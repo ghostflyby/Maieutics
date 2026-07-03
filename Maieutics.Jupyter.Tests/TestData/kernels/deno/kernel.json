@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "deno",
+    "jupyter",
+    "--kernel",
+    "--conn",
+    "{connection_file}"
+  ],
+  "display_name": "Deno",
+  "language": "typescript"
+}

@@ -6,4 +6,12 @@
         <Nullable>enable</Nullable>
     </PropertyGroup>
 
+    <ItemGroup>
+        <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NetMQ" Version="4.0.2.2"/>
+    </ItemGroup>
+
 </Project>

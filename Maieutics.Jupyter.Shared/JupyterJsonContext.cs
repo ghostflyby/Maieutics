@@ -26,5 +26,11 @@ namespace Maieutics.Jupyter.Shared;
 [JsonSerializable(typeof(JupyterInterruptReply))]
 [JsonSerializable(typeof(JupyterShutdownRequest))]
 [JsonSerializable(typeof(JupyterShutdownReply))]
+[JsonSerializable(typeof(JupyterCompleteRequest))]
+[JsonSerializable(typeof(JupyterCompleteReply))]
+[JsonSerializable(typeof(JupyterInspectRequest))]
+[JsonSerializable(typeof(JupyterInspectReply))]
+[JsonSerializable(typeof(JupyterIsCompleteRequest))]
+[JsonSerializable(typeof(JupyterIsCompleteReply))]
 [JsonSerializable(typeof(JupyterIopubWelcome))]
 public partial class JupyterJsonContext : JsonSerializerContext;

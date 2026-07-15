@@ -16,7 +16,12 @@ public sealed record JupyterKernelInfo(
     JupyterLanguageInfo LanguageInfo,
     [property: JsonPropertyName("banner")] string Banner = "",
     [property: JsonPropertyName("help_links")]
-    IReadOnlyList<JupyterHelpLink>? HelpLinks = null);
+    IReadOnlyList<JupyterHelpLink>? HelpLinks = null,
+    [property: JsonPropertyName("status")] string Status = "ok",
+    [property: JsonPropertyName("debugger")]
+    bool Debugger = false,
+    [property: JsonPropertyName("supported_features")]
+    IReadOnlyList<string>? SupportedFeatures = null);
 
 public sealed record JupyterLanguageInfo(
     [property: JsonPropertyName("name")] string Name,
@@ -112,7 +117,69 @@ public sealed record JupyterShutdownRequest(
 
 public sealed record JupyterShutdownReply(
     [property: JsonPropertyName("restart")]
-    bool Restart);
+    bool Restart,
+    [property: JsonPropertyName("status")] string Status = "ok");
+
+public sealed record JupyterCompleteRequest(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("cursor_pos")]
+    int CursorPosition);
+
+public sealed record JupyterCompleteReply
+{
+    [JsonPropertyName("status")] public string Status { get; init; } = string.Empty;
+
+    [JsonPropertyName("matches")] public IReadOnlyList<string> Matches { get; init; } = [];
+
+    [JsonPropertyName("cursor_start")] public int CursorStart { get; init; }
+
+    [JsonPropertyName("cursor_end")] public int CursorEnd { get; init; }
+
+    [JsonPropertyName("metadata")]
+    public IReadOnlyDictionary<string, JsonElement> Metadata { get; init; } =
+        new Dictionary<string, JsonElement>();
+
+    [JsonPropertyName("ename")] public string? ErrorName { get; init; }
+
+    [JsonPropertyName("evalue")] public string? ErrorValue { get; init; }
+
+    [JsonPropertyName("traceback")] public IReadOnlyList<string>? Traceback { get; init; }
+}
+
+public sealed record JupyterInspectRequest(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("cursor_pos")]
+    int CursorPosition,
+    [property: JsonPropertyName("detail_level")]
+    int DetailLevel = 0);
+
+public sealed record JupyterInspectReply
+{
+    [JsonPropertyName("status")] public string Status { get; init; } = string.Empty;
+
+    [JsonPropertyName("found")] public bool Found { get; init; }
+
+    [JsonPropertyName("data")]
+    public IReadOnlyDictionary<string, JsonElement> Data { get; init; } =
+        new Dictionary<string, JsonElement>();
+
+    [JsonPropertyName("metadata")]
+    public IReadOnlyDictionary<string, JsonElement> Metadata { get; init; } =
+        new Dictionary<string, JsonElement>();
+
+    [JsonPropertyName("ename")] public string? ErrorName { get; init; }
+
+    [JsonPropertyName("evalue")] public string? ErrorValue { get; init; }
+
+    [JsonPropertyName("traceback")] public IReadOnlyList<string>? Traceback { get; init; }
+}
+
+public sealed record JupyterIsCompleteRequest(
+    [property: JsonPropertyName("code")] string Code);
+
+public sealed record JupyterIsCompleteReply(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("indent")] string? Indent = null);
 
 public sealed record JupyterIopubWelcome(
     [property: JsonPropertyName("subscription")]

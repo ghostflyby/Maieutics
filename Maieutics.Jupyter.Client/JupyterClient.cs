@@ -38,10 +38,28 @@ public sealed class JupyterClient : IJupyterClient
     public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default) =>
         protocolSession.GetKernelInfoAsync(cancellationToken);
 
+    internal Task<JupyterKernelInfo> WaitForReadyAsync(CancellationToken cancellationToken = default) =>
+        protocolSession.WaitForReadyAsync(cancellationToken);
+
     public Task<IJupyterExecution> ExecuteAsync(
         JupyterExecuteRequest request,
         CancellationToken cancellationToken = default) =>
         protocolSession.StartExecutionAsync(request, cancellationToken);
+
+    public Task<JupyterCompleteReply> CompleteAsync(
+        JupyterCompleteRequest request,
+        CancellationToken cancellationToken = default) =>
+        protocolSession.CompleteAsync(request, cancellationToken);
+
+    public Task<JupyterInspectReply> InspectAsync(
+        JupyterInspectRequest request,
+        CancellationToken cancellationToken = default) =>
+        protocolSession.InspectAsync(request, cancellationToken);
+
+    public Task<JupyterIsCompleteReply> IsCompleteAsync(
+        JupyterIsCompleteRequest request,
+        CancellationToken cancellationToken = default) =>
+        protocolSession.IsCompleteAsync(request, cancellationToken);
 
     public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
         protocolSession.PingAsync(cancellationToken);

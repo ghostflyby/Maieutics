@@ -109,4 +109,50 @@ public sealed class JupyterMessageSerializerTests
 
         act.Should().Throw<NotSupportedException>().WithMessage("*CurveZMQ*");
     }
+
+    [Fact]
+    public void LanguageServiceDtoRoundTripUsesGeneratedMetadata()
+    {
+        var reply = new JupyterCompleteReply
+        {
+            Status = "ok",
+            Matches = ["console"],
+            CursorStart = 0,
+            CursorEnd = 4,
+            Metadata = new Dictionary<string, JsonElement>
+            {
+                ["source"] = JsonSerializer.SerializeToElement("test")
+            }
+        };
+
+        var json = JsonSerializer.Serialize(reply, JupyterJsonContext.Default.JupyterCompleteReply);
+        var roundTripped = JsonSerializer.Deserialize(json, JupyterJsonContext.Default.JupyterCompleteReply);
+
+        roundTripped.Should().NotBeNull();
+        roundTripped!.Status.Should().Be("ok");
+        roundTripped.Matches.Should().Equal("console");
+        roundTripped.CursorStart.Should().Be(0);
+        roundTripped.CursorEnd.Should().Be(4);
+        roundTripped.Metadata["source"].GetString().Should().Be("test");
+    }
+
+    [Fact]
+    public void KernelInfoMissingNewFieldsUsesCompatibilityDefaults()
+    {
+        const string json = """
+                            {
+                              "protocol_version": "5.3",
+                              "implementation": "legacy",
+                              "implementation_version": "1.0",
+                              "language_info": { "name": "test", "version": "1.0" }
+                            }
+                            """;
+
+        var info = JsonSerializer.Deserialize(json, JupyterJsonContext.Default.JupyterKernelInfo);
+
+        info.Should().NotBeNull();
+        info!.Status.Should().Be("ok");
+        info.Debugger.Should().BeFalse();
+        info.SupportedFeatures.Should().BeNull();
+    }
 }

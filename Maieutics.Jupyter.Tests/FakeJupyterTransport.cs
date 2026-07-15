@@ -10,10 +10,20 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         Channel.CreateUnbounded<JupyterTransportMessage>();
 
     private readonly List<JupyterTransportMessage> sentMessages = [];
+    private readonly object sentMessagesGate = new();
 
     public IAsyncEnumerable<JupyterTransportMessage> IncomingMessages => incomingMessages.Reader.ReadAllAsync();
 
-    public IReadOnlyList<JupyterTransportMessage> SentMessages => sentMessages;
+    public IReadOnlyList<JupyterTransportMessage> SentMessages
+    {
+        get
+        {
+            lock (sentMessagesGate)
+            {
+                return sentMessages.ToArray();
+            }
+        }
+    }
 
     public ValueTask SendAsync(
         JupyterTransportChannel channel,
@@ -21,7 +31,11 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        sentMessages.Add(new JupyterTransportMessage(channel, JupyterWireMessage.Create(message)));
+        lock (sentMessagesGate)
+        {
+            sentMessages.Add(new JupyterTransportMessage(channel, JupyterWireMessage.Create(message)));
+        }
+
         return ValueTask.CompletedTask;
     }
 

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using Maieutics.Jupyter.Shared;
 
@@ -144,7 +145,7 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
             .ConfigureAwait(false);
         using var timeout = new CancellationTokenSource(options.StartupTimeout);
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
-        await client.GetKernelInfoAsync(startup.Token).ConfigureAwait(false);
+        await client.WaitForReadyAsync(startup.Token).ConfigureAwait(false);
     }
 
     private async Task StopCoreAsync(bool restart, CancellationToken cancellationToken)
@@ -153,46 +154,81 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
         var currentProcess = process;
         client = null;
         process = null;
+        Exception? failure = null;
+        using var timeout = new CancellationTokenSource(options.ShutdownTimeout);
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
 
-        if (currentClient is not null)
+        try
         {
-            try
+            if (currentClient is not null && currentProcess is { HasExited: false })
             {
-                if (currentProcess is { HasExited: false })
-                {
-                    await currentClient.ShutdownAsync(restart, cancellationToken).ConfigureAwait(false);
-                }
+                await currentClient.ShutdownAsync(restart, shutdown.Token).ConfigureAwait(false);
             }
-            catch when (Volatile.Read(ref disposeState) != 0)
+
+            if (currentProcess is { HasExited: false })
             {
-            }
-            finally
-            {
-                await currentClient.DisposeAsync().ConfigureAwait(false);
+                await currentProcess.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);
             }
         }
-
-        if (currentProcess is not null)
+        catch (Exception exception)
         {
-            if (!currentProcess.HasExited)
+            failure = exception;
+        }
+        finally
+        {
+            if (currentProcess is not null)
             {
-                using var timeout = new CancellationTokenSource(options.ShutdownTimeout);
-                using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
                 try
                 {
+                    if (!currentProcess.HasExited)
+                    {
+                        currentProcess.Kill(entireProcessTree: true);
+                    }
+
                     await currentProcess.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                catch (InvalidOperationException) when (currentProcess.HasExited)
                 {
-                    currentProcess.Kill(entireProcessTree: true);
-                    await currentProcess.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failure ??= exception;
                 }
             }
 
-            currentProcess.Dispose();
+            if (currentClient is not null)
+            {
+                try
+                {
+                    await currentClient.DisposeAsync().AsTask().WaitAsync(shutdown.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failure ??= exception;
+                }
+            }
+
+            currentProcess?.Dispose();
+            try
+            {
+                DeleteConnectionFile();
+            }
+            catch (Exception exception)
+            {
+                failure ??= exception;
+            }
         }
 
-        DeleteConnectionFile();
+        if (failure is OperationCanceledException && timeout.IsCancellationRequested &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (failure is not null && Volatile.Read(ref disposeState) == 0)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 
     private Process StartProcess(string path)

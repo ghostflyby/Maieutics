@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Kernel.Transport;
@@ -22,6 +23,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
     private readonly Task controlLoop;
     private CancellationTokenSource? currentExecution;
     private int executionCount;
+    private int iopubInitialized;
     private int disposeState;
 
     private JupyterKernelHost(
@@ -92,7 +94,12 @@ public sealed class JupyterKernelHost : IJupyterKernel
                         RouteInputReply(stdin.WireMessage.Message);
                         break;
                     case JupyterIopubSubscriptionReceived subscription:
-                        await SendIopubWelcomeAsync(subscription.Topic, lifetime.Token).ConfigureAwait(false);
+                        if (Interlocked.Exchange(ref iopubInitialized, 1) == 0)
+                        {
+                            await SendIopubWelcomeAsync(subscription.Topic, lifetime.Token).ConfigureAwait(false);
+                            await PublishStatusAsync("starting", null, lifetime.Token).ConfigureAwait(false);
+                        }
+
                         break;
                 }
             }
@@ -167,6 +174,15 @@ public sealed class JupyterKernelHost : IJupyterKernel
                 return false;
             case "execute_request":
                 await ExecuteAsync(request).ConfigureAwait(false);
+                return false;
+            case "complete_request":
+                await CompleteAsync(request, channel).ConfigureAwait(false);
+                return false;
+            case "inspect_request":
+                await InspectAsync(request, channel).ConfigureAwait(false);
+                return false;
+            case "is_complete_request":
+                await IsCompleteAsync(request, channel).ConfigureAwait(false);
                 return false;
             case "shutdown_request":
                 return await HandleShutdownAsync(request, channel).ConfigureAwait(false);
@@ -281,6 +297,133 @@ public sealed class JupyterKernelHost : IJupyterKernel
                 }
             }
         }
+    }
+
+    private async Task CompleteAsync(JupyterWireMessage wireRequest, JupyterKernelChannel channel)
+    {
+        var request = wireRequest.Message.GetContent(JupyterJsonContext.Default.JupyterCompleteRequest);
+        try
+        {
+            ValidateCursorPosition(request.Code, request.CursorPosition);
+            if (application is not IJupyterCompletionProvider provider)
+            {
+                throw new JupyterKernelExecutionException(
+                    "NotSupported",
+                    "The Jupyter kernel does not provide code completion.");
+            }
+
+            var result = await provider.CompleteAsync(request, lifetime.Token).ConfigureAwait(false);
+            ValidateCursorRange(request.Code, result.CursorStart, result.CursorEnd);
+            await SendReplyAsync(
+                channel,
+                wireRequest,
+                "complete_reply",
+                new JupyterCompleteReply
+                {
+                    Status = "ok",
+                    Matches = result.Matches,
+                    CursorStart = result.CursorStart,
+                    CursorEnd = result.CursorEnd,
+                    Metadata = result.Metadata ?? new Dictionary<string, JsonElement>()
+                },
+                JupyterJsonContext.Default.JupyterCompleteReply,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var error = ToJupyterError(exception);
+            await SendReplyAsync(
+                channel,
+                wireRequest,
+                "complete_reply",
+                new JupyterCompleteReply
+                {
+                    Status = "error",
+                    ErrorName = error.Name,
+                    ErrorValue = error.Value,
+                    Traceback = error.Traceback
+                },
+                JupyterJsonContext.Default.JupyterCompleteReply,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task InspectAsync(JupyterWireMessage wireRequest, JupyterKernelChannel channel)
+    {
+        var request = wireRequest.Message.GetContent(JupyterJsonContext.Default.JupyterInspectRequest);
+        try
+        {
+            ValidateCursorPosition(request.Code, request.CursorPosition);
+            if (request.DetailLevel is not (0 or 1))
+            {
+                throw new ArgumentOutOfRangeException(nameof(request.DetailLevel),
+                    "Jupyter inspect detail level must be 0 or 1.");
+            }
+
+            if (application is not IJupyterInspectionProvider provider)
+            {
+                throw new JupyterKernelExecutionException(
+                    "NotSupported",
+                    "The Jupyter kernel does not provide code inspection.");
+            }
+
+            var result = await provider.InspectAsync(request, lifetime.Token).ConfigureAwait(false);
+            await SendReplyAsync(
+                channel,
+                wireRequest,
+                "inspect_reply",
+                new JupyterInspectReply
+                {
+                    Status = "ok",
+                    Found = result.Found,
+                    Data = result.Data.Data,
+                    Metadata = result.Metadata ?? new Dictionary<string, JsonElement>()
+                },
+                JupyterJsonContext.Default.JupyterInspectReply,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var error = ToJupyterError(exception);
+            await SendReplyAsync(
+                channel,
+                wireRequest,
+                "inspect_reply",
+                new JupyterInspectReply
+                {
+                    Status = "error",
+                    ErrorName = error.Name,
+                    ErrorValue = error.Value,
+                    Traceback = error.Traceback
+                },
+                JupyterJsonContext.Default.JupyterInspectReply,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task IsCompleteAsync(JupyterWireMessage wireRequest, JupyterKernelChannel channel)
+    {
+        var request = wireRequest.Message.GetContent(JupyterJsonContext.Default.JupyterIsCompleteRequest);
+        var result = new JupyterCodeCompletenessResult(JupyterCodeCompletenessStatus.Unknown);
+        if (application is IJupyterCodeCompletenessProvider provider)
+        {
+            try
+            {
+                result = await provider.IsCompleteAsync(request, lifetime.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                result = new JupyterCodeCompletenessResult(JupyterCodeCompletenessStatus.Unknown);
+            }
+        }
+
+        await SendReplyAsync(
+            channel,
+            wireRequest,
+            "is_complete_reply",
+            new JupyterIsCompleteReply(ToWireStatus(result.Status), result.Indent),
+            JupyterJsonContext.Default.JupyterIsCompleteReply,
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private JupyterExecutionContext CreateExecutionContext(
@@ -411,7 +554,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
 
     private async ValueTask PublishStatusAsync(
         string state,
-        JupyterMessageHeader parent,
+        JupyterMessageHeader? parent,
         CancellationToken cancellationToken)
     {
         await PublishAsync(
@@ -426,7 +569,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
         string messageType,
         TContent content,
         JsonTypeInfo<TContent> contentType,
-        JupyterMessageHeader parent,
+        JupyterMessageHeader? parent,
         CancellationToken cancellationToken)
     {
         var message = JupyterMessage.Create(messageType, content, contentType, session, parent);
@@ -495,4 +638,30 @@ public sealed class JupyterKernelHost : IJupyterKernel
 
         return new JupyterError(exception.GetType().Name, exception.Message, exception.StackTrace?.Split('\n') ?? []);
     }
+
+    private static void ValidateCursorPosition(string code, int cursorPosition)
+    {
+        ArgumentNullException.ThrowIfNull(code);
+        JupyterCursorPosition.ToUtf16Index(code, cursorPosition);
+    }
+
+    private static void ValidateCursorRange(string code, int cursorStart, int cursorEnd)
+    {
+        if (cursorStart > cursorEnd)
+        {
+            throw new ArgumentOutOfRangeException(nameof(cursorStart),
+                "Jupyter completion cursor start must not exceed cursor end.");
+        }
+
+        JupyterCursorPosition.ToUtf16Index(code, cursorStart);
+        JupyterCursorPosition.ToUtf16Index(code, cursorEnd);
+    }
+
+    private static string ToWireStatus(JupyterCodeCompletenessStatus status) => status switch
+    {
+        JupyterCodeCompletenessStatus.Complete => "complete",
+        JupyterCodeCompletenessStatus.Incomplete => "incomplete",
+        JupyterCodeCompletenessStatus.Invalid => "invalid",
+        _ => "unknown"
+    };
 }

@@ -36,6 +36,30 @@ public sealed class JupyterProtocolSessionTests
         reply.Implementation.Should().Be("test-kernel");
     }
 
+    [Fact]
+    public async Task ReadinessProbeAcceptsDelayedIdleFromAnEarlierRequest()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var readyTask = session.WaitForReadyAsync(TestContext.Current.CancellationToken);
+        var firstRequest = transport.SentMessages.Single().Message;
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply("kernel_info_reply", KernelInfo(), JupyterJsonContext.Default.JupyterKernelInfo, firstRequest));
+
+        await WaitForSentMessageCountAsync(transport, 2, TestContext.Current.CancellationToken);
+        var secondRequest = transport.SentMessages[1].Message;
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, firstRequest));
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply("kernel_info_reply", KernelInfo(), JupyterJsonContext.Default.JupyterKernelInfo, secondRequest));
+
+        var reply = await readyTask.WaitAsync(TestContext.Current.CancellationToken);
+        reply.Implementation.Should().Be("test-kernel");
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -144,6 +168,125 @@ public sealed class JupyterProtocolSessionTests
     }
 
     [Fact]
+    public async Task LanguageServiceRequestsCanCompleteConcurrentlyOutOfOrder()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var completeTask = session.CompleteAsync(
+            new JupyterCompleteRequest("cons", 4),
+            TestContext.Current.CancellationToken);
+        var completeRequest = transport.SentMessages.Single().Message;
+        var inspectTask = session.InspectAsync(
+            new JupyterInspectRequest("console", 7),
+            TestContext.Current.CancellationToken);
+        var inspectRequest = transport.SentMessages.Last().Message;
+
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "inspect_reply",
+                new JupyterInspectReply { Status = "ok", Found = false },
+                JupyterJsonContext.Default.JupyterInspectReply,
+                inspectRequest));
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "complete_reply",
+                new JupyterCompleteReply
+                {
+                    Status = "ok",
+                    Matches = ["console"],
+                    CursorStart = 0,
+                    CursorEnd = 4
+                },
+                JupyterJsonContext.Default.JupyterCompleteReply,
+                completeRequest));
+
+        (await completeTask.WaitAsync(TestContext.Current.CancellationToken)).Matches.Should().Contain("console");
+        (await inspectTask.WaitAsync(TestContext.Current.CancellationToken)).Found.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CompleteErrorBecomesTypedRequestException()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var task = session.CompleteAsync(
+            new JupyterCompleteRequest("bad", 3),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "complete_reply",
+                new JupyterCompleteReply
+                {
+                    Status = "error",
+                    ErrorName = "CompletionError",
+                    ErrorValue = "failed",
+                    Traceback = ["trace"]
+                },
+                JupyterJsonContext.Default.JupyterCompleteReply,
+                request));
+
+        var assertion = await task.Invoking(value => value).Should().ThrowAsync<JupyterRequestException>();
+        assertion.Which.RequestId.Should().Be(request.Header.MessageId);
+        assertion.Which.RequestMessageType.Should().Be("complete_request");
+        assertion.Which.ReplyMessageType.Should().Be("complete_reply");
+        assertion.Which.ErrorName.Should().Be("CompletionError");
+        assertion.Which.ErrorValue.Should().Be("failed");
+        assertion.Which.Traceback.Should().Equal("trace");
+    }
+
+    [Fact]
+    public async Task IsCompleteValidatesReplyStatus()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var task = session.IsCompleteAsync(
+            new JupyterIsCompleteRequest("{}"),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "is_complete_reply",
+                new JupyterIsCompleteReply("unexpected"),
+                JupyterJsonContext.Default.JupyterIsCompleteReply,
+                request));
+
+        await task.Invoking(value => value).Should().ThrowAsync<JupyterProtocolException>();
+    }
+
+    [Fact]
+    public async Task InvalidCursorIsRejectedBeforeSending()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+
+        var act = () => session.CompleteAsync(
+            new JupyterCompleteRequest("a😀b", 4),
+            TestContext.Current.CancellationToken);
+
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        transport.SentMessages.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CancellingLanguageRequestDoesNotSendInterrupt()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        using var cancellation = new CancellationTokenSource();
+        var task = session.CompleteAsync(new JupyterCompleteRequest("cons", 4), cancellation.Token);
+
+        await cancellation.CancelAsync();
+
+        await task.Invoking(value => value).Should().ThrowAsync<OperationCanceledException>();
+        transport.SentMessages.Should().ContainSingle(message => message.Message.MessageType == "complete_request");
+    }
+
+    [Fact]
     public async Task DisposeFailsPendingRequest()
     {
         var transport = new FakeJupyterTransport();
@@ -181,5 +324,17 @@ public sealed class JupyterProtocolSessionTests
         }
 
         return outputs;
+    }
+
+    private static async Task WaitForSentMessageCountAsync(
+        FakeJupyterTransport transport,
+        int expectedCount,
+        CancellationToken cancellationToken)
+    {
+        while (transport.SentMessages.Count < expectedCount)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
     }
 }

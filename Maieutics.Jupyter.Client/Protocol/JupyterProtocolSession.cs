@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Client.Transport;
 using Maieutics.Jupyter.Shared;
@@ -13,6 +14,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private readonly IJupyterTransport transport;
     private readonly JupyterSessionIdentity session;
     private readonly ConcurrentDictionary<JupyterMessageId, PendingRequest> pendingRequests = new();
+    private readonly ConcurrentDictionary<JupyterMessageId, TaskCompletionSource<bool>> readinessProbes = new();
     private readonly ConcurrentDictionary<JupyterMessageId, ExecutionState> executions = new();
     private readonly AsyncEventHub<JupyterClientEvent> events = new(256);
     private readonly CancellationTokenSource disposal = new();
@@ -42,17 +44,75 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
 
     public async Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default)
     {
-        var request = JupyterMessage.Create(
-            "kernel_info_request",
-            new JupyterEmptyContent(),
-            JupyterJsonContext.Default.JupyterEmptyContent,
-            session);
+        var request = CreateKernelInfoRequest();
         var reply = await SendRequestAsync(
             JupyterTransportChannel.Shell,
             request,
             "kernel_info_reply",
             cancellationToken).ConfigureAwait(false);
-        return reply.GetContent(JupyterJsonContext.Default.JupyterKernelInfo);
+        return ParseKernelInfo(reply);
+    }
+
+    public async Task<JupyterKernelInfo> WaitForReadyAsync(CancellationToken cancellationToken = default)
+    {
+        var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var probeIds = new List<JupyterMessageId>();
+        try
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var request = CreateKernelInfoRequest();
+                if (!readinessProbes.TryAdd(request.Header.MessageId, ready))
+                {
+                    throw new InvalidOperationException(
+                        $"Readiness probe '{request.Header.MessageId}' was already registered.");
+                }
+
+                probeIds.Add(request.Header.MessageId);
+                var reply = await SendRequestAsync(
+                    JupyterTransportChannel.Shell,
+                    request,
+                    "kernel_info_reply",
+                    cancellationToken).ConfigureAwait(false);
+                var kernelInfo = ParseKernelInfo(reply);
+                if (ready.Task.IsCompletedSuccessfully)
+                {
+                    return kernelInfo;
+                }
+
+                await transport.PingAsync(cancellationToken).ConfigureAwait(false);
+                if (ready.Task.IsCompletedSuccessfully)
+                {
+                    return kernelInfo;
+                }
+            }
+        }
+        finally
+        {
+            foreach (var probeId in probeIds)
+            {
+                readinessProbes.TryRemove(probeId, out _);
+            }
+        }
+    }
+
+    private JupyterMessage CreateKernelInfoRequest() => JupyterMessage.Create(
+        "kernel_info_request",
+        new JupyterEmptyContent(),
+        JupyterJsonContext.Default.JupyterEmptyContent,
+        session);
+
+    private static JupyterKernelInfo ParseKernelInfo(JupyterMessage reply)
+    {
+        var kernelInfo = reply.GetContent(JupyterJsonContext.Default.JupyterKernelInfo);
+        if (!string.Equals(kernelInfo.Status, "ok", StringComparison.Ordinal))
+        {
+            throw new JupyterProtocolException(
+                $"Jupyter kernel_info_reply contained invalid status '{kernelInfo.Status}'.");
+        }
+
+        return kernelInfo;
     }
 
     public async Task<IJupyterExecution> StartExecutionAsync(
@@ -94,6 +154,64 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         return new JupyterExecution(message.Header.MessageId, outputs.Reader, completion.Task, ReplyInputAsync);
     }
 
+    public async Task<JupyterCompleteReply> CompleteAsync(
+        JupyterCompleteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateCursorPosition(request.Code, request.CursorPosition);
+        var replyMessage = await SendShellRequestAsync(
+            "complete_request",
+            request,
+            JupyterJsonContext.Default.JupyterCompleteRequest,
+            "complete_reply",
+            cancellationToken).ConfigureAwait(false);
+        var reply = replyMessage.GetContent(JupyterJsonContext.Default.JupyterCompleteReply);
+        ThrowIfRequestFailed(reply.Status, reply.ErrorName, reply.ErrorValue, reply.Traceback, replyMessage);
+        ValidateReplyCursorRange(request.Code, reply.CursorStart, reply.CursorEnd);
+        return reply;
+    }
+
+    public async Task<JupyterInspectReply> InspectAsync(
+        JupyterInspectRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateCursorPosition(request.Code, request.CursorPosition);
+        if (request.DetailLevel is not (0 or 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(request.DetailLevel),
+                "Jupyter inspect detail level must be 0 or 1.");
+        }
+
+        var replyMessage = await SendShellRequestAsync(
+            "inspect_request",
+            request,
+            JupyterJsonContext.Default.JupyterInspectRequest,
+            "inspect_reply",
+            cancellationToken).ConfigureAwait(false);
+        var reply = replyMessage.GetContent(JupyterJsonContext.Default.JupyterInspectReply);
+        ThrowIfRequestFailed(reply.Status, reply.ErrorName, reply.ErrorValue, reply.Traceback, replyMessage);
+        return reply;
+    }
+
+    public async Task<JupyterIsCompleteReply> IsCompleteAsync(
+        JupyterIsCompleteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var replyMessage = await SendShellRequestAsync(
+            "is_complete_request",
+            request,
+            JupyterJsonContext.Default.JupyterIsCompleteRequest,
+            "is_complete_reply",
+            cancellationToken).ConfigureAwait(false);
+        var reply = replyMessage.GetContent(JupyterJsonContext.Default.JupyterIsCompleteReply);
+        if (reply.Status is not ("complete" or "incomplete" or "invalid" or "unknown"))
+        {
+            throw new JupyterProtocolException($"Jupyter is_complete_reply contained invalid status '{reply.Status}'.");
+        }
+
+        return reply;
+    }
+
     public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
         transport.PingAsync(cancellationToken);
 
@@ -126,7 +244,14 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             request,
             "shutdown_reply",
             cancellationToken).ConfigureAwait(false);
-        return reply.GetContent(JupyterJsonContext.Default.JupyterShutdownReply);
+        var shutdownReply = reply.GetContent(JupyterJsonContext.Default.JupyterShutdownReply);
+        if (!string.Equals(shutdownReply.Status, "ok", StringComparison.Ordinal))
+        {
+            throw new JupyterProtocolException(
+                $"Jupyter shutdown_reply contained invalid status '{shutdownReply.Status}'.");
+        }
+
+        return shutdownReply;
     }
 
     public async ValueTask DisposeAsync()
@@ -188,6 +313,66 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         }
     }
 
+    private Task<JupyterMessage> SendShellRequestAsync<TRequest>(
+        string requestType,
+        TRequest content,
+        JsonTypeInfo<TRequest> contentType,
+        string replyType,
+        CancellationToken cancellationToken)
+    {
+        var request = JupyterMessage.Create(requestType, content, contentType, session);
+        return SendRequestAsync(JupyterTransportChannel.Shell, request, replyType, cancellationToken);
+    }
+
+    private static void ValidateCursorPosition(string code, int cursorPosition)
+    {
+        ArgumentNullException.ThrowIfNull(code);
+        JupyterCursorPosition.ToUtf16Index(code, cursorPosition);
+    }
+
+    private static void ValidateReplyCursorRange(string code, int cursorStart, int cursorEnd)
+    {
+        if (cursorStart > cursorEnd)
+        {
+            throw new JupyterProtocolException("Jupyter complete_reply cursor_start exceeded cursor_end.");
+        }
+
+        try
+        {
+            JupyterCursorPosition.ToUtf16Index(code, cursorStart);
+            JupyterCursorPosition.ToUtf16Index(code, cursorEnd);
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new JupyterProtocolException("Jupyter complete_reply contained an invalid cursor range.", exception);
+        }
+    }
+
+    private static void ThrowIfRequestFailed(
+        string status,
+        string? errorName,
+        string? errorValue,
+        IReadOnlyList<string>? traceback,
+        JupyterMessage rawReply)
+    {
+        if (string.Equals(status, "ok", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (string.Equals(status, "error", StringComparison.Ordinal))
+        {
+            throw new JupyterRequestException(
+                errorName ?? "JupyterError",
+                errorValue ?? "The Jupyter kernel rejected the request.",
+                traceback ?? [],
+                rawReply);
+        }
+
+        throw new JupyterProtocolException(
+            $"Jupyter reply '{rawReply.MessageType}' contained invalid status '{status}'.");
+    }
+
     private async Task ReplyInputAsync(
         JupyterInputRequest request,
         string value,
@@ -233,14 +418,30 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private void RouteMessage(JupyterTransportMessage transportMessage)
     {
         var message = transportMessage.Message;
-        if (message.ParentHeader is { } parent &&
-            pendingRequests.TryGetValue(parent.MessageId, out var pending) &&
-            pending.Channel == transportMessage.Channel &&
-            string.Equals(pending.ExpectedReplyType, message.MessageType, StringComparison.Ordinal) &&
-            pendingRequests.TryRemove(parent.MessageId, out pending))
+        if (transportMessage.Channel == JupyterTransportChannel.Iopub &&
+            message.MessageType == "status" &&
+            message.ParentHeader is { } readinessParent &&
+            readinessProbes.TryGetValue(readinessParent.MessageId, out var readiness) &&
+            message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState == "idle")
         {
-            pending.Completion.TrySetResult(message);
-            return;
+            readiness.TrySetResult(true);
+        }
+
+        if (message.ParentHeader is { } parent &&
+            pendingRequests.TryGetValue(parent.MessageId, out var pending))
+        {
+            var replyMatched = pending.Channel == transportMessage.Channel &&
+                               string.Equals(pending.ExpectedReplyType, message.MessageType,
+                                   StringComparison.Ordinal);
+            if (replyMatched)
+            {
+                if (pendingRequests.TryRemove(parent.MessageId, out _))
+                {
+                    pending.Completion.TrySetResult(message);
+                }
+
+                return;
+            }
         }
 
         if (message.ParentHeader is { } executionParent &&
@@ -437,10 +638,17 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private void ThrowIfDisposed() =>
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
 
-    private sealed record PendingRequest(
-        JupyterTransportChannel Channel,
-        string ExpectedReplyType,
-        TaskCompletionSource<JupyterMessage> Completion);
+    private sealed class PendingRequest(
+        JupyterTransportChannel channel,
+        string expectedReplyType,
+        TaskCompletionSource<JupyterMessage> completion)
+    {
+        public JupyterTransportChannel Channel { get; } = channel;
+
+        public string ExpectedReplyType { get; } = expectedReplyType;
+
+        public TaskCompletionSource<JupyterMessage> Completion { get; } = completion;
+    }
 
     private sealed class ExecutionState(
         JupyterMessageHeader requestHeader,

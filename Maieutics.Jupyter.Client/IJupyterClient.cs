@@ -13,5 +13,17 @@ public interface IJupyterClient : IAsyncDisposable
         JupyterExecuteRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<JupyterCompleteReply> CompleteAsync(
+        JupyterCompleteRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<JupyterInspectReply> InspectAsync(
+        JupyterInspectRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<JupyterIsCompleteReply> IsCompleteAsync(
+        JupyterIsCompleteRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default);
 }

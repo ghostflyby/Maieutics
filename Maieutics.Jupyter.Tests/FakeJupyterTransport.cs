@@ -20,13 +20,22 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         JupyterMessage message,
         CancellationToken cancellationToken = default)
     {
-        sentMessages.Add(new JupyterTransportMessage(channel, message));
+        cancellationToken.ThrowIfCancellationRequested();
+        sentMessages.Add(new JupyterTransportMessage(channel, JupyterWireMessage.Create(message)));
         return ValueTask.CompletedTask;
     }
 
-    public void Receive(JupyterTransportChannel channel, JupyterMessage message)
+    public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(TimeSpan.FromMilliseconds(1));
+
+    public void Receive(
+        JupyterTransportChannel channel,
+        JupyterMessage message,
+        IReadOnlyList<byte[]>? identities = null)
     {
-        incomingMessages.Writer.TryWrite(new JupyterTransportMessage(channel, message));
+        incomingMessages.Writer.TryWrite(new JupyterTransportMessage(
+            channel,
+            new JupyterWireMessage(identities ?? [], message, [])));
     }
 
     public ValueTask DisposeAsync()

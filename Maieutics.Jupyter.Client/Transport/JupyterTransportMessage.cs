@@ -12,4 +12,9 @@ public enum JupyterTransportChannel
 
 public sealed record JupyterTransportMessage(
     JupyterTransportChannel Channel,
-    JupyterMessage Message);
+    JupyterWireMessage WireMessage)
+{
+    public JupyterMessage Message => WireMessage.Message;
+}
+
+public sealed class JupyterBackpressureException(string message) : Exception(message);

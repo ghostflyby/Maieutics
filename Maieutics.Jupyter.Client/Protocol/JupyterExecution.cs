@@ -1,33 +1,47 @@
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Jupyter.Client.Protocol;
 
 internal sealed class JupyterExecution(
-    JupyterMessageHeader requestHeader,
-    Channel<KernelOutput> outputs,
-    TaskCompletionSource<ExecutionResult> completion,
-    Func<InputRequestId, string, CancellationToken, Task> replyInput,
-    Func<CancellationToken, Task> cancel) : IJupyterExecution
+    JupyterMessageId requestId,
+    ChannelReader<JupyterOutput> outputs,
+    Task<JupyterExecutionResult> completion,
+    Func<JupyterInputRequest, string, CancellationToken, Task> replyInput) : IJupyterExecution
 {
-    public string MessageId => requestHeader.MessageId;
+    private int outputEnumerationStarted;
 
-    public IAsyncEnumerable<KernelOutput> Outputs => outputs.Reader.ReadAllAsync();
+    public JupyterMessageId RequestId => requestId;
 
-    public Task<ExecutionResult> Completion => completion.Task;
+    public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
+
+    public Task<JupyterExecutionResult> Completion => completion;
 
     public Task ReplyInputAsync(
-        InputRequestId requestId,
+        JupyterInputRequest request,
         string value,
         CancellationToken cancellationToken = default)
     {
-        return replyInput(requestId, value, cancellationToken);
+        if (request.RequestId != requestId)
+        {
+            throw new ArgumentException("The input request belongs to a different execution.", nameof(request));
+        }
+
+        return replyInput(request, value, cancellationToken);
     }
 
-    public Task CancelAsync(CancellationToken cancellationToken = default)
+    private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        outputs.Writer.TryComplete();
-        completion.TrySetCanceled(cancellationToken);
-        return cancel(cancellationToken);
+        if (Interlocked.Exchange(ref outputEnumerationStarted, 1) != 0)
+        {
+            throw new InvalidOperationException("Jupyter execution output is a single-consumer stream.");
+        }
+
+        await foreach (var output in outputs.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return output;
+        }
     }
 }

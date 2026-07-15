@@ -1,12 +1,17 @@
+using Maieutics.Jupyter.Shared;
+
 namespace Maieutics.Jupyter.Client;
 
 public interface IJupyterClient : IAsyncDisposable
 {
-    IAsyncEnumerable<KernelEvent> Events { get; }
+    IAsyncEnumerable<JupyterClientEvent> WatchEventsAsync(
+        CancellationToken cancellationToken = default);
 
-    Task<KernelInfoReply> GetKernelInfoAsync(CancellationToken cancellationToken = default);
+    Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default);
 
     Task<IJupyterExecution> ExecuteAsync(
-        ExecuteRequest request,
+        JupyterExecuteRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default);
 }

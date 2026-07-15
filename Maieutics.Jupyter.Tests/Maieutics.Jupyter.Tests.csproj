@@ -17,6 +17,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj"/>
+        <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj"/>
         <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj"/>
     </ItemGroup>
 

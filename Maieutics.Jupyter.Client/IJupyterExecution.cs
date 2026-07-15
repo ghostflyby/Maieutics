@@ -1,17 +1,17 @@
+using Maieutics.Jupyter.Shared;
+
 namespace Maieutics.Jupyter.Client;
 
 public interface IJupyterExecution
 {
-    string MessageId { get; }
+    JupyterMessageId RequestId { get; }
 
-    IAsyncEnumerable<KernelOutput> Outputs { get; }
+    IAsyncEnumerable<JupyterOutput> Outputs { get; }
 
-    Task<ExecutionResult> Completion { get; }
+    Task<JupyterExecutionResult> Completion { get; }
 
     Task ReplyInputAsync(
-        InputRequestId requestId,
+        JupyterInputRequest request,
         string value,
         CancellationToken cancellationToken = default);
-
-    Task CancelAsync(CancellationToken cancellationToken = default);
 }

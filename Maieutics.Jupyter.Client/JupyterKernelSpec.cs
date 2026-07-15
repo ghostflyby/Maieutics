@@ -1,47 +1,35 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Jupyter.Client;
 
-public sealed record JupyterKernelSpec(IReadOnlyList<string> Argv, string DisplayName, string Language)
+public sealed record JupyterKernelSpec(
+    IReadOnlyList<string> Argv,
+    string DisplayName,
+    string Language,
+    string InterruptMode,
+    IReadOnlyDictionary<string, string> Environment)
 {
-    public static async Task<JupyterKernelSpec> ReadAsync(string path, CancellationToken cancellationToken = default)
+    public static async Task<JupyterKernelSpec> ReadAsync(
+        string path,
+        CancellationToken cancellationToken = default)
     {
         await using var stream = File.OpenRead(path);
         var file = await JsonSerializer.DeserializeAsync<KernelSpecFile>(stream, Json.Options, cancellationToken)
                    ?? throw new JupyterProtocolException($"Kernel spec '{path}' did not contain valid JSON.");
 
-        if (file.Argv.Count == 0)
+        if (file.Argv.Count == 0 || string.IsNullOrWhiteSpace(file.Argv[0]))
         {
-            throw new JupyterProtocolException($"Kernel spec '{path}' did not define argv.");
+            throw new JupyterProtocolException($"Kernel spec '{path}' did not define a valid argv.");
         }
 
-        return new JupyterKernelSpec(file.Argv, file.DisplayName, file.Language);
-    }
-
-    public Process Start(string connectionFile)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = Argv[0],
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false
-        };
-
-        foreach (var argument in Argv.Skip(1))
-        {
-            startInfo.ArgumentList.Add(argument.Replace("{connection_file}", connectionFile, StringComparison.Ordinal));
-        }
-
-        var process = Process.Start(startInfo)
-                      ?? throw new InvalidOperationException($"Could not start kernel '{DisplayName}'.");
-
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        return process;
+        return new JupyterKernelSpec(
+            file.Argv,
+            file.DisplayName,
+            file.Language,
+            file.InterruptMode,
+            file.Environment);
     }
 
     private sealed class KernelSpecFile
@@ -51,6 +39,10 @@ public sealed record JupyterKernelSpec(IReadOnlyList<string> Argv, string Displa
         [JsonPropertyName("display_name")] public string DisplayName { get; init; } = string.Empty;
 
         [JsonPropertyName("language")] public string Language { get; init; } = string.Empty;
+
+        [JsonPropertyName("interrupt_mode")] public string InterruptMode { get; init; } = "signal";
+
+        [JsonPropertyName("env")] public Dictionary<string, string> Environment { get; init; } = [];
     }
 
     private static class Json

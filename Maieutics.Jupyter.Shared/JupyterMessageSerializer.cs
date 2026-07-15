@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace Maieutics.Jupyter.Shared;
 
@@ -9,45 +8,56 @@ public interface IJupyterMessageSerializer
 {
     string Delimiter { get; }
 
-    IReadOnlyList<byte[]> Serialize(JupyterMessage message);
+    IReadOnlyList<byte[]> Serialize(JupyterWireMessage message);
 
-    JupyterMessage Deserialize(IReadOnlyList<byte[]> frames);
+    JupyterWireMessage Deserialize(IReadOnlyList<byte[]> frames);
 }
 
-public sealed class JupyterMessageSerializer(string key) : IJupyterMessageSerializer
+public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
 {
     private const string WireDelimiter = "<IDS|MSG>";
-
+    private const string SupportedSignatureScheme = "hmac-sha256";
     private static readonly byte[] DelimiterBytes = Encoding.UTF8.GetBytes(WireDelimiter);
-    private readonly byte[] _key = Encoding.UTF8.GetBytes(key);
+    private readonly byte[] key;
+
+    public JupyterMessageSerializer(string key, string signatureScheme = SupportedSignatureScheme)
+    {
+        if (!string.Equals(signatureScheme, SupportedSignatureScheme, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException($"Jupyter signature scheme '{signatureScheme}' is not supported.");
+        }
+
+        this.key = Encoding.UTF8.GetBytes(key);
+    }
 
     public string Delimiter => WireDelimiter;
 
-    public IReadOnlyList<byte[]> Serialize(JupyterMessage message)
+    public IReadOnlyList<byte[]> Serialize(JupyterWireMessage wireMessage)
     {
-        var header = SerializeJson(message.Header);
+        var message = wireMessage.Message;
+        var header =
+            JsonSerializer.SerializeToUtf8Bytes(message.Header, JupyterJsonContext.Default.JupyterMessageHeader);
         var parentHeader = message.ParentHeader is null
-            ? SerializeJson(new JsonObject())
-            : SerializeJson(message.ParentHeader);
-        var metadata = SerializeJson(message.Metadata);
-        var content = SerializeJson(message.Content);
-
+            ? JupyterJson.EmptyObjectUtf8
+            : JsonSerializer.SerializeToUtf8Bytes(message.ParentHeader,
+                JupyterJsonContext.Default.JupyterMessageHeader);
+        var metadata = JsonSerializer.SerializeToUtf8Bytes(message.Metadata, JupyterJsonContext.Default.JsonElement);
+        var content = JsonSerializer.SerializeToUtf8Bytes(message.Content, JupyterJsonContext.Default.JsonElement);
         var signature = Sign(header, parentHeader, metadata, content);
-        var frames = new List<byte[]>(message.Identities.Count + message.Buffers.Count + 6);
+        var frames = new List<byte[]>(wireMessage.Identities.Count + wireMessage.Buffers.Count + 6);
 
-        frames.AddRange(message.Identities);
+        frames.AddRange(wireMessage.Identities.Select(Clone));
         frames.Add(DelimiterBytes);
-        frames.Add(Encoding.UTF8.GetBytes(signature));
+        frames.Add(Encoding.ASCII.GetBytes(signature));
         frames.Add(header);
         frames.Add(parentHeader);
         frames.Add(metadata);
         frames.Add(content);
-        frames.AddRange(message.Buffers);
-
+        frames.AddRange(wireMessage.Buffers.Select(Clone));
         return frames;
     }
 
-    public JupyterMessage Deserialize(IReadOnlyList<byte[]> frames)
+    public JupyterWireMessage Deserialize(IReadOnlyList<byte[]> frames)
     {
         var delimiterIndex = FindDelimiter(frames);
         if (delimiterIndex < 0)
@@ -57,101 +67,102 @@ public sealed class JupyterMessageSerializer(string key) : IJupyterMessageSerial
 
         if (frames.Count < delimiterIndex + 6)
         {
-            throw new JupyterProtocolException("Jupyter wire message did not contain all required header frames.");
+            throw new JupyterProtocolException("Jupyter wire message did not contain all required frames.");
         }
 
-        var signature = Encoding.UTF8.GetString(frames[delimiterIndex + 1]);
+        var signatureFrame = frames[delimiterIndex + 1];
         var headerFrame = frames[delimiterIndex + 2];
         var parentHeaderFrame = frames[delimiterIndex + 3];
         var metadataFrame = frames[delimiterIndex + 4];
         var contentFrame = frames[delimiterIndex + 5];
-        var expectedSignature = Sign(headerFrame, parentHeaderFrame, metadataFrame, contentFrame);
+        var expected = Encoding.ASCII.GetBytes(Sign(headerFrame, parentHeaderFrame, metadataFrame, contentFrame));
 
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(signature),
-                Encoding.UTF8.GetBytes(expectedSignature)))
+        if (!CryptographicOperations.FixedTimeEquals(signatureFrame, expected))
         {
             throw new JupyterProtocolException("Jupyter wire message signature verification failed.");
         }
 
-        return new JupyterMessage(
+        var header = JsonSerializer.Deserialize(headerFrame, JupyterJsonContext.Default.JupyterMessageHeader)
+                     ?? throw new JupyterProtocolException("Jupyter message header was empty.");
+        var parentHeader = DeserializeParentHeader(parentHeaderFrame);
+        var metadata = ParseObject(metadataFrame, "metadata");
+        var content = ParseObject(contentFrame, "content");
+
+        return new JupyterWireMessage(
             frames.Take(delimiterIndex).Select(Clone).ToArray(),
-            DeserializeJson<JupyterMessageHeader>(headerFrame),
-            DeserializeNullableHeader(parentHeaderFrame),
-            DeserializeJsonObject(metadataFrame),
-            DeserializeJsonObject(contentFrame),
+            new JupyterMessage(header, parentHeader, metadata, content),
             frames.Skip(delimiterIndex + 6).Select(Clone).ToArray());
+    }
+
+    private string Sign(params byte[][] frames)
+    {
+        if (key.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        using var hmac = new HMACSHA256(key);
+        foreach (var frame in frames)
+        {
+            hmac.TransformBlock(frame, 0, frame.Length, null, 0);
+        }
+
+        hmac.TransformFinalBlock([], 0, 0);
+        return Convert.ToHexString(hmac.Hash ?? []).ToLowerInvariant();
     }
 
     private static int FindDelimiter(IReadOnlyList<byte[]> frames)
     {
-        for (var i = 0; i < frames.Count; i++)
+        for (var index = 0; index < frames.Count; index++)
         {
-            if (frames[i].AsSpan().SequenceEqual(DelimiterBytes))
+            if (frames[index].AsSpan().SequenceEqual(DelimiterBytes))
             {
-                return i;
+                return index;
             }
         }
 
         return -1;
     }
 
-    private string Sign(params byte[][] frames)
+    private static JupyterMessageHeader? DeserializeParentHeader(byte[] bytes)
     {
-        if (_key.Length == 0)
+        using var document = JsonDocument.Parse(bytes);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
         {
-            return string.Empty;
+            throw new JupyterProtocolException("Jupyter parent header must be a JSON object.");
         }
 
-        using var hmac = new HMACSHA256(_key);
-        foreach (var frame in frames)
-        {
-            hmac.TransformBlock(frame, 0, frame.Length, null, 0);
-        }
-
-        hmac.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-        return Convert.ToHexString(hmac.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
-    }
-
-    private static byte[] SerializeJson<T>(T value)
-    {
-        return JsonSerializer.SerializeToUtf8Bytes(value, Json.Options);
-    }
-
-    private static T DeserializeJson<T>(byte[] bytes)
-    {
-        return JsonSerializer.Deserialize<T>(bytes, Json.Options)
-               ?? throw new JupyterProtocolException($"Could not deserialize {typeof(T).Name}.");
-    }
-
-    private static JupyterMessageHeader? DeserializeNullableHeader(byte[] bytes)
-    {
-        var node = JsonNode.Parse(bytes);
-        if (node is not JsonObject obj || obj.Count == 0)
+        if (!document.RootElement.EnumerateObject().Any())
         {
             return null;
         }
 
-        return obj.Deserialize<JupyterMessageHeader>(Json.Options);
+        return document.RootElement.Deserialize(JupyterJsonContext.Default.JupyterMessageHeader);
     }
 
-    private static JsonObject DeserializeJsonObject(byte[] bytes)
+    private static JsonElement ParseObject(byte[] bytes, string frameName)
     {
-        return JsonNode.Parse(bytes)?.AsObject()
-               ?? throw new JupyterProtocolException("Expected a JSON object frame.");
+        using var document = JsonDocument.Parse(bytes);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new JupyterProtocolException($"Jupyter {frameName} frame must be a JSON object.");
+        }
+
+        return document.RootElement.Clone();
     }
 
-    private static byte[] Clone(byte[] value)
-    {
-        var copy = new byte[value.Length];
-        Buffer.BlockCopy(value, 0, copy, 0, value.Length);
-        return copy;
-    }
-
-    private static class Json
-    {
-        public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
-    }
+    private static byte[] Clone(byte[] value) => value.ToArray();
 }
 
-public sealed class JupyterProtocolException(string message) : Exception(message);
+public sealed class JupyterProtocolException : Exception
+{
+    public JupyterProtocolException(string message)
+        : base(message)
+    {
+    }
+
+    public JupyterProtocolException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}

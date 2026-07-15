@@ -17,6 +17,14 @@ public sealed record JupyterConnectionInfo(
     string SignatureScheme,
     string Key)
 {
+    public string? PublicKey { get; init; }
+
+    public string? PrivateKey { get; init; }
+
+    public string? ServerKey { get; init; }
+
+    public string? Keychain { get; init; }
+
     public static JupyterConnectionInfo CreateLocalTcp()
     {
         var ports = ReserveTcpPorts(5);
@@ -37,14 +45,20 @@ public sealed record JupyterConnectionInfo(
         CancellationToken cancellationToken = default)
     {
         await using var stream = File.OpenRead(path);
-        var file = await JsonSerializer.DeserializeAsync<JupyterConnectionFile>(stream, Json.Options, cancellationToken)
+        var file = await JsonSerializer.DeserializeAsync(
+                       stream,
+                       JupyterConnectionJsonContext.Default.JupyterConnectionFile,
+                       cancellationToken)
                    ?? throw new JupyterProtocolException($"Connection file '{path}' did not contain valid JSON.");
 
-        return FromConnectionFile(file);
+        var connectionInfo = FromConnectionFile(file);
+        connectionInfo.ValidateSupported();
+        return connectionInfo;
     }
 
     public async Task WriteFileAsync(string path, CancellationToken cancellationToken = default)
     {
+        ValidateSupported();
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
         {
@@ -52,11 +66,16 @@ public sealed record JupyterConnectionInfo(
         }
 
         await using var stream = File.Create(path);
-        await JsonSerializer.SerializeAsync(stream, ToConnectionFile(), Json.Options, cancellationToken);
+        await JsonSerializer.SerializeAsync(
+            stream,
+            ToConnectionFile(),
+            JupyterConnectionJsonContext.Default.JupyterConnectionFile,
+            cancellationToken);
     }
 
     public string Endpoint(JupyterChannel channel)
     {
+        ValidateSupported();
         var port = channel switch
         {
             JupyterChannel.Shell => ShellPort,
@@ -80,8 +99,30 @@ public sealed record JupyterConnectionInfo(
         ControlPort = ControlPort,
         HeartbeatPort = HeartbeatPort,
         SignatureScheme = SignatureScheme,
-        Key = Key
+        Key = Key,
+        PublicKey = PublicKey,
+        PrivateKey = PrivateKey,
+        ServerKey = ServerKey,
+        Keychain = Keychain
     };
+
+    public void ValidateSupported()
+    {
+        if (!string.Equals(Transport, "tcp", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException($"Jupyter transport '{Transport}' is not supported.");
+        }
+
+        if (!string.Equals(SignatureScheme, "hmac-sha256", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NotSupportedException($"Jupyter signature scheme '{SignatureScheme}' is not supported.");
+        }
+
+        if (PublicKey is not null || PrivateKey is not null || ServerKey is not null || Keychain is not null)
+        {
+            throw new NotSupportedException("CurveZMQ Jupyter connections are not supported by the NetMQ transport.");
+        }
+    }
 
     private static JupyterConnectionInfo FromConnectionFile(JupyterConnectionFile file)
     {
@@ -94,7 +135,13 @@ public sealed record JupyterConnectionInfo(
             file.ControlPort,
             file.HeartbeatPort,
             file.SignatureScheme,
-            file.Key);
+            file.Key)
+        {
+            PublicKey = file.PublicKey,
+            PrivateKey = file.PrivateKey,
+            ServerKey = file.ServerKey,
+            Keychain = file.Keychain
+        };
     }
 
     private static int[] ReserveTcpPorts(int count)
@@ -117,17 +164,9 @@ public sealed record JupyterConnectionInfo(
         {
             foreach (var listener in listeners)
             {
-                listener.Stop();
+                listener?.Stop();
             }
         }
-    }
-
-    private static class Json
-    {
-        public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
-        {
-            WriteIndented = true
-        };
     }
 }
 
@@ -150,4 +189,19 @@ internal sealed class JupyterConnectionFile
     [JsonPropertyName("signature_scheme")] public string SignatureScheme { get; set; } = "hmac-sha256";
 
     [JsonPropertyName("key")] public string Key { get; set; } = string.Empty;
+
+    [JsonPropertyName("public_key")] public string? PublicKey { get; set; }
+
+    [JsonPropertyName("private_key")] public string? PrivateKey { get; set; }
+
+    [JsonPropertyName("server_key")] public string? ServerKey { get; set; }
+
+    [JsonPropertyName("keychain")] public string? Keychain { get; set; }
 }
+
+[JsonSourceGenerationOptions(
+    GenerationMode = JsonSourceGenerationMode.Metadata,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.Unspecified,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(JupyterConnectionFile))]
+internal partial class JupyterConnectionJsonContext : JsonSerializerContext;

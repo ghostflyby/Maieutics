@@ -33,16 +33,26 @@ public sealed class DenoKernelIntegrationTests
                 timeout.Token,
                 TestContext.Current.CancellationToken);
 
-            var kernelInfo = await client.RequestKernelInfoAsync(cancellation.Token);
-            kernelInfo.MessageType.Should().Be("kernel_info_reply");
-            kernelInfo.Content["language_info"]?["name"]?.GetValue<string>()
+            var kernelInfo = await client.GetKernelInfoAsync(cancellation.Token);
+            kernelInfo.Message.MessageType.Should().Be("kernel_info_reply");
+            kernelInfo.LanguageName
                 .Should().BeOneOf("typescript", "javascript");
 
-            var execute = await client.ExecuteAsync("1 + 2", cancellation.Token);
-            execute.Status.Should().Be("ok");
-            execute.IopubMessages.Any(message =>
-                    (message.MessageType == "execute_result" || message.MessageType == "display_data") &&
-                    message.Content.ToJsonString().Contains('3', StringComparison.Ordinal))
+            var execution = await client.ExecuteAsync(new ExecuteRequest("1 + 2"), cancellation.Token);
+            var outputs = new List<KernelOutput>();
+            var outputReader = Task.Run(async () =>
+            {
+                await foreach (var output in execution.Outputs.WithCancellation(cancellation.Token))
+                {
+                    outputs.Add(output);
+                }
+            }, cancellation.Token);
+
+            var result = await execution.Completion.WaitAsync(cancellation.Token);
+            await outputReader.WaitAsync(cancellation.Token);
+            result.Status.Should().Be("ok");
+            outputs.OfType<ExecuteResultOutput>()
+                .Any(output => output.Data.Data["text/plain"]?.ToString().Contains('3') == true)
                 .Should().BeTrue();
         }
         finally

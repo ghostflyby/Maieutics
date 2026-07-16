@@ -8,6 +8,14 @@ public sealed class JupyterExecutionContext
     private readonly Func<string, string, CancellationToken, ValueTask> writeStream;
     private readonly Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask> display;
 
+    private readonly Func<MimeBundle, JupyterDisplayId?, IReadOnlyDictionary<string, JsonElement>, CancellationToken,
+        ValueTask<JupyterDisplayId>> displayTracked;
+
+    private readonly Func<JupyterDisplayId, MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken,
+        ValueTask> updateDisplay;
+
+    private readonly Func<bool, CancellationToken, ValueTask> clearOutput;
+
     private readonly Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask>
         publishResult;
 
@@ -18,6 +26,11 @@ public sealed class JupyterExecutionContext
         int executionCount,
         Func<string, string, CancellationToken, ValueTask> writeStream,
         Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask> display,
+        Func<MimeBundle, JupyterDisplayId?, IReadOnlyDictionary<string, JsonElement>, CancellationToken,
+            ValueTask<JupyterDisplayId>> displayTracked,
+        Func<JupyterDisplayId, MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask>
+            updateDisplay,
+        Func<bool, CancellationToken, ValueTask> clearOutput,
         Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask> publishResult,
         Func<string, bool, CancellationToken, Task<string>> requestInput)
     {
@@ -25,6 +38,9 @@ public sealed class JupyterExecutionContext
         ExecutionCount = executionCount;
         this.writeStream = writeStream;
         this.display = display;
+        this.displayTracked = displayTracked;
+        this.updateDisplay = updateDisplay;
+        this.clearOutput = clearOutput;
         this.publishResult = publishResult;
         this.requestInput = requestInput;
     }
@@ -44,6 +60,25 @@ public sealed class JupyterExecutionContext
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
         CancellationToken cancellationToken = default) =>
         display(data, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+
+    public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
+        MimeBundle data,
+        JupyterDisplayId? displayId = null,
+        IReadOnlyDictionary<string, JsonElement>? metadata = null,
+        CancellationToken cancellationToken = default) =>
+        displayTracked(data, displayId, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+
+    public ValueTask UpdateDisplayAsync(
+        JupyterDisplayId displayId,
+        MimeBundle data,
+        IReadOnlyDictionary<string, JsonElement>? metadata = null,
+        CancellationToken cancellationToken = default) =>
+        updateDisplay(displayId, data, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+
+    public ValueTask ClearOutputAsync(
+        bool wait = false,
+        CancellationToken cancellationToken = default) =>
+        clearOutput(wait, cancellationToken);
 
     public ValueTask PublishResultAsync(
         MimeBundle data,

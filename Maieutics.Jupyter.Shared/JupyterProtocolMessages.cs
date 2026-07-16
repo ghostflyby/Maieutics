@@ -82,6 +82,16 @@ public sealed record JupyterDisplayData(
     [property: JsonPropertyName("transient")]
     IReadOnlyDictionary<string, JsonElement>? Transient = null);
 
+public sealed record JupyterUpdateDisplayData(
+    [property: JsonPropertyName("data")] IReadOnlyDictionary<string, JsonElement> Data,
+    [property: JsonPropertyName("metadata")]
+    IReadOnlyDictionary<string, JsonElement> Metadata,
+    [property: JsonPropertyName("transient")]
+    IReadOnlyDictionary<string, JsonElement>? Transient = null);
+
+public sealed record JupyterClearOutputContent(
+    [property: JsonPropertyName("wait")] bool Wait = false);
+
 public sealed record JupyterExecuteResultData(
     [property: JsonPropertyName("data")] IReadOnlyDictionary<string, JsonElement> Data,
     [property: JsonPropertyName("metadata")]

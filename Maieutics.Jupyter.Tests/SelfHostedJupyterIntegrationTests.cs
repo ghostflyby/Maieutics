@@ -61,6 +61,45 @@ public sealed class SelfHostedJupyterIntegrationTests
         (await sum.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
         sumOutputs.Should().ContainSingle(output => output is JupyterExecuteResultOutput);
 
+        var displayExecution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("display"),
+            cancellationToken);
+        var displayOutputs = await ReadOutputsAsync(displayExecution, cancellationToken);
+        (await displayExecution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
+        displayOutputs.Where(IsNotebookDisplayOutput).Select(output => output.GetType()).Should().Equal(
+            typeof(JupyterDisplayOutput),
+            typeof(JupyterDisplayUpdateOutput),
+            typeof(JupyterClearOutput));
+        var display = displayOutputs.OfType<JupyterDisplayOutput>().Single();
+        var update = displayOutputs.OfType<JupyterDisplayUpdateOutput>().Single();
+        display.DisplayId.Should().NotBeNull();
+        update.DisplayId.Should().Be(display.DisplayId);
+        displayOutputs.OfType<JupyterClearOutput>().Single().Wait.Should().BeTrue();
+
+        var specifiedExecution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("specified-display"),
+            cancellationToken);
+        var specifiedOutputs = await ReadOutputsAsync(specifiedExecution, cancellationToken);
+        await specifiedExecution.Completion.WaitAsync(cancellationToken);
+        specifiedOutputs.OfType<JupyterDisplayOutput>().Single().DisplayId.Should()
+            .Be(new JupyterDisplayId("specified-display"));
+
+        var silentExecution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("display", Silent: true),
+            cancellationToken);
+        var silentOutputs = await ReadOutputsAsync(silentExecution, cancellationToken);
+        await silentExecution.Completion.WaitAsync(cancellationToken);
+        silentOutputs.Should()
+            .NotContain(output => output is JupyterExecuteInputOutput || IsNotebookDisplayOutput(output));
+
+        var invalidDisplayExecution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("invalid-display"),
+            cancellationToken);
+        var invalidDisplayOutputs = await ReadOutputsAsync(invalidDisplayExecution, cancellationToken);
+        var invalidDisplayCompletion = await invalidDisplayExecution.Completion.WaitAsync(cancellationToken);
+        invalidDisplayCompletion.Reply.Status.Should().Be("error");
+        invalidDisplayOutputs.OfType<JupyterExecutionError>().Should().ContainSingle();
+
         var inputExecution = await client.ExecuteAsync(
             new JupyterExecuteRequest("input", AllowStdin: true),
             cancellationToken);
@@ -93,6 +132,48 @@ public sealed class SelfHostedJupyterIntegrationTests
         shutdown.Restart.Should().BeFalse();
         shutdown.Status.Should().Be("ok");
         await host.Completion.WaitAsync(cancellationToken);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task DisplayUpdateAfterIdleBecomesTypedLateOutput()
+    {
+        using var deadline = CreateDeadline();
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var application = new TestKernelApplication();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+        await using var events = client.WatchEventsAsync(deadline.Token).GetAsyncEnumerator(deadline.Token);
+        (await events.MoveNextAsync()).Should().BeTrue();
+
+        var execution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("late-display"),
+            deadline.Token);
+        var outputs = await ReadOutputsAsync(execution, deadline.Token);
+        await execution.Completion.WaitAsync(deadline.Token);
+        outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle();
+
+        await application.PublishLateDisplayUpdateAsync(deadline.Token);
+
+        JupyterLateOutput? late = null;
+        while (await events.MoveNextAsync())
+        {
+            if (events.Current is JupyterLateOutput lateOutput)
+            {
+                late = lateOutput;
+                break;
+            }
+        }
+
+        late.Should().NotBeNull();
+        var lateEvent = late!;
+        lateEvent.Message.MessageType.Should().Be("update_display_data");
+        lateEvent.Output.Should().BeOfType<JupyterDisplayUpdateOutput>()
+            .Which.DisplayId.Should().Be(application.LateDisplayId);
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
     }
 
     [Fact(Timeout = 30_000)]
@@ -195,6 +276,9 @@ public sealed class SelfHostedJupyterIntegrationTests
         return outputs;
     }
 
+    private static bool IsNotebookDisplayOutput(JupyterOutput output) =>
+        output is JupyterDisplayOutput or JupyterDisplayUpdateOutput or JupyterClearOutput;
+
     private static CancellationTokenSource CreateDeadline(TimeSpan? timeout = null)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -245,7 +329,12 @@ public sealed class SelfHostedJupyterIntegrationTests
     private sealed class TestKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider,
         IJupyterInspectionProvider, IJupyterCodeCompletenessProvider
     {
+        private readonly TaskCompletionSource<(JupyterExecutionContext Context, JupyterDisplayId DisplayId)>
+            lateDisplay = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource WaitStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public JupyterDisplayId LateDisplayId { get; private set; }
 
         public JupyterKernelInfo KernelInfo { get; } = new(
             "5.5",
@@ -272,6 +361,34 @@ public sealed class SelfHostedJupyterIntegrationTests
                     var name = await context.RequestInputAsync("Name: ", cancellationToken: cancellationToken);
                     await context.WriteStdoutAsync($"Hello {name}", cancellationToken);
                     break;
+                case "display":
+                    var displayId = await context.DisplayTrackedAsync(
+                        TextBundle("initial"),
+                        cancellationToken: cancellationToken);
+                    await context.UpdateDisplayAsync(
+                        displayId,
+                        TextBundle("updated"),
+                        cancellationToken: cancellationToken);
+                    await context.ClearOutputAsync(true, cancellationToken);
+                    break;
+                case "specified-display":
+                    await context.DisplayTrackedAsync(
+                        TextBundle("specified"),
+                        new JupyterDisplayId("specified-display"),
+                        cancellationToken: cancellationToken);
+                    break;
+                case "late-display":
+                    LateDisplayId = await context.DisplayTrackedAsync(
+                        TextBundle("initial"),
+                        cancellationToken: cancellationToken);
+                    lateDisplay.TrySetResult((context, LateDisplayId));
+                    break;
+                case "invalid-display":
+                    await context.UpdateDisplayAsync(
+                        default,
+                        TextBundle("invalid"),
+                        cancellationToken: cancellationToken);
+                    break;
                 case "wait":
                     WaitStarted.TrySetResult();
                     await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
@@ -279,6 +396,15 @@ public sealed class SelfHostedJupyterIntegrationTests
             }
 
             return JupyterExecuteResult.Ok;
+        }
+
+        public async Task PublishLateDisplayUpdateAsync(CancellationToken cancellationToken)
+        {
+            var state = await lateDisplay.Task.WaitAsync(cancellationToken);
+            await state.Context.UpdateDisplayAsync(
+                state.DisplayId,
+                TextBundle("late"),
+                cancellationToken: cancellationToken);
         }
 
         public ValueTask<JupyterCompletionResult> CompleteAsync(
@@ -327,6 +453,11 @@ public sealed class SelfHostedJupyterIntegrationTests
                 incomplete ? JupyterCodeCompletenessStatus.Incomplete : JupyterCodeCompletenessStatus.Complete,
                 incomplete ? "  " : null));
         }
+
+        private static MimeBundle TextBundle(string text) => new(new Dictionary<string, JsonElement>
+        {
+            ["text/plain"] = JsonSerializer.SerializeToElement(text)
+        });
     }
 
     private sealed class ExecuteOnlyKernelApplication : IJupyterKernelApplication

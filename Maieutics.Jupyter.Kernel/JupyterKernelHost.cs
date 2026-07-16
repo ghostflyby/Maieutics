@@ -458,6 +458,53 @@ public sealed class JupyterKernelHost : IJupyterKernel
                         cancellationToken).ConfigureAwait(false);
                 }
             },
+            async (data, displayId, metadata, cancellationToken) =>
+            {
+                var resolvedDisplayId = displayId ?? JupyterDisplayId.Create();
+                var transient = JupyterDisplayTransient.Create(resolvedDisplayId);
+                if (!request.Silent)
+                {
+                    await PublishAsync(
+                        "display_data",
+                        new JupyterDisplayData(
+                            data.Data,
+                            metadata,
+                            transient),
+                        JupyterJsonContext.Default.JupyterDisplayData,
+                        wireRequest.Message.Header,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                return resolvedDisplayId;
+            },
+            async (displayId, data, metadata, cancellationToken) =>
+            {
+                var transient = JupyterDisplayTransient.Create(displayId);
+                if (!request.Silent)
+                {
+                    await PublishAsync(
+                        "update_display_data",
+                        new JupyterUpdateDisplayData(
+                            data.Data,
+                            metadata,
+                            transient),
+                        JupyterJsonContext.Default.JupyterUpdateDisplayData,
+                        wireRequest.Message.Header,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            },
+            async (wait, cancellationToken) =>
+            {
+                if (!request.Silent)
+                {
+                    await PublishAsync(
+                        "clear_output",
+                        new JupyterClearOutputContent(wait),
+                        JupyterJsonContext.Default.JupyterClearOutputContent,
+                        wireRequest.Message.Header,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            },
             async (data, metadata, cancellationToken) =>
             {
                 if (!request.Silent)

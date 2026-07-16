@@ -455,7 +455,13 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             message.ParentHeader is { } lateParent &&
             IsCompletedExecution(lateParent.MessageId))
         {
-            events.Publish(new JupyterLateOutput(lateParent.MessageId, message));
+            var lateOutput = new JupyterLateOutput(lateParent.MessageId, message);
+            if (TryCreateOutput(lateParent.MessageId, message, out var output))
+            {
+                lateOutput = lateOutput with { Output = output };
+            }
+
+            events.Publish(lateOutput);
             return;
         }
 
@@ -510,7 +516,10 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         output = message.MessageType switch
         {
             "stream" => CreateStreamOutput(requestId, message),
+            "execute_input" => CreateExecuteInputOutput(requestId, message),
             "display_data" => CreateDisplayOutput(requestId, message),
+            "update_display_data" => CreateDisplayUpdateOutput(requestId, message),
+            "clear_output" => CreateClearOutput(requestId, message),
             "execute_result" => CreateExecuteResultOutput(requestId, message),
             "error" => CreateErrorOutput(requestId, message),
             "input_request" => CreateInputRequest(requestId, message),
@@ -533,7 +542,37 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private static JupyterOutput CreateDisplayOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var display = message.GetContent(JupyterJsonContext.Default.JupyterDisplayData);
-        return new JupyterDisplayOutput(requestId, new MimeBundle(display.Data), display.Metadata);
+        return new JupyterDisplayOutput(requestId, new MimeBundle(display.Data), display.Metadata)
+        {
+            Transient = display.Transient,
+            DisplayId = JupyterDisplayTransient.GetDisplayId(display.Transient)
+        };
+    }
+
+    private static JupyterOutput CreateDisplayUpdateOutput(JupyterMessageId requestId, JupyterMessage message)
+    {
+        var update = message.GetContent(JupyterJsonContext.Default.JupyterUpdateDisplayData);
+        var displayId = JupyterDisplayTransient.GetDisplayId(update.Transient)
+                        ?? throw new JupyterProtocolException(
+                            "Jupyter update_display_data must contain transient.display_id.");
+        return new JupyterDisplayUpdateOutput(
+            requestId,
+            new MimeBundle(update.Data),
+            update.Metadata,
+            update.Transient!,
+            displayId);
+    }
+
+    private static JupyterOutput CreateClearOutput(JupyterMessageId requestId, JupyterMessage message)
+    {
+        var clear = message.GetContent(JupyterJsonContext.Default.JupyterClearOutputContent);
+        return new JupyterClearOutput(requestId, clear.Wait);
+    }
+
+    private static JupyterOutput CreateExecuteInputOutput(JupyterMessageId requestId, JupyterMessage message)
+    {
+        var input = message.GetContent(JupyterJsonContext.Default.JupyterExecuteInput);
+        return new JupyterExecuteInputOutput(requestId, input.Code, input.ExecutionCount);
     }
 
     private static JupyterOutput CreateExecuteResultOutput(JupyterMessageId requestId, JupyterMessage message)

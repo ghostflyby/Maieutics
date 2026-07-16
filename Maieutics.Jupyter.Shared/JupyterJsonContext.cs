@@ -18,6 +18,8 @@ namespace Maieutics.Jupyter.Shared;
 [JsonSerializable(typeof(JupyterStatus))]
 [JsonSerializable(typeof(JupyterStream))]
 [JsonSerializable(typeof(JupyterDisplayData))]
+[JsonSerializable(typeof(JupyterUpdateDisplayData))]
+[JsonSerializable(typeof(JupyterClearOutputContent))]
 [JsonSerializable(typeof(JupyterExecuteResultData))]
 [JsonSerializable(typeof(JupyterError))]
 [JsonSerializable(typeof(JupyterExecuteInput))]

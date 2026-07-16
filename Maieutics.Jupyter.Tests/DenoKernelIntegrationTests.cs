@@ -55,6 +55,8 @@ public sealed class DenoKernelIntegrationTests
         var executionCompletion = await execution.Completion.WaitAsync(cancellationToken);
 
         executionCompletion.Reply.Status.Should().Be("ok");
+        outputs.OfType<JupyterExecuteInputOutput>().Should()
+            .Contain(output => output.Code == "1 + 2" && output.ExecutionCount > 0);
         outputs.OfType<JupyterExecuteResultOutput>()
             .Should().Contain(output => output.Data.Data.Values.Any(value => value.ToString().Contains('3')));
     }

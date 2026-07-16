@@ -46,9 +46,9 @@ public static class MaieuticsHost
             .Bind(builder.Configuration.GetSection(MaieuticsOptions.SectionName))
             .Validate(MaieuticsOptions.IsValid, MaieuticsOptions.ValidationMessage)
             .ValidateOnStart();
-        builder.Services.AddSingleton<IChatClient>(CreateChatClient);
-        builder.Services.AddSingleton<IAgentSession>(CreateAgentSession);
-        builder.Services.AddSingleton<IJupyterKernelApplication>(CreateKernelApplication);
+        builder.Services.AddSingleton(CreateChatClient);
+        builder.Services.AddSingleton(CreateAgentSession);
+        builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<JupyterKernelHostedService>();
         return builder;
     }

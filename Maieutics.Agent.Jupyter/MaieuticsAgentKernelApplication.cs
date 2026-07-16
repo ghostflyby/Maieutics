@@ -73,12 +73,11 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         try
         {
             await foreach (var agentEvent in session.ExecuteTurnAsync(new AgentTurn(input), cancellationToken)
-                               .WithCancellation(cancellationToken)
                                .ConfigureAwait(false))
             {
                 switch (agentEvent)
                 {
-                    case AgentTextDelta delta when delta.Text.Length > 0:
+                    case AgentTextDelta { Text.Length: > 0 } delta:
                         response.Append(delta.Text);
                         if (displayId is null)
                         {

@@ -11,6 +11,7 @@ public sealed class MaieuticsOptions
 
     public string? SystemPrompt { get; set; }
 
+    // ReSharper disable once InconsistentNaming
     public MaieuticsOpenAIOptions OpenAI { get; set; } = new();
 
     public MaieuticsAgentOptions Agent { get; set; } = new();
@@ -33,6 +34,7 @@ public sealed class MaieuticsOptions
         options.Jupyter.FlushCharacters > 0;
 }
 
+// ReSharper disable once InconsistentNaming
 public sealed class MaieuticsOpenAIOptions
 {
     public string ApiKey { get; set; } = string.Empty;

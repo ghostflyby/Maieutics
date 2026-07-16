@@ -10,36 +10,41 @@ Maieutics must support OpenAI Responses, OpenAI Chat Completions, Anthropic Mess
 model APIs. These APIs differ in request shape, streaming events, tool calls, reasoning metadata, continuation state,
 usage reporting, and multimodal support.
 
-The current first-stage runtime injects `Microsoft.Extensions.AI.IChatClient` and models messages and events primarily as
-text. That is sufficient for a streaming text prototype, but it must not become the permanent Agent Core boundary.
+The current runtime injects `Microsoft.Extensions.AI.IChatClient` and models public messages and events primarily as
+text. `IChatClient` already provides provider-neutral messages, polymorphic content, tools, streaming responses, usage,
+opaque provider state, additional properties, and service discovery. OpenAI Chat Completions and Responses both expose
+`IChatClient` adapters, and other providers can implement the same contract.
+
+Adding another model-client abstraction with nearly the same responsibilities would create a permanent translation
+layer without establishing a meaningfully different ownership boundary.
 
 ## Decision
 
-Agent Core owns a provider-neutral model protocol. Conceptually:
+`IChatClient` is the primary model-provider boundary used by Agent Core and Microsoft Agent Framework. Provider APIs are
+adapted to this interface directly:
 
-```csharp
-public interface IModelClient
-{
-    ModelCapabilities Capabilities { get; }
-
-    IAsyncEnumerable<ModelEvent> GenerateAsync(
-        ModelRequest request,
-        CancellationToken cancellationToken);
-}
+```text
+OpenAI Chat Completions ----\
+OpenAI Responses -----------+--> IChatClient --> ChatClientAgent
+Anthropic Messages ---------+
+Google model APIs ----------/
 ```
 
-The exact names may change during API design, but the following semantics are required:
+Maieutics does not introduce an `IModelClient` compatibility layer unless a concrete provider requirement cannot be
+represented through `IChatClient`, its extension points, or a narrowly scoped adjacent abstraction.
 
-- `ModelRequest` contains provider-neutral messages, content parts, available tools, output constraints, and request
-  metadata.
-- `ModelEvent` is a discriminated event model capable of representing text, structured content, tool-call arguments,
-  usage, provider-supported reasoning summaries, completion, and typed failure.
-- `ModelCapabilities` declares tools, multimodal input, structured output, reasoning summaries, continuation IDs, and
-  other optional behavior.
+The following semantics remain required:
+
+- `ChatMessage` and `AIContent` are accepted as the provider-facing message and content representation inside the model
+  integration layer.
+- Provider-neutral Agent events and transcript types remain Maieutics-owned API and are mapped from framework response
+  updates; Microsoft types do not become the Jupyter, worker, extension, or persistence wire contract.
+- A Maieutics capability descriptor declares tools, multimodal input, structured output, reasoning summaries,
+  continuation behavior, and other optional features not safely inferred from the common interface alone.
 - Each provider API has a dedicated adapter. OpenAI Responses and OpenAI Chat Completions are separate adapters even if
   they share an SDK or configuration.
-- `IChatClient` may be wrapped by a compatibility adapter, but provider-specific advanced behavior must not be forced
-  through its least-common-denominator surface.
+- Provider-specific behavior may use custom `AIContent`, `AdditionalProperties`, `RawRepresentation`, `GetService`, or a
+  dedicated provider options object confined to the adapter.
 - SDK response types, authentication types, raw JSON objects, and provider exception types stop at the adapter boundary.
 
 ## Conversation authority
@@ -50,6 +55,11 @@ response or interaction IDs are opaque optional checkpoints associated with tran
 The runtime must remain able to reconstruct a provider request from the canonical transcript when a checkpoint is
 missing, expired, incompatible with a selected provider, or intentionally discarded. Provider checkpoints may improve
 latency or caching but must not be required for correctness.
+
+The default operating mode uses Maieutics-owned local history supplied through a framework history provider and disables
+provider-side conversation storage when an adapter would otherwise make local history and a provider conversation ID
+mutually exclusive. A future provider-managed acceleration mode must still record the canonical transcript independently
+and must have explicit replay and fallback semantics.
 
 ## Provider selection
 
@@ -73,9 +83,10 @@ when a requested feature is unsupported.
 - Agent Core can add or switch providers without changing transcript, tool, or notebook contracts.
 - Provider-specific features remain available without polluting common models.
 - Cross-provider continuation uses the canonical transcript rather than opaque provider state.
-- A new adapter requires conformance tests for normalized streaming events, cancellation, tool calls, usage, and errors.
-- The current `AgentSession(IChatClient, ...)` constructor is transitional and should be replaced before tool calling or
-  multimodal input becomes public API.
+- A new `IChatClient` implementation requires conformance tests for streaming content, cancellation, tool calls, usage,
+  provider identifiers, and errors.
+- `IChatClient` remains injectable and directly testable even when `ChatClientAgent` performs the internal orchestration.
+- Maieutics avoids maintaining a second provider abstraction that mirrors Microsoft.Extensions.AI.
 
 ## References
 
@@ -84,4 +95,4 @@ when a requested feature is unsupported.
 - Anthropic Messages API: https://platform.claude.com/docs/en/api/messages
 - Google Interactions API: https://ai.google.dev/gemini-api/docs/interactions
 - Google `generateContent`: https://ai.google.dev/api/generate-content
-
+- Microsoft.Extensions.AI `IChatClient`: https://learn.microsoft.com/dotnet/api/microsoft.extensions.ai.ichatclient

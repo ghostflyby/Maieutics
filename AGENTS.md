@@ -23,14 +23,17 @@ The repository currently contains:
 - `Maieutics.Jupyter.Client`
 - `Maieutics.Jupyter.Kernel`
 - `Maieutics.Jupyter.Tests`
+- `Maieutics.Agent`
+- `Maieutics.Agent.Jupyter`
 - `Maieutics`
 
 The first three projects are reusable Jupyter libraries. `Maieutics.Jupyter.Tests` owns their automated tests.
-`Maieutics` is the composition root and is expected to evolve into the executable agent kernel host.
+`Maieutics.Agent` owns the Jupyter-independent Agent facade and runtime. `Maieutics.Agent.Jupyter` adapts Agent runs to
+the user-facing kernel. `Maieutics` is the executable composition root.
 
-Do not assume that future Agent, Provider, Tool, or Persistence projects already exist. The boundaries described below
-are target architectural boundaries. They may initially be represented by namespaces and internal abstractions, but
-dependency direction must be preserved from the first implementation.
+Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already exist.
+The boundaries described below are target architectural boundaries. They may initially be represented by namespaces and
+internal abstractions, but dependency direction must be preserved from the first implementation.
 
 Do not place reusable protocol, runtime, provider, tool, or persistence logic in `Maieutics`. The executable project
 should contain configuration, dependency registration, startup, shutdown, and process-level hosting only.
@@ -48,12 +51,17 @@ Maieutics.Jupyter.Shared
 
 `Client` and `Kernel` must never reference each other.
 
-The target agent dependency direction is conceptually:
+The target Agent dependency direction is conceptually:
 
 ```text
-Agent runtime abstractions
+IChatClient provider adapters
+    |
+    v
+Maieutics.Agent internal Microsoft Agent Framework orchestration
+    |
+    v
+Maieutics.Agent public facade
     ^
-    |-- provider adapters
     |-- tool adapters
     `-- persistence adapters
 
@@ -68,6 +76,10 @@ The exact future project names are not prescribed by this document. The boundari
 
 The agent runtime must not depend on Jupyter. The Jupyter protocol layer must not depend on agent concepts. The adapter
 that hosts the runtime behind `JupyterKernelHost` is the only place that should understand both domains.
+
+Microsoft Agent Framework is an internal implementation dependency of `Maieutics.Agent`. Framework types must not cross
+into Jupyter libraries, notebook presentation contracts, Deno extension IPC, worker protocols, or persisted Maieutics
+formats.
 
 Do not solve a boundary problem by adding a reverse project reference. Prefer a small interface in the lower-level
 owning layer.
@@ -297,7 +309,7 @@ process exit, forced termination, and cleanup.
 
 ## Agent runtime target
 
-The future agent runtime is independent of Jupyter and owns:
+The agent runtime is independent of Jupyter and owns:
 
 - authoritative conversation history;
 - conversion of cell input into a turn request;
@@ -309,16 +321,42 @@ The future agent runtime is independent of Jupyter and owns:
 - normalized semantic output events;
 - replay and snapshot models.
 
+`Microsoft.Extensions.AI.IChatClient` is the primary model-provider abstraction. OpenAI Chat Completions, OpenAI
+Responses, Anthropic, Google, and future providers should be integrated as dedicated `IChatClient` implementations or
+adapters. Do not introduce a parallel `IModelClient` that merely mirrors `IChatClient`.
+
+`Microsoft.Agents.AI.AIAgent`, `ChatClientAgent`, `AgentSession`, response updates, context providers, and history
+providers may be used internally. The stable Maieutics boundary remains its own `IAgentSession`, future `IAgentRun`,
+events, transcript, tool, and capability contracts.
+
+Maieutics, not Agent Framework, owns these externally observable semantics:
+
+- starting a run reserves the session immediately;
+- one mutating run is active per session;
+- input, response, history, event, and artifact limits;
+- cancellation and terminal completion;
+- normalized event types and correlation IDs;
+- validation and atomic commit of the canonical transcript.
+
+Framework history completion is only a staging point. Use a Maieutics-owned staging `ChatHistoryProvider`: load committed
+history before invocation, stage request and response messages after framework completion, and promote them only after
+the outer run validates the complete result. Empty or unsupported responses, policy rejection, output limits,
+cancellation, provider failure, and aborting tool failure must discard the staged turn.
+
+Pass an explicitly composed `IChatClient` pipeline to `ChatClientAgent`. Initially use `UseProvidedChatClientAsIs` so
+default function invocation, approval, message injection, or per-service-call history behavior cannot acquire ownership
+without an explicit design and tests.
+
 The runtime should emit semantic events such as assistant text deltas, completed messages, permitted reasoning
 summaries, tool-call lifecycle events, rich values, warnings, typed failures, and input requests.
 
 The Agent-to-Jupyter adapter maps these semantic events to Jupyter messages. Runtime code must not know about NetMQ,
 routing identities, multipart frames, or notebook frontend state.
 
-Provider adapters must:
+`IChatClient` provider adapters must:
 
-- translate provider-neutral requests to provider APIs;
-- normalize streaming responses into runtime events;
+- translate `ChatMessage`, `AIContent`, tools, and options to provider APIs;
+- preserve streaming content needed by the Agent runtime;
 - preserve opaque provider identifiers needed for continuation;
 - report capabilities and token usage;
 - map provider failures into typed runtime errors.
@@ -326,8 +364,16 @@ Provider adapters must:
 Provider response objects, SDK types, and authentication types must not leak into the conversation model, tool runtime,
 or Jupyter host.
 
-Use capability negotiation. Do not assume every provider supports tools, reasoning summaries, multimodal inputs,
-continuation IDs, or identical streaming behavior.
+Use a Maieutics-owned capability descriptor. Do not assume every provider supports tools, reasoning summaries,
+multimodal inputs, continuation IDs, server-side history, or identical streaming behavior.
+
+The canonical transcript is local and provider-neutral. The default model profile must not allow a returned provider
+conversation ID to silently disable local history. Disable provider-side conversation storage where supported. Any
+future provider-managed acceleration mode must independently retain the canonical transcript and define replay, expiry,
+provider switching, and recovery.
+
+Do not adopt Agent Framework Workflows, hosting, A2A, AG-UI, Durable Task, MCP, shell tools, or persistence providers
+without a concrete requirement and an independent architecture review.
 
 ## Tool runtime target
 
@@ -351,26 +397,19 @@ policies in the tool implementation.
 
 ## Deno runtime target
 
-Deno is a supervised child runtime and programmable tool behind a dedicated IPC boundary. It is not a second Jupyter
-stack by default.
+The primary stateful TypeScript REPL is a real `deno jupyter` kernel. The .NET process remains the user-facing Jupyter
+kernel and connects to Deno through `Maieutics.Jupyter.Client`. One Agent session owns one Deno REPL session by default.
 
-The .NET process remains the Jupyter kernel. It launches and supervises Deno, translates agent tool requests into IPC
-requests, and maps Deno events back into structured tool and Jupyter output.
+The Deno adapter owns process startup, portable kernelspec resolution, connection-file lifecycle, readiness, heartbeat,
+execution, stdin, interrupt, shutdown, forced termination, and cleanup. It maps Deno Client outputs into Maieutics model
+content and ordered notebook presentation events. Raw Deno Jupyter headers, identities, and wire messages never cross the
+adapter.
 
-The IPC protocol must be versioned and distinguish:
+Independent Deno script extensions use a separate versioned IPC protocol for REPL contributions and lifecycle hooks.
+They are not Agent tools, are not MCP servers, and do not share the Deno Jupyter connection merely to reuse permissions.
 
-- request;
-- response;
-- stream event;
-- input request and reply;
-- cancellation;
-- process-level failure.
-
-Support streaming stdout, stderr, rich MIME values, input, cancellation, and terminal process failure without parsing ad
-hoc human-readable output.
-
-Pass only explicitly allowlisted environment variables to child processes. Do not inherit the complete kernel
-environment by default.
+Pass only explicitly allowlisted environment variables to Deno processes. Do not inherit the complete kernel
+environment by default. Treat `deno jupyter` as privileged execution, not an untrusted-code sandbox.
 
 The existing real Deno Jupyter kernel test remains an interoperability test for the reusable Client. Its kernelspec is a
 test asset at `Maieutics.Jupyter.Tests/TestData/kernels/deno/kernel.json`, resolved from the test output directory.
@@ -485,6 +524,10 @@ Use deterministic fake providers and tools. Cover plain and streamed answers, on
 input requests, cancellation, context compaction, provider capability differences, rich output mapping, and snapshot
 creation. Unit tests must not require a real model provider or external network access.
 
+When Microsoft Agent Framework is involved, also cover early stream disposal, staging and commit, empty and unsupported
+responses, provider conversation-ID conflicts, one-run enforcement, and framework upgrade compatibility. A partially
+consumed or failed run must leave committed history unchanged.
+
 ### Integration and conformance tests
 
 Use dynamically allocated loopback TCP ports or isolated IPC-safe endpoints. Socket tests that share NetMQ process state
@@ -494,6 +537,10 @@ Keep both forms of integration coverage:
 
 - self-hosted `Maieutics.Jupyter.Kernel` connected to `Maieutics.Jupyter.Client`;
 - real portable Deno kernel connected through the copied test kernelspec and `deno` from `PATH`.
+
+The executable's NativeAOT smoke coverage must exercise the selected Agent Framework core path. Every newly adopted
+framework module or provider adapter requires a warning-free publish test for the supported runtime identifier. Do not
+work around trimming or dynamic-code failures with broad warning suppression.
 
 Integration failures should identify the failed stage, such as process start, readiness, heartbeat, request send, reply,
 output completion, shutdown, or cleanup.
@@ -511,6 +558,8 @@ Do not make tests pass by adding protocol timing guesses such as `Task.Delay(250
 - Avoid global mutable state and service locators.
 - Keep dependency-injection registration in the executable composition root.
 - Use explicit registries for dynamic providers and tools instead of mutating DI registrations at runtime.
+- Do not expose Microsoft Agent Framework types from Maieutics public APIs merely because the runtime uses them
+  internally.
 - Public APIs require XML documentation.
 - Comment non-obvious protocol assumptions with the relevant Jupyter concept.
 - Use explicit ownership for every disposable resource.
@@ -563,6 +612,9 @@ When no more specific design has been approved, use these defaults:
 - keep the three existing Jupyter assemblies and their dependency boundaries;
 - keep Client transport, protocol, and public API as layers inside the Client assembly;
 - keep agent runtime concepts independent of Jupyter;
+- use `IChatClient` as the provider boundary and keep Microsoft Agent Framework behind the Maieutics Agent facade;
+- keep one-run enforcement, limits, cancellation, and final transcript commit owned by Maieutics;
+- treat framework history completion as staged data until the outer run commits it;
 - keep the executable as a composition root;
 - serialize shell execution and keep control independently responsive;
 - use NetMQ as the only ZeroMQ implementation;
@@ -570,7 +622,8 @@ When no more specific design has been approved, use these defaults:
 - use bounded, cancellation-aware asynchronous streams;
 - use MIME bundles with a useful text fallback for rich values;
 - keep the live kernel session authoritative and `.ipynb` as a portable snapshot;
-- run Deno as a supervised child behind versioned IPC for agent execution;
+- run the primary TypeScript REPL as a supervised `deno jupyter` child connected through Jupyter Client;
+- keep independent Deno extension hooks behind their own versioned IPC and outside the Agent tool registry;
 - use deterministic fakes before real external services;
 - preserve real Deno kernel coverage as a Client interoperability test.
 

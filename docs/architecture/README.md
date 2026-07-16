@@ -20,7 +20,8 @@ flowchart LR
     Notebook[Notebook frontend] --> Kernel[Maieutics Jupyter kernel]
     Kernel --> Runtime[Agent runtime and local control plane]
 
-    Runtime --> Models[Model gateway]
+    Runtime --> AgentFramework[Maieutics facade over Agent Framework]
+    AgentFramework --> Models[IChatClient model gateway]
     Models --> OpenAIResponses[OpenAI Responses]
     Models --> OpenAIChat[OpenAI Chat Completions]
     Models --> Anthropic[Anthropic Messages]
@@ -56,6 +57,9 @@ in the local control plane. Filesystem and process tools may execute on a select
 10. Cancellation, backpressure, terminal failure, and disposal are explicit parts of every streaming boundary.
 11. Raw provider objects, raw Jupyter messages, and raw worker protocol messages do not enter the Agent domain model.
 12. Model credentials remain in the control plane and are not forwarded to execution workers.
+13. Microsoft Agent Framework is an internal orchestration dependency and does not define Maieutics public or wire
+    contracts.
+14. `IChatClient` is the provider boundary; provider capability negotiation remains Maieutics-owned.
 
 ## Target logical modules
 
@@ -64,10 +68,12 @@ and Kernel dependencies, and worker executables should remain in separate assemb
 
 ```text
 Maieutics.Agent
-    Provider-neutral transcript, content, sessions, runs, events, tools, and capabilities
+    Provider-neutral transcript, content, sessions, runs, events, tools, capabilities, and the internal
+    ChatClientAgent integration
 
 Maieutics.Agent.Providers.*
-    OpenAI Responses, OpenAI Chat Completions, Anthropic Messages, and Google adapters
+    IChatClient implementations and configuration for OpenAI Responses, OpenAI Chat Completions, Anthropic Messages,
+    and Google APIs
 
 Maieutics.Notebook
     Ordered presentation events, artifacts, display correlation, and component contracts
@@ -109,13 +115,16 @@ and the user-facing kernel adapter must not reference the Jupyter Client project
 
 ## Relationship to AGENTS.md
 
-`AGENTS.md` contains earlier target guidance that describes Deno as a custom IPC child tool and not a second Jupyter
-stack by default. ADR 0003 supersedes that default for the primary stateful TypeScript REPL: the REPL is provided by a
-real `deno jupyter` kernel and Maieutics connects to it as a Jupyter client.
+`AGENTS.md` summarizes the active implementation constraints from these decisions. ADR 0003 establishes that the
+primary stateful TypeScript REPL is a real `deno jupyter` kernel and Maieutics connects to it as a Jupyter client.
 
 ADR 0004 retains a separate process boundary for independently deployable Deno script extensions. They extend REPL
 behavior or observe host lifecycle events through a dedicated IPC protocol. They are not MCP servers and are not exposed
 to the model as tools.
+
+ADR 0006 adopts Microsoft Agent Framework only inside `Maieutics.Agent`. The Maieutics session facade continues owning
+one-run enforcement, limits, transactional transcript commit, normalized events, and cancellation. Framework hosting,
+workflows, MCP, and distributed protocols are not part of this decision.
 
 ## Decisions
 
@@ -124,6 +133,8 @@ to the model as tools.
 - [ADR 0003](decisions/0003-deno-jupyter-repl-output-bridge.md): Deno Jupyter REPL and notebook output bridge
 - [ADR 0004](decisions/0004-deno-extension-protocol.md): Out-of-process Deno extensions and lifecycle hooks
 - [ADR 0005](decisions/0005-distributed-execution.md): Distributed execution control and worker planes
+- [ADR 0006](decisions/0006-selective-microsoft-agent-framework-adoption.md): Selective Microsoft Agent Framework
+  adoption
 
 ## Explicitly deferred
 
@@ -132,7 +143,8 @@ to the model as tools.
 - Component frontend framework and MIME type
 - Artifact-store implementation
 - Transcript persistence format
-- Provider SDK selection within each adapter
+- Provider SDK selection within each `IChatClient` adapter
+- Agent Framework Workflows, hosting, A2A, AG-UI, Durable Task, and MCP integration
 - Worker scheduling, pooling, and multi-tenant deployment
 
 These choices must be made behind the boundaries above and must not require changes to Agent Core contracts.

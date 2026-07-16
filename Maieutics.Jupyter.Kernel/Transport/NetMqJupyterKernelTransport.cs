@@ -14,8 +14,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Thread ioThread;
-    private NetMQQueue<byte>? commandSignal;
-    private NetMQPoller? poller;
+    private KernelIoLoop? ioLoop;
     private Exception? terminalError;
     private int disposeState;
 
@@ -87,9 +86,12 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
 
         try
         {
-            var signal = Volatile.Read(ref commandSignal)
-                         ?? throw new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
-            signal.Enqueue(0);
+            var loop = Volatile.Read(ref ioLoop)
+                       ?? throw new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
+            if (!loop.TrySignalCommandsAvailable())
+            {
+                throw new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
+            }
         }
         catch (Exception exception)
         {
@@ -109,77 +111,26 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             return;
         }
 
-        Volatile.Read(ref poller)?.StopAsync();
+        Volatile.Read(ref ioLoop)?.RequestStop();
         await stopped.Task.ConfigureAwait(false);
     }
 
     private void RunIoThread()
     {
+        KernelIoLoop? loop = null;
         Exception? failure = null;
 
         try
         {
-            var serializer = new JupyterMessageSerializer(connectionInfo.Key, connectionInfo.SignatureScheme);
-            using var shell = new RouterSocket();
-            using var control = new RouterSocket();
-            using var stdin = new RouterSocket();
-            using var iopub = new XPublisherSocket();
-            using var heartbeat = new ResponseSocket();
-            using var queue = new NetMQQueue<byte>(0);
-            using var poller = new NetMQPoller { shell, control, stdin, iopub, heartbeat, queue };
-
-            shell.Bind(connectionInfo.Endpoint(JupyterChannel.Shell));
-            control.Bind(connectionInfo.Endpoint(JupyterChannel.Control));
-            stdin.Bind(connectionInfo.Endpoint(JupyterChannel.Stdin));
-            iopub.Bind(connectionInfo.Endpoint(JupyterChannel.Iopub));
-            heartbeat.Bind(connectionInfo.Endpoint(JupyterChannel.Heartbeat));
-
-            shell.ReceiveReady += (_, args) =>
-                ReceiveMessages(JupyterKernelChannel.Shell, args.Socket, serializer, poller);
-            control.ReceiveReady += (_, args) =>
-                ReceiveMessages(JupyterKernelChannel.Control, args.Socket, serializer, poller);
-            stdin.ReceiveReady += (_, args) =>
-                ReceiveMessages(JupyterKernelChannel.Stdin, args.Socket, serializer, poller);
-            iopub.ReceiveReady += (_, args) => ReceiveSubscription(args.Socket, poller);
-            heartbeat.ReceiveReady += (_, args) =>
+            loop = KernelIoLoop.Create(this);
+            Volatile.Write(ref ioLoop, loop);
+            if (Volatile.Read(ref disposeState) != 0 || Volatile.Read(ref terminalError) is not null)
             {
-                var payload = args.Socket.ReceiveFrameBytes();
-                args.Socket.SendFrame(payload);
-            };
-            queue.ReceiveReady += (_, args) =>
-            {
-                while (args.Queue.TryDequeue(out byte _, TimeSpan.Zero))
-                {
-                }
-
-                while (outgoingCommands.Reader.TryRead(out var command))
-                {
-                    switch (command)
-                    {
-                        case SendCommand send:
-                            try
-                            {
-                                Send(send.Channel, send.Message, serializer, shell, control, iopub, stdin);
-                                send.Completion.TrySetResult();
-                            }
-                            catch (Exception exception)
-                            {
-                                send.Completion.TrySetException(exception);
-                                throw;
-                            }
-
-                            break;
-                    }
-                }
-            };
-
-            commandSignal = queue;
-            this.poller = poller;
-            ready.TrySetResult();
-            if (Volatile.Read(ref disposeState) == 0)
-            {
-                poller.Run();
+                loop.RequestStop();
             }
+
+            ready.TrySetResult();
+            loop.Run();
         }
         catch (Exception exception)
         {
@@ -189,8 +140,11 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         }
         finally
         {
-            commandSignal = null;
-            poller = null;
+            if (loop is not null)
+            {
+                Interlocked.CompareExchange(ref ioLoop, null, loop);
+            }
+
             var completionError = terminalError ?? failure;
             var pendingError = completionError ?? new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
             while (outgoingCommands.Reader.TryRead(out var command))
@@ -198,58 +152,10 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
                 command.Fail(pendingError);
             }
 
+            loop?.Dispose();
             incomingEvents.Writer.TryComplete(completionError);
             stopped.TrySetResult();
         }
-    }
-
-    private void ReceiveMessages(
-        JupyterKernelChannel channel,
-        NetMQSocket socket,
-        IJupyterMessageSerializer serializer,
-        NetMQPoller poller)
-    {
-        while (true)
-        {
-            var message = new NetMQMessage();
-            if (!socket.TryReceiveMultipartMessage(TimeSpan.Zero, ref message))
-            {
-                return;
-            }
-
-            var wireMessage = serializer.Deserialize(message.Select(frame => frame.ToByteArray()).ToArray());
-            if (!incomingEvents.Writer.TryWrite(new JupyterKernelMessageReceived(channel, wireMessage)))
-            {
-                FailBackpressure(poller);
-                return;
-            }
-        }
-    }
-
-    private void ReceiveSubscription(NetMQSocket socket, NetMQPoller poller)
-    {
-        while (socket.TryReceiveFrameBytes(out var subscription))
-        {
-            if (subscription.Length == 0 || subscription[0] == 0)
-            {
-                continue;
-            }
-
-            if (!incomingEvents.Writer.TryWrite(new JupyterIopubSubscriptionReceived(subscription[1..])))
-            {
-                FailBackpressure(poller);
-                return;
-            }
-        }
-    }
-
-    private void FailBackpressure(NetMQPoller poller)
-    {
-        var exception = new JupyterKernelBackpressureException(
-            $"The Jupyter kernel incoming queue exceeded its capacity of {options.IncomingCapacity}.");
-        incomingEvents.Writer.TryComplete(exception);
-        Interlocked.CompareExchange(ref terminalError, exception, null);
-        poller.StopAsync();
     }
 
     private static void Send(
@@ -282,7 +188,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
     {
         if (Interlocked.CompareExchange(ref terminalError, exception, null) is not null) return;
         incomingEvents.Writer.TryComplete(exception);
-        Volatile.Read(ref poller)?.StopAsync();
+        Volatile.Read(ref ioLoop)?.RequestStop();
     }
 
     private void ThrowIfTerminated()
@@ -304,6 +210,250 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         TaskCompletionSource Completion) : KernelCommand
     {
         public override void Fail(Exception exception) => Completion.TrySetException(exception);
+    }
+
+    private enum IoSignal
+    {
+        CommandsAvailable,
+        Stop
+    }
+
+    private sealed class KernelIoLoop : IDisposable
+    {
+        private readonly NetMqJupyterKernelTransport owner;
+        private readonly Lock lifecycleGate = new();
+        private readonly IJupyterMessageSerializer serializer;
+        private readonly RouterSocket shell;
+        private readonly RouterSocket control;
+        private readonly RouterSocket stdin;
+        private readonly XPublisherSocket iopub;
+        private readonly ResponseSocket heartbeat;
+        private readonly NetMQQueue<IoSignal> signals;
+        private readonly NetMQPoller poller;
+        private int stopRequested;
+        private bool disposed;
+
+        private KernelIoLoop(NetMqJupyterKernelTransport owner)
+        {
+            this.owner = owner;
+            try
+            {
+                serializer = new JupyterMessageSerializer(
+                    owner.connectionInfo.Key,
+                    owner.connectionInfo.SignatureScheme);
+                shell = new RouterSocket();
+                control = new RouterSocket();
+                stdin = new RouterSocket();
+                iopub = new XPublisherSocket();
+                heartbeat = new ResponseSocket();
+                signals = new NetMQQueue<IoSignal>();
+                poller = new NetMQPoller();
+
+                shell.Bind(owner.connectionInfo.Endpoint(JupyterChannel.Shell));
+                control.Bind(owner.connectionInfo.Endpoint(JupyterChannel.Control));
+                stdin.Bind(owner.connectionInfo.Endpoint(JupyterChannel.Stdin));
+                iopub.Bind(owner.connectionInfo.Endpoint(JupyterChannel.Iopub));
+                heartbeat.Bind(owner.connectionInfo.Endpoint(JupyterChannel.Heartbeat));
+
+                shell.ReceiveReady += OnShellReceiveReady;
+                control.ReceiveReady += OnControlReceiveReady;
+                stdin.ReceiveReady += OnStdinReceiveReady;
+                iopub.ReceiveReady += OnIopubReceiveReady;
+                heartbeat.ReceiveReady += OnHeartbeatReceiveReady;
+                signals.ReceiveReady += OnSignalReady;
+
+                poller.Add(shell);
+                poller.Add(control);
+                poller.Add(stdin);
+                poller.Add(iopub);
+                poller.Add(heartbeat);
+                poller.Add(signals);
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
+
+        public static KernelIoLoop Create(NetMqJupyterKernelTransport owner) => new(owner);
+
+        public void Run() => poller.Run();
+
+        public bool TrySignalCommandsAvailable()
+        {
+            lock (lifecycleGate)
+            {
+                if (disposed || Volatile.Read(ref stopRequested) != 0)
+                {
+                    return false;
+                }
+
+                signals.Enqueue(IoSignal.CommandsAvailable);
+                return true;
+            }
+        }
+
+        public void RequestStop()
+        {
+            lock (lifecycleGate)
+            {
+                if (disposed || Interlocked.Exchange(ref stopRequested, 1) != 0)
+                {
+                    return;
+                }
+
+                signals.Enqueue(IoSignal.Stop);
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (lifecycleGate)
+            {
+                if (disposed)
+                {
+                    return;
+                }
+
+                disposed = true;
+            }
+
+            shell.ReceiveReady -= OnShellReceiveReady;
+
+            control.ReceiveReady -= OnControlReceiveReady;
+
+            stdin.ReceiveReady -= OnStdinReceiveReady;
+
+            iopub.ReceiveReady -= OnIopubReceiveReady;
+
+            heartbeat.ReceiveReady -= OnHeartbeatReceiveReady;
+
+            signals.ReceiveReady -= OnSignalReady;
+
+            poller.Dispose();
+            signals.Dispose();
+            heartbeat.Dispose();
+            iopub.Dispose();
+            stdin.Dispose();
+            control.Dispose();
+            shell.Dispose();
+        }
+
+        private void OnShellReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+            ReceiveMessages(JupyterKernelChannel.Shell, args.Socket);
+
+        private void OnControlReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+            ReceiveMessages(JupyterKernelChannel.Control, args.Socket);
+
+        private void OnStdinReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+            ReceiveMessages(JupyterKernelChannel.Stdin, args.Socket);
+
+        private void OnIopubReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+            ReceiveSubscription(args.Socket);
+
+        private static void OnHeartbeatReceiveReady(object? sender, NetMQSocketEventArgs args)
+        {
+            var payload = args.Socket.ReceiveFrameBytes();
+            args.Socket.SendFrame(payload);
+        }
+
+        private void OnSignalReady(object? sender, NetMQQueueEventArgs<IoSignal> args)
+        {
+            var commandsAvailable = false;
+            while (args.Queue.TryDequeue(out var signal, TimeSpan.Zero))
+            {
+                commandsAvailable |= signal == IoSignal.CommandsAvailable;
+            }
+
+            if (Volatile.Read(ref stopRequested) != 0)
+            {
+                poller.Stop();
+                return;
+            }
+
+            if (commandsAvailable)
+            {
+                ProcessCommands();
+            }
+        }
+
+        private void ProcessCommands()
+        {
+            while (owner.outgoingCommands.Reader.TryRead(out var command))
+            {
+                switch (command)
+                {
+                    case SendCommand send:
+                        try
+                        {
+                            Send(
+                                send.Channel,
+                                send.Message,
+                                serializer,
+                                shell,
+                                control,
+                                iopub,
+                                stdin);
+                            send.Completion.TrySetResult();
+                        }
+                        catch (Exception exception)
+                        {
+                            send.Completion.TrySetException(exception);
+                            throw;
+                        }
+
+                        break;
+                }
+            }
+        }
+
+        private void ReceiveMessages(JupyterKernelChannel channel, NetMQSocket socket)
+        {
+            while (true)
+            {
+                var message = new NetMQMessage();
+                if (!socket.TryReceiveMultipartMessage(TimeSpan.Zero, ref message))
+                {
+                    return;
+                }
+
+                var wireMessage = serializer.Deserialize(
+                    message.Select(frame => frame.ToByteArray()).ToArray());
+                if (owner.incomingEvents.Writer.TryWrite(new JupyterKernelMessageReceived(channel, wireMessage)))
+                {
+                    continue;
+                }
+
+                FailBackpressure();
+                return;
+            }
+        }
+
+        private void ReceiveSubscription(NetMQSocket socket)
+        {
+            while (socket.TryReceiveFrameBytes(out var subscription))
+            {
+                if (subscription.Length == 0 || subscription[0] == 0)
+                {
+                    continue;
+                }
+
+                if (owner.incomingEvents.Writer.TryWrite(new JupyterIopubSubscriptionReceived(subscription[1..])))
+                {
+                    continue;
+                }
+
+                FailBackpressure();
+                return;
+            }
+        }
+
+        private void FailBackpressure()
+        {
+            owner.Terminate(new JupyterKernelBackpressureException(
+                $"The Jupyter kernel incoming queue exceeded its capacity of {owner.options.IncomingCapacity}."));
+        }
     }
 }
 

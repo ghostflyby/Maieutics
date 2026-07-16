@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
@@ -511,7 +512,9 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         RememberCompletedExecution(execution.RequestHeader.MessageId);
     }
 
-    private static bool TryCreateOutput(JupyterMessageId requestId, JupyterMessage message, out JupyterOutput output)
+
+    private static bool TryCreateOutput(JupyterMessageId requestId, JupyterMessage message,
+        [NotNullWhen(true)] out JupyterOutput? output)
     {
         output = message.MessageType switch
         {
@@ -526,7 +529,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             "status" => new JupyterExecutionStatusChanged(
                 requestId,
                 ParseKernelState(message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState)),
-            _ => null!
+            _ => null
         };
         return output is not null;
     }
@@ -559,7 +562,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             requestId,
             new MimeBundle(update.Data),
             update.Metadata,
-            update.Transient!,
+            update.Transient,
             displayId);
     }
 

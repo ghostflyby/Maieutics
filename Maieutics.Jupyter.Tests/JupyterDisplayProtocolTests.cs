@@ -40,8 +40,8 @@ public sealed class JupyterDisplayProtocolTests
         var roundTripped = JsonSerializer.Deserialize(json, JupyterJsonContext.Default.JupyterUpdateDisplayData);
 
         roundTripped.Should().NotBeNull();
-        JupyterDisplayTransient.GetDisplayId(roundTripped!.Transient).Should().Be(displayId);
-        roundTripped.Transient!["future"].GetInt32().Should().Be(42);
+        JupyterDisplayTransient.GetDisplayId(roundTripped.Transient).Should().Be(displayId);
+        roundTripped.Transient?["future"].GetInt32().Should().Be(42);
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public sealed class JupyterDisplayProtocolTests
         var clear = JsonSerializer.Deserialize("{}", JupyterJsonContext.Default.JupyterClearOutputContent);
 
         clear.Should().NotBeNull();
-        clear!.Wait.Should().BeFalse();
+        clear.Wait.Should().BeFalse();
     }
 
     [Theory]

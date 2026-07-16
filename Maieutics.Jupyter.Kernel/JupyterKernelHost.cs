@@ -549,7 +549,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
             throw new InvalidOperationException($"Input request '{message.Header.MessageId}' was already registered.");
         }
 
-        using var registration = cancellationToken.Register(() =>
+        await using var registration = cancellationToken.Register(() =>
         {
             if (pendingInputs.TryRemove(message.Header.MessageId, out var pending))
             {

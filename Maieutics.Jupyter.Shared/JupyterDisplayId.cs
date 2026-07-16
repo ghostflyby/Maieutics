@@ -52,7 +52,7 @@ public static class JupyterDisplayTransient
 
         try
         {
-            return new JupyterDisplayId(element.GetString()!);
+            return new JupyterDisplayId(element.GetString() ?? "");
         }
         catch (ArgumentException exception)
         {

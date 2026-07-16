@@ -146,8 +146,14 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
                 CreateDealerSocket(connectionInfo.Endpoint(JupyterChannel.Stdin), serializer.ClientIdentity);
             using var iopub = new SubscriberSocket();
             using var heartbeat = new RequestSocket();
-            using var queue = new NetMQQueue<byte>(0);
-            using var poller = new NetMQPoller { shell, control, stdin, iopub, heartbeat, queue };
+            using var queue = new NetMQQueue<byte>();
+            using var poller = new NetMQPoller();
+            poller.Add(shell);
+            poller.Add(control);
+            poller.Add(stdin);
+            poller.Add(iopub);
+            poller.Add(heartbeat);
+            poller.Add(queue);
 
             iopub.Connect(connectionInfo.Endpoint(JupyterChannel.Iopub));
             iopub.SubscribeToAnyTopic();

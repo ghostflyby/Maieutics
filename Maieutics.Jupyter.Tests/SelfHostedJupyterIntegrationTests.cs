@@ -168,7 +168,7 @@ public sealed class SelfHostedJupyterIntegrationTests
         }
 
         late.Should().NotBeNull();
-        var lateEvent = late!;
+        var lateEvent = late;
         lateEvent.Message.MessageType.Should().Be("update_display_data");
         lateEvent.Output.Should().BeOfType<JupyterDisplayUpdateOutput>()
             .Which.DisplayId.Should().Be(application.LateDisplayId);
@@ -253,12 +253,12 @@ public sealed class SelfHostedJupyterIntegrationTests
         var reply = ReceiveWireMessage(shell, serializer);
         var idle = ReceiveWireMessage(subscriber, serializer);
         busy.Message.MessageType.Should().Be("status");
-        busy.Message.ParentHeader!.MessageId.Should().Be(request.Header.MessageId);
+        busy.Message.ParentHeader?.MessageId.Should().Be(request.Header.MessageId);
         busy.Message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState.Should().Be("busy");
         reply.Message.MessageType.Should().Be("kernel_info_reply");
-        reply.Message.ParentHeader!.MessageId.Should().Be(request.Header.MessageId);
+        reply.Message.ParentHeader?.MessageId.Should().Be(request.Header.MessageId);
         idle.Message.MessageType.Should().Be("status");
-        idle.Message.ParentHeader!.MessageId.Should().Be(request.Header.MessageId);
+        idle.Message.ParentHeader?.MessageId.Should().Be(request.Header.MessageId);
         idle.Message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState.Should().Be("idle");
         await host.StopAsync(deadline.Token);
     }

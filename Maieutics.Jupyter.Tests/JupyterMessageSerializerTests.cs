@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Jupyter.Shared;
@@ -34,18 +33,18 @@ public sealed class JupyterMessageSerializerTests
             }
         };
         var wire = new JupyterWireMessage(
-            [Encoding.UTF8.GetBytes("client-id")],
+            ["client-id"u8.ToArray()],
             message,
-            [Encoding.UTF8.GetBytes("buffer")]);
+            ["buffer"u8.ToArray()]);
 
         var roundTripped = serializer.Deserialize(serializer.Serialize(wire));
 
         roundTripped.Message.Header.MessageId.Should().Be(message.Header.MessageId);
         roundTripped.Message.Header.Version.Should().Be("5.5");
         roundTripped.Message.Header.SubshellId.Should().Be("subshell-1");
-        roundTripped.Message.Header.ExtensionData!["future_header_field"].GetString().Should().Be("preserved");
-        roundTripped.Identities.Single().Should().Equal(Encoding.UTF8.GetBytes("client-id"));
-        roundTripped.Buffers.Single().Should().Equal(Encoding.UTF8.GetBytes("buffer"));
+        roundTripped.Message.Header.ExtensionData?["future_header_field"].GetString().Should().Be("preserved");
+        roundTripped.Identities.Single().Should().Equal("client-id"u8.ToArray());
+        roundTripped.Buffers.Single().Should().Equal("buffer"u8.ToArray());
     }
 
     [Fact]
@@ -75,7 +74,7 @@ public sealed class JupyterMessageSerializerTests
             JupyterSessionIdentity.Create());
         var frames = serializer.Serialize(JupyterWireMessage.Create(message)).Select(frame => frame.ToArray())
             .ToArray();
-        frames[^1] = Encoding.UTF8.GetBytes("{\"tampered\":true}");
+        frames[^1] = "{\"tampered\":true}"u8.ToArray();
 
         var act = () => serializer.Deserialize(frames);
 
@@ -129,7 +128,7 @@ public sealed class JupyterMessageSerializerTests
         var roundTripped = JsonSerializer.Deserialize(json, JupyterJsonContext.Default.JupyterCompleteReply);
 
         roundTripped.Should().NotBeNull();
-        roundTripped!.Status.Should().Be("ok");
+        roundTripped.Status.Should().Be("ok");
         roundTripped.Matches.Should().Equal("console");
         roundTripped.CursorStart.Should().Be(0);
         roundTripped.CursorEnd.Should().Be(4);
@@ -151,7 +150,7 @@ public sealed class JupyterMessageSerializerTests
         var info = JsonSerializer.Deserialize(json, JupyterJsonContext.Default.JupyterKernelInfo);
 
         info.Should().NotBeNull();
-        info!.Status.Should().Be("ok");
+        info.Status.Should().Be("ok");
         info.Debugger.Should().BeFalse();
         info.SupportedFeatures.Should().BeNull();
     }

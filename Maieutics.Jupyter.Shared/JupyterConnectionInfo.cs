@@ -164,7 +164,7 @@ public sealed record JupyterConnectionInfo(
         {
             foreach (var listener in listeners)
             {
-                listener?.Stop();
+                listener.Stop();
             }
         }
     }

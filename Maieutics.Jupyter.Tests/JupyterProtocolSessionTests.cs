@@ -179,7 +179,7 @@ public sealed class JupyterProtocolSessionTests
         input.ExecutionCount.Should().Be(1);
         var display = outputs.OfType<JupyterDisplayOutput>().Single();
         display.DisplayId.Should().Be(displayId);
-        display.Transient!["future"].GetString().Should().Be("preserved");
+        display.Transient?["future"].GetString().Should().Be("preserved");
         outputs.OfType<JupyterDisplayUpdateOutput>().Single().DisplayId.Should().Be(displayId);
         outputs.OfType<JupyterClearOutput>().Single().Wait.Should().BeTrue();
     }

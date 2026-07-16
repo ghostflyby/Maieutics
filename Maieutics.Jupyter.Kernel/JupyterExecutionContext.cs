@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Text.Json;
 using Maieutics.Jupyter.Shared;
 
@@ -5,6 +6,9 @@ namespace Maieutics.Jupyter.Kernel;
 
 public sealed class JupyterExecutionContext
 {
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
+        new ReadOnlyDictionary<string, JsonElement>(new Dictionary<string, JsonElement>());
+
     private readonly Func<string, string, CancellationToken, ValueTask> writeStream;
     private readonly Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask> display;
 
@@ -59,21 +63,21 @@ public sealed class JupyterExecutionContext
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
         CancellationToken cancellationToken = default) =>
-        display(data, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+        display(data, metadata ?? EmptyMetadata, cancellationToken);
 
     public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
         MimeBundle data,
         JupyterDisplayId? displayId = null,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
         CancellationToken cancellationToken = default) =>
-        displayTracked(data, displayId, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+        displayTracked(data, displayId, metadata ?? EmptyMetadata, cancellationToken);
 
     public ValueTask UpdateDisplayAsync(
         JupyterDisplayId displayId,
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
         CancellationToken cancellationToken = default) =>
-        updateDisplay(displayId, data, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+        updateDisplay(displayId, data, metadata ?? EmptyMetadata, cancellationToken);
 
     public ValueTask ClearOutputAsync(
         bool wait = false,
@@ -84,7 +88,7 @@ public sealed class JupyterExecutionContext
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
         CancellationToken cancellationToken = default) =>
-        publishResult(data, metadata ?? new Dictionary<string, JsonElement>(), cancellationToken);
+        publishResult(data, metadata ?? EmptyMetadata, cancellationToken);
 
     public Task<string> RequestInputAsync(
         string prompt,

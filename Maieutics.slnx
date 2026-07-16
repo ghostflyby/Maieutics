@@ -1,4 +1,6 @@
 <Solution>
+    <Project Path="Maieutics.Agent/Maieutics.Agent.csproj"/>
+    <Project Path="Maieutics.Agent.Jupyter/Maieutics.Agent.Jupyter.csproj"/>
     <Project Path="Maieutics.Jupyter.Client/Maieutics.Jupyter.Client.csproj"/>
     <Project Path="Maieutics.Jupyter.Kernel/Maieutics.Jupyter.Kernel.csproj"/>
     <Project Path="Maieutics.Jupyter.Shared/Maieutics.Jupyter.Shared.csproj"/>

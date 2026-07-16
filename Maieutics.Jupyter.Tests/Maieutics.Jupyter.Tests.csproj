@@ -16,9 +16,12 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
+        <ProjectReference Include="..\Maieutics.Agent.Jupyter\Maieutics.Agent.Jupyter.csproj"/>
         <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj"/>
         <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj"/>
         <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj"/>
+        <ProjectReference Include="..\Maieutics\Maieutics.csproj"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -27,6 +30,9 @@
 
     <ItemGroup>
         <None Include="TestData\kernels\deno\kernel.json" CopyToOutputDirectory="PreserveNewest"/>
+        <None Include="..\Maieutics\kernelspec\kernel.json"
+              Link="TestData\kernels\maieutics\kernel.json"
+              CopyToOutputDirectory="PreserveNewest"/>
     </ItemGroup>
 
 </Project>

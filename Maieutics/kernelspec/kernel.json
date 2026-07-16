@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "maieutics",
+    "--connection-file",
+    "{connection_file}"
+  ],
+  "display_name": "Maieutics Agent",
+  "language": "markdown",
+  "interrupt_mode": "message"
+}

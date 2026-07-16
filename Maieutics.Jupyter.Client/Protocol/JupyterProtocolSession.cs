@@ -555,14 +555,17 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private static JupyterOutput CreateDisplayUpdateOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var update = message.GetContent(JupyterJsonContext.Default.JupyterUpdateDisplayData);
-        var displayId = JupyterDisplayTransient.GetDisplayId(update.Transient)
+        var transient = update.Transient
+                        ?? throw new JupyterProtocolException(
+                            "Jupyter update_display_data must contain transient.display_id.");
+        var displayId = JupyterDisplayTransient.GetDisplayId(transient)
                         ?? throw new JupyterProtocolException(
                             "Jupyter update_display_data must contain transient.display_id.");
         return new JupyterDisplayUpdateOutput(
             requestId,
             new MimeBundle(update.Data),
             update.Metadata,
-            update.Transient,
+            transient,
             displayId);
     }
 

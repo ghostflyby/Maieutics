@@ -7,6 +7,7 @@ namespace Maieutics.Jupyter.Shared;
     GenerationMode = JsonSourceGenerationMode.Metadata,
     PropertyNamingPolicy = JsonKnownNamingPolicy.Unspecified,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(JsonElement))]
 [JsonSerializable(typeof(JupyterMessageHeader))]
 [JsonSerializable(typeof(JupyterEmptyContent))]

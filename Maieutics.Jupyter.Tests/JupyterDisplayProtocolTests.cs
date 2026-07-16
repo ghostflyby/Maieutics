@@ -7,6 +7,18 @@ namespace Maieutics.Jupyter.Tests;
 public sealed class JupyterDisplayProtocolTests
 {
     [Fact]
+    public void MimeBundleFactoriesCreateTextAndMarkdownRepresentations()
+    {
+        var text = MimeBundle.FromText("plain");
+        var markdown = MimeBundle.FromMarkdown("**bold**", "bold");
+
+        text.Data.Should().ContainSingle();
+        text.Data["text/plain"].GetString().Should().Be("plain");
+        markdown.Data["text/markdown"].GetString().Should().Be("**bold**");
+        markdown.Data["text/plain"].GetString().Should().Be("bold");
+    }
+
+    [Fact]
     public void DisplayIdValidatesAndCreatesValues()
     {
         var created = JupyterDisplayId.Create();

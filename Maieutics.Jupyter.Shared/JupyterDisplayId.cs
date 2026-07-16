@@ -34,7 +34,9 @@ public static class JupyterDisplayTransient
 
         return new Dictionary<string, JsonElement>
         {
-            [DisplayIdPropertyName] = JsonSerializer.SerializeToElement(displayId.Value)
+            [DisplayIdPropertyName] = JsonSerializer.SerializeToElement(
+                displayId.Value,
+                JupyterJsonContext.Default.String)
         };
     }
 

@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using FluentAssertions;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
@@ -71,7 +74,8 @@ public sealed class MaieuticsHostIntegrationTests
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-host-{Guid.NewGuid():N}.json");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
-        using var started = StartHostProcess(connectionFile);
+        await using var provider = new FakeOpenAiServer();
+        using var started = StartHostProcess(connectionFile, provider.Endpoint);
         var process = started.Process;
 
         try
@@ -94,6 +98,18 @@ public sealed class MaieuticsHostIntegrationTests
             var info = await client.GetKernelInfoAsync(deadline.Token);
             info.Implementation.Should().Be("maieutics");
             info.ProtocolVersion.Should().Be("5.5");
+
+            var execution = await client.ExecuteAsync(new JupyterExecuteRequest("hello"), deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
+            {
+                outputs.Add(output);
+            }
+
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterDisplayOutput>().Single().Data.Data["text/markdown"].GetString().Should()
+                .Be("native answer");
+            await provider.Completion.WaitAsync(deadline.Token);
 
             var shutdown = await client.ShutdownAsync(false, deadline.Token);
             shutdown.Status.Should().Be("ok");
@@ -123,7 +139,7 @@ public sealed class MaieuticsHostIntegrationTests
         spec.InterruptMode.Should().Be("message");
     }
 
-    private static StartedHostProcess StartHostProcess(string connectionFile)
+    private static StartedHostProcess StartHostProcess(string connectionFile, Uri? endpoint = null)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
         var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
@@ -139,7 +155,7 @@ public sealed class MaieuticsHostIntegrationTests
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath ?? "dotnet",
-            WorkingDirectory = Path.GetDirectoryName(executablePath ?? assemblyPath!)!,
+            WorkingDirectory = Path.GetDirectoryName(executablePath ?? assemblyPath),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
@@ -155,6 +171,10 @@ public sealed class MaieuticsHostIntegrationTests
         startInfo.ArgumentList.Add("test-model");
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";
         startInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
+        if (endpoint is not null)
+        {
+            startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
+        }
 
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException("Could not start the Maieutics host process.");
@@ -211,6 +231,103 @@ public sealed class MaieuticsHostIntegrationTests
         }
 
         public void Dispose() => Process.Dispose();
+    }
+
+    private sealed class FakeOpenAiServer : IAsyncDisposable
+    {
+        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource cancellation = new();
+
+        public FakeOpenAiServer()
+        {
+            listener.Start();
+            var endpoint = (IPEndPoint)listener.LocalEndpoint;
+            Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
+            Completion = ServeOnceAsync(cancellation.Token);
+        }
+
+        public Uri Endpoint { get; }
+
+        public Task Completion { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+            cancellation.Cancel();
+            listener.Stop();
+            try
+            {
+                await Completion.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+            }
+            catch (SocketException) when (cancellation.IsCancellationRequested)
+            {
+            }
+
+            cancellation.Dispose();
+        }
+
+        private async Task ServeOnceAsync(CancellationToken cancellationToken)
+        {
+            using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+            await using var stream = client.GetStream();
+            await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+
+            const string data =
+                "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+                "\"role\":\"assistant\",\"content\":\"native answer\"},\"finish_reason\":\"stop\"}]}\n\n" +
+                "data: [DONE]\n\n";
+            var body = Encoding.UTF8.GetBytes(data);
+            var headers = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
+                "Connection: close\r\n\r\n");
+            await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+            await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static async Task ReadRequestAsync(NetworkStream stream, CancellationToken cancellationToken)
+        {
+            var buffer = new byte[4096];
+            var request = new MemoryStream();
+            var headerLength = -1;
+            var contentLength = 0;
+
+            while (headerLength < 0 || request.Length < headerLength + contentLength)
+            {
+                var count = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    throw new EndOfStreamException("The OpenAI-compatible request ended before its body was complete.");
+                }
+
+                request.Write(buffer, 0, count);
+                if (headerLength >= 0)
+                {
+                    continue;
+                }
+
+                var bytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));
+                var delimiter = "\r\n\r\n"u8;
+                var delimiterIndex = bytes.IndexOf(delimiter);
+                if (delimiterIndex < 0)
+                {
+                    continue;
+                }
+
+                headerLength = delimiterIndex + delimiter.Length;
+                var headers = Encoding.ASCII.GetString(bytes[..delimiterIndex]);
+                foreach (var line in headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        contentLength = int.Parse(line["Content-Length:".Length..].Trim());
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     private static CancellationTokenSource CreateDeadline(TimeSpan timeout)

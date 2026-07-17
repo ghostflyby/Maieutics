@@ -81,7 +81,8 @@ serialized as committed conversation history.
 `IChatClient` remains the provider boundary defined by ADR 0001. `ChatClientAgent` receives an explicitly constructed
 client pipeline.
 
-Initially, set `UseProvidedChatClientAsIs` and compose required decorators deliberately. This prevents default function
+Set `UseProvidedChatClientAsIs` and compose required decorators deliberately. Configure provider-history conflicts to
+fail rather than clearing the local history provider. This prevents default function
 invocation, approval, message injection, or history persistence behavior from changing ownership without an explicit
 Maieutics design and test.
 
@@ -147,8 +148,8 @@ This probe does not approve every optional framework package. Each newly adopted
 - Maieutics reuses mature Agent composition facilities without making them public protocol contracts.
 - `IChatClient` remains the common provider abstraction for OpenAI, Anthropic, Google, and future providers.
 - Existing transactional guarantees remain stronger than the framework's default history completion point.
-- The current text-only `AgentSession` can migrate incrementally behind its existing interface before the explicit-run API
-  becomes public.
+- The explicit `IAgentRun` API and typed text content are now the public execution boundary; the lazy
+  `ExecuteTurnAsync` compatibility surface is intentionally absent.
 - Provider or framework replacement remains possible because Jupyter, Deno, workers, and persistence depend on
   Maieutics-owned contracts.
 - Framework upgrades require focused conformance and NativeAOT validation rather than broad application rewrites.

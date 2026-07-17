@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Date: 2026-07-16
+Date: 2026-07-17
 
 ## Context
 
@@ -19,24 +19,31 @@ An Agent session starts an explicit Agent run. Conceptually:
 ```csharp
 public interface IAgentSession
 {
-    ValueTask<IAgentRun> StartTurnAsync(
+    AgentSessionId Id { get; }
+
+    Task<IAgentRun> StartTurnAsync(
         AgentTurn turn,
         CancellationToken cancellationToken = default);
 
     AgentTranscript GetTranscriptSnapshot();
 }
 
-public interface IAgentRun
+public interface IAgentRun : IAsyncDisposable
 {
-    AgentTurnId Id { get; }
+    AgentRunId Id { get; }
+    AgentSessionId SessionId { get; }
     IAsyncEnumerable<AgentEvent> Events { get; }
-    Task<AgentTurnResult> Completion { get; }
-    ValueTask CancelAsync(CancellationToken cancellationToken = default);
+    Task<AgentRunResult> Completion { get; }
+    Task CancelAsync(CancellationToken cancellationToken = default);
 }
 ```
 
 Starting a run reserves the session immediately. Event enumeration does not control whether the run has started. A
 session owns at most one mutating run unless a later design explicitly introduces branches or isolated child runs.
+
+The run owns a bounded single-consumer event stream. Producers wait for capacity rather than dropping events. Callers
+that stop consuming before terminal completion must cancel or dispose the run. `Completion` becomes terminal only after
+the session reservation is released and the event writer is closed.
 
 The public interfaces above are Maieutics contracts. A `MaieuticsAgentSession` may internally own a Microsoft Agent
 Framework `AIAgent` and `AgentSession`, but framework session and response types are not returned to notebook, worker,
@@ -93,8 +100,8 @@ later tool failures still roll back the complete turn.
 Strong value types are required for at least:
 
 - `AgentSessionId`;
-- `AgentTurnId`;
 - `AgentRunId`;
+- `AgentMessageId`;
 - `ToolCallId`;
 - `ExecutionTargetId`;
 - `ExecutionOperationId`;
@@ -121,7 +128,7 @@ contract must describe kernel-session scope rather than global process state.
 - Starting and cancelling work no longer depends on whether a caller begins enumerating an async stream.
 - Tool loops and distributed operations have an owner and terminal completion task.
 - Multimodal and structured provider responses do not require replacing message APIs later.
-- The first-stage string-only records require a deliberate breaking migration before the next feature stage.
+- The first-stage string-only records have been replaced by Maieutics-owned typed content and explicit run contracts.
 - Microsoft Agent Framework can be replaced or upgraded without changing public session and run contracts.
 
 ## References

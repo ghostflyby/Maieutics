@@ -70,10 +70,12 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         JupyterDisplayId? displayId = null;
         var flushedLength = 0;
 
+        await using var run = await session
+            .StartTurnAsync(AgentTurn.FromText(input), cancellationToken)
+            .ConfigureAwait(false);
         try
         {
-            await foreach (var agentEvent in session.ExecuteTurnAsync(new AgentTurn(input), cancellationToken)
-                               .ConfigureAwait(false))
+            await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 switch (agentEvent)
                 {
@@ -97,7 +99,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
                         }
 
                         break;
-                    case AgentTurnCompleted:
+                    case AgentMessageCompleted:
                         if (displayId is not null && flushedLength != response.Length)
                         {
                             await FlushAsync(context, displayId.Value, response, cancellationToken)
@@ -108,30 +110,62 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
                         break;
                 }
             }
+
+            // Once the event writer closes normally, the run has crossed its commit boundary.
+            await run.Completion.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await run.CancelAsync(CancellationToken.None).ConfigureAwait(false);
+            await ObserveCompletionAsync(run).ConfigureAwait(false);
+            await TryFlushPartialAsync(context, displayId, response, flushedLength).ConfigureAwait(false);
+            throw;
         }
         catch
         {
-            if (displayId is not null && flushedLength != response.Length)
-            {
-                try
-                {
-                    await FlushAsync(context, displayId.Value, response, CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    logger.LogWarning(
-                        exception,
-                        "Could not flush partial Agent output for Jupyter request {RequestId}.",
-                        context.RequestId);
-                }
-            }
-
+            await TryFlushPartialAsync(context, displayId, response, flushedLength).ConfigureAwait(false);
             throw;
         }
 
         if (displayId is not null && flushedLength != response.Length)
         {
             await FlushAsync(context, displayId.Value, response, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task TryFlushPartialAsync(
+        JupyterExecutionContext context,
+        JupyterDisplayId? displayId,
+        StringBuilder response,
+        int flushedLength)
+    {
+        if (displayId is null || flushedLength == response.Length)
+        {
+            return;
+        }
+
+        try
+        {
+            await FlushAsync(context, displayId.Value, response, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not flush partial Agent output for Jupyter request {RequestId}.",
+                context.RequestId);
+        }
+    }
+
+    private static async Task ObserveCompletionAsync(IAgentRun run)
+    {
+        try
+        {
+            await run.Completion.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The caller is already propagating the interrupt; this only observes the terminal task.
         }
     }
 

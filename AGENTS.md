@@ -24,12 +24,14 @@ The repository currently contains:
 - `Maieutics.Jupyter.Kernel`
 - `Maieutics.Jupyter.Tests`
 - `Maieutics.Agent`
+- `Maieutics.Agent.Tests`
 - `Maieutics.Agent.Jupyter`
 - `Maieutics`
 
-The first three projects are reusable Jupyter libraries. `Maieutics.Jupyter.Tests` owns their automated tests.
-`Maieutics.Agent` owns the Jupyter-independent Agent facade and runtime. `Maieutics.Agent.Jupyter` adapts Agent runs to
-the user-facing kernel. `Maieutics` is the executable composition root.
+The first three projects are reusable Jupyter libraries. `Maieutics.Jupyter.Tests` owns their automated tests and
+cross-layer Agent/Jupyter integration tests. `Maieutics.Agent` owns the Jupyter-independent Agent facade and runtime;
+`Maieutics.Agent.Tests` owns its unit tests. `Maieutics.Agent.Jupyter` adapts Agent runs to the user-facing kernel.
+`Maieutics` is the executable composition root.
 
 Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already exist.
 The boundaries described below are target architectural boundaries. They may initially be represented by namespaces and
@@ -326,8 +328,8 @@ Responses, Anthropic, Google, and future providers should be integrated as dedic
 adapters. Do not introduce a parallel `IModelClient` that merely mirrors `IChatClient`.
 
 `Microsoft.Agents.AI.AIAgent`, `ChatClientAgent`, `AgentSession`, response updates, context providers, and history
-providers may be used internally. The stable Maieutics boundary remains its own `IAgentSession`, future `IAgentRun`,
-events, transcript, tool, and capability contracts.
+providers may be used internally. The stable Maieutics boundary remains its own `IAgentSession`, `IAgentRun`, events,
+transcript, tool, and capability contracts.
 
 Maieutics, not Agent Framework, owns these externally observable semantics:
 
@@ -337,6 +339,10 @@ Maieutics, not Agent Framework, owns these externally observable semantics:
 - cancellation and terminal completion;
 - normalized event types and correlation IDs;
 - validation and atomic commit of the canonical transcript.
+
+`StartTurnAsync` starts work independently of event enumeration. `IAgentRun.Events` is a bounded single-consumer stream;
+producers wait for capacity, and a caller that stops consuming must cancel or dispose the run. `Completion` is the only
+terminal success or failure boundary and must not complete before the session reservation is released.
 
 Framework history completion is only a staging point. Use a Maieutics-owned staging `ChatHistoryProvider`: load committed
 history before invocation, stage request and response messages after framework completion, and promote them only after
@@ -519,6 +525,9 @@ interrupt, shutdown, silent execution, stdin, language-service providers, displa
 conversion.
 
 ### Agent tests
+
+Agent runtime unit tests belong in `Maieutics.Agent.Tests`; Jupyter tests retain only adapter, kernel, and process-level
+integration coverage.
 
 Use deterministic fake providers and tools. Cover plain and streamed answers, one or multiple tool calls, tool failure,
 input requests, cancellation, context compaction, provider capability differences, rich output mapping, and snapshot

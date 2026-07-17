@@ -16,11 +16,11 @@ public sealed class JupyterTransportLifecycleTests
         await cancellation.CancelAsync();
         var connection = JupyterConnectionInfo.CreateLocalTcp();
 
-        var connect = () => NetMqJupyterTransport.ConnectAsync(
-            connection,
-            cancellationToken: cancellation.Token);
-
-        await connect.Should().ThrowAsync<OperationCanceledException>();
+        await (Connection: connection, cancellation.Token)
+            .Awaiting(static state => NetMqJupyterTransport.ConnectAsync(
+                state.Connection,
+                cancellationToken: state.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact(Timeout = 15_000)]
@@ -31,11 +31,11 @@ public sealed class JupyterTransportLifecycleTests
         await cancellation.CancelAsync();
         var connection = JupyterConnectionInfo.CreateLocalTcp();
 
-        var bind = () => NetMqJupyterKernelTransport.BindAsync(
-            connection,
-            cancellationToken: cancellation.Token);
-
-        await bind.Should().ThrowAsync<OperationCanceledException>();
+        await (Connection: connection, cancellation.Token)
+            .Awaiting(static state => NetMqJupyterKernelTransport.BindAsync(
+                state.Connection,
+                cancellationToken: state.Token))
+            .Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact(Timeout = 15_000)]
@@ -64,6 +64,6 @@ public sealed class JupyterTransportLifecycleTests
         await Task.WhenAll(transport.DisposeAsync().AsTask(), transport.DisposeAsync().AsTask())
             .WaitAsync(deadline.Token);
 
-        await ping.Invoking(task => task).Should().ThrowAsync<ObjectDisposedException>();
+        await ping.Invoking(static task => task).Should().ThrowAsync<ObjectDisposedException>();
     }
 }

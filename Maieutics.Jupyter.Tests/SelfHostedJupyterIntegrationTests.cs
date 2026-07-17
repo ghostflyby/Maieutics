@@ -45,11 +45,17 @@ public sealed class SelfHostedJupyterIntegrationTests
             cancellationToken);
         completeness.Status.Should().Be("incomplete");
         completeness.Indent.Should().Be("  ");
-        var completionFailure = () => client.CompleteAsync(new JupyterCompleteRequest("fail", 4), cancellationToken);
-        (await completionFailure.Should().ThrowAsync<JupyterRequestException>()).Which.ErrorName.Should()
+        (await (Client: client, Token: cancellationToken)
+                .Awaiting(static state => state.Client.CompleteAsync(
+                    new JupyterCompleteRequest("fail", 4),
+                    state.Token))
+                .Should().ThrowAsync<JupyterRequestException>()).Which.ErrorName.Should()
             .Be("CompletionFailure");
-        var inspectionFailure = () => client.InspectAsync(new JupyterInspectRequest("fail", 4), cancellationToken);
-        (await inspectionFailure.Should().ThrowAsync<JupyterRequestException>()).Which.ErrorName.Should()
+        (await (Client: client, Token: cancellationToken)
+                .Awaiting(static state => state.Client.InspectAsync(
+                    new JupyterInspectRequest("fail", 4),
+                    state.Token))
+                .Should().ThrowAsync<JupyterRequestException>()).Which.ErrorName.Should()
             .Be("InspectionFailure");
         (await client.IsCompleteAsync(new JupyterIsCompleteRequest("fail"), cancellationToken)).Status.Should()
             .Be("unknown");
@@ -116,6 +122,14 @@ public sealed class SelfHostedJupyterIntegrationTests
         (await inputExecution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should()
             .Be("ok");
         inputOutputs.OfType<JupyterStdout>().Should().Contain(output => output.Text == "Hello Ada");
+
+        var deniedInputExecution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("input", AllowStdin: false),
+            cancellationToken);
+        var deniedInputOutputs = await ReadOutputsAsync(deniedInputExecution, cancellationToken);
+        (await deniedInputExecution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("error");
+        deniedInputOutputs.Should().NotContain(output => output is JupyterInputRequest);
+        deniedInputOutputs.OfType<JupyterExecutionError>().Should().ContainSingle();
 
         var waiting = await client.ExecuteAsync(
             new JupyterExecuteRequest("wait"),
@@ -187,12 +201,17 @@ public sealed class SelfHostedJupyterIntegrationTests
             cancellationToken: deadline.Token);
         await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
 
-        var act = () => client.CompleteAsync(new JupyterCompleteRequest("cons", 4), deadline.Token);
-
-        var assertion = await act.Should().ThrowAsync<JupyterRequestException>();
+        var assertion = await (Client: client, deadline.Token)
+            .Awaiting(static state => state.Client.CompleteAsync(
+                new JupyterCompleteRequest("cons", 4),
+                state.Token))
+            .Should().ThrowAsync<JupyterRequestException>();
         assertion.Which.ErrorName.Should().Be("NotSupported");
-        var inspect = () => client.InspectAsync(new JupyterInspectRequest("console", 7), deadline.Token);
-        (await inspect.Should().ThrowAsync<JupyterRequestException>()).Which.ErrorName.Should().Be("NotSupported");
+        (await (Client: client, deadline.Token)
+            .Awaiting(static state => state.Client.InspectAsync(
+                new JupyterInspectRequest("console", 7),
+                state.Token))
+            .Should().ThrowAsync<JupyterRequestException>()).Which.ErrorName.Should().Be("NotSupported");
         await client.ShutdownAsync(false, deadline.Token);
         await host.Completion.WaitAsync(deadline.Token);
     }

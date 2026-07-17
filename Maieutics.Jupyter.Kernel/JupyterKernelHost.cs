@@ -143,7 +143,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
         Func<JupyterWireMessage, JupyterKernelChannel, Task<bool>> handler)
     {
         await PublishStatusAsync("busy", request.Message.Header, lifetime.Token).ConfigureAwait(false);
-        var stop = false;
+        bool stop;
         try
         {
             stop = await handler(request, channel).ConfigureAwait(false);
@@ -517,26 +517,28 @@ public sealed class JupyterKernelHost : IJupyterKernel
                         cancellationToken).ConfigureAwait(false);
                 }
             },
-            (prompt, password, cancellationToken) => RequestInputAsync(
-                wireRequest,
-                request.AllowStdin,
-                prompt,
-                password,
-                cancellationToken));
+            (prompt, password, cancellationToken) =>
+            {
+                if (!request.AllowStdin)
+                {
+                    return Task.FromException<string>(
+                        new InvalidOperationException("The execute request did not allow stdin."));
+                }
+
+                return SendInputRequestAsync(
+                    wireRequest,
+                    prompt,
+                    password,
+                    cancellationToken);
+            });
     }
 
-    private async Task<string> RequestInputAsync(
+    private async Task<string> SendInputRequestAsync(
         JupyterWireMessage executeRequest,
-        bool allowStdin,
         string prompt,
         bool password,
         CancellationToken cancellationToken)
     {
-        if (!allowStdin)
-        {
-            throw new InvalidOperationException("The execute request did not allow stdin.");
-        }
-
         var message = JupyterMessage.Create(
             "input_request",
             new JupyterInputRequestContent(prompt, password),

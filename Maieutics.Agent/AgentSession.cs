@@ -410,38 +410,28 @@ public sealed class AgentSession : IAgentSession
 
         private async Task ExecuteAsync()
         {
-            AgentRunResult? result = null;
-            Exception? failure = null;
-            var canceled = false;
             try
             {
-                result = await owner.ExecuteRunAsync(this, cancellation.Token).ConfigureAwait(false);
+                AgentRunResult result;
+                try
+                {
+                    result = await owner.ExecuteRunAsync(this, cancellation.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    owner.ReleaseRun();
+                    events.Writer.TryComplete();
+                }
+
+                completion.TrySetResult(result);
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
             {
-                canceled = true;
+                completion.TrySetCanceled(cancellation.Token);
             }
             catch (Exception exception)
             {
-                failure = exception;
-            }
-            finally
-            {
-                owner.ReleaseRun();
-                events.Writer.TryComplete();
-            }
-
-            if (canceled)
-            {
-                completion.TrySetCanceled(cancellation.Token);
-            }
-            else if (failure is not null)
-            {
-                completion.TrySetException(failure);
-            }
-            else
-            {
-                completion.TrySetResult(result!);
+                completion.TrySetException(exception);
             }
         }
 

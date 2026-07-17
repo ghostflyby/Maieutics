@@ -143,7 +143,7 @@ public sealed class DenoKernelIntegrationTests
 
             elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
             Directory.GetFiles(runtimeDirectory, "maieutics-kernel-*.json").Should().BeEmpty();
-            await execution.Completion.Invoking(task => task).Should().ThrowAsync<Exception>();
+            await execution.Completion.Invoking(static task => task).Should().ThrowAsync<Exception>();
         }
         finally
         {

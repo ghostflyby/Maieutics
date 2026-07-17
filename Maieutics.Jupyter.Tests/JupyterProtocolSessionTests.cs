@@ -203,7 +203,7 @@ public sealed class JupyterProtocolSessionTests
                 JupyterJsonContext.Default.JupyterUpdateDisplayData,
                 request));
 
-        await execution.Completion.Invoking(task => task).Should().ThrowAsync<JupyterProtocolException>();
+        await execution.Completion.Invoking(static task => task).Should().ThrowAsync<JupyterProtocolException>();
     }
 
     [Fact]
@@ -348,7 +348,7 @@ public sealed class JupyterProtocolSessionTests
                 JupyterJsonContext.Default.JupyterCompleteReply,
                 request));
 
-        var assertion = await task.Invoking(value => value).Should().ThrowAsync<JupyterRequestException>();
+        var assertion = await task.Invoking(static value => value).Should().ThrowAsync<JupyterRequestException>();
         assertion.Which.RequestId.Should().Be(request.Header.MessageId);
         assertion.Which.RequestMessageType.Should().Be("complete_request");
         assertion.Which.ReplyMessageType.Should().Be("complete_reply");
@@ -374,7 +374,7 @@ public sealed class JupyterProtocolSessionTests
                 JupyterJsonContext.Default.JupyterIsCompleteReply,
                 request));
 
-        await task.Invoking(value => value).Should().ThrowAsync<JupyterProtocolException>();
+        await task.Invoking(static value => value).Should().ThrowAsync<JupyterProtocolException>();
     }
 
     [Fact]
@@ -383,11 +383,11 @@ public sealed class JupyterProtocolSessionTests
         var transport = new FakeJupyterTransport();
         await using var session = new JupyterProtocolSession(transport);
 
-        var act = () => session.CompleteAsync(
-            new JupyterCompleteRequest("a😀b", 4),
-            TestContext.Current.CancellationToken);
-
-        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        await session
+            .Awaiting(static value => value.CompleteAsync(
+                new JupyterCompleteRequest("a😀b", 4),
+                TestContext.Current.CancellationToken))
+            .Should().ThrowAsync<ArgumentOutOfRangeException>();
         transport.SentMessages.Should().BeEmpty();
     }
 
@@ -401,7 +401,7 @@ public sealed class JupyterProtocolSessionTests
 
         await cancellation.CancelAsync();
 
-        await task.Invoking(value => value).Should().ThrowAsync<OperationCanceledException>();
+        await task.Invoking(static value => value).Should().ThrowAsync<OperationCanceledException>();
         transport.SentMessages.Should().ContainSingle(message => message.Message.MessageType == "complete_request");
     }
 
@@ -414,7 +414,7 @@ public sealed class JupyterProtocolSessionTests
 
         await session.DisposeAsync();
 
-        await request.Invoking(task => task).Should().ThrowAsync<ObjectDisposedException>();
+        await request.Invoking(static task => task).Should().ThrowAsync<ObjectDisposedException>();
     }
 
     private static JupyterKernelInfo KernelInfo() => new(

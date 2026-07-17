@@ -22,8 +22,9 @@ public sealed class AgentSessionTests
         await providerStarted.Task.WaitAsync(deadline.Token);
         run.Id.Value.Should().NotBe(Guid.Empty);
         run.SessionId.Should().Be(session.Id);
-        var concurrent = () => session.StartTurnAsync(AgentTurn.FromText("concurrent"), deadline.Token);
-        await concurrent.Should().ThrowAsync<AgentTurnInProgressException>();
+        await (Session: session, deadline.Token)
+            .Awaiting(static state => state.Session.StartTurnAsync(AgentTurn.FromText("concurrent"), state.Token))
+            .Should().ThrowAsync<AgentTurnInProgressException>();
 
         releaseProvider.SetResult();
         await ReadEventsAsync(run, deadline.Token);
@@ -46,7 +47,8 @@ public sealed class AgentSessionTests
 
         events.Should().HaveCount(3);
         events.Select(agentEvent => agentEvent.Sequence).Should().Equal(1, 2, 3);
-        events.Should().OnlyContain(agentEvent => agentEvent.RunId == run.Id);
+        var runId = run.Id;
+        events.Should().OnlyContain(agentEvent => agentEvent.RunId == runId);
         var deltas = events.OfType<AgentTextDelta>().ToArray();
         deltas.Select(delta => delta.Text).Should().Equal("Hello", " world");
         deltas.Select(delta => delta.MessageId).Should().OnlyContain(id => id == result.AssistantMessage.Id);
@@ -77,10 +79,10 @@ public sealed class AgentSessionTests
 
         await using var failedRun = await session.StartTurnAsync(AgentTurn.FromText("failure"), deadline.Token);
         var events = await ReadEventsAsync(failedRun, deadline.Token);
-        var completion = () => failedRun.Completion.WaitAsync(deadline.Token);
-
         events.OfType<AgentTextDelta>().Select(delta => delta.Text).Should().Equal("partial");
-        var failure = (await completion.Should().ThrowAsync<AgentProviderException>()).Which;
+        var failure = (await failedRun.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentProviderException>()).Which;
         failure.InnerException.Should().BeOfType<InvalidOperationException>();
         session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
 
@@ -105,8 +107,9 @@ public sealed class AgentSessionTests
         var events = await ReadEventsAsync(run, deadline.Token);
 
         events.OfType<AgentTextDelta>().Select(delta => delta.Text).Should().Equal("partial");
-        var completion = () => run.Completion;
-        await completion.Should().ThrowAsync<OperationCanceledException>();
+        await run.Completion
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
         session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
@@ -120,9 +123,9 @@ public sealed class AgentSessionTests
         using var deadline = CreateDeadline();
         var unusedClient = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var inputLimited = new AgentSession(unusedClient, new AgentSessionOptions { MaxInputCharacters = 3 });
-        var rejected = () => inputLimited.StartTurnAsync(AgentTurn.FromText("four"), deadline.Token);
-
-        var inputFailure = (await rejected.Should().ThrowAsync<AgentInputLimitExceededException>()).Which;
+        var inputFailure = (await (Session: inputLimited, deadline.Token)
+            .Awaiting(static state => state.Session.StartTurnAsync(AgentTurn.FromText("four"), state.Token))
+            .Should().ThrowAsync<AgentInputLimitExceededException>()).Which;
         inputFailure.ActualCharacters.Should().Be(4);
         unusedClient.Requests.Should().BeEmpty();
         inputLimited.GetTranscriptSnapshot().Messages.Should().BeEmpty();
@@ -132,10 +135,10 @@ public sealed class AgentSessionTests
             new AgentSessionOptions { MaxResponseCharacters = 5 });
         await using var run = await responseLimited.StartTurnAsync(AgentTurn.FromText("limit"), deadline.Token);
         var events = await ReadEventsAsync(run, deadline.Token);
-        var completion = () => run.Completion.WaitAsync(deadline.Token);
-
         events.OfType<AgentTextDelta>().Select(delta => delta.Text).Should().Equal("123");
-        await completion.Should().ThrowAsync<AgentResponseLimitExceededException>();
+        await run.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentResponseLimitExceededException>();
         responseLimited.GetTranscriptSnapshot().Messages.Should().BeEmpty();
     }
 
@@ -146,8 +149,9 @@ public sealed class AgentSessionTests
         var emptySession = new AgentSession(new ScriptedChatClient((_, _) => StreamAsync()));
         await using var emptyRun = await emptySession.StartTurnAsync(AgentTurn.FromText("empty"), deadline.Token);
         (await ReadEventsAsync(emptyRun, deadline.Token)).Should().BeEmpty();
-        var emptyCompletion = () => emptyRun.Completion.WaitAsync(deadline.Token);
-        await emptyCompletion.Should().ThrowAsync<AgentUnsupportedResponseException>();
+        await emptyRun.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentUnsupportedResponseException>();
         emptySession.GetTranscriptSnapshot().Messages.Should().BeEmpty();
 
         var unsupportedUpdate = new ChatResponseUpdate(
@@ -159,8 +163,9 @@ public sealed class AgentSessionTests
             AgentTurn.FromText("unsupported"),
             deadline.Token);
         await ReadEventsAsync(unsupportedRun, deadline.Token);
-        var unsupportedCompletion = () => unsupportedRun.Completion.WaitAsync(deadline.Token);
-        await unsupportedCompletion.Should().ThrowAsync<AgentUnsupportedResponseException>();
+        await unsupportedRun.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentUnsupportedResponseException>();
         unsupportedSession.GetTranscriptSnapshot().Messages.Should().BeEmpty();
     }
 
@@ -198,9 +203,9 @@ public sealed class AgentSessionTests
 
         await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
-        var secondConsumer = () => ReadEventsAsync(run, deadline.Token);
-
-        await secondConsumer.Should().ThrowAsync<InvalidOperationException>()
+        await (Run: run, deadline.Token)
+            .Awaiting(static state => ReadEventsAsync(state.Run, state.Token))
+            .Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*only one consumer*");
     }
 
@@ -219,8 +224,9 @@ public sealed class AgentSessionTests
         run.Completion.IsCompleted.Should().BeFalse();
 
         await run.CancelAsync(deadline.Token);
-        var completion = () => run.Completion;
-        await completion.Should().ThrowAsync<OperationCanceledException>();
+        await run.Completion
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
         session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
@@ -245,8 +251,9 @@ public sealed class AgentSessionTests
         await run.DisposeAsync();
         await run.DisposeAsync();
 
-        var completion = () => run.Completion;
-        await completion.Should().ThrowAsync<OperationCanceledException>();
+        await run.Completion
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
         await next.Completion.WaitAsync(deadline.Token);
@@ -288,8 +295,9 @@ public sealed class AgentSessionTests
 
         await using var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token);
         await ReadEventsAsync(failed, deadline.Token);
-        var failure = () => failed.Completion.WaitAsync(deadline.Token);
-        await failure.Should().ThrowAsync<AgentProviderException>();
+        await failed.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentProviderException>();
         session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
 
         await using var recovered = await session.StartTurnAsync(AgentTurn.FromText("retry"), deadline.Token);
@@ -315,8 +323,9 @@ public sealed class AgentSessionTests
         }
 
         await run.DisposeAsync();
-        var completion = () => run.Completion;
-        await completion.Should().ThrowAsync<OperationCanceledException>();
+        await run.Completion
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
         session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
@@ -342,14 +351,13 @@ public sealed class AgentSessionTests
         completed.Should().Throw<ArgumentException>();
     }
 
-    private static async Task<AgentRunResult> CompleteTurnAsync(
-        AgentSession session,
+    private static async Task CompleteTurnAsync(AgentSession session,
         string input,
         CancellationToken cancellationToken)
     {
         await using var run = await session.StartTurnAsync(AgentTurn.FromText(input), cancellationToken);
         await ReadEventsAsync(run, cancellationToken);
-        return await run.Completion.WaitAsync(cancellationToken);
+        await run.Completion.WaitAsync(cancellationToken);
     }
 
     private static async Task<IReadOnlyList<AgentEvent>> ReadEventsAsync(
@@ -443,6 +451,7 @@ public sealed class AgentSessionTests
             yield return new ChatResponseUpdate(ChatRole.Assistant, $"{index++}");
             await Task.Yield();
         }
+        // ReSharper disable once IteratorNeverReturns
     }
 
     private static CancellationTokenSource CreateDeadline()

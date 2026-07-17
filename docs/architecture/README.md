@@ -63,17 +63,23 @@ in the local control plane. Filesystem and process tools may execute on a select
 
 ## Target logical modules
 
-The boundaries below are logical ownership boundaries. They may begin as namespaces, but provider SDKs, Jupyter Client
-and Kernel dependencies, and worker executables should remain in separate assemblies.
+The boundaries below are logical ownership boundaries. A logical module starts as a namespace unless it has an
+independent consumer, publication or deployment target, target framework, or dependency boundary that requires a
+separate assembly. The reusable Jupyter Client and Kernel libraries and future worker executables remain separate
+assemblies. Product-specific provider wiring and the user-facing Jupyter adapter currently live in the executable.
 
 ```text
 Maieutics.Agent
     Provider-neutral transcript, content, sessions, runs, events, tools, capabilities, and the internal
-    ChatClientAgent integration
+    ChatClientAgent integration. It is currently an internal, non-packable product assembly rather than a supported SDK
 
-Maieutics.Agent.Providers.*
-    IChatClient implementations and configuration for OpenAI Responses, OpenAI Chat Completions, Anthropic Messages,
-    and Google APIs
+Maieutics.Providers.*
+    Executable-owned IChatClient construction and configuration for OpenAI Responses, OpenAI Chat Completions,
+    Anthropic Messages, and Google APIs. Extract only when an adapter gains an independent consumer
+
+Maieutics.Providers.OpenAI
+    Current executable namespace. Selects Responses or Chat Completions while keeping OpenAI SDK types behind
+    IChatClient
 
 Maieutics.Notebook
     Ordered presentation events, artifacts, display correlation, and component contracts
@@ -81,8 +87,8 @@ Maieutics.Notebook
 Maieutics.Agent.Deno
     IReplSession implementation backed by Maieutics.Jupyter.Client
 
-Maieutics.Agent.Jupyter
-    User-facing kernel adapter backed by Maieutics.Jupyter.Kernel
+Maieutics.Jupyter
+    Executable-owned user-facing kernel adapter backed by Maieutics.Jupyter.Kernel
 
 Maieutics.Extensions.Deno
     Out-of-process Deno extension discovery, lifecycle hooks, REPL contributions, and versioned IPC
@@ -97,17 +103,17 @@ Maieutics.Worker
     Local, SSH-launched, or container-hosted execution-plane process
 
 Maieutics
-    Configuration, DI composition, process hosting, and lifecycle only
+    AOT executable, product-specific adapters, configuration, DI composition, process hosting, and lifecycle
 ```
 
 ## Dependency direction
 
 ```text
-Provider adapters ---------> Maieutics.Agent
+Maieutics.Providers.* ------> Maieutics.Agent through IChatClient
 Execution adapters --------> Maieutics.Execution + Maieutics.Agent
 Maieutics.Agent.Deno ------> Maieutics.Agent + Maieutics.Notebook + Jupyter.Client
-Maieutics.Agent.Jupyter ---> Maieutics.Agent + Maieutics.Notebook + Jupyter.Kernel
-Maieutics executable ------> all selected adapters and hosts
+Maieutics.Jupyter ----------> Maieutics.Agent + Maieutics.Notebook + Jupyter.Kernel
+Maieutics executable ------> selected libraries and future independently reusable adapters
 ```
 
 No reverse references are allowed. In particular, the Deno REPL adapter must not reference the Jupyter Kernel project,
@@ -143,7 +149,7 @@ workflows, MCP, and distributed protocols are not part of this decision.
 - Component frontend framework and MIME type
 - Artifact-store implementation
 - Transcript persistence format
-- Provider SDK selection within each `IChatClient` adapter
+- Provider SDK selection for future non-OpenAI adapters
 - Agent Framework Workflows, hosting, A2A, AG-UI, Durable Task, and MCP integration
 - Worker scheduling, pooling, and multi-tenant deployment
 

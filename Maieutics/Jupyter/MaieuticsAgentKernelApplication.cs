@@ -1,11 +1,12 @@
 using System.Reflection;
 using System.Text;
+using Maieutics.Agent;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Maieutics.Agent.Jupyter;
+namespace Maieutics.Jupyter;
 
 public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
 {

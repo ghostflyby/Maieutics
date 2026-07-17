@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Maieutics.Agent;
-using Maieutics.Agent.Jupyter;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;

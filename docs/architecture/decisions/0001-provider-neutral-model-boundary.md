@@ -78,6 +78,24 @@ ModelProfile
 Provider-specific options remain inside the selected adapter. The runtime uses capability negotiation and fails early
 when a requested feature is unsupported.
 
+## Current OpenAI adapter
+
+The executable-owned `Maieutics.Providers.OpenAI` namespace uses the `Microsoft.Extensions.AI.OpenAI` adapters for both
+OpenAI API shapes. The configured `ApiFlavor` selects `Responses` or `ChatCompletions`; `Responses` is the default.
+OpenAI SDK types remain inside the provider factory and do not cross the `IChatClient` boundary into Agent Core.
+
+This adapter is not a separate project because it currently has one product consumer and no independent publication
+target. It may be extracted later if another executable or library consumes it independently.
+
+Both flavors explicitly send `store: false`. The current implementation does not use Responses
+`previous_response_id` or Conversations. Every turn is reconstructed from the committed Maieutics transcript, and
+provider response identifiers are not conversation authority. Prompt caching remains independent of this storage
+choice.
+
+The OpenAI .NET Responses client and its `IChatClient` adapter are marked experimental by the current SDK. The required
+`OPENAI001` acknowledgement is isolated to the OpenAI provider factory. Upgrading that SDK requires the provider
+conformance tests and NativeAOT publish check to pass before the version is accepted.
+
 ## Consequences
 
 - Agent Core can add or switch providers without changing transcript, tool, or notebook contracts.

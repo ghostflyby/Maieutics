@@ -3,9 +3,11 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
+using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.Hosting;
 
 namespace Maieutics.Jupyter.Tests;
@@ -67,15 +69,17 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
-    [Fact(Timeout = 45_000)]
-    public async Task GenericHostStartsRealKernelAndStopsAfterShutdown()
+    [Theory(Timeout = 45_000)]
+    [InlineData(OpenAiApiFlavor.Responses)]
+    [InlineData(OpenAiApiFlavor.ChatCompletions)]
+    public async Task GenericHostStartsRealKernelAndStopsAfterShutdown(OpenAiApiFlavor apiFlavor)
     {
         using var deadline = CreateDeadline(TimeSpan.FromSeconds(35));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-host-{Guid.NewGuid():N}.json");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
-        await using var provider = new FakeOpenAiServer();
-        using var started = StartHostProcess(connectionFile, provider.Endpoint);
+        await using var provider = new FakeOpenAiServer(apiFlavor);
+        using var started = StartHostProcess(connectionFile, provider.Endpoint, apiFlavor);
         var process = started.Process;
 
         try
@@ -139,7 +143,10 @@ public sealed class MaieuticsHostIntegrationTests
         spec.InterruptMode.Should().Be("message");
     }
 
-    private static StartedHostProcess StartHostProcess(string connectionFile, Uri? endpoint = null)
+    private static StartedHostProcess StartHostProcess(
+        string connectionFile,
+        Uri? endpoint = null,
+        OpenAiApiFlavor apiFlavor = OpenAiApiFlavor.Responses)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
         var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
@@ -169,8 +176,16 @@ public sealed class MaieuticsHostIntegrationTests
         startInfo.ArgumentList.Add(connectionFile);
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add("test-model");
+        if (apiFlavor is OpenAiApiFlavor.ChatCompletions)
+        {
+            startInfo.ArgumentList.Add("--openai-api");
+            startInfo.ArgumentList.Add(nameof(OpenAiApiFlavor.ChatCompletions));
+        }
+
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";
         startInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
+        startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
+        startInfo.Environment.Remove("Maieutics__OpenAI__ApiFlavor");
         if (endpoint is not null)
         {
             startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
@@ -235,11 +250,13 @@ public sealed class MaieuticsHostIntegrationTests
 
     private sealed class FakeOpenAiServer : IAsyncDisposable
     {
+        private readonly OpenAiApiFlavor apiFlavor;
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource cancellation = new();
 
-        public FakeOpenAiServer()
+        public FakeOpenAiServer(OpenAiApiFlavor apiFlavor)
         {
+            this.apiFlavor = apiFlavor;
             listener.Start();
             var endpoint = (IPEndPoint)listener.LocalEndpoint;
             Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
@@ -272,13 +289,15 @@ public sealed class MaieuticsHostIntegrationTests
         {
             using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
             await using var stream = client.GetStream();
-            await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+            var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+            AssertRequest(request);
 
-            const string data =
-                "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
-                "\"role\":\"assistant\",\"content\":\"native answer\"},\"finish_reason\":\"stop\"}]}\n\n" +
-                "data: [DONE]\n\n";
+            var data = apiFlavor switch
+            {
+                OpenAiApiFlavor.Responses => CreateResponsesStream(),
+                OpenAiApiFlavor.ChatCompletions => CreateChatCompletionsStream(),
+                _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
+            };
             var body = Encoding.UTF8.GetBytes(data);
             var headers = Encoding.ASCII.GetBytes(
                 $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
@@ -287,7 +306,86 @@ public sealed class MaieuticsHostIntegrationTests
             await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
         }
 
-        private static async Task ReadRequestAsync(NetworkStream stream, CancellationToken cancellationToken)
+        private void AssertRequest(HttpRequest request)
+        {
+            request.Method.Should().Be("POST");
+            request.Path.Should().Be(apiFlavor switch
+            {
+                OpenAiApiFlavor.Responses => "/v1/responses",
+                OpenAiApiFlavor.ChatCompletions => "/v1/chat/completions",
+                _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
+            });
+            request.Body.GetProperty("model").GetString().Should().Be("test-model");
+            request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
+            request.Body.GetProperty("store").GetBoolean().Should().BeFalse();
+        }
+
+        private static string CreateChatCompletionsStream() =>
+            "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+            "\"role\":\"assistant\",\"content\":\"native answer\"},\"finish_reason\":null}]}\n\n" +
+            "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+            "data: [DONE]\n\n";
+
+        private static string CreateResponsesStream()
+        {
+            const string inProgressResponse =
+                "{\"id\":\"resp-test\",\"object\":\"response\",\"created_at\":0," +
+                "\"status\":\"in_progress\",\"error\":null,\"incomplete_details\":null," +
+                "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
+                "\"output\":[],\"parallel_tool_calls\":true,\"previous_response_id\":null," +
+                "\"reasoning\":null,\"store\":false,\"temperature\":null," +
+                "\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\"," +
+                "\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":null," +
+                "\"metadata\":{}}";
+            const string completedItem =
+                "{\"id\":\"msg-test\",\"type\":\"message\",\"status\":\"completed\"," +
+                "\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\"," +
+                "\"text\":\"native answer\",\"annotations\":[],\"logprobs\":[]}]}";
+            const string completedResponse =
+                "{\"id\":\"resp-test\",\"object\":\"response\",\"created_at\":0," +
+                "\"status\":\"completed\",\"error\":null,\"incomplete_details\":null," +
+                "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
+                "\"output\":[" + completedItem + "],\"parallel_tool_calls\":true," +
+                "\"previous_response_id\":null,\"reasoning\":null,\"store\":false," +
+                "\"temperature\":null,\"text\":{\"format\":{\"type\":\"text\"}}," +
+                "\"tool_choice\":\"auto\",\"tools\":[],\"top_p\":null," +
+                "\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":1," +
+                "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1," +
+                "\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":2}," +
+                "\"metadata\":{}}";
+
+            return
+                "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0," +
+                "\"response\":" + inProgressResponse + "}\n\n" +
+                "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"," +
+                "\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg-test\"," +
+                "\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\"," +
+                "\"content\":[]}}\n\n" +
+                "event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\"," +
+                "\"sequence_number\":2,\"item_id\":\"msg-test\",\"output_index\":0," +
+                "\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\"," +
+                "\"annotations\":[],\"logprobs\":[]}}\n\n" +
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\"," +
+                "\"sequence_number\":3,\"item_id\":\"msg-test\",\"output_index\":0," +
+                "\"content_index\":0,\"delta\":\"native answer\",\"logprobs\":[]}\n\n" +
+                "event: response.output_text.done\ndata: {\"type\":\"response.output_text.done\"," +
+                "\"sequence_number\":4,\"item_id\":\"msg-test\",\"output_index\":0," +
+                "\"content_index\":0,\"text\":\"native answer\",\"logprobs\":[]}\n\n" +
+                "event: response.content_part.done\ndata: {\"type\":\"response.content_part.done\"," +
+                "\"sequence_number\":5,\"item_id\":\"msg-test\",\"output_index\":0," +
+                "\"content_index\":0,\"part\":{\"type\":\"output_text\"," +
+                "\"text\":\"native answer\",\"annotations\":[],\"logprobs\":[]}}\n\n" +
+                "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
+                "\"sequence_number\":6,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
+                "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":7," +
+                "\"response\":" + completedResponse + "}\n\n";
+        }
+
+        private static async Task<HttpRequest> ReadRequestAsync(
+            NetworkStream stream,
+            CancellationToken cancellationToken)
         {
             var buffer = new byte[4096];
             var request = new MemoryStream();
@@ -327,7 +425,27 @@ public sealed class MaieuticsHostIntegrationTests
                     }
                 }
             }
+
+            var requestBytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));
+            var requestLineEnd = requestBytes.IndexOf("\r\n"u8);
+            if (requestLineEnd < 0)
+            {
+                throw new InvalidDataException("The OpenAI-compatible request did not contain a request line.");
+            }
+
+            var requestLine = Encoding.ASCII.GetString(requestBytes[..requestLineEnd]);
+            var requestLineParts = requestLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (requestLineParts.Length != 3)
+            {
+                throw new InvalidDataException($"Invalid OpenAI-compatible request line: '{requestLine}'.");
+            }
+
+            var bodyBytes = request.GetBuffer().AsMemory(headerLength, contentLength);
+            var body = JsonDocument.Parse(bodyBytes).RootElement.Clone();
+            return new HttpRequest(requestLineParts[0], requestLineParts[1], body);
         }
+
+        private sealed record HttpRequest(string Method, string Path, JsonElement Body);
     }
 
     private static CancellationTokenSource CreateDeadline(TimeSpan timeout)

@@ -1,3 +1,5 @@
+using Maieutics.Providers.OpenAI;
+
 namespace Maieutics;
 
 public sealed class MaieuticsOptions
@@ -5,7 +7,8 @@ public sealed class MaieuticsOptions
     public const string SectionName = "Maieutics";
 
     public const string ValidationMessage =
-        "Maieutics requires a model, API key, valid connection file, positive history limits, and positive flush settings.";
+        "Maieutics requires a model, supported OpenAI API flavor, API key, valid connection file, " +
+        "positive history limits, and positive flush settings.";
 
     public string Model { get; set; } = string.Empty;
 
@@ -20,16 +23,15 @@ public sealed class MaieuticsOptions
 
     public static bool IsValid(MaieuticsOptions options) =>
         !string.IsNullOrWhiteSpace(options.Model) &&
+        Enum.IsDefined(options.OpenAI.ApiFlavor) &&
         !string.IsNullOrWhiteSpace(options.OpenAI.ApiKey) &&
         (options.OpenAI.Endpoint is null ||
          options.OpenAI.Endpoint.IsAbsoluteUri &&
          options.OpenAI.Endpoint.Scheme is "http" or "https") &&
         !string.IsNullOrWhiteSpace(options.Jupyter.ConnectionFile) &&
         File.Exists(options.Jupyter.ConnectionFile) &&
-        options.Agent.MaxRetainedTurns > 0 &&
-        options.Agent.MaxHistoryCharacters > 0 &&
-        options.Agent.MaxInputCharacters > 0 &&
-        options.Agent.MaxResponseCharacters > 0 &&
+        options.Agent is { MaxRetainedTurns: > 0, MaxHistoryCharacters: > 0 } and
+            { MaxInputCharacters: > 0, MaxResponseCharacters: > 0 } &&
         options.Jupyter.FlushInterval > TimeSpan.Zero &&
         options.Jupyter.FlushCharacters > 0;
 }
@@ -37,6 +39,8 @@ public sealed class MaieuticsOptions
 // ReSharper disable once InconsistentNaming
 public sealed class MaieuticsOpenAIOptions
 {
+    public OpenAiApiFlavor ApiFlavor { get; set; } = OpenAiApiFlavor.Responses;
+
     public string ApiKey { get; set; } = string.Empty;
 
     public Uri? Endpoint { get; set; }

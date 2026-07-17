@@ -1,5 +1,9 @@
 # Maieutics Documentation
 
+## Operations
+
+- [Runtime configuration](configuration.md)
+
 ## Architecture
 
 - [Agent platform architecture](architecture/README.md)

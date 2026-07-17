@@ -25,20 +25,31 @@ The repository currently contains:
 - `Maieutics.Jupyter.Tests`
 - `Maieutics.Agent`
 - `Maieutics.Agent.Tests`
-- `Maieutics.Agent.Jupyter`
 - `Maieutics`
 
 The first three projects are reusable Jupyter libraries. `Maieutics.Jupyter.Tests` owns their automated tests and
 cross-layer Agent/Jupyter integration tests. `Maieutics.Agent` owns the Jupyter-independent Agent facade and runtime;
-`Maieutics.Agent.Tests` owns its unit tests. `Maieutics.Agent.Jupyter` adapts Agent runs to the user-facing kernel.
-`Maieutics` is the executable composition root.
+`Maieutics.Agent.Tests` owns its unit tests. `Maieutics` is the executable composition root and contains the
+product-specific Agent-to-Jupyter adapter and model-provider wiring.
+
+`Maieutics.Agent` is currently an internal product assembly and is not packed as a supported Agent SDK. Its boundary is
+kept provider- and host-neutral so that a future independent consumer can validate whether it should become one.
+
+`Maieutics.Providers.OpenAI` is an internal namespace in the executable that wires OpenAI Responses and Chat
+Completions into `IChatClient`. `Maieutics.Jupyter` is an executable-owned namespace that adapts Agent runs to the
+user-facing kernel. These are logical product modules, not independently published assemblies. Responses is the default
+OpenAI flavor. Both flavors currently send `store: false`; provider-side conversation IDs are not used as canonical
+session state.
 
 Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already exist.
 The boundaries described below are target architectural boundaries. They may initially be represented by namespaces and
 internal abstractions, but dependency direction must be preserved from the first implementation.
 
-Do not place reusable protocol, runtime, provider, tool, or persistence logic in `Maieutics`. The executable project
-should contain configuration, dependency registration, startup, shutdown, and process-level hosting only.
+Do not place reusable protocol, runtime, tool, or persistence logic in `Maieutics`. The executable may contain
+product-specific provider construction, Agent-to-Jupyter adaptation, configuration, dependency registration, startup,
+shutdown, and process-level hosting. Extract an adapter into a project only when it has an independent consumer,
+publication target, deployment boundary, target framework, or dependency boundary that cannot be expressed safely as
+an executable-owned namespace.
 
 ## Dependency direction
 
@@ -67,11 +78,11 @@ Maieutics.Agent public facade
     |-- tool adapters
     `-- persistence adapters
 
-Maieutics.Jupyter.Kernel + Agent runtime
-    ^
-Agent-to-Jupyter adapter
-    ^
 Maieutics executable composition root
+    |-- product-specific IChatClient provider wiring
+    `-- Agent-to-Jupyter adapter
+            |-- Maieutics.Agent
+            `-- Maieutics.Jupyter.Kernel
 ```
 
 The exact future project names are not prescribed by this document. The boundaries are.
@@ -625,6 +636,8 @@ When no more specific design has been approved, use these defaults:
 - keep one-run enforcement, limits, cancellation, and final transcript commit owned by Maieutics;
 - treat framework history completion as staged data until the outer run commits it;
 - keep the executable as a composition root;
+- keep product-specific provider wiring and Agent-to-Jupyter adaptation as executable-owned namespaces until they have
+  an independent consumer or publication boundary;
 - serialize shell execution and keep control independently responsive;
 - use NetMQ as the only ZeroMQ implementation;
 - use source-generated `System.Text.Json` for protocol serialization;

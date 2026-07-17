@@ -1,15 +1,13 @@
-using System.ClientModel;
 using Maieutics.Agent;
-using Maieutics.Agent.Jupyter;
+using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
+using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OpenAI;
-using OpenAI.Chat;
 
 namespace Maieutics;
 
@@ -32,11 +30,13 @@ public static class MaieuticsHost
         builder.Configuration.AddCommandLine(args, new Dictionary<string, string>
         {
             ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
-            ["--model"] = "Maieutics:Model"
+            ["--model"] = "Maieutics:Model",
+            ["--openai-api"] = "Maieutics:OpenAI:ApiFlavor"
         });
         ApplyEnvironmentAlias(builder.Configuration, "OPENAI_API_KEY", "Maieutics:OpenAI:ApiKey");
         ApplyEnvironmentAlias(builder.Configuration, "OPENAI_BASE_URL", "Maieutics:OpenAI:Endpoint");
         ApplyEnvironmentAlias(builder.Configuration, "MAIEUTICS_MODEL", "Maieutics:Model");
+        ApplyEnvironmentAlias(builder.Configuration, "MAIEUTICS_OPENAI_API", "Maieutics:OpenAI:ApiFlavor");
 
         builder.Logging
             .AddConfiguration(builder.Configuration.GetSection("Logging"))
@@ -56,14 +56,7 @@ public static class MaieuticsHost
     private static IChatClient CreateChatClient(IServiceProvider services)
     {
         var options = services.GetRequiredService<IOptions<MaieuticsOptions>>().Value;
-        var credential = new ApiKeyCredential(options.OpenAI.ApiKey);
-        var client = options.OpenAI.Endpoint is null
-            ? new ChatClient(options.Model, credential)
-            : new ChatClient(
-                options.Model,
-                credential,
-                new OpenAIClientOptions { Endpoint = options.OpenAI.Endpoint });
-        return client.AsIChatClient();
+        return OpenAiChatClientFactory.Create(options.Model, options.OpenAI);
     }
 
     private static IAgentSession CreateAgentSession(IServiceProvider services)

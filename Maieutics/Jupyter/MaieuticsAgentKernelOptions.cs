@@ -1,4 +1,4 @@
-namespace Maieutics.Agent.Jupyter;
+namespace Maieutics.Jupyter;
 
 public sealed record MaieuticsAgentKernelOptions
 {

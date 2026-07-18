@@ -8,6 +8,7 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
+        <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(PublishAot)' == 'true' And $([System.Text.RegularExpressions.Regex]::IsMatch('$(RuntimeIdentifier)', '^(osx|linux)-'))">
@@ -28,8 +29,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
-        <None Update="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
         <None Include="kernelspec\kernel.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     </ItemGroup>
 

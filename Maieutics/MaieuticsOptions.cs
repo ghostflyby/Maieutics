@@ -6,37 +6,36 @@ public sealed class MaieuticsOptions
 {
     public const string SectionName = "Maieutics";
 
-    public const string ValidationMessage =
-        "Maieutics requires a model, supported OpenAI API flavor, API key, valid connection file, " +
-        "positive history limits, and positive flush settings.";
-
-    public string Model { get; set; } = string.Empty;
-
     public string? SystemPrompt { get; set; }
 
-    // ReSharper disable once InconsistentNaming
-    public MaieuticsOpenAIOptions OpenAI { get; set; } = new();
+    public MaieuticsModelOptions Model { get; set; } = new();
+
+    public MaieuticsProviderOptions Providers { get; set; } = new();
 
     public MaieuticsAgentOptions Agent { get; set; } = new();
 
     public MaieuticsJupyterOptions Jupyter { get; set; } = new();
 
-    public static bool IsValid(MaieuticsOptions options) =>
-        !string.IsNullOrWhiteSpace(options.Model) &&
-        Enum.IsDefined(options.OpenAI.ApiFlavor) &&
-        !string.IsNullOrWhiteSpace(options.OpenAI.ApiKey) &&
-        (options.OpenAI.Endpoint is null ||
-         options.OpenAI.Endpoint.IsAbsoluteUri &&
-         options.OpenAI.Endpoint.Scheme is "http" or "https") &&
-        !string.IsNullOrWhiteSpace(options.Jupyter.ConnectionFile) &&
-        File.Exists(options.Jupyter.ConnectionFile) &&
-        options.Agent is { MaxRetainedTurns: > 0, MaxHistoryCharacters: > 0 } and
-            { MaxInputCharacters: > 0, MaxResponseCharacters: > 0 } and
-            { MaxModelIterationsPerTurn: > 0, MaxToolCallsPerTurn: > 0 } and
-            { MaxToolArgumentsBytes: > 0, MaxToolResultBytes: > 0 } and
-            { MaxToolProgressEventsPerCall: > 0 } &&
-        options.Jupyter.FlushInterval > TimeSpan.Zero &&
-        options.Jupyter.FlushCharacters > 0;
+    internal void Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(Model.Provider);
+        ArgumentException.ThrowIfNullOrWhiteSpace(Model.Name);
+        Agent.Validate();
+        Jupyter.Validate();
+    }
+}
+
+public sealed class MaieuticsModelOptions
+{
+    public string Provider { get; set; } = "OpenAI";
+
+    public string Name { get; set; } = string.Empty;
+}
+
+public sealed class MaieuticsProviderOptions
+{
+    // ReSharper disable once InconsistentNaming
+    public MaieuticsOpenAIOptions OpenAI { get; set; } = new();
 }
 
 // ReSharper disable once InconsistentNaming
@@ -68,6 +67,22 @@ public sealed class MaieuticsAgentOptions
     public int MaxToolResultBytes { get; set; } = 262_144;
 
     public int MaxToolProgressEventsPerCall { get; set; } = 256;
+
+    public int EventBufferCapacity { get; set; } = 128;
+
+    internal void Validate()
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryCharacters, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxResponseCharacters, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelIterationsPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolCallsPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolArgumentsBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolResultBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
+    }
 }
 
 public sealed class MaieuticsJupyterOptions
@@ -77,4 +92,20 @@ public sealed class MaieuticsJupyterOptions
     public TimeSpan FlushInterval { get; set; } = TimeSpan.FromMilliseconds(50);
 
     public int FlushCharacters { get; set; } = 1024;
+
+    internal void Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ConnectionFile);
+        if (!File.Exists(ConnectionFile))
+        {
+            throw new FileNotFoundException("The configured Jupyter connection file does not exist.", ConnectionFile);
+        }
+
+        if (FlushInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(FlushInterval), "Flush interval must be positive.");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(FlushCharacters, 1);
+    }
 }

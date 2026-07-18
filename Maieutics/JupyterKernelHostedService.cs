@@ -1,14 +1,14 @@
+using Maieutics.Configuration;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Maieutics;
 
-public sealed class JupyterKernelHostedService(
+internal sealed class JupyterKernelHostedService(
     IJupyterKernelApplication application,
-    IOptions<MaieuticsOptions> options,
+    IMaieuticsRuntimeConfiguration configuration,
     IHostApplicationLifetime applicationLifetime,
     ILogger<JupyterKernelHostedService> logger) : BackgroundService
 {
@@ -19,7 +19,7 @@ public sealed class JupyterKernelHostedService(
         try
         {
             var connectionInfo = await JupyterConnectionInfo.ReadFileAsync(
-                options.Value.Jupyter.ConnectionFile,
+                configuration.ConnectionFile,
                 stoppingToken).ConfigureAwait(false);
             await using var host = await JupyterKernelHost.StartAsync(
                 connectionInfo,

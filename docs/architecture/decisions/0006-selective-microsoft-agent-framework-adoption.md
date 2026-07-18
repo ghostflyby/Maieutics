@@ -58,6 +58,12 @@ Maieutics remains the owner of externally observable run semantics:
 `AgentResponseUpdate` values are internal inputs to Maieutics event normalization. Receiving or streaming an update does
 not itself commit a Maieutics turn.
 
+Each run acquires one provider-neutral `AgentRunProfile` lease containing its `IChatClient` and immutable
+`AgentSessionOptions`. The Framework agent, staging history provider, and Framework session are constructed for that
+run. Configuration changes may affect the next run, but they cannot replace the model client, instructions, or limits
+inside an active provider/tool continuation loop. The lease and Maieutics session reservation are released before the
+run completion task becomes terminal.
+
 ## Transactional history
 
 The default framework history behavior stores messages after a successfully completed framework stream, which is close

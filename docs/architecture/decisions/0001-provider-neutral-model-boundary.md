@@ -63,20 +63,21 @@ and must have explicit replay and fallback semantics.
 
 ## Provider selection
 
-Configuration selects a model profile rather than directly selecting an SDK client:
+Configuration selects a provider-neutral model definition rather than directly selecting an SDK client:
 
 ```text
-ModelProfile
+Maieutics:Model
     Provider
-    ApiFlavor
-    Model
-    Endpoint
-    CredentialReference
-    ProviderOptions
+    Name
+
+Maieutics:Providers:<ProviderName>
+    provider-specific API flavor, endpoint, credentials, and options
 ```
 
-Provider-specific options remain inside the selected adapter. The runtime uses capability negotiation and fails early
-when a requested feature is unsupported.
+The executable resolves the selected provider through an immutable factory registry. Provider-specific options remain
+inside the selected adapter. A configuration reload constructs a replacement client before publishing the new model
+profile; active runs retain their existing client lease. The runtime uses capability negotiation and fails early when a
+requested feature is unsupported.
 
 ## Current OpenAI adapter
 

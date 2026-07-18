@@ -11,7 +11,7 @@ namespace Maieutics.Jupyter;
 public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
 {
     private readonly IAgentSession session;
-    private readonly MaieuticsAgentKernelOptions options;
+    private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
     private readonly TimeProvider timeProvider;
 
@@ -20,10 +20,19 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), logger, timeProvider)
+    {
+    }
+
+    internal MaieuticsAgentKernelApplication(
+        IAgentSession session,
+        Func<MaieuticsAgentKernelOptions> getOptions,
+        ILogger<MaieuticsAgentKernelApplication>? logger = null,
+        TimeProvider? timeProvider = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
-        this.options = options ?? new MaieuticsAgentKernelOptions();
-        this.options.Validate();
+        this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
+        this.getOptions().Validate();
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -47,7 +56,9 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
 
         try
         {
-            await RenderTurnAsync(context, request.Code, cancellationToken).ConfigureAwait(false);
+            var options = getOptions();
+            options.Validate();
+            await RenderTurnAsync(context, request.Code, options, cancellationToken).ConfigureAwait(false);
             return JupyterExecuteResult.Ok;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -64,6 +75,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
     private async Task RenderTurnAsync(
         JupyterExecutionContext context,
         string input,
+        MaieuticsAgentKernelOptions options,
         CancellationToken cancellationToken)
     {
         var response = new StringBuilder();

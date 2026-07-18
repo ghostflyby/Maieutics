@@ -14,14 +14,10 @@ namespace Maieutics.Agent;
 /// <summary>Runs a provider-neutral Agent conversation over Microsoft Agent Framework.</summary>
 public sealed class AgentSession : IAgentSession
 {
-    private readonly IChatClient chatClient;
-    private readonly AgentSessionOptions options;
+    private readonly IAgentRunProfileProvider profileProvider;
     private readonly Lock transcriptGate = new();
-    private readonly StagingChatHistoryProvider historyProvider;
-    private readonly ChatClientAgent agent;
     private readonly ImmutableDictionary<string, ToolAIFunction> tools;
     private ImmutableArray<AgentTranscriptTurn> turns = [];
-    private FrameworkAgentSession? frameworkSession;
     private long transcriptVersion;
     private int runInProgress;
 
@@ -30,54 +26,73 @@ public sealed class AgentSession : IAgentSession
         IChatClient chatClient,
         AgentSessionOptions? options = null,
         IEnumerable<IAgentTool>? tools = null)
+        : this(
+            new FixedAgentRunProfileProvider(
+                new AgentRunProfile(
+                    chatClient ?? throw new ArgumentNullException(nameof(chatClient)),
+                    options ?? new AgentSessionOptions())),
+            tools)
     {
-        this.chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
-        this.options = options ?? new AgentSessionOptions();
-        this.options.Validate();
+    }
+
+    /// <summary>Initializes an Agent session whose profile is captured independently for each run.</summary>
+    /// <param name="profileProvider">The provider used to acquire each run's model client and options.</param>
+    /// <param name="tools">The immutable set of tools available to the session.</param>
+    public AgentSession(
+        IAgentRunProfileProvider profileProvider,
+        IEnumerable<IAgentTool>? tools = null)
+    {
+        this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.tools = CreateToolRegistry(tools);
 
         Id = AgentSessionId.Create();
-        historyProvider = new StagingChatHistoryProvider(GetCommittedChatMessages);
-        agent = new ChatClientAgent(
-            chatClient,
-            new ChatClientAgentOptions
-            {
-                ChatOptions = new ChatOptions { Instructions = this.options.SystemPrompt },
-                ChatHistoryProvider = historyProvider,
-                UseProvidedChatClientAsIs = true,
-                ClearOnChatHistoryProviderConflict = false,
-                WarnOnChatHistoryProviderConflict = true,
-                ThrowOnChatHistoryProviderConflict = true
-            });
     }
 
     /// <inheritdoc />
     public AgentSessionId Id { get; }
 
     /// <inheritdoc />
-    public Task<IAgentRun> StartTurnAsync(
+    public async Task<IAgentRun> StartTurnAsync(
         AgentTurn turn,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(turn);
         cancellationToken.ThrowIfCancellationRequested();
-        ValidateInput(turn);
 
         if (Interlocked.CompareExchange(ref runInProgress, 1, 0) != 0)
         {
             throw new AgentTurnInProgressException();
         }
 
+        IAgentRunProfileLease? profileLease = null;
         try
         {
+            profileLease = profileProvider.Acquire() ??
+                           throw new InvalidOperationException("The Agent run profile provider returned a null lease.");
+            var profile = profileLease.Profile ??
+                          throw new InvalidOperationException("The Agent run profile lease returned a null profile.");
+            profile.Options.Validate();
+            ValidateInput(turn, profile.Options);
+
             var userMessage = new AgentMessage(AgentMessageId.Create(), AgentMessageRole.User, turn.Contents);
-            var run = new AgentRun(this, AgentRunId.Create(), userMessage, options.EventBufferCapacity);
+            var run = new AgentRun(
+                this,
+                AgentRunId.Create(),
+                userMessage,
+                profileLease,
+                profile,
+                profile.Options.EventBufferCapacity);
             run.Start();
-            return Task.FromResult<IAgentRun>(run);
+            return run;
         }
         catch
         {
             Volatile.Write(ref runInProgress, 0);
+            if (profileLease is not null)
+            {
+                await profileLease.DisposeAsync().ConfigureAwait(false);
+            }
+
             throw;
         }
     }
@@ -91,23 +106,30 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private async Task<AgentRunResult> ExecuteRunAsync(AgentRun run, CancellationToken cancellationToken)
+    private async Task<PreparedRunResult> ExecuteRunAsync(AgentRun run, CancellationToken cancellationToken)
     {
+        var profile = run.Profile;
+        var options = profile.Options;
+        var historyProvider = new StagingChatHistoryProvider(GetCommittedChatMessages);
         historyProvider.BeginRun(run.Id);
-        var committed = false;
-        var recordingClient = new RecordingChatClient(chatClient);
-        var toolState = new RunToolState(this, run, recordingClient);
+        var recordingClient = new RecordingChatClient(profile.ChatClient);
+        var toolState = new RunToolState(this, run, recordingClient, options);
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
+        var agent = new ChatClientAgent(
+            profile.ChatClient,
+            new ChatClientAgentOptions
+            {
+                ChatOptions = new ChatOptions { Instructions = options.SystemPrompt },
+                ChatHistoryProvider = historyProvider,
+                UseProvidedChatClientAsIs = true,
+                ClearOnChatHistoryProviderConflict = false,
+                WarnOnChatHistoryProviderConflict = true,
+                ThrowOnChatHistoryProviderConflict = true
+            });
         try
         {
-            var session = frameworkSession;
-            if (session is null)
-            {
-                session = await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
-                frameworkSession = session;
-            }
-
-            var runOptions = CreateRunOptions(recordingClient, toolState);
+            FrameworkAgentSession session = await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
+            var runOptions = CreateRunOptions(recordingClient, toolState, options);
             try
             {
                 await foreach (var _ in agent
@@ -136,24 +158,18 @@ public sealed class AgentSession : IAgentSession
             var staged = historyProvider.TakeStaged(run.Id);
             ValidateStagedRequest(staged.RequestMessages, run.UserMessage);
             var turnMessages = await toolState.BuildCompletedMessagesAsync(cancellationToken).ConfigureAwait(false);
-            var assistant = turnMessages[^1];
-            var transcript = CommitTurn(run.Id, turnMessages);
-            committed = true;
-            return new AgentRunResult(run.Id, run.UserMessage, assistant, transcript);
+            return new PreparedRunResult(turnMessages, turnMessages[^1]);
         }
         finally
         {
             historyProvider.Discard(run.Id);
-            if (!committed)
-            {
-                frameworkSession = null;
-            }
         }
     }
 
     private ChatClientAgentRunOptions CreateRunOptions(
         RecordingChatClient recordingClient,
-        RunToolState toolState)
+        RunToolState toolState,
+        AgentSessionOptions options)
     {
         var chatOptions = new ChatOptions
         {
@@ -174,7 +190,10 @@ public sealed class AgentSession : IAgentSession
         };
     }
 
-    private AgentTranscript CommitTurn(AgentRunId runId, ImmutableArray<AgentMessage> turnMessages)
+    private AgentTranscript CommitTurn(
+        AgentRunId runId,
+        ImmutableArray<AgentMessage> turnMessages,
+        AgentSessionOptions options)
     {
         lock (transcriptGate)
         {
@@ -191,6 +210,12 @@ public sealed class AgentSession : IAgentSession
             transcriptVersion++;
             return new AgentTranscript(Id, transcriptVersion, turns);
         }
+    }
+
+    private AgentRunResult CommitRun(AgentRun run, PreparedRunResult prepared)
+    {
+        var transcript = CommitTurn(run.Id, prepared.TurnMessages, run.Profile.Options);
+        return new AgentRunResult(run.Id, run.UserMessage, prepared.AssistantMessage, transcript);
     }
 
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
@@ -278,7 +303,7 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private void ValidateInput(AgentTurn turn)
+    private static void ValidateInput(AgentTurn turn, AgentSessionOptions options)
     {
         var characters = 0;
         foreach (var content in turn.Contents)
@@ -339,10 +364,23 @@ public sealed class AgentSession : IAgentSession
 
     private void ReleaseRun() => Volatile.Write(ref runInProgress, 0);
 
+    private sealed class FixedAgentRunProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
+    {
+        public IAgentRunProfileLease Acquire() => new FixedAgentRunProfileLease(profile);
+    }
+
+    private sealed class FixedAgentRunProfileLease(AgentRunProfile profile) : IAgentRunProfileLease
+    {
+        public AgentRunProfile Profile { get; } = profile;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private sealed class RunToolState(
         AgentSession owner,
         AgentRun run,
-        RecordingChatClient recordingClient)
+        RecordingChatClient recordingClient,
+        AgentSessionOptions options)
     {
         private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
         private readonly Dictionary<(int Iteration, string MessageId), AgentMessageId> messageIds = [];
@@ -361,10 +399,10 @@ public sealed class AgentSession : IAgentSession
             }
 
             var recordedIteration = checked(invocation.Iteration + 1);
-            if (recordedIteration >= owner.options.MaxModelIterationsPerTurn)
+            if (recordedIteration >= options.MaxModelIterationsPerTurn)
             {
                 throw new AgentModelIterationLimitExceededException(
-                    owner.options.MaxModelIterationsPerTurn);
+                    options.MaxModelIterationsPerTurn);
             }
 
             EnsureIterationCalls(recordedIteration);
@@ -403,11 +441,11 @@ public sealed class AgentSession : IAgentSession
                 record.CallId,
                 async (content, token) =>
                 {
-                    if (Interlocked.Increment(ref progressCount) > owner.options.MaxToolProgressEventsPerCall)
+                    if (Interlocked.Increment(ref progressCount) > options.MaxToolProgressEventsPerCall)
                     {
                         throw new AgentToolLimitExceededException(
                             nameof(AgentSessionOptions.MaxToolProgressEventsPerCall),
-                            owner.options.MaxToolProgressEventsPerCall);
+                            options.MaxToolProgressEventsPerCall);
                     }
 
                     await run.WriteEventAsync(
@@ -447,11 +485,11 @@ public sealed class AgentSession : IAgentSession
             }
 
             var envelope = ToolJson.CreateResultEnvelope(outcome);
-            if (Encoding.UTF8.GetByteCount(envelope.GetRawText()) > owner.options.MaxToolResultBytes)
+            if (Encoding.UTF8.GetByteCount(envelope.GetRawText()) > options.MaxToolResultBytes)
             {
                 throw new AgentToolLimitExceededException(
                     nameof(AgentSessionOptions.MaxToolResultBytes),
-                    owner.options.MaxToolResultBytes);
+                    options.MaxToolResultBytes);
             }
 
             record.Outcome = outcome;
@@ -502,9 +540,9 @@ public sealed class AgentSession : IAgentSession
             }
 
             responseCharacters = checked(responseCharacters + text.Length);
-            if (responseCharacters > owner.options.MaxResponseCharacters)
+            if (responseCharacters > options.MaxResponseCharacters)
             {
-                throw new AgentResponseLimitExceededException(owner.options.MaxResponseCharacters);
+                throw new AgentResponseLimitExceededException(options.MaxResponseCharacters);
             }
 
             await run.WriteEventAsync(
@@ -525,13 +563,13 @@ public sealed class AgentSession : IAgentSession
                 throw new AgentUnsupportedResponseException("The model provider returned no response.");
             }
 
-            if (iterations.Count >= owner.options.MaxModelIterationsPerTurn &&
+            if (iterations.Count >= options.MaxModelIterationsPerTurn &&
                 iterations[^1].ResponseMessages
                     .SelectMany(static message => message.Contents)
                     .OfType<FunctionCallContent>()
                     .Any())
             {
-                throw new AgentModelIterationLimitExceededException(owner.options.MaxModelIterationsPerTurn);
+                throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
             }
 
             for (var index = 1; index < iterations.Count; index++)
@@ -548,7 +586,7 @@ public sealed class AgentSession : IAgentSession
             {
                 if (messages[^1].Contents.OfType<AgentToolCallContent>().Any())
                 {
-                    throw new AgentModelIterationLimitExceededException(owner.options.MaxModelIterationsPerTurn);
+                    throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
                 }
 
                 throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
@@ -659,19 +697,19 @@ public sealed class AgentSession : IAgentSession
                         call.Exception);
                 }
 
-                if (Interlocked.Increment(ref toolCallCount) > owner.options.MaxToolCallsPerTurn)
+                if (Interlocked.Increment(ref toolCallCount) > options.MaxToolCallsPerTurn)
                 {
                     throw new AgentToolLimitExceededException(
                         nameof(AgentSessionOptions.MaxToolCallsPerTurn),
-                        owner.options.MaxToolCallsPerTurn);
+                        options.MaxToolCallsPerTurn);
                 }
 
                 var arguments = ToolJson.CreateArguments(call.Arguments ?? new Dictionary<string, object?>());
-                if (arguments.GetUtf8Size() > owner.options.MaxToolArgumentsBytes)
+                if (arguments.GetUtf8Size() > options.MaxToolArgumentsBytes)
                 {
                     throw new AgentToolLimitExceededException(
                         nameof(AgentSessionOptions.MaxToolArgumentsBytes),
-                        owner.options.MaxToolArgumentsBytes);
+                        options.MaxToolArgumentsBytes);
                 }
 
                 calls.Add(call.CallId, new ToolInvocationRecord(
@@ -816,6 +854,10 @@ public sealed class AgentSession : IAgentSession
             IReadOnlyList<ChatMessage> ResponseMessages);
     }
 
+    private sealed record PreparedRunResult(
+        ImmutableArray<AgentMessage> TurnMessages,
+        AgentMessage AssistantMessage);
+
     private sealed class ToolAIFunction(IAgentTool tool) : AIFunction
     {
         internal IAgentTool Tool { get; } = tool;
@@ -837,6 +879,8 @@ public sealed class AgentSession : IAgentSession
         AgentSession owner,
         AgentRunId id,
         AgentMessage userMessage,
+        IAgentRunProfileLease profileLease,
+        AgentRunProfile profile,
         int eventBufferCapacity) : IAgentRun
     {
         private readonly CancellationTokenSource cancellation = new();
@@ -867,6 +911,8 @@ public sealed class AgentSession : IAgentSession
         public Task<AgentRunResult> Completion => completion.Task;
 
         internal AgentMessage UserMessage { get; } = userMessage;
+
+        internal AgentRunProfile Profile { get; } = profile;
 
         internal void Start()
         {
@@ -911,28 +957,68 @@ public sealed class AgentSession : IAgentSession
 
         private async Task ExecuteAsync()
         {
+            PreparedRunResult? prepared = null;
+            AgentRunResult? result = null;
+            Exception? failure = null;
+            var canceled = false;
             try
             {
-                AgentRunResult result;
-                try
-                {
-                    result = await owner.ExecuteRunAsync(this, cancellation.Token).ConfigureAwait(false);
-                }
-                finally
-                {
-                    owner.ReleaseRun();
-                    events.Writer.TryComplete();
-                }
-
-                completion.TrySetResult(result);
+                prepared = await owner.ExecuteRunAsync(this, cancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
             {
-                completion.TrySetCanceled(cancellation.Token);
+                canceled = true;
             }
             catch (Exception exception)
             {
-                completion.TrySetException(exception);
+                failure = exception;
+            }
+            finally
+            {
+                events.Writer.TryComplete();
+                try
+                {
+                    await profileLease.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception) when (failure is not null || canceled)
+                {
+                    // Preserve the run's primary terminal cause after ownership has been released.
+                }
+                catch (Exception exception)
+                {
+                    failure = exception;
+                }
+
+                if (failure is null && !canceled)
+                {
+                    try
+                    {
+                        result = owner.CommitRun(
+                            this,
+                            prepared ?? throw new InvalidOperationException(
+                                "The Agent run completed without a prepared result."));
+                    }
+                    catch (Exception exception)
+                    {
+                        failure = exception;
+                    }
+                }
+
+                owner.ReleaseRun();
+            }
+
+            if (failure is not null)
+            {
+                completion.TrySetException(failure);
+            }
+            else if (canceled)
+            {
+                completion.TrySetCanceled(cancellation.Token);
+            }
+            else
+            {
+                completion.TrySetResult(result ?? throw new InvalidOperationException(
+                    "The Agent run completed without a result."));
             }
         }
 

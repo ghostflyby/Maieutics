@@ -1,13 +1,14 @@
+using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Configuration;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
+using Maieutics.Providers;
 using Maieutics.Providers.OpenAI;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace Maieutics;
 
@@ -15,38 +16,61 @@ public static class MaieuticsHost
 {
     public static HostApplicationBuilder CreateApplicationBuilder(string[] args)
     {
+        ArgumentNullException.ThrowIfNull(args);
         var environmentName = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? Environments.Production;
+        var configurationFile = MaieuticsConfigurationFile.Resolve(
+            args,
+            Environment.GetEnvironmentVariable,
+            AppContext.BaseDirectory,
+            Directory.GetCurrentDirectory(),
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+        ValidateInitialConfigurationFile(configurationFile);
+
         var builder = new HostApplicationBuilder(new HostApplicationBuilderSettings
         {
             ApplicationName = typeof(MaieuticsHost).Assembly.GetName().Name,
-            ContentRootPath = Directory.GetCurrentDirectory(),
+            ContentRootPath = AppContext.BaseDirectory,
             DisableDefaults = true,
             EnvironmentName = environmentName
         });
-        builder.Configuration
-            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
-            .AddJsonFile($"appsettings.{environmentName}.json", optional: true, reloadOnChange: false)
-            .AddEnvironmentVariables();
-        builder.Configuration.AddCommandLine(args, new Dictionary<string, string>
+        var fileErrors = new MaieuticsConfigurationFileErrors();
+        var fileProvider = MaieuticsConfigurationFileProvider.Create(configurationFile.Path);
+        builder.Configuration.AddJsonFile(source =>
         {
-            ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
-            ["--model"] = "Maieutics:Model",
-            ["--openai-api"] = "Maieutics:OpenAI:ApiFlavor"
+            source.FileProvider = fileProvider.Provider;
+            source.Path = fileProvider.RelativePath;
+            source.Optional = !configurationFile.Required;
+            source.ReloadOnChange = true;
+            source.OnLoadException = context =>
+            {
+                fileErrors.Record(context.Exception);
+                context.Ignore = true;
+            };
         });
-        ApplyEnvironmentAlias(builder.Configuration, "OPENAI_API_KEY", "Maieutics:OpenAI:ApiKey");
-        ApplyEnvironmentAlias(builder.Configuration, "OPENAI_BASE_URL", "Maieutics:OpenAI:Endpoint");
-        ApplyEnvironmentAlias(builder.Configuration, "MAIEUTICS_MODEL", "Maieutics:Model");
-        ApplyEnvironmentAlias(builder.Configuration, "MAIEUTICS_OPENAI_API", "Maieutics:OpenAI:ApiFlavor");
+        builder.Configuration
+            .AddInMemoryCollection(GetEnvironmentAliases())
+            .AddEnvironmentVariables()
+            .AddCommandLine(args, new Dictionary<string, string>
+            {
+                ["--config"] = "Maieutics:ConfigurationFile",
+                ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
+                ["--provider"] = "Maieutics:Model:Provider",
+                ["--model"] = "Maieutics:Model:Name",
+                ["--openai-api"] = "Maieutics:Providers:OpenAI:ApiFlavor"
+            });
 
         builder.Logging
             .AddConfiguration(builder.Configuration.GetSection("Logging"))
             .AddSimpleConsole();
-        builder.Services
-            .AddOptions<MaieuticsOptions>()
-            .Bind(builder.Configuration.GetSection(MaieuticsOptions.SectionName))
-            .Validate(MaieuticsOptions.IsValid, MaieuticsOptions.ValidationMessage)
-            .ValidateOnStart();
-        builder.Services.AddSingleton(CreateChatClient);
+        builder.Services.AddSingleton(configurationFile);
+        builder.Services.AddSingleton(_ => fileProvider);
+        builder.Services.AddSingleton(fileErrors);
+        builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
+        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
+        builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
+            services.GetRequiredService<MaieuticsRuntimeConfiguration>());
+        builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
+            services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>([]);
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
@@ -54,52 +78,59 @@ public static class MaieuticsHost
         return builder;
     }
 
-    private static IChatClient CreateChatClient(IServiceProvider services)
-    {
-        var options = services.GetRequiredService<IOptions<MaieuticsOptions>>().Value;
-        return OpenAiChatClientFactory.Create(options.Model, options.OpenAI);
-    }
-
-    private static IAgentSession CreateAgentSession(IServiceProvider services)
-    {
-        var options = services.GetRequiredService<IOptions<MaieuticsOptions>>().Value;
-        return new AgentSession(
-            services.GetRequiredService<IChatClient>(),
-            new AgentSessionOptions
-            {
-                SystemPrompt = options.SystemPrompt,
-                MaxRetainedTurns = options.Agent.MaxRetainedTurns,
-                MaxHistoryCharacters = options.Agent.MaxHistoryCharacters,
-                MaxInputCharacters = options.Agent.MaxInputCharacters,
-                MaxResponseCharacters = options.Agent.MaxResponseCharacters,
-                MaxModelIterationsPerTurn = options.Agent.MaxModelIterationsPerTurn,
-                MaxToolCallsPerTurn = options.Agent.MaxToolCallsPerTurn,
-                MaxToolArgumentsBytes = options.Agent.MaxToolArgumentsBytes,
-                MaxToolResultBytes = options.Agent.MaxToolResultBytes,
-                MaxToolProgressEventsPerCall = options.Agent.MaxToolProgressEventsPerCall
-            },
+    private static IAgentSession CreateAgentSession(IServiceProvider services) =>
+        new AgentSession(
+            services.GetRequiredService<IAgentRunProfileProvider>(),
             services.GetRequiredService<IReadOnlyList<IAgentTool>>());
-    }
 
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {
-        var options = services.GetRequiredService<IOptions<MaieuticsOptions>>().Value;
+        var runtimeConfiguration = services.GetRequiredService<IMaieuticsRuntimeConfiguration>();
         return new MaieuticsAgentKernelApplication(
             services.GetRequiredService<IAgentSession>(),
-            new MaieuticsAgentKernelOptions
-            {
-                FlushInterval = options.Jupyter.FlushInterval,
-                FlushCharacters = options.Jupyter.FlushCharacters
-            },
+            runtimeConfiguration.GetKernelOptions,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>());
     }
 
-    private static void ApplyEnvironmentAlias(IConfiguration configuration, string environmentVariable, string key)
+    private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()
+    {
+        var aliases = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
+        AddAlias(aliases, "MAIEUTICS_MODEL", "Maieutics:Model:Name");
+        AddAlias(aliases, "MAIEUTICS_OPENAI_API", "Maieutics:Providers:OpenAI:ApiFlavor");
+        AddAlias(aliases, "OPENAI_API_KEY", "Maieutics:Providers:OpenAI:ApiKey");
+        AddAlias(aliases, "OPENAI_BASE_URL", "Maieutics:Providers:OpenAI:Endpoint");
+        return aliases;
+    }
+
+    private static void AddAlias(IDictionary<string, string?> aliases, string environmentVariable, string key)
     {
         var value = Environment.GetEnvironmentVariable(environmentVariable);
-        if (string.IsNullOrWhiteSpace(configuration[key]) && !string.IsNullOrWhiteSpace(value))
+        if (!string.IsNullOrWhiteSpace(value))
         {
-            configuration[key] = value;
+            aliases.Add(key, value);
         }
+    }
+
+    private static void ValidateInitialConfigurationFile(MaieuticsConfigurationFile configurationFile)
+    {
+        if (configurationFile.Path is null)
+        {
+            return;
+        }
+
+        if (!File.Exists(configurationFile.Path))
+        {
+            if (configurationFile.Required)
+            {
+                throw new FileNotFoundException("The selected Maieutics configuration file does not exist.",
+                    configurationFile.Path);
+            }
+
+            return;
+        }
+
+        using var stream = File.OpenRead(configurationFile.Path);
+        using var _ = JsonDocument.Parse(stream);
     }
 }

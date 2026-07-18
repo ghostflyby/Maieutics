@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Jupyter.Client;
@@ -34,7 +35,7 @@ public sealed class MaieuticsHostIntegrationTests
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         var builder = MaieuticsHost.CreateApplicationBuilder(
             ["--connection-file", connectionFile, "--model", "test-model"]);
-        builder.Configuration["Maieutics:OpenAI:ApiKey"] = "test-key";
+        builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
         using var host = builder.Build();
         var phase = "host start";
 
@@ -84,9 +85,9 @@ public sealed class MaieuticsHostIntegrationTests
         await using var provider = new FakeOpenAiServer(apiFlavor, toolFlow: true);
         var builder = MaieuticsHost.CreateApplicationBuilder(
             ["--connection-file", connectionFile, "--model", "test-model"]);
-        builder.Configuration["Maieutics:OpenAI:ApiKey"] = "test-key";
-        builder.Configuration["Maieutics:OpenAI:Endpoint"] = provider.Endpoint.ToString();
-        builder.Configuration["Maieutics:OpenAI:ApiFlavor"] = apiFlavor.ToString();
+        builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
+        builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
+        builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] = apiFlavor.ToString();
         builder.Services.RemoveAll<IReadOnlyList<IAgentTool>>();
         builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>([new EchoAgentTool()]);
         using var host = builder.Build();
@@ -196,6 +197,82 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
+    [Theory(Timeout = 60_000)]
+    [InlineData(OpenAiApiFlavor.Responses)]
+    [InlineData(OpenAiApiFlavor.ChatCompletions)]
+    public async Task ReloadedProviderConfigurationIsUsedByTheNextNotebookCell(OpenAiApiFlavor apiFlavor)
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-hot-reload-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(root, "connection.json");
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await using var firstProvider = new FakeOpenAiServer(
+            apiFlavor,
+            model: "first-model",
+            answer: "first answer");
+        await using var secondProvider = new FakeOpenAiServer(
+            apiFlavor,
+            model: "second-model",
+            answer: "second answer");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateHostConfiguration(connectionFile, firstProvider.Endpoint, apiFlavor, "first-model", "first prompt"),
+            deadline.Token);
+        using var started = StartConfiguredHostProcess(configurationFile);
+        var process = started.Process;
+
+        try
+        {
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            var ready = client.WaitForReadyAsync(deadline.Token);
+            var exited = process.WaitForExitAsync(deadline.Token);
+            var startup = await Task.WhenAny(ready, exited);
+            startup.Should().BeSameAs(ready, started.FailureDetails());
+            await ready;
+
+            (await client.PingAsync(deadline.Token)).Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+
+            (await ExecuteAndGetMarkdownAsync(client, "first cell", deadline.Token)).Should().Be("first answer");
+            await firstProvider.Completion.WaitAsync(deadline.Token);
+
+            await File.WriteAllTextAsync(
+                configurationFile,
+                CreateHostConfiguration(
+                    connectionFile,
+                    secondProvider.Endpoint,
+                    apiFlavor,
+                    "second-model",
+                    "second prompt"),
+                deadline.Token);
+            await started.WaitForOutputAsync(
+                "Applied Maieutics configuration version 2.",
+                deadline.Token);
+
+            (await ExecuteAndGetMarkdownAsync(client, "second cell", deadline.Token)).Should().Be("second answer");
+            await secondProvider.Completion.WaitAsync(deadline.Token);
+            secondProvider.RequestBodies.Should().ContainSingle();
+            secondProvider.RequestBodies.Single().GetRawText().Should()
+                .Contain("first cell").And.Contain("first answer").And.Contain("second cell");
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await process.WaitForExitAsync(deadline.Token);
+            process.ExitCode.Should().Be(0, started.FailureDetails());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task PackagedKernelSpecUsesPortableExecutableCommand()
     {
@@ -226,7 +303,7 @@ public sealed class MaieuticsHostIntegrationTests
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath ?? "dotnet",
-            WorkingDirectory = Path.GetDirectoryName(executablePath ?? assemblyPath),
+            WorkingDirectory = Path.GetTempPath(),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
@@ -248,22 +325,75 @@ public sealed class MaieuticsHostIntegrationTests
 
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";
         startInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
+        startInfo.Environment.Remove("MAIEUTICS_CONFIG");
+        startInfo.Environment.Remove("MAIEUTICS_PROVIDER");
         startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
-        startInfo.Environment.Remove("Maieutics__OpenAI__ApiFlavor");
+        startInfo.Environment.Remove("Maieutics__Model__Provider");
+        startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiFlavor");
         if (endpoint is not null)
         {
             startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
         }
 
+        return StartProcess(startInfo);
+    }
+
+    private static StartedHostProcess StartConfiguredHostProcess(string configurationFile)
+    {
+        var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
+        var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
+            ? null
+            : Path.GetFullPath(nativeExecutable);
+        if (executablePath is not null && !File.Exists(executablePath))
+        {
+            throw new FileNotFoundException("The configured Maieutics test host executable does not exist.",
+                executablePath);
+        }
+
+        var assemblyPath = executablePath is null ? GetManagedHostAssemblyPath() : null;
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executablePath ?? "dotnet",
+            WorkingDirectory = Path.GetTempPath(),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        if (assemblyPath is not null)
+        {
+            startInfo.ArgumentList.Add(assemblyPath);
+        }
+
+        startInfo.ArgumentList.Add("--config");
+        startInfo.ArgumentList.Add(configurationFile);
+        startInfo.Environment["DOTNET_ENVIRONMENT"] = "Production";
+        startInfo.Environment.Remove("MAIEUTICS_CONFIG");
+        startInfo.Environment.Remove("MAIEUTICS_PROVIDER");
+        startInfo.Environment.Remove("MAIEUTICS_MODEL");
+        startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
+        startInfo.Environment.Remove("OPENAI_API_KEY");
+        startInfo.Environment.Remove("OPENAI_BASE_URL");
+        startInfo.Environment.Remove("Maieutics__Model__Provider");
+        startInfo.Environment.Remove("Maieutics__Model__Name");
+        startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiFlavor");
+        startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiKey");
+        startInfo.Environment.Remove("Maieutics__Providers__OpenAI__Endpoint");
+        return StartProcess(startInfo);
+    }
+
+    private static StartedHostProcess StartProcess(ProcessStartInfo startInfo)
+    {
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException("Could not start the Maieutics host process.");
         var standardOutput = new ConcurrentQueue<string>();
         var standardError = new ConcurrentQueue<string>();
+        var outputChanged = new SemaphoreSlim(0);
         process.OutputDataReceived += (_, eventArgs) =>
         {
             if (eventArgs.Data is not null)
             {
                 standardOutput.Enqueue(eventArgs.Data);
+                outputChanged.Release();
             }
         };
         process.ErrorDataReceived += (_, eventArgs) =>
@@ -275,7 +405,59 @@ public sealed class MaieuticsHostIntegrationTests
         };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        return new StartedHostProcess(process, standardOutput, standardError);
+        return new StartedHostProcess(process, standardOutput, standardError, outputChanged);
+    }
+
+    private static async Task<string> ExecuteAndGetMarkdownAsync(
+        IJupyterClient client,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        var execution = await client.ExecuteAsync(new JupyterExecuteRequest(code), cancellationToken);
+        var outputs = new List<JupyterOutput>();
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
+        {
+            outputs.Add(output);
+        }
+
+        (await execution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
+        return outputs.OfType<JupyterDisplayOutput>().Single().Data.Data["text/markdown"].GetString()
+               ?? throw new InvalidOperationException("The Agent display did not contain Markdown text.");
+    }
+
+    private static string CreateHostConfiguration(
+        string connectionFile,
+        Uri endpoint,
+        OpenAiApiFlavor apiFlavor,
+        string model,
+        string systemPrompt)
+    {
+        var root = new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["SystemPrompt"] = systemPrompt,
+                ["Model"] = new JsonObject
+                {
+                    ["Provider"] = "OpenAI",
+                    ["Name"] = model
+                },
+                ["Providers"] = new JsonObject
+                {
+                    ["OpenAI"] = new JsonObject
+                    {
+                        ["ApiFlavor"] = apiFlavor.ToString(),
+                        ["ApiKey"] = "test-key",
+                        ["Endpoint"] = endpoint.ToString()
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        };
+        return root.ToJsonString();
     }
 
     private static string GetManagedHostAssemblyPath()
@@ -298,7 +480,8 @@ public sealed class MaieuticsHostIntegrationTests
     private sealed class StartedHostProcess(
         Process process,
         ConcurrentQueue<string> standardOutput,
-        ConcurrentQueue<string> standardError) : IDisposable
+        ConcurrentQueue<string> standardError,
+        SemaphoreSlim outputChanged) : IDisposable
     {
         public Process Process { get; } = process;
 
@@ -309,21 +492,41 @@ public sealed class MaieuticsHostIntegrationTests
                    $"\nstderr:\n{string.Join('\n', standardError)}";
         }
 
-        public void Dispose() => Process.Dispose();
+        public async Task WaitForOutputAsync(string text, CancellationToken cancellationToken)
+        {
+            while (!standardOutput.Any(line => line.Contains(text, StringComparison.Ordinal)))
+            {
+                await outputChanged.WaitAsync(cancellationToken);
+            }
+        }
+
+        public void Dispose()
+        {
+            outputChanged.Dispose();
+            Process.Dispose();
+        }
     }
 
     private sealed class FakeOpenAiServer : IAsyncDisposable
     {
         private readonly OpenAiApiFlavor apiFlavor;
+        private readonly string model;
+        private readonly string answer;
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource cancellation = new();
 
         private readonly bool toolFlow;
 
-        public FakeOpenAiServer(OpenAiApiFlavor apiFlavor, bool toolFlow = false)
+        public FakeOpenAiServer(
+            OpenAiApiFlavor apiFlavor,
+            bool toolFlow = false,
+            string model = "test-model",
+            string answer = "native answer")
         {
             this.apiFlavor = apiFlavor;
             this.toolFlow = toolFlow;
+            this.model = model;
+            this.answer = answer;
             listener.Start();
             var endpoint = (IPEndPoint)listener.LocalEndpoint;
             Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
@@ -333,6 +536,8 @@ public sealed class MaieuticsHostIntegrationTests
         public Uri Endpoint { get; }
 
         public Task Completion { get; }
+
+        public ConcurrentQueue<JsonElement> RequestBodies { get; } = new();
 
         public async ValueTask DisposeAsync()
         {
@@ -360,6 +565,7 @@ public sealed class MaieuticsHostIntegrationTests
                 using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
                 await using var stream = client.GetStream();
                 var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+                RequestBodies.Enqueue(request.Body.Clone());
                 AssertRequest(request, requestIndex);
 
                 var data = (apiFlavor, toolFlow, requestIndex) switch
@@ -367,9 +573,9 @@ public sealed class MaieuticsHostIntegrationTests
                     (OpenAiApiFlavor.Responses, true, 0) => CreateResponsesToolStream(),
                     (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(),
                     (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
-                        toolFlow ? "tool-backed answer" : "native answer"),
+                        toolFlow ? "tool-backed answer" : answer),
                     (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
-                        toolFlow ? "tool-backed answer" : "native answer"),
+                        toolFlow ? "tool-backed answer" : answer),
                     _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
                 };
                 var body = Encoding.UTF8.GetBytes(data);
@@ -390,7 +596,7 @@ public sealed class MaieuticsHostIntegrationTests
                 OpenAiApiFlavor.ChatCompletions => "/v1/chat/completions",
                 _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
             });
-            request.Body.GetProperty("model").GetString().Should().Be("test-model");
+            request.Body.GetProperty("model").GetString().Should().Be(model);
             request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
             request.Body.GetProperty("store").GetBoolean().Should().BeFalse();
             if (!toolFlow)

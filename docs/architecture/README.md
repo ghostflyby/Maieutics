@@ -71,7 +71,8 @@ assemblies. Product-specific provider wiring and the user-facing Jupyter adapter
 ```text
 Maieutics.Agent
     Provider-neutral transcript, content, sessions, runs, events, tools, capabilities, and the internal
-    ChatClientAgent integration. It is currently an internal, non-packable product assembly rather than a supported SDK
+    ChatClientAgent integration. Each run captures an immutable model-client/options profile lease. It is currently an
+    internal, non-packable product assembly rather than a supported SDK
 
 Maieutics.Providers.*
     Executable-owned IChatClient construction and configuration for OpenAI Responses, OpenAI Chat Completions,
@@ -103,7 +104,8 @@ Maieutics.Worker
     Local, SSH-launched, or container-hosted execution-plane process
 
 Maieutics
-    AOT executable, product-specific adapters, configuration, DI composition, process hosting, and lifecycle
+    AOT executable, product-specific adapters, provider registry, last-known-good configuration reload, DI composition,
+    process hosting, and lifecycle
 ```
 
 ## Dependency direction

@@ -6,8 +6,14 @@
     }
   },
   "Maieutics": {
-    "OpenAI": {
-      "ApiFlavor": "Responses"
+    "Model": {
+      "Provider": "OpenAI",
+      "Name": "model-id"
+    },
+    "Providers": {
+      "OpenAI": {
+        "ApiFlavor": "Responses"
+      }
     },
     "Agent": {
       "MaxRetainedTurns": 50,
@@ -18,7 +24,8 @@
       "MaxToolCallsPerTurn": 16,
       "MaxToolArgumentsBytes": 65536,
       "MaxToolResultBytes": 262144,
-      "MaxToolProgressEventsPerCall": 256
+      "MaxToolProgressEventsPerCall": 256,
+      "EventBufferCapacity": 128
     },
     "Jupyter": {
       "FlushInterval": "00:00:00.050",

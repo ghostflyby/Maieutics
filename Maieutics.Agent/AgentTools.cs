@@ -89,7 +89,7 @@ public sealed record AgentToolArguments
     public T Deserialize<T>(JsonTypeInfo<T> jsonTypeInfo)
     {
         ArgumentNullException.ThrowIfNull(jsonTypeInfo);
-        return JsonSerializer.Deserialize(Value, jsonTypeInfo)
+        return Value.Deserialize(jsonTypeInfo)
                ?? throw new JsonException($"Tool arguments could not be deserialized as {typeof(T).Name}.");
     }
 

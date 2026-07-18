@@ -355,6 +355,10 @@ Maieutics, not Agent Framework, owns these externally observable semantics:
 producers wait for capacity, and a caller that stops consuming must cancel or dispose the run. `Completion` is the only
 terminal success or failure boundary and must not complete before the session reservation is released.
 
+Each run captures one provider-neutral `AgentRunProfile` lease containing its `IChatClient` and immutable options.
+Provider, model, prompt, and limit changes may apply to the next run but must never replace the client or options inside
+an active model/tool loop. Retired provider clients remain alive until every run lease has been released.
+
 Framework history completion is only a staging point. Use a Maieutics-owned staging `ChatHistoryProvider`: load committed
 history before invocation, stage request and response messages after framework completion, and promote them only after
 the outer run validates the complete result. Empty or unsupported responses, policy rejection, output limits,
@@ -371,6 +375,12 @@ assistant last, with assistant tool-call and tool-result messages preserved in o
 Pass an explicitly composed `IChatClient` pipeline to `ChatClientAgent`. Initially use `UseProvidedChatClientAsIs` so
 default function invocation, approval, message injection, or per-service-call history behavior cannot acquire ownership
 without an explicit design and tests.
+
+The executable selects one external `maieutics.json`: explicit `--config`, then `MAIEUTICS_CONFIG`, then an existing
+file beside the executable, otherwise the platform user application-data path. Never load configuration implicitly from
+the notebook working directory. JSON reloads use complete validated snapshots and retain the last-known-good version on
+failure. Jupyter connection information is startup-only; reloadable Agent and presentation settings apply at operation
+boundaries.
 
 The runtime should emit semantic events such as assistant text deltas, completed messages, permitted reasoning
 summaries, tool-call lifecycle events, rich values, warnings, typed failures, and input requests.

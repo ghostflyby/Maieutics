@@ -18,6 +18,21 @@ public sealed record AgentSessionOptions
     /// <summary>Gets the maximum number of UTF-16 characters accepted in one response.</summary>
     public int MaxResponseCharacters { get; init; } = 64_000;
 
+    /// <summary>Gets the maximum number of model round trips in one turn.</summary>
+    public int MaxModelIterationsPerTurn { get; init; } = 8;
+
+    /// <summary>Gets the maximum number of tool calls in one turn.</summary>
+    public int MaxToolCallsPerTurn { get; init; } = 16;
+
+    /// <summary>Gets the maximum UTF-8 encoded argument size for one tool call.</summary>
+    public int MaxToolArgumentsBytes { get; init; } = 65_536;
+
+    /// <summary>Gets the maximum UTF-8 encoded result envelope size for one tool call.</summary>
+    public int MaxToolResultBytes { get; init; } = 262_144;
+
+    /// <summary>Gets the maximum number of progress events emitted by one tool call.</summary>
+    public int MaxToolProgressEventsPerCall { get; init; } = 256;
+
     /// <summary>Gets the capacity of each run's bounded event stream.</summary>
     public int EventBufferCapacity { get; init; } = 128;
 
@@ -27,6 +42,11 @@ public sealed record AgentSessionOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxResponseCharacters, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelIterationsPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolCallsPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolArgumentsBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolResultBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
     }
 }

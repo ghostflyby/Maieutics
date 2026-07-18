@@ -97,12 +97,12 @@ public sealed class AgentJupyterIntegrationTests
             .Select(ReadMarkdown)
             .Should().Equal("part", "partial");
         failedOutputs.OfType<JupyterExecutionError>().Single().Name.Should().Be("AgentProviderError");
-        session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
 
         var recovered = await client.ExecuteAsync(new JupyterExecuteRequest("retry"), deadline.Token);
         await ReadOutputsAsync(recovered, deadline.Token);
         (await recovered.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
-        session.GetTranscriptSnapshot().Messages
+        session.GetTranscriptSnapshot().Turns.SelectMany(turn => turn.Messages)
             .Select(message => (message.Role, Text: ReadText(message)))
             .Should().Equal(
                 (AgentMessageRole.User, "retry"),
@@ -154,7 +154,7 @@ public sealed class AgentJupyterIntegrationTests
             .Select(ReadMarkdown)
             .Should().ContainSingle().Which.Should().Be("partial");
         (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("aborted");
-        session.GetTranscriptSnapshot().Messages.Should().BeEmpty();
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
         (await client.PingAsync(deadline.Token)).Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
 
         await client.ShutdownAsync(false, deadline.Token);
@@ -399,7 +399,10 @@ public sealed class AgentJupyterIntegrationTests
 
         public void Complete()
         {
-            var transcript = new AgentTranscript(SessionId, 1, [user, assistant]);
+            var transcript = new AgentTranscript(
+                SessionId,
+                1,
+                [new AgentTranscriptTurn(Id, [user, assistant])]);
             completion.TrySetResult(new AgentRunResult(Id, user, assistant, transcript));
         }
 

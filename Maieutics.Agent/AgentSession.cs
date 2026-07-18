@@ -1,6 +1,9 @@
+using System.Collections;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -11,21 +14,27 @@ namespace Maieutics.Agent;
 /// <summary>Runs a provider-neutral Agent conversation over Microsoft Agent Framework.</summary>
 public sealed class AgentSession : IAgentSession
 {
+    private readonly IChatClient chatClient;
     private readonly AgentSessionOptions options;
     private readonly Lock transcriptGate = new();
     private readonly StagingChatHistoryProvider historyProvider;
     private readonly ChatClientAgent agent;
-    private ImmutableArray<AgentMessage> messages = [];
+    private readonly ImmutableDictionary<string, ToolAIFunction> tools;
+    private ImmutableArray<AgentTranscriptTurn> turns = [];
     private FrameworkAgentSession? frameworkSession;
     private long transcriptVersion;
     private int runInProgress;
 
     /// <summary>Initializes an Agent session.</summary>
-    public AgentSession(IChatClient chatClient, AgentSessionOptions? options = null)
+    public AgentSession(
+        IChatClient chatClient,
+        AgentSessionOptions? options = null,
+        IEnumerable<IAgentTool>? tools = null)
     {
-        ArgumentNullException.ThrowIfNull(chatClient);
+        this.chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         this.options = options ?? new AgentSessionOptions();
         this.options.Validate();
+        this.tools = CreateToolRegistry(tools);
 
         Id = AgentSessionId.Create();
         historyProvider = new StagingChatHistoryProvider(GetCommittedChatMessages);
@@ -62,12 +71,7 @@ public sealed class AgentSession : IAgentSession
         try
         {
             var userMessage = new AgentMessage(AgentMessageId.Create(), AgentMessageRole.User, turn.Contents);
-            var run = new AgentRun(
-                this,
-                AgentRunId.Create(),
-                userMessage,
-                AgentMessageId.Create(),
-                options.EventBufferCapacity);
+            var run = new AgentRun(this, AgentRunId.Create(), userMessage, options.EventBufferCapacity);
             run.Start();
             return Task.FromResult<IAgentRun>(run);
         }
@@ -83,7 +87,7 @@ public sealed class AgentSession : IAgentSession
     {
         lock (transcriptGate)
         {
-            return new AgentTranscript(Id, transcriptVersion, messages);
+            return new AgentTranscript(Id, transcriptVersion, turns);
         }
     }
 
@@ -91,6 +95,9 @@ public sealed class AgentSession : IAgentSession
     {
         historyProvider.BeginRun(run.Id);
         var committed = false;
+        var recordingClient = new RecordingChatClient(chatClient);
+        var toolState = new RunToolState(this, run, recordingClient);
+        recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
         try
         {
             var session = frameworkSession;
@@ -100,30 +107,17 @@ public sealed class AgentSession : IAgentSession
                 frameworkSession = session;
             }
 
-            var response = new StringBuilder();
-            var frameworkMessage = ToChatMessage(run.UserMessage);
+            var runOptions = CreateRunOptions(recordingClient, toolState);
             try
             {
-                await foreach (var update in agent
-                                   .RunStreamingAsync(frameworkMessage, session, cancellationToken: cancellationToken)
+                await foreach (var _ in agent
+                                   .RunStreamingAsync(
+                                       ToChatMessage(run.UserMessage),
+                                       session,
+                                       runOptions,
+                                       cancellationToken)
                                    .ConfigureAwait(false))
                 {
-                    ValidateResponseContents(update.Contents);
-                    var text = update.Text;
-                    if (string.IsNullOrEmpty(text))
-                    {
-                        continue;
-                    }
-
-                    if (response.Length + text.Length > options.MaxResponseCharacters)
-                    {
-                        throw new AgentResponseLimitExceededException(options.MaxResponseCharacters);
-                    }
-
-                    response.Append(text);
-                    await run.WriteEventAsync(
-                        new AgentTextDelta(run.Id, run.NextSequence(), run.AssistantMessageId, text),
-                        cancellationToken).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -141,17 +135,9 @@ public sealed class AgentSession : IAgentSession
 
             var staged = historyProvider.TakeStaged(run.Id);
             ValidateStagedRequest(staged.RequestMessages, run.UserMessage);
-            var assistantText = ValidateFinalResponse(staged.ResponseMessages, response.ToString());
-            var assistant = new AgentMessage(
-                run.AssistantMessageId,
-                AgentMessageRole.Assistant,
-                [new AgentTextContent(assistantText)]);
-
-            await run.WriteEventAsync(
-                new AgentMessageCompleted(run.Id, run.NextSequence(), assistant),
-                cancellationToken).ConfigureAwait(false);
-
-            var transcript = CommitTurn(run.UserMessage, assistant);
+            var turnMessages = await toolState.BuildCompletedMessagesAsync(cancellationToken).ConfigureAwait(false);
+            var assistant = turnMessages[^1];
+            var transcript = CommitTurn(run.Id, turnMessages);
             committed = true;
             return new AgentRunResult(run.Id, run.UserMessage, assistant, transcript);
         }
@@ -165,35 +151,57 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private AgentTranscript CommitTurn(AgentMessage user, AgentMessage assistant)
+    private ChatClientAgentRunOptions CreateRunOptions(
+        RecordingChatClient recordingClient,
+        RunToolState toolState)
+    {
+        var chatOptions = new ChatOptions
+        {
+            Tools = tools.Values.Cast<AITool>().ToList(),
+            AllowMultipleToolCalls = true
+        };
+        return new ChatClientAgentRunOptions(chatOptions)
+        {
+            ChatClientFactory = _ => new FunctionInvokingChatClient(recordingClient)
+            {
+                AllowConcurrentInvocation = false,
+                MaximumIterationsPerRequest = options.MaxModelIterationsPerTurn,
+                MaximumConsecutiveErrorsPerRequest = 0,
+                IncludeDetailedErrors = false,
+                TerminateOnUnknownCalls = true,
+                FunctionInvoker = toolState.InvokeAsync
+            }
+        };
+    }
+
+    private AgentTranscript CommitTurn(AgentRunId runId, ImmutableArray<AgentMessage> turnMessages)
     {
         lock (transcriptGate)
         {
-            var builder = messages.ToBuilder();
-            builder.Add(user);
-            builder.Add(assistant);
+            var builder = turns.ToBuilder();
+            builder.Add(new AgentTranscriptTurn(runId, turnMessages));
 
-            while (builder.Count / 2 > options.MaxRetainedTurns ||
+            while (builder.Count > options.MaxRetainedTurns ||
                    CountCharacters(builder) > options.MaxHistoryCharacters)
             {
-                builder.RemoveRange(0, 2);
+                builder.RemoveAt(0);
             }
 
-            messages = builder.ToImmutable();
+            turns = builder.ToImmutable();
             transcriptVersion++;
-            return new AgentTranscript(Id, transcriptVersion, messages);
+            return new AgentTranscript(Id, transcriptVersion, turns);
         }
     }
 
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
     {
-        ImmutableArray<AgentMessage> snapshot;
+        ImmutableArray<AgentTranscriptTurn> snapshot;
         lock (transcriptGate)
         {
-            snapshot = messages;
+            snapshot = turns;
         }
 
-        return snapshot.Select(ToChatMessage).ToArray();
+        return snapshot.SelectMany(static turn => turn.Messages).Select(ToChatMessage).ToArray();
     }
 
     private static ChatMessage ToChatMessage(AgentMessage message)
@@ -202,6 +210,7 @@ public sealed class AgentSession : IAgentSession
         {
             AgentMessageRole.User => ChatRole.User,
             AgentMessageRole.Assistant => ChatRole.Assistant,
+            AgentMessageRole.Tool => ChatRole.Tool,
             _ => throw new ArgumentOutOfRangeException(nameof(message), message.Role, null)
         };
         var contents = message.Contents.Select(ToAIContent).ToList();
@@ -212,42 +221,26 @@ public sealed class AgentSession : IAgentSession
     private static AIContent ToAIContent(AgentContent content) => content switch
     {
         AgentTextContent text => new TextContent(text.Text),
+        AgentToolCallContent call => new FunctionCallContent(
+            call.CallId.ToString(),
+            call.Name,
+            ToArgumentDictionary(call.Arguments)),
+        AgentToolResultContent result => new FunctionResultContent(
+            result.CallId.ToString(),
+            ToolJson.CreateResultEnvelope(result.Outcome)),
         _ => throw new AgentUnsupportedResponseException(
-            $"Agent input content of type '{content.GetType().Name}' is not supported.")
+            $"Agent message content of type '{content.GetType().Name}' is not supported by the model adapter.")
     };
 
-    private static string ValidateFinalResponse(
-        IReadOnlyList<ChatMessage> responseMessages,
-        string streamedText)
+    private static Dictionary<string, object?> ToArgumentDictionary(AgentToolArguments arguments)
     {
-        var text = new StringBuilder();
-        foreach (var message in responseMessages)
+        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var property in arguments.Value.EnumerateObject())
         {
-            if (message.Role != ChatRole.Assistant)
-            {
-                throw new AgentUnsupportedResponseException(
-                    $"The model provider returned an unsupported '{message.Role}' response message.");
-            }
-
-            ValidateResponseContents(message.Contents);
-            foreach (var content in message.Contents.OfType<TextContent>())
-            {
-                text.Append(content.Text);
-            }
+            result.Add(property.Name, property.Value.Clone());
         }
 
-        if (text.Length == 0)
-        {
-            throw new AgentUnsupportedResponseException("The model provider returned no assistant text.");
-        }
-
-        if (!string.Equals(text.ToString(), streamedText, StringComparison.Ordinal))
-        {
-            throw new AgentUnsupportedResponseException(
-                "The model provider returned inconsistent streamed and completed assistant text.");
-        }
-
-        return text.ToString();
+        return result;
     }
 
     private static void ValidateStagedRequest(
@@ -263,27 +256,19 @@ public sealed class AgentSession : IAgentSession
         var expectedText = string.Concat(
             userMessage.Contents.OfType<AgentTextContent>().Select(static content => content.Text));
         var requestMessage = requestMessages[0];
-        foreach (var content in requestMessage.Contents)
-        {
-            if (content is not TextContent)
-            {
-                throw new AgentUnsupportedResponseException(
-                    $"Agent Framework staged unsupported request content of type '{content.GetType().Name}'.");
-            }
-        }
-
-        if (!string.Equals(requestMessage.Text, expectedText, StringComparison.Ordinal))
+        if (requestMessage.Contents.Any(static content => content is not TextContent) ||
+            !string.Equals(requestMessage.Text, expectedText, StringComparison.Ordinal))
         {
             throw new AgentUnsupportedResponseException(
-                "Agent Framework staged request text that differs from the submitted turn.");
+                "Agent Framework staged request content that differs from the submitted turn.");
         }
     }
 
-    private static void ValidateResponseContents(IEnumerable<AIContent> contents)
+    private static void ValidateStreamingContents(IEnumerable<AIContent> contents)
     {
         foreach (var content in contents)
         {
-            if (content is TextContent or UsageContent)
+            if (content is TextContent or UsageContent or FunctionCallContent or FunctionResultContent)
             {
                 continue;
             }
@@ -313,27 +298,545 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private static int CountCharacters(IEnumerable<AgentMessage> source)
+    private static int CountCharacters(IEnumerable<AgentTranscriptTurn> source)
     {
         var count = 0;
-        foreach (var message in source)
+        foreach (var content in source
+                     .SelectMany(static turn => turn.Messages)
+                     .SelectMany(static message => message.Contents))
         {
-            foreach (var content in message.Contents.OfType<AgentTextContent>())
+            count = content switch
             {
-                count = checked(count + content.Text.Length);
-            }
+                AgentTextContent text => checked(count + text.Text.Length),
+                AgentToolCallContent call => checked(count + call.Arguments.Value.GetRawText().Length),
+                AgentToolResultContent result => checked(count + ToolJson.CreateResultEnvelope(result.Outcome)
+                    .GetRawText().Length),
+                AgentJsonContent json => checked(count + json.Value.GetRawText().Length),
+                _ => count
+            };
         }
 
         return count;
     }
 
+    private static ImmutableDictionary<string, ToolAIFunction> CreateToolRegistry(IEnumerable<IAgentTool>? source)
+    {
+        var builder = ImmutableDictionary.CreateBuilder<string, ToolAIFunction>(StringComparer.Ordinal);
+        foreach (var tool in source ?? [])
+        {
+            ArgumentNullException.ThrowIfNull(tool);
+            var descriptor = tool.Descriptor ??
+                             throw new ArgumentException("Agent tools must provide a descriptor.", nameof(source));
+            if (!builder.TryAdd(descriptor.Name, new ToolAIFunction(tool)))
+            {
+                throw new ArgumentException($"An Agent tool named '{descriptor.Name}' is already registered.",
+                    nameof(source));
+            }
+        }
+
+        return builder.ToImmutable();
+    }
+
     private void ReleaseRun() => Volatile.Write(ref runInProgress, 0);
+
+    private sealed class RunToolState(
+        AgentSession owner,
+        AgentRun run,
+        RecordingChatClient recordingClient)
+    {
+        private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
+        private readonly Dictionary<(int Iteration, string MessageId), AgentMessageId> messageIds = [];
+        private readonly HashSet<int> publishedIterations = [];
+        private readonly List<AgentMessage> intermediateMessages = [];
+        private int responseCharacters;
+        private int toolCallCount;
+
+        internal async ValueTask<object?> InvokeAsync(
+            FunctionInvocationContext invocation,
+            CancellationToken cancellationToken)
+        {
+            if (invocation.Function is not ToolAIFunction function)
+            {
+                throw new AgentToolArgumentsException("The model requested an unregistered Agent tool.");
+            }
+
+            var recordedIteration = checked(invocation.Iteration + 1);
+            if (recordedIteration >= owner.options.MaxModelIterationsPerTurn)
+            {
+                throw new AgentModelIterationLimitExceededException(
+                    owner.options.MaxModelIterationsPerTurn);
+            }
+
+            EnsureIterationCalls(recordedIteration);
+            await PublishIterationMessagesAsync(recordedIteration, cancellationToken).ConfigureAwait(false);
+            var callContent = invocation.CallContent;
+            if (callContent.Exception is not null)
+            {
+                throw new AgentToolArgumentsException(
+                    $"The model supplied malformed arguments for tool '{function.Name}'.",
+                    callContent.Exception);
+            }
+
+            if (!calls.TryGetValue(callContent.CallId, out var record) ||
+                !ReferenceEquals(record.Tool, function.Tool))
+            {
+                throw new AgentToolArgumentsException(
+                    "The function invoker could not correlate the requested Agent tool.");
+            }
+
+            await run.WriteEventAsync(
+                new AgentToolRequested(
+                    run.Id,
+                    run.NextSequence(),
+                    record.CallId,
+                    function.Tool.Descriptor,
+                    record.Arguments),
+                cancellationToken).ConfigureAwait(false);
+            await run.WriteEventAsync(
+                new AgentToolStarted(run.Id, run.NextSequence(), record.CallId, function.Tool.Descriptor),
+                cancellationToken).ConfigureAwait(false);
+
+            var progressCount = 0;
+            var context = new AgentToolContext(
+                owner.Id,
+                run.Id,
+                record.CallId,
+                async (content, token) =>
+                {
+                    if (Interlocked.Increment(ref progressCount) > owner.options.MaxToolProgressEventsPerCall)
+                    {
+                        throw new AgentToolLimitExceededException(
+                            nameof(AgentSessionOptions.MaxToolProgressEventsPerCall),
+                            owner.options.MaxToolProgressEventsPerCall);
+                    }
+
+                    await run.WriteEventAsync(
+                        new AgentToolProgress(run.Id, run.NextSequence(), record.CallId, content),
+                        token).ConfigureAwait(false);
+                });
+
+            AgentToolOutcome outcome;
+            try
+            {
+                outcome = await function.Tool
+                              .InvokeAsync(context, record.Arguments, cancellationToken)
+                              .ConfigureAwait(false)
+                          ?? throw new AgentToolInvocationException(
+                              function.Name,
+                              new InvalidOperationException("The tool returned a null outcome."));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (AgentException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                await run.WriteEventAsync(
+                    new AgentToolFailed(
+                        run.Id,
+                        run.NextSequence(),
+                        record.CallId,
+                        "tool_execution_failed",
+                        "The tool failed unexpectedly."),
+                    cancellationToken).ConfigureAwait(false);
+                throw new AgentToolInvocationException(function.Name, exception);
+            }
+
+            var envelope = ToolJson.CreateResultEnvelope(outcome);
+            if (Encoding.UTF8.GetByteCount(envelope.GetRawText()) > owner.options.MaxToolResultBytes)
+            {
+                throw new AgentToolLimitExceededException(
+                    nameof(AgentSessionOptions.MaxToolResultBytes),
+                    owner.options.MaxToolResultBytes);
+            }
+
+            record.Outcome = outcome;
+            intermediateMessages.Add(new AgentMessage(
+                AgentMessageId.Create(),
+                AgentMessageRole.Tool,
+                [
+                    new AgentToolResultContent(
+                        record.CallId,
+                        record.Tool.Descriptor.Name,
+                        outcome)
+                ]));
+            switch (outcome)
+            {
+                case AgentToolSuccess success:
+                    await run.WriteEventAsync(
+                        new AgentToolCompleted(run.Id, run.NextSequence(), record.CallId, success),
+                        cancellationToken).ConfigureAwait(false);
+                    break;
+                case AgentToolFailure failure:
+                    await run.WriteEventAsync(
+                        new AgentToolFailed(
+                            run.Id,
+                            run.NextSequence(),
+                            record.CallId,
+                            failure.Code,
+                            failure.Message),
+                        cancellationToken).ConfigureAwait(false);
+                    break;
+                default:
+                    throw new AgentUnsupportedResponseException(
+                        $"Tool '{function.Name}' returned unsupported outcome type '{outcome.GetType().Name}'.");
+            }
+
+            return envelope;
+        }
+
+        internal async ValueTask ObserveProviderUpdateAsync(
+            int iteration,
+            ChatResponseUpdate update,
+            CancellationToken cancellationToken)
+        {
+            ValidateStreamingContents(update.Contents);
+            var text = update.Text;
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            responseCharacters = checked(responseCharacters + text.Length);
+            if (responseCharacters > owner.options.MaxResponseCharacters)
+            {
+                throw new AgentResponseLimitExceededException(owner.options.MaxResponseCharacters);
+            }
+
+            await run.WriteEventAsync(
+                new AgentTextDelta(
+                    run.Id,
+                    run.NextSequence(),
+                    GetMessageId(iteration, update.MessageId),
+                    text),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        internal async Task<ImmutableArray<AgentMessage>> BuildCompletedMessagesAsync(
+            CancellationToken cancellationToken)
+        {
+            var iterations = recordingClient.GetIterations();
+            if (iterations.Count == 0)
+            {
+                throw new AgentUnsupportedResponseException("The model provider returned no response.");
+            }
+
+            if (iterations.Count >= owner.options.MaxModelIterationsPerTurn &&
+                iterations[^1].ResponseMessages
+                    .SelectMany(static message => message.Contents)
+                    .OfType<FunctionCallContent>()
+                    .Any())
+            {
+                throw new AgentModelIterationLimitExceededException(owner.options.MaxModelIterationsPerTurn);
+            }
+
+            for (var index = 1; index < iterations.Count; index++)
+            {
+                await PublishIterationMessagesAsync(index, cancellationToken).ConfigureAwait(false);
+            }
+
+            await PublishIterationMessagesAsync(iterations.Count, cancellationToken).ConfigureAwait(false);
+            var messages = ImmutableArray.CreateBuilder<AgentMessage>();
+            messages.Add(run.UserMessage);
+            messages.AddRange(intermediateMessages);
+            if (messages[^1].Role != AgentMessageRole.Assistant ||
+                !messages[^1].Contents.OfType<AgentTextContent>().Any(static content => content.Text.Length > 0))
+            {
+                if (messages[^1].Contents.OfType<AgentToolCallContent>().Any())
+                {
+                    throw new AgentModelIterationLimitExceededException(owner.options.MaxModelIterationsPerTurn);
+                }
+
+                throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
+            }
+
+            return messages.ToImmutable();
+        }
+
+        private async Task PublishIterationMessagesAsync(int iteration, CancellationToken cancellationToken)
+        {
+            if (!publishedIterations.Add(iteration))
+            {
+                return;
+            }
+
+            var recorded = recordingClient.GetIteration(iteration);
+            foreach (var responseMessage in recorded.ResponseMessages)
+            {
+                if (responseMessage.Role != ChatRole.Assistant)
+                {
+                    throw new AgentUnsupportedResponseException(
+                        $"The model provider returned an unsupported '{responseMessage.Role}' response message.");
+                }
+
+                var assistant = ConvertAssistantMessage(responseMessage, iteration);
+                intermediateMessages.Add(assistant);
+                await run.WriteEventAsync(
+                    new AgentMessageCompleted(run.Id, run.NextSequence(), assistant),
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private AgentMessage ConvertAssistantMessage(ChatMessage message, int iteration)
+        {
+            var contents = ImmutableArray.CreateBuilder<AgentContent>();
+            foreach (var content in message.Contents)
+            {
+                switch (content)
+                {
+                    case TextContent text when !string.IsNullOrEmpty(text.Text):
+                        contents.Add(new AgentTextContent(text.Text));
+                        break;
+                    case FunctionCallContent call:
+                    {
+                        if (!calls.TryGetValue(call.CallId, out var record))
+                        {
+                            throw new AgentToolArgumentsException(
+                                $"The model requested unknown tool '{call.Name}'.");
+                        }
+
+                        contents.Add(new AgentToolCallContent(record.CallId, call.Name, record.Arguments));
+                        break;
+                    }
+                    case UsageContent:
+                        break;
+                    default:
+                        throw new AgentUnsupportedResponseException(
+                            $"The model provider returned unsupported content of type '{content.GetType().Name}'.");
+                }
+            }
+
+            if (contents.Count == 0)
+            {
+                throw new AgentUnsupportedResponseException("The model provider returned an empty assistant message.");
+            }
+
+            var messageId = GetMessageId(iteration, message.MessageId);
+            return new AgentMessage(messageId, AgentMessageRole.Assistant, contents.ToImmutable());
+        }
+
+        private AgentMessageId GetMessageId(int iteration, string? providerMessageId)
+        {
+            var key = (iteration, providerMessageId ?? string.Empty);
+            if (messageIds.TryGetValue(key, out var existing))
+            {
+                return existing;
+            }
+
+            var created = AgentMessageId.Create();
+            messageIds.Add(key, created);
+            return created;
+        }
+
+        private void EnsureIterationCalls(int iteration)
+        {
+            var recorded = recordingClient.GetIteration(iteration);
+            var index = 0;
+            foreach (var call in recorded.ResponseMessages
+                         .SelectMany(static message => message.Contents)
+                         .OfType<FunctionCallContent>())
+            {
+                if (calls.ContainsKey(call.CallId))
+                {
+                    index++;
+                    continue;
+                }
+
+                if (!owner.tools.TryGetValue(call.Name, out var function))
+                {
+                    throw new AgentToolArgumentsException(
+                        $"The model requested unregistered tool '{call.Name}'.");
+                }
+
+                if (call.Exception is not null)
+                {
+                    throw new AgentToolArgumentsException(
+                        $"The model supplied malformed arguments for tool '{call.Name}'.",
+                        call.Exception);
+                }
+
+                if (Interlocked.Increment(ref toolCallCount) > owner.options.MaxToolCallsPerTurn)
+                {
+                    throw new AgentToolLimitExceededException(
+                        nameof(AgentSessionOptions.MaxToolCallsPerTurn),
+                        owner.options.MaxToolCallsPerTurn);
+                }
+
+                var arguments = ToolJson.CreateArguments(call.Arguments ?? new Dictionary<string, object?>());
+                if (arguments.GetUtf8Size() > owner.options.MaxToolArgumentsBytes)
+                {
+                    throw new AgentToolLimitExceededException(
+                        nameof(AgentSessionOptions.MaxToolArgumentsBytes),
+                        owner.options.MaxToolArgumentsBytes);
+                }
+
+                calls.Add(call.CallId, new ToolInvocationRecord(
+                    AgentToolCallId.Create(),
+                    function.Tool,
+                    arguments)
+                {
+                    Iteration = iteration,
+                    Index = index
+                });
+                index++;
+            }
+        }
+
+        private sealed class ToolInvocationRecord(
+            AgentToolCallId callId,
+            IAgentTool tool,
+            AgentToolArguments arguments)
+        {
+            internal AgentToolCallId CallId { get; } = callId;
+
+            internal IAgentTool Tool { get; } = tool;
+
+            internal AgentToolArguments Arguments { get; } = arguments;
+
+            internal int Iteration { get; set; }
+
+            internal int Index { get; set; }
+
+            internal AgentToolOutcome? Outcome { get; set; }
+        }
+    }
+
+    private sealed class RecordingChatClient(IChatClient innerClient) : IChatClient
+    {
+        private readonly Lock gate = new();
+        private readonly List<RecordedIteration> iterations = [];
+        private Func<int, ChatResponseUpdate, CancellationToken, ValueTask>? updateObserver;
+        private int iterationCount;
+
+        public async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var request = messages.Select(static message => message.Clone()).ToArray();
+            var response = await innerClient
+                .GetResponseAsync(request, options, cancellationToken)
+                .ConfigureAwait(false);
+            AddIteration(request, response.Messages);
+            return response;
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            RecordStreamingAsync(
+                Interlocked.Increment(ref iterationCount),
+                messages.Select(static message => message.Clone()).ToArray(),
+                options,
+                cancellationToken);
+
+        public object? GetService(Type serviceType, object? serviceKey = null) =>
+            innerClient.GetService(serviceType, serviceKey);
+
+        public void Dispose()
+        {
+        }
+
+        internal void SetUpdateObserver(
+            Func<int, ChatResponseUpdate, CancellationToken, ValueTask> observer)
+        {
+            ArgumentNullException.ThrowIfNull(observer);
+            if (Interlocked.CompareExchange(ref updateObserver, observer, null) is not null)
+            {
+                throw new InvalidOperationException("A recording update observer is already configured.");
+            }
+        }
+
+        internal IReadOnlyList<RecordedIteration> GetIterations()
+        {
+            lock (gate)
+            {
+                return iterations.ToArray();
+            }
+        }
+
+        internal RecordedIteration GetIteration(int iteration)
+        {
+            lock (gate)
+            {
+                if (iteration < 1 || iteration > iterations.Count)
+                {
+                    throw new AgentUnsupportedResponseException(
+                        $"Agent tool invocation referenced unavailable model iteration {iteration}.");
+                }
+
+                return iterations[iteration - 1];
+            }
+        }
+
+        private async IAsyncEnumerable<ChatResponseUpdate> RecordStreamingAsync(
+            int iteration,
+            IReadOnlyList<ChatMessage> request,
+            ChatOptions? options,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var updates = new List<ChatResponseUpdate>();
+            await foreach (var update in innerClient
+                               .GetStreamingResponseAsync(request, options, cancellationToken)
+                               .ConfigureAwait(false))
+            {
+                updates.Add(update.Clone());
+                var observer = updateObserver;
+                if (observer is not null)
+                {
+                    await observer(iteration, update, cancellationToken).ConfigureAwait(false);
+                }
+
+                yield return update;
+            }
+
+            AddIteration(request, updates.ToChatResponse().Messages);
+        }
+
+        private void AddIteration(
+            IReadOnlyList<ChatMessage> requestMessages,
+            IEnumerable<ChatMessage> responseMessages)
+        {
+            var iteration = new RecordedIteration(
+                requestMessages.Select(static message => message.Clone()).ToArray(),
+                responseMessages.Select(static message => message.Clone()).ToArray());
+            lock (gate)
+            {
+                iterations.Add(iteration);
+            }
+        }
+
+        internal sealed record RecordedIteration(
+            IReadOnlyList<ChatMessage> RequestMessages,
+            IReadOnlyList<ChatMessage> ResponseMessages);
+    }
+
+    private sealed class ToolAIFunction(IAgentTool tool) : AIFunction
+    {
+        internal IAgentTool Tool { get; } = tool;
+
+        public override string Name => Tool.Descriptor.Name;
+
+        public override string Description => Tool.Descriptor.Description;
+
+        public override JsonElement JsonSchema => Tool.Descriptor.InputSchema;
+
+        protected override ValueTask<object?> InvokeCoreAsync(
+            AIFunctionArguments arguments,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromException<object?>(new InvalidOperationException(
+                "Maieutics tools must be invoked through the configured FunctionInvokingChatClient."));
+    }
 
     private sealed class AgentRun(
         AgentSession owner,
         AgentRunId id,
         AgentMessage userMessage,
-        AgentMessageId assistantMessageId,
         int eventBufferCapacity) : IAgentRun
     {
         private readonly CancellationTokenSource cancellation = new();
@@ -343,7 +846,7 @@ public sealed class AgentSession : IAgentSession
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
-            SingleWriter = true
+            SingleWriter = false
         });
 
         private readonly TaskCompletionSource<AgentRunResult> completion =
@@ -364,8 +867,6 @@ public sealed class AgentSession : IAgentSession
         public Task<AgentRunResult> Completion => completion.Task;
 
         internal AgentMessage UserMessage { get; } = userMessage;
-
-        internal AgentMessageId AssistantMessageId { get; } = assistantMessageId;
 
         internal void Start()
         {
@@ -448,5 +949,99 @@ public sealed class AgentSession : IAgentSession
                 yield return agentEvent;
             }
         }
+    }
+}
+
+file static class ToolJson
+{
+    internal static AgentToolArguments CreateArguments(IDictionary<string, object?> arguments)
+    {
+        var root = new JsonObject();
+        foreach (var (name, value) in arguments)
+        {
+            root.Add(name, ToJsonNode(value));
+        }
+
+        return new AgentToolArguments(ParseElement(root));
+    }
+
+    internal static JsonElement CreateResultEnvelope(AgentToolOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        var envelope = outcome switch
+        {
+            AgentToolSuccess success => new ToolResultEnvelope(
+                "ok",
+                success.Contents.Select(static content => content switch
+                    {
+                        AgentTextContent text => new ToolResultContentEnvelope("text", Text: text.Text),
+                        AgentJsonContent json => new ToolResultContentEnvelope("json", Value: json.Value),
+                        _ => throw new AgentUnsupportedResponseException(
+                            $"Tool result content of type '{content.GetType().Name}' is not supported.")
+                    })
+                    .ToImmutableArray()),
+            AgentToolFailure failure => new ToolResultEnvelope(
+                "error",
+                Code: failure.Code,
+                Message: failure.Message),
+            _ => throw new AgentUnsupportedResponseException(
+                $"Tool outcome type '{outcome.GetType().Name}' is not supported.")
+        };
+        return JsonSerializer.SerializeToElement(
+            envelope,
+            AgentToolJsonSerializerContext.Default.ToolResultEnvelope);
+    }
+
+    private static JsonElement ParseElement(JsonNode node)
+    {
+        using var document = JsonDocument.Parse(node.ToJsonString());
+        return document.RootElement.Clone();
+    }
+
+    private static JsonNode? ToJsonNode(object? value) => value switch
+    {
+        null => null,
+        JsonElement element => JsonNode.Parse(element.GetRawText()),
+        JsonNode node => node.DeepClone(),
+        string text => JsonValue.Create(text),
+        bool boolean => JsonValue.Create(boolean),
+        byte number => JsonValue.Create(number),
+        sbyte number => JsonValue.Create(number),
+        short number => JsonValue.Create(number),
+        ushort number => JsonValue.Create(number),
+        int number => JsonValue.Create(number),
+        uint number => JsonValue.Create(number),
+        long number => JsonValue.Create(number),
+        ulong number => JsonValue.Create(number),
+        float number => JsonValue.Create(number),
+        double number => JsonValue.Create(number),
+        decimal number => JsonValue.Create(number),
+        IDictionary<string, object?> dictionary => ToJsonObject(dictionary),
+        IReadOnlyDictionary<string, object?> dictionary => ToJsonObject(dictionary),
+        IEnumerable sequence => ToJsonArray(sequence),
+        _ => throw new AgentToolArgumentsException(
+            $"Tool argument value of type '{value.GetType().Name}' is not supported.")
+    };
+
+    private static JsonObject ToJsonObject(IEnumerable<KeyValuePair<string, object?>> values)
+    {
+        var result = new JsonObject();
+        foreach (var (name, value) in values)
+        {
+            result.Add(name, ToJsonNode(value));
+        }
+
+        return result;
+    }
+
+    private static JsonArray ToJsonArray(IEnumerable values)
+    {
+        var result = new JsonArray();
+        foreach (var value in values)
+        {
+            result.Add(ToJsonNode(value));
+        }
+
+        return result;
     }
 }

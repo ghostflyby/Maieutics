@@ -47,6 +47,7 @@ public static class MaieuticsHost
             .Validate(MaieuticsOptions.IsValid, MaieuticsOptions.ValidationMessage)
             .ValidateOnStart();
         builder.Services.AddSingleton(CreateChatClient);
+        builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>([]);
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<JupyterKernelHostedService>();
@@ -70,8 +71,14 @@ public static class MaieuticsHost
                 MaxRetainedTurns = options.Agent.MaxRetainedTurns,
                 MaxHistoryCharacters = options.Agent.MaxHistoryCharacters,
                 MaxInputCharacters = options.Agent.MaxInputCharacters,
-                MaxResponseCharacters = options.Agent.MaxResponseCharacters
-            });
+                MaxResponseCharacters = options.Agent.MaxResponseCharacters,
+                MaxModelIterationsPerTurn = options.Agent.MaxModelIterationsPerTurn,
+                MaxToolCallsPerTurn = options.Agent.MaxToolCallsPerTurn,
+                MaxToolArgumentsBytes = options.Agent.MaxToolArgumentsBytes,
+                MaxToolResultBytes = options.Agent.MaxToolResultBytes,
+                MaxToolProgressEventsPerCall = options.Agent.MaxToolProgressEventsPerCall
+            },
+            services.GetRequiredService<IReadOnlyList<IAgentTool>>());
     }
 
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)

@@ -86,17 +86,38 @@ fail rather than clearing the local history provider. This prevents default func
 invocation, approval, message injection, or history persistence behavior from changing ownership without an explicit
 Maieutics design and test.
 
-When model-callable tools are added:
+Model-callable tools use an explicitly constructed, per-run `FunctionInvokingChatClient`:
 
 ```text
 Agent Framework function-call representation
     -> Maieutics tool adapter
-        -> validation, policy, approval, and dispatch
-            -> IExecutionTarget
+        -> limits, typed events, structured result envelope, and dispatch
+            -> IAgentTool
 ```
 
-The framework may drive the model/tool continuation loop, but Maieutics owns tool registration, policy, target routing,
-structured results, cancellation, and notebook presentation. Deno lifecycle extensions remain outside this tool path.
+The decorator runs calls serially and has explicit iteration, error, and unknown-call settings. A custom invoker maps
+framework arguments to cloned `AgentToolArguments`, publishes requested/started/progress/completed/failed events, and
+returns a source-generated JSON envelope to the model. Expected `AgentToolFailure` values remain recoverable model
+inputs. Malformed arguments, unknown tools, limit violations, and unexpected tool exceptions terminate and roll back
+the turn.
+
+Framework iteration counters are not treated as the public budget definition. Maieutics counts actual provider
+iterations and tool calls and enforces its configured limits before another provider continuation can begin.
+
+The framework may drive the mechanical model/tool continuation loop, but Maieutics owns the immutable tool registry,
+policy, future target routing, structured results, cancellation, and notebook presentation. Deno lifecycle extensions
+remain outside this tool path.
+
+## Complete interaction recording
+
+Framework history staging is retained as a completion boundary, but it is not assumed to expose every intermediate
+message produced inside a function-invocation loop. Each run therefore inserts a non-owning recording client directly
+inside `FunctionInvokingChatClient`. It records every provider request and response iteration before framework
+normalization.
+
+After the final response, Maieutics reconstructs one complete provider-neutral turn containing the user message,
+assistant tool calls, tool results, and final assistant response. Only this validated turn is promoted to the canonical
+transcript. The recording client owns no provider connection and never disposes the singleton `IChatClient`.
 
 ## Provider history modes
 

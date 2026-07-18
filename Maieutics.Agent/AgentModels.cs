@@ -118,7 +118,10 @@ public enum AgentMessageRole
     User,
 
     /// <summary>A message produced by the assistant.</summary>
-    Assistant
+    Assistant,
+
+    /// <summary>A message containing the result of a model-requested tool call.</summary>
+    Tool
 }
 
 /// <summary>Represents one committed provider-neutral transcript message.</summary>
@@ -162,7 +165,7 @@ public sealed record AgentTranscript
     public AgentTranscript(
         AgentSessionId sessionId,
         long version,
-        ImmutableArray<AgentMessage> messages)
+        ImmutableArray<AgentTranscriptTurn> turns)
     {
         if (sessionId.Value == Guid.Empty)
         {
@@ -170,14 +173,14 @@ public sealed record AgentTranscript
         }
 
         ArgumentOutOfRangeException.ThrowIfNegative(version);
-        if (messages.IsDefault)
+        if (turns.IsDefault)
         {
-            throw new ArgumentException("Transcript messages must be initialized and non-null.", nameof(messages));
+            throw new ArgumentException("Transcript turns must be initialized and non-null.", nameof(turns));
         }
 
         SessionId = sessionId;
         Version = version;
-        Messages = messages;
+        Turns = turns;
     }
 
     /// <summary>Gets the session identifier.</summary>
@@ -186,7 +189,42 @@ public sealed record AgentTranscript
     /// <summary>Gets the committed transcript version.</summary>
     public long Version { get; }
 
-    /// <summary>Gets the committed messages.</summary>
+    /// <summary>Gets the committed complete turns.</summary>
+    public ImmutableArray<AgentTranscriptTurn> Turns { get; }
+}
+
+/// <summary>Represents one complete committed Agent turn.</summary>
+public sealed record AgentTranscriptTurn
+{
+    /// <summary>Initializes a complete transcript turn.</summary>
+    public AgentTranscriptTurn(AgentRunId runId, ImmutableArray<AgentMessage> messages)
+    {
+        if (runId.Value == Guid.Empty)
+        {
+            throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(runId));
+        }
+
+        if (messages.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("Transcript turn messages must be initialized and non-empty.",
+                nameof(messages));
+        }
+
+        if (messages[0].Role != AgentMessageRole.User || messages[^1].Role != AgentMessageRole.Assistant)
+        {
+            throw new ArgumentException(
+                "A transcript turn must begin with a user message and end with an assistant message.",
+                nameof(messages));
+        }
+
+        RunId = runId;
+        Messages = messages;
+    }
+
+    /// <summary>Gets the run that produced this turn.</summary>
+    public AgentRunId RunId { get; }
+
+    /// <summary>Gets all messages in provider order, including tool calls and results.</summary>
     public ImmutableArray<AgentMessage> Messages { get; }
 }
 

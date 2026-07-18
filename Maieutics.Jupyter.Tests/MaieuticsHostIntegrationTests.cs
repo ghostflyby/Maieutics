@@ -5,9 +5,12 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Maieutics.Agent;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace Maieutics.Jupyter.Tests;
@@ -53,6 +56,67 @@ public sealed class MaieuticsHostIntegrationTests
         catch (Exception exception)
         {
             throw new InvalidOperationException($"Maieutics composition root failed during {phase}.", exception);
+        }
+        finally
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await host.StopAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+            {
+            }
+
+            File.Delete(connectionFile);
+        }
+    }
+
+    [Theory(Timeout = 45_000)]
+    [InlineData(OpenAiApiFlavor.Responses)]
+    [InlineData(OpenAiApiFlavor.ChatCompletions)]
+    public async Task InProcessHostCompletesToolLoopWithoutPublishingToolLifecycle(OpenAiApiFlavor apiFlavor)
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-tool-{Guid.NewGuid():N}.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await using var provider = new FakeOpenAiServer(apiFlavor, toolFlow: true);
+        var builder = MaieuticsHost.CreateApplicationBuilder(
+            ["--connection-file", connectionFile, "--model", "test-model"]);
+        builder.Configuration["Maieutics:OpenAI:ApiKey"] = "test-key";
+        builder.Configuration["Maieutics:OpenAI:Endpoint"] = provider.Endpoint.ToString();
+        builder.Configuration["Maieutics:OpenAI:ApiFlavor"] = apiFlavor.ToString();
+        builder.Services.RemoveAll<IReadOnlyList<IAgentTool>>();
+        builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>([new EchoAgentTool()]);
+        using var host = builder.Build();
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+
+            var execution = await client.ExecuteAsync(new JupyterExecuteRequest("use echo"), deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
+            {
+                outputs.Add(output);
+            }
+
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle()
+                .Which.Data.Data["text/markdown"].GetString().Should().Be("tool-backed answer");
+            outputs.Where(output =>
+                    output is not JupyterExecuteInputOutput and
+                        not JupyterDisplayOutput and
+                        not JupyterDisplayUpdateOutput and
+                        not JupyterExecutionStatusChanged)
+                .Should().BeEmpty();
+            await provider.Completion.WaitAsync(deadline.Token);
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
         }
         finally
         {
@@ -254,13 +318,16 @@ public sealed class MaieuticsHostIntegrationTests
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource cancellation = new();
 
-        public FakeOpenAiServer(OpenAiApiFlavor apiFlavor)
+        private readonly bool toolFlow;
+
+        public FakeOpenAiServer(OpenAiApiFlavor apiFlavor, bool toolFlow = false)
         {
             this.apiFlavor = apiFlavor;
+            this.toolFlow = toolFlow;
             listener.Start();
             var endpoint = (IPEndPoint)listener.LocalEndpoint;
             Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-            Completion = ServeOnceAsync(cancellation.Token);
+            Completion = ServeAsync(cancellation.Token);
         }
 
         public Uri Endpoint { get; }
@@ -285,28 +352,36 @@ public sealed class MaieuticsHostIntegrationTests
             cancellation.Dispose();
         }
 
-        private async Task ServeOnceAsync(CancellationToken cancellationToken)
+        private async Task ServeAsync(CancellationToken cancellationToken)
         {
-            using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
-            await using var stream = client.GetStream();
-            var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-            AssertRequest(request);
-
-            var data = apiFlavor switch
+            var requestCount = toolFlow ? 2 : 1;
+            for (var requestIndex = 0; requestIndex < requestCount; requestIndex++)
             {
-                OpenAiApiFlavor.Responses => CreateResponsesStream(),
-                OpenAiApiFlavor.ChatCompletions => CreateChatCompletionsStream(),
-                _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
-            };
-            var body = Encoding.UTF8.GetBytes(data);
-            var headers = Encoding.ASCII.GetBytes(
-                $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
-                "Connection: close\r\n\r\n");
-            await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-            await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                await using var stream = client.GetStream();
+                var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+                AssertRequest(request, requestIndex);
+
+                var data = (apiFlavor, toolFlow, requestIndex) switch
+                {
+                    (OpenAiApiFlavor.Responses, true, 0) => CreateResponsesToolStream(),
+                    (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(),
+                    (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
+                        toolFlow ? "tool-backed answer" : "native answer"),
+                    (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
+                        toolFlow ? "tool-backed answer" : "native answer"),
+                    _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
+                };
+                var body = Encoding.UTF8.GetBytes(data);
+                var headers = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
+                    "Connection: close\r\n\r\n");
+                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        private void AssertRequest(HttpRequest request)
+        private void AssertRequest(HttpRequest request, int requestIndex)
         {
             request.Method.Should().Be("POST");
             request.Path.Should().Be(apiFlavor switch
@@ -318,17 +393,40 @@ public sealed class MaieuticsHostIntegrationTests
             request.Body.GetProperty("model").GetString().Should().Be("test-model");
             request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
             request.Body.GetProperty("store").GetBoolean().Should().BeFalse();
+            if (!toolFlow)
+            {
+                return;
+            }
+
+            request.Body.GetProperty("tools").GetArrayLength().Should().BeGreaterThan(0);
+            request.Body.GetRawText().Should().Contain("echo");
+            if (requestIndex > 0)
+            {
+                request.Body.GetRawText().Should().Contain("status").And.Contain("ok");
+            }
         }
 
-        private static string CreateChatCompletionsStream() =>
+        private static string CreateChatCompletionsStream(string text) =>
             "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
             "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
-            "\"role\":\"assistant\",\"content\":\"native answer\"},\"finish_reason\":null}]}\n\n" +
+            "\"role\":\"assistant\",\"content\":" + JsonSerializer.Serialize(text) +
+            "},\"finish_reason\":null}]}\n\n" +
             "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
             "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
             "data: [DONE]\n\n";
 
-        private static string CreateResponsesStream()
+        private static string CreateChatCompletionsToolStream() =>
+            "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+            "\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-test\"," +
+            "\"type\":\"function\",\"function\":{\"name\":\"echo\"," +
+            "\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\"}}]},\"finish_reason\":null}]}\n\n" +
+            "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{}," +
+            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+            "data: [DONE]\n\n";
+
+        private static string CreateResponsesStream(string text)
         {
             const string inProgressResponse =
                 "{\"id\":\"resp-test\",\"object\":\"response\",\"created_at\":0," +
@@ -339,11 +437,12 @@ public sealed class MaieuticsHostIntegrationTests
                 "\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\"," +
                 "\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":null," +
                 "\"metadata\":{}}";
-            const string completedItem =
+            var completedItem =
                 "{\"id\":\"msg-test\",\"type\":\"message\",\"status\":\"completed\"," +
                 "\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\"," +
-                "\"text\":\"native answer\",\"annotations\":[],\"logprobs\":[]}]}";
-            const string completedResponse =
+                "\"text\":" + JsonSerializer.Serialize(text) +
+                ",\"annotations\":[],\"logprobs\":[]}]}";
+            var completedResponse =
                 "{\"id\":\"resp-test\",\"object\":\"response\",\"created_at\":0," +
                 "\"status\":\"completed\",\"error\":null,\"incomplete_details\":null," +
                 "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
@@ -369,17 +468,69 @@ public sealed class MaieuticsHostIntegrationTests
                 "\"annotations\":[],\"logprobs\":[]}}\n\n" +
                 "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\"," +
                 "\"sequence_number\":3,\"item_id\":\"msg-test\",\"output_index\":0," +
-                "\"content_index\":0,\"delta\":\"native answer\",\"logprobs\":[]}\n\n" +
+                "\"content_index\":0,\"delta\":" + JsonSerializer.Serialize(text) +
+                ",\"logprobs\":[]}\n\n" +
                 "event: response.output_text.done\ndata: {\"type\":\"response.output_text.done\"," +
                 "\"sequence_number\":4,\"item_id\":\"msg-test\",\"output_index\":0," +
-                "\"content_index\":0,\"text\":\"native answer\",\"logprobs\":[]}\n\n" +
+                "\"content_index\":0,\"text\":" + JsonSerializer.Serialize(text) +
+                ",\"logprobs\":[]}\n\n" +
                 "event: response.content_part.done\ndata: {\"type\":\"response.content_part.done\"," +
                 "\"sequence_number\":5,\"item_id\":\"msg-test\",\"output_index\":0," +
                 "\"content_index\":0,\"part\":{\"type\":\"output_text\"," +
-                "\"text\":\"native answer\",\"annotations\":[],\"logprobs\":[]}}\n\n" +
+                "\"text\":" + JsonSerializer.Serialize(text) +
+                ",\"annotations\":[],\"logprobs\":[]}}\n\n" +
                 "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
                 "\"sequence_number\":6,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
                 "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":7," +
+                "\"response\":" + completedResponse + "}\n\n";
+        }
+
+        private static string CreateResponsesToolStream()
+        {
+            const string inProgressResponse =
+                "{\"id\":\"resp-tool\",\"object\":\"response\",\"created_at\":0," +
+                "\"status\":\"in_progress\",\"error\":null,\"incomplete_details\":null," +
+                "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
+                "\"output\":[],\"parallel_tool_calls\":true,\"previous_response_id\":null," +
+                "\"reasoning\":null,\"store\":false,\"temperature\":null," +
+                "\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\"," +
+                "\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":null," +
+                "\"metadata\":{}}";
+            const string completedItem =
+                "{\"id\":\"fc-test\",\"type\":\"function_call\",\"status\":\"completed\"," +
+                "\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\",\"call_id\":\"call-test\"," +
+                "\"name\":\"echo\"}";
+            const string completedResponse =
+                "{\"id\":\"resp-tool\",\"object\":\"response\",\"created_at\":0," +
+                "\"status\":\"completed\",\"error\":null,\"incomplete_details\":null," +
+                "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
+                "\"output\":[" + completedItem + "],\"parallel_tool_calls\":true," +
+                "\"previous_response_id\":null,\"reasoning\":null,\"store\":false," +
+                "\"temperature\":null,\"text\":{\"format\":{\"type\":\"text\"}}," +
+                "\"tool_choice\":\"auto\",\"tools\":[],\"top_p\":null," +
+                "\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":1," +
+                "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1," +
+                "\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":2}," +
+                "\"metadata\":{}}";
+
+            return
+                "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0," +
+                "\"response\":" + inProgressResponse + "}\n\n" +
+                "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"," +
+                "\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"fc-test\"," +
+                "\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\"," +
+                "\"call_id\":\"call-test\",\"name\":\"echo\"}}\n\n" +
+                "event: response.function_call_arguments.delta\ndata: {" +
+                "\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":2," +
+                "\"item_id\":\"fc-test\",\"output_index\":0," +
+                "\"delta\":\"{\\\"text\\\":\\\"hello\\\"}\"}\n\n" +
+                "event: response.function_call_arguments.done\ndata: {" +
+                "\"type\":\"response.function_call_arguments.done\",\"sequence_number\":3," +
+                "\"item_id\":\"fc-test\",\"output_index\":0," +
+                "\"arguments\":\"{\\\"text\\\":\\\"hello\\\"}\"}\n\n" +
+                "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
+                "\"sequence_number\":4,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
+                "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":5," +
                 "\"response\":" + completedResponse + "}\n\n";
         }
 
@@ -446,6 +597,32 @@ public sealed class MaieuticsHostIntegrationTests
         }
 
         private sealed record HttpRequest(string Method, string Path, JsonElement Body);
+    }
+
+    private sealed class EchoAgentTool : IAgentTool
+    {
+        public AgentToolDescriptor Descriptor { get; } = new(
+            "echo",
+            "Returns the supplied text.",
+            ParseJson("{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}," +
+                      "\"required\":[\"text\"]}"));
+
+        public ValueTask<AgentToolOutcome> InvokeAsync(
+            AgentToolContext context,
+            AgentToolArguments arguments,
+            CancellationToken cancellationToken = default)
+        {
+            var text = arguments.Value.GetProperty("text").GetString()
+                       ?? throw new InvalidDataException("The fake tool expected text.");
+            return ValueTask.FromResult<AgentToolOutcome>(
+                new AgentToolSuccess([new AgentTextContent(text)]));
+        }
+    }
+
+    private static JsonElement ParseJson(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 
     private static CancellationTokenSource CreateDeadline(TimeSpan timeout)

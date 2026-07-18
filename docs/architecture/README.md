@@ -132,6 +132,11 @@ ADR 0006 adopts Microsoft Agent Framework only inside `Maieutics.Agent`. The Mai
 one-run enforcement, limits, transactional transcript commit, normalized events, and cancellation. Framework hosting,
 workflows, MCP, and distributed protocols are not part of this decision.
 
+The current tool loop uses a per-run `FunctionInvokingChatClient` behind `ChatClientAgent`. Maieutics exposes only its
+own `IAgentTool`, arguments, outcomes, contents, events, and transcript turns. A recording decorator preserves every
+model iteration so canonical history includes assistant tool calls and tool results instead of only the final answer.
+The executable currently registers an empty immutable tool collection; deterministic tools exist only in tests.
+
 ## Decisions
 
 - [ADR 0001](decisions/0001-provider-neutral-model-boundary.md): Provider-neutral model boundary

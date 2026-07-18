@@ -83,7 +83,11 @@ The Maieutics event model preserves semantic identity and correlation without ex
 
 ## Transactional transcript
 
-- The current user turn and final assistant result are committed together only after successful model and tool-loop
+- The canonical transcript is an ordered collection of complete `AgentTranscriptTurn` values.
+- Every turn begins with the submitted user message and ends with the final assistant message.
+- Intermediate assistant tool-call messages and tool-result messages are retained in provider order so a later request
+  can be reconstructed without provider-owned conversation state.
+- The complete user, assistant, and tool message sequence is committed only after successful model and tool-loop
   completion.
 - Cancellation, provider failure, tool failure that aborts the turn, output limits, and worker failure do not commit a
   partial turn.
@@ -102,7 +106,7 @@ Strong value types are required for at least:
 - `AgentSessionId`;
 - `AgentRunId`;
 - `AgentMessageId`;
-- `ToolCallId`;
+- `AgentToolCallId`;
 - `ExecutionTargetId`;
 - `ExecutionOperationId`;
 - `ArtifactId`;
@@ -129,6 +133,8 @@ contract must describe kernel-session scope rather than global process state.
 - Tool loops and distributed operations have an owner and terminal completion task.
 - Multimodal and structured provider responses do not require replacing message APIs later.
 - The first-stage string-only records have been replaced by Maieutics-owned typed content and explicit run contracts.
+- Expected tool failures are committed as structured tool results only when the model subsequently produces a valid
+  final answer; unexpected tool exceptions roll back the complete turn.
 - Microsoft Agent Framework can be replaced or upgraded without changing public session and run contracts.
 
 ## References

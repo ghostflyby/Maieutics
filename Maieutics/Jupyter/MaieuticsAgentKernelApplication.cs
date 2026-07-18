@@ -185,6 +185,14 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         AgentProviderException => Create("AgentProviderError", "The model provider failed while producing a response."),
         AgentInputLimitExceededException => Create("AgentInputTooLarge", exception.Message),
         AgentResponseLimitExceededException => Create("AgentResponseTooLarge", exception.Message),
+        AgentToolLimitExceededException => Create("AgentToolLimitExceeded", exception.Message),
+        AgentToolArgumentsException => Create(
+            "AgentToolArgumentsError",
+            "The model supplied an invalid tool request."),
+        AgentToolInvocationException => Create(
+            "AgentToolError",
+            "An Agent tool failed while processing the request."),
+        AgentModelIterationLimitExceededException => Create("AgentModelIterationLimit", exception.Message),
         AgentUnsupportedResponseException => Create(
             "AgentUnsupportedResponse",
             "The model provider returned a response that this kernel does not support."),

@@ -31,7 +31,10 @@ public sealed class MaieuticsOptions
         !string.IsNullOrWhiteSpace(options.Jupyter.ConnectionFile) &&
         File.Exists(options.Jupyter.ConnectionFile) &&
         options.Agent is { MaxRetainedTurns: > 0, MaxHistoryCharacters: > 0 } and
-            { MaxInputCharacters: > 0, MaxResponseCharacters: > 0 } &&
+            { MaxInputCharacters: > 0, MaxResponseCharacters: > 0 } and
+            { MaxModelIterationsPerTurn: > 0, MaxToolCallsPerTurn: > 0 } and
+            { MaxToolArgumentsBytes: > 0, MaxToolResultBytes: > 0 } and
+            { MaxToolProgressEventsPerCall: > 0 } &&
         options.Jupyter.FlushInterval > TimeSpan.Zero &&
         options.Jupyter.FlushCharacters > 0;
 }
@@ -55,6 +58,16 @@ public sealed class MaieuticsAgentOptions
     public int MaxInputCharacters { get; set; } = 32_000;
 
     public int MaxResponseCharacters { get; set; } = 64_000;
+
+    public int MaxModelIterationsPerTurn { get; set; } = 8;
+
+    public int MaxToolCallsPerTurn { get; set; } = 16;
+
+    public int MaxToolArgumentsBytes { get; set; } = 65_536;
+
+    public int MaxToolResultBytes { get; set; } = 262_144;
+
+    public int MaxToolProgressEventsPerCall { get; set; } = 256;
 }
 
 public sealed class MaieuticsJupyterOptions

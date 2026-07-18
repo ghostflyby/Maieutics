@@ -360,6 +360,14 @@ history before invocation, stage request and response messages after framework c
 the outer run validates the complete result. Empty or unsupported responses, policy rejection, output limits,
 cancellation, provider failure, and aborting tool failure must discard the staged turn.
 
+Function-calling runs use an explicitly configured, per-run `FunctionInvokingChatClient`. Keep calls serial unless a
+future policy and transcript design explicitly permits concurrency. Maieutics must enforce actual provider-iteration,
+tool-call, argument-size, result-size, and progress-event budgets independently of framework counter conventions.
+
+Do not assume framework history staging contains every intermediate function-loop message. Record the provider
+iterations inside the function-invoking decorator and commit a complete `AgentTranscriptTurn`: user first, final
+assistant last, with assistant tool-call and tool-result messages preserved in order between them.
+
 Pass an explicitly composed `IChatClient` pipeline to `ChatClientAgent`. Initially use `UseProvidedChatClientAsIs` so
 default function invocation, approval, message injection, or per-service-call history behavior cannot acquire ownership
 without an explicit design and tests.
@@ -405,6 +413,12 @@ The tool subsystem owns:
 - structured and MIME results;
 - bounded execution logs;
 - approval and policy hooks where required.
+
+`IAgentTool`, descriptors, cloned JSON arguments, context, outcomes, contents, and lifecycle events are Maieutics-owned
+contracts. Framework `AIFunction` values are internal adapters only. Expected `AgentToolFailure` values are returned to
+the model as stable JSON and may be recovered within the turn. Unknown tools, malformed arguments, configured limit
+violations, and unexpected tool exceptions terminate and roll back the entire turn while retaining already published
+partial events.
 
 Do not flatten a typed or rich result to plain text before the Jupyter output boundary. Preserve structured values and
 attach a useful `text/plain` fallback when rendering custom MIME.

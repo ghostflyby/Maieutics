@@ -110,6 +110,7 @@ public sealed class AgentSession : IAgentSession
     {
         var profile = run.Profile;
         var options = profile.Options;
+        ValidateModelCapabilities(profile);
         var historyProvider = new StagingChatHistoryProvider(GetCommittedChatMessages);
         historyProvider.BeginRun(run.Id);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
@@ -193,12 +194,13 @@ public sealed class AgentSession : IAgentSession
     private AgentTranscript CommitTurn(
         AgentRunId runId,
         ImmutableArray<AgentMessage> turnMessages,
-        AgentSessionOptions options)
+        AgentSessionOptions options,
+        AgentModelIdentity? modelIdentity)
     {
         lock (transcriptGate)
         {
             var builder = turns.ToBuilder();
-            builder.Add(new AgentTranscriptTurn(runId, turnMessages));
+            builder.Add(new AgentTranscriptTurn(runId, turnMessages, modelIdentity));
 
             while (builder.Count > options.MaxRetainedTurns ||
                    CountCharacters(builder) > options.MaxHistoryCharacters)
@@ -214,8 +216,14 @@ public sealed class AgentSession : IAgentSession
 
     private AgentRunResult CommitRun(AgentRun run, PreparedRunResult prepared)
     {
-        var transcript = CommitTurn(run.Id, prepared.TurnMessages, run.Profile.Options);
-        return new AgentRunResult(run.Id, run.UserMessage, prepared.AssistantMessage, transcript);
+        var modelIdentity = run.Profile.ModelIdentity;
+        var transcript = CommitTurn(run.Id, prepared.TurnMessages, run.Profile.Options, modelIdentity);
+        return new AgentRunResult(
+            run.Id,
+            run.UserMessage,
+            prepared.AssistantMessage,
+            transcript,
+            modelIdentity);
     }
 
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
@@ -320,6 +328,23 @@ public sealed class AgentSession : IAgentSession
         if (characters > options.MaxInputCharacters)
         {
             throw new AgentInputLimitExceededException(characters, options.MaxInputCharacters);
+        }
+    }
+
+    private void ValidateModelCapabilities(AgentRunProfile profile)
+    {
+        if ((profile.Capabilities & AgentModelCapabilities.StreamingText) == 0)
+        {
+            throw new AgentModelCapabilityException(
+                AgentModelCapabilities.StreamingText,
+                profile.ModelIdentity);
+        }
+
+        if (tools.Count > 0 && (profile.Capabilities & AgentModelCapabilities.FunctionCalling) == 0)
+        {
+            throw new AgentModelCapabilityException(
+                AgentModelCapabilities.FunctionCalling,
+                profile.ModelIdentity);
         }
     }
 
@@ -858,6 +883,7 @@ public sealed class AgentSession : IAgentSession
         ImmutableArray<AgentMessage> TurnMessages,
         AgentMessage AssistantMessage);
 
+    // ReSharper disable once InconsistentNaming
     private sealed class ToolAIFunction(IAgentTool tool) : AIFunction
     {
         internal IAgentTool Tool { get; } = tool;

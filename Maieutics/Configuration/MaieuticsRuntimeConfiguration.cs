@@ -31,6 +31,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private readonly IDisposable fileErrorSubscription;
     private readonly Task reloadLoop;
     private RuntimeSnapshot? current;
+    private string? sessionOverride;
     private int disposed;
     private long reloadAttempt;
     private long completedReloadAttempt;
@@ -49,13 +50,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         this.factories = CreateFactoryRegistry(factories);
 
         var candidate = CreateCandidate();
-        var generation = new ProviderGeneration(candidate.Factory.Create(candidate.Options), logger);
-        current = new RuntimeSnapshot(
-            1,
-            candidate.Options,
-            candidate.ProviderKey,
-            candidate.RuntimeKey,
-            generation);
+        current = BuildSnapshot(candidate, previous: null, version: 1);
         ConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
 
         fileErrorSubscription = fileErrors.RegisterSignal(SignalReload);
@@ -91,10 +86,64 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             var snapshot = GetCurrent();
-            var generationLease = snapshot.Generation.Acquire();
+            var profileId = sessionOverride ?? snapshot.DefaultProfileId;
+            var entry = snapshot.Profiles[profileId];
+            var generationLease = entry.Generation.Acquire();
             return new RuntimeProfileLease(
                 generationLease,
-                new AgentRunProfile(snapshot.Generation.Client, CreateAgentOptions(snapshot.Options)));
+                new AgentRunProfile(
+                    entry.Generation.Client,
+                    CreateAgentOptions(snapshot.Options),
+                    entry.Identity,
+                    entry.Capabilities));
+        }
+    }
+
+    public MaieuticsModelProfileSelection GetModelProfileSelection()
+    {
+        lock (gate)
+        {
+            var snapshot = GetCurrent();
+            var selected = sessionOverride ?? snapshot.DefaultProfileId;
+            var profiles = snapshot.Profiles.Values
+                .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(profile => new MaieuticsModelProfileInfo(
+                    profile.Id,
+                    profile.SourceId,
+                    profile.Identity.Provider,
+                    profile.Identity.Model,
+                    string.Equals(profile.Id, snapshot.DefaultProfileId, StringComparison.OrdinalIgnoreCase),
+                    string.Equals(profile.Id, selected, StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            return new MaieuticsModelProfileSelection(
+                snapshot.DefaultProfileId,
+                selected,
+                sessionOverride is not null,
+                profiles);
+        }
+    }
+
+    public void SelectModelProfile(string profileId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        lock (gate)
+        {
+            var snapshot = GetCurrent();
+            if (!snapshot.Profiles.TryGetValue(profileId, out var profile))
+            {
+                throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
+            }
+
+            sessionOverride = profile.Id;
+        }
+    }
+
+    public void ResetModelProfile()
+    {
+        lock (gate)
+        {
+            _ = GetCurrent();
+            sessionOverride = null;
         }
     }
 
@@ -124,17 +173,20 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         reloadSignals.Writer.TryComplete();
         await reloadLoop.ConfigureAwait(false);
 
-        ProviderGeneration generation;
+        ProfileGeneration[] generations;
         Task[] retired;
         lock (gate)
         {
-            generation = GetCurrent().Generation;
+            generations = GetCurrent().Profiles.Values
+                .Select(static profile => profile.Generation)
+                .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+                .ToArray();
             current = null;
             retired = retiredGenerations.ToArray();
         }
 
-        var currentRetirement = generation.Retire();
-        await Task.WhenAll(retired.Append(currentRetirement)).ConfigureAwait(false);
+        var currentRetirements = generations.Select(static generation => generation.Retire());
+        await Task.WhenAll(retired.Concat(currentRetirements)).ConfigureAwait(false);
     }
 
     private void SignalReload() => reloadSignals.Writer.TryWrite(0);
@@ -172,7 +224,6 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         }
 
         ValidateConfigurationFileSyntax();
-
         var candidate = CreateCandidate();
         var configuredConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
         if (!string.Equals(configuredConnectionFile, ConnectionFile, StringComparison.Ordinal))
@@ -185,52 +236,333 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             previous = GetCurrent();
-            if (Equals(previous.RuntimeKey, candidate.RuntimeKey))
+            if (HasSameConfiguration(previous, candidate))
             {
                 return;
             }
         }
 
-        ProviderGeneration? replacement = null;
-        if (!Equals(previous.ProviderKey, candidate.ProviderKey))
-        {
-            replacement = new ProviderGeneration(candidate.Factory.Create(candidate.Options), logger);
-        }
-
+        var replacement = BuildSnapshot(candidate, previous, checked(previous.Version + 1));
+        List<ProfileGeneration> retired;
+        string? removedOverride = null;
         lock (gate)
         {
-            current = new RuntimeSnapshot(
-                checked(previous.Version + 1),
-                candidate.Options,
-                candidate.ProviderKey,
-                candidate.RuntimeKey,
-                replacement ?? previous.Generation);
-        }
-
-        if (replacement is not null)
-        {
-            lock (gate)
+            previous = GetCurrent();
+            current = replacement;
+            if (sessionOverride is not null && !replacement.Profiles.ContainsKey(sessionOverride))
             {
-                retiredGenerations.Add(previous.Generation.Retire());
+                removedOverride = sessionOverride;
+                sessionOverride = null;
             }
+
+            var retained = replacement.Profiles.Values
+                .Select(static profile => profile.Generation)
+                .ToHashSet<ProfileGeneration>(ReferenceEqualityComparer.Instance);
+            retired = previous.Profiles.Values
+                .Select(static profile => profile.Generation)
+                .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+                .Where(generation => !retained.Contains(generation))
+                .ToList();
+            retiredGenerations.AddRange(retired.Select(static generation => generation.Retire()));
         }
 
-        logger.LogInformation("Applied Maieutics configuration version {ConfigurationVersion}.", Version);
+        if (removedOverride is not null)
+        {
+            logger.LogWarning(
+                "The selected model profile {ProfileId} was removed; subsequent runs will use default profile {DefaultProfileId}.",
+                removedOverride,
+                replacement.DefaultProfileId);
+        }
+
+        logger.LogInformation("Applied Maieutics configuration version {ConfigurationVersion}.", replacement.Version);
+    }
+
+    private RuntimeSnapshot BuildSnapshot(Candidate candidate, RuntimeSnapshot? previous, long version)
+    {
+        var entries = new Dictionary<string, ProfileEntry>(StringComparer.OrdinalIgnoreCase);
+        var created = new List<ProfileGeneration>();
+        try
+        {
+            foreach (var profile in candidate.Profiles)
+            {
+                ProfileGeneration generation;
+                if (previous is not null &&
+                    previous.Profiles.TryGetValue(profile.Id, out var previousProfile) &&
+                    previousProfile.Key == profile.Key)
+                {
+                    generation = previousProfile.Generation;
+                }
+                else
+                {
+                    generation = new ProfileGeneration(profile.Source.Create(profile.Model), logger);
+                    created.Add(generation);
+                }
+
+                var identity = new AgentModelIdentity(
+                    new AgentModelProfileId(profile.Id),
+                    profile.Source.ProviderName,
+                    profile.Model);
+                entries.Add(profile.Id, new ProfileEntry(
+                    profile.Id,
+                    profile.SourceId,
+                    profile.Key,
+                    identity,
+                    profile.Source.Capabilities,
+                    generation));
+            }
+
+            return new RuntimeSnapshot(
+                version,
+                candidate.Options,
+                candidate.DefaultProfileId,
+                entries,
+                candidate.Key);
+        }
+        catch
+        {
+            foreach (var generation in created)
+            {
+                generation.Retire().GetAwaiter().GetResult();
+            }
+
+            throw;
+        }
     }
 
     private Candidate CreateCandidate()
     {
+        var root = configuration.GetSection(MaieuticsOptions.SectionName);
         var options = new MaieuticsOptions();
-        configuration.GetSection(MaieuticsOptions.SectionName).Bind(options);
-        options.Validate();
+        root.Bind(options);
+        options.ValidateCommon();
 
-        if (!factories.TryGetValue(options.Model.Provider, out var factory))
+        var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
+                           root.GetSection("Profiles").GetChildren().Any();
+        var hasLegacySchema = root.GetSection("Model").GetChildren().Any() ||
+                              root.GetSection("Providers").GetChildren().Any();
+        if (hasNewSchema && hasLegacySchema)
         {
-            throw new NotSupportedException($"The model provider '{options.Model.Provider}' is not registered.");
+            throw new InvalidOperationException(
+                "The named Sources/Profiles configuration cannot be combined with legacy Model configuration.");
         }
 
-        var key = new ProviderKey(factory.ProviderName, factory.GetConfigurationKey(options));
-        return new Candidate(options, factory, key, CreateRuntimeKey(options, key));
+        return hasNewSchema
+            ? CreateNamedCandidate(root, options)
+            : CreateLegacyCandidate(root, options);
+    }
+
+    private Candidate CreateNamedCandidate(IConfigurationSection root, MaieuticsOptions options)
+    {
+        var sources = new Dictionary<string, BoundSource>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sourceSection in root.GetSection("Sources").GetChildren())
+        {
+            var sourceId = ValidateIdentifier(sourceSection.Key, "source");
+            if (sources.ContainsKey(sourceId))
+            {
+                throw new InvalidOperationException($"A model source named '{sourceId}' is configured more than once.");
+            }
+
+            var provider = sourceSection["Provider"];
+            ArgumentException.ThrowIfNullOrWhiteSpace(provider);
+            if (!factories.TryGetValue(provider, out var factory))
+            {
+                throw new NotSupportedException($"The model provider '{provider}' is not registered.");
+            }
+
+            var source = factory.BindSource(sourceId, sourceSection);
+            ValidateBoundSource(factory, source);
+            sources.Add(sourceId, new BoundSource(sourceId, source));
+        }
+
+        if (sources.Count == 0)
+        {
+            throw new InvalidOperationException("At least one model source must be configured.");
+        }
+
+        var profiles = new List<CandidateProfile>();
+        var profileIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profileSection in root.GetSection("Profiles").GetChildren())
+        {
+            var profileId = ValidateIdentifier(profileSection.Key, "profile");
+            if (!profileIds.Add(profileId))
+            {
+                throw new InvalidOperationException(
+                    $"A model profile named '{profileId}' is configured more than once.");
+            }
+
+            ValidateKeys(profileSection, "Source", "Model");
+            var sourceId = ValidateIdentifier(profileSection["Source"], "source");
+            var model = profileSection["Model"];
+            ArgumentException.ThrowIfNullOrWhiteSpace(model);
+            if (!sources.TryGetValue(sourceId, out var source))
+            {
+                throw new InvalidOperationException(
+                    $"Model profile '{profileId}' references unknown source '{sourceId}'.");
+            }
+
+            profiles.Add(new CandidateProfile(
+                profileId,
+                source.Id,
+                model,
+                source.Source,
+                new ProfileKey(
+                    NormalizeIdentifier(profileId),
+                    NormalizeIdentifier(source.Id),
+                    source.Source.ProviderName,
+                    source.Source.ConfigurationKey,
+                    model)));
+        }
+
+        if (profiles.Count == 0)
+        {
+            throw new InvalidOperationException("At least one model profile must be configured.");
+        }
+
+        var defaultProfileId = ValidateIdentifier(options.DefaultProfile, "profile");
+        var defaultProfile = profiles.FirstOrDefault(profile =>
+            string.Equals(profile.Id, defaultProfileId, StringComparison.OrdinalIgnoreCase));
+        if (defaultProfile is null)
+        {
+            throw new InvalidOperationException($"Default model profile '{defaultProfileId}' does not exist.");
+        }
+
+        return CreateCandidate(options, defaultProfile.Id, profiles);
+    }
+
+    private Candidate CreateLegacyCandidate(IConfigurationSection root, MaieuticsOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.Model.Name);
+        var provider = string.IsNullOrWhiteSpace(options.Model.Provider) ? "OpenAI" : options.Model.Provider;
+        if (!factories.TryGetValue(provider, out var factory))
+        {
+            throw new NotSupportedException($"The model provider '{provider}' is not registered.");
+        }
+
+        var sourceId = ValidateIdentifier(provider.ToLowerInvariant(), "source");
+        var profileId = "default";
+        var sourceSection = MergeLegacySourceSections(
+            root.GetSection($"Providers:{provider}"),
+            root.GetSection($"Sources:{sourceId}"));
+        var source = factory.BindSource(sourceId, sourceSection);
+        ValidateBoundSource(factory, source);
+        var profile = new CandidateProfile(
+            profileId,
+            sourceId,
+            options.Model.Name,
+            source,
+            new ProfileKey(
+                NormalizeIdentifier(profileId),
+                NormalizeIdentifier(sourceId),
+                source.ProviderName,
+                source.ConfigurationKey,
+                options.Model.Name));
+        return CreateCandidate(options, profileId, [profile]);
+    }
+
+    private static Candidate CreateCandidate(
+        MaieuticsOptions options,
+        string defaultProfileId,
+        IReadOnlyList<CandidateProfile> profiles)
+    {
+        var key = new RuntimeKey(
+            NormalizeIdentifier(defaultProfileId),
+            options.SystemPrompt,
+            options.Agent.MaxRetainedTurns,
+            options.Agent.MaxHistoryCharacters,
+            options.Agent.MaxInputCharacters,
+            options.Agent.MaxResponseCharacters,
+            options.Agent.MaxModelIterationsPerTurn,
+            options.Agent.MaxToolCallsPerTurn,
+            options.Agent.MaxToolArgumentsBytes,
+            options.Agent.MaxToolResultBytes,
+            options.Agent.MaxToolProgressEventsPerCall,
+            options.Agent.EventBufferCapacity,
+            Path.GetFullPath(options.Jupyter.ConnectionFile),
+            options.Jupyter.FlushInterval,
+            options.Jupyter.FlushCharacters);
+        return new Candidate(options, defaultProfileId, profiles, key);
+    }
+
+    private static bool HasSameConfiguration(RuntimeSnapshot snapshot, Candidate candidate)
+    {
+        if (snapshot.Key != candidate.Key || snapshot.Profiles.Count != candidate.Profiles.Count)
+        {
+            return false;
+        }
+
+        foreach (var profile in candidate.Profiles)
+        {
+            if (!snapshot.Profiles.TryGetValue(profile.Id, out var currentProfile) ||
+                currentProfile.Key != profile.Key)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static IConfigurationSection MergeLegacySourceSections(
+        IConfigurationSection legacy,
+        IConfigurationSection conventional)
+    {
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        AddSection(values, legacy);
+        AddSection(values, conventional);
+        return new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build()
+            .GetSection("Source");
+    }
+
+    private static void AddSection(IDictionary<string, string?> values, IConfigurationSection section)
+    {
+        foreach (var pair in section.AsEnumerable(makePathsRelative: true))
+        {
+            if (!string.IsNullOrEmpty(pair.Key))
+            {
+                values[$"Source:{pair.Key}"] = pair.Value;
+            }
+        }
+    }
+
+    private static string ValidateIdentifier(string? value, string kind)
+    {
+        try
+        {
+            return new AgentModelProfileId(value ?? string.Empty).Value;
+        }
+        catch (ArgumentException exception)
+        {
+            throw new ArgumentException($"The model {kind} identifier is invalid.", kind, exception);
+        }
+    }
+
+    private static string NormalizeIdentifier(string value) => value.ToUpperInvariant();
+
+    private static void ValidateKeys(IConfigurationSection section, params string[] allowed)
+    {
+        var allowedKeys = allowed.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = section.GetChildren().FirstOrDefault(child => !allowedKeys.Contains(child.Key));
+        if (unknown is not null)
+        {
+            throw new InvalidOperationException(
+                $"Configuration field '{unknown.Path}' is not valid for a model profile.");
+        }
+    }
+
+    private static void ValidateBoundSource(
+        IConfiguredChatClientFactory factory,
+        IConfiguredChatClientSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (!string.Equals(factory.ProviderName, source.ProviderName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Provider factory '{factory.ProviderName}' returned source '{source.ProviderName}'.");
+        }
+
+        ArgumentNullException.ThrowIfNull(source.ConfigurationKey);
     }
 
     private void ValidateConfigurationFileSyntax()
@@ -280,23 +612,6 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         EventBufferCapacity = options.Agent.EventBufferCapacity
     };
 
-    private static RuntimeKey CreateRuntimeKey(MaieuticsOptions options, ProviderKey providerKey) => new(
-        providerKey,
-        options.SystemPrompt,
-        options.Agent.MaxRetainedTurns,
-        options.Agent.MaxHistoryCharacters,
-        options.Agent.MaxInputCharacters,
-        options.Agent.MaxResponseCharacters,
-        options.Agent.MaxModelIterationsPerTurn,
-        options.Agent.MaxToolCallsPerTurn,
-        options.Agent.MaxToolArgumentsBytes,
-        options.Agent.MaxToolResultBytes,
-        options.Agent.MaxToolProgressEventsPerCall,
-        options.Agent.EventBufferCapacity,
-        Path.GetFullPath(options.Jupyter.ConnectionFile),
-        options.Jupyter.FlushInterval,
-        options.Jupyter.FlushCharacters);
-
     private static IReadOnlyDictionary<string, IConfiguredChatClientFactory> CreateFactoryRegistry(
         IEnumerable<IConfiguredChatClientFactory> source)
     {
@@ -318,14 +633,28 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
     private sealed record Candidate(
         MaieuticsOptions Options,
-        IConfiguredChatClientFactory Factory,
-        ProviderKey ProviderKey,
-        RuntimeKey RuntimeKey);
+        string DefaultProfileId,
+        IReadOnlyList<CandidateProfile> Profiles,
+        RuntimeKey Key);
 
-    private sealed record ProviderKey(string ProviderName, object Configuration);
+    private sealed record CandidateProfile(
+        string Id,
+        string SourceId,
+        string Model,
+        IConfiguredChatClientSource Source,
+        ProfileKey Key);
+
+    private sealed record BoundSource(string Id, IConfiguredChatClientSource Source);
+
+    private sealed record ProfileKey(
+        string ProfileId,
+        string SourceId,
+        string ProviderName,
+        object SourceConfiguration,
+        string Model);
 
     private sealed record RuntimeKey(
-        ProviderKey ProviderKey,
+        string DefaultProfileId,
         string? SystemPrompt,
         int MaxRetainedTurns,
         int MaxHistoryCharacters,
@@ -344,12 +673,20 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private sealed record RuntimeSnapshot(
         long Version,
         MaieuticsOptions Options,
-        ProviderKey ProviderKey,
-        RuntimeKey RuntimeKey,
-        ProviderGeneration Generation);
+        string DefaultProfileId,
+        IReadOnlyDictionary<string, ProfileEntry> Profiles,
+        RuntimeKey Key);
+
+    private sealed record ProfileEntry(
+        string Id,
+        string SourceId,
+        ProfileKey Key,
+        AgentModelIdentity Identity,
+        AgentModelCapabilities Capabilities,
+        ProfileGeneration Generation);
 
     private sealed class RuntimeProfileLease(
-        ProviderGenerationLease generationLease,
+        ProfileGenerationLease generationLease,
         AgentRunProfile profile) : IAgentRunProfileLease
     {
         public AgentRunProfile Profile { get; } = profile;
@@ -357,7 +694,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         public ValueTask DisposeAsync() => generationLease.DisposeAsync();
     }
 
-    private sealed class ProviderGeneration(IChatClient client, ILogger logger)
+    private sealed class ProfileGeneration(IChatClient client, ILogger logger)
     {
         private readonly Lock gate = new();
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -366,17 +703,17 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
         internal IChatClient Client { get; } = client ?? throw new ArgumentNullException(nameof(client));
 
-        internal ProviderGenerationLease Acquire()
+        internal ProfileGenerationLease Acquire()
         {
             lock (gate)
             {
                 if (retired)
                 {
-                    throw new ObjectDisposedException(nameof(ProviderGeneration));
+                    throw new ObjectDisposedException(nameof(ProfileGeneration));
                 }
 
                 references = checked(references + 1);
-                return new ProviderGenerationLease(this);
+                return new ProfileGenerationLease(this);
             }
         }
 
@@ -402,7 +739,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
         internal ValueTask ReleaseAsync()
         {
-            var dispose = false;
+            bool dispose;
             lock (gate)
             {
                 if (references <= 0)
@@ -441,7 +778,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         }
     }
 
-    private sealed class ProviderGenerationLease(ProviderGeneration generation) : IAsyncDisposable
+    private sealed class ProfileGenerationLease(ProfileGeneration generation) : IAsyncDisposable
     {
         private int disposed;
 

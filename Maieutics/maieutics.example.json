@@ -6,13 +6,28 @@
     }
   },
   "Maieutics": {
-    "Model": {
-      "Provider": "OpenAI",
-      "Name": "model-id"
+    "DefaultProfile": "gpt",
+    "Sources": {
+      "openai": {
+        "Provider": "OpenAI",
+        "ApiFlavor": "Responses",
+        "ApiKey": "",
+        "Endpoint": null
+      },
+      "anthropic": {
+        "Provider": "Anthropic",
+        "ApiKey": "",
+        "Endpoint": null
+      }
     },
-    "Providers": {
-      "OpenAI": {
-        "ApiFlavor": "Responses"
+    "Profiles": {
+      "gpt": {
+        "Source": "openai",
+        "Model": "openai-model-id"
+      },
+      "claude": {
+        "Source": "anthropic",
+        "Model": "anthropic-model-id"
       }
     },
     "Agent": {

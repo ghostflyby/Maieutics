@@ -9,6 +9,35 @@ namespace Maieutics.Agent.Tests;
 public sealed class AgentRunProfileTests
 {
     [Fact]
+    public void ModelProfileIdentifiersValidateAndRenderStableValues()
+    {
+        var id = new AgentModelProfileId("OpenAI_primary-1");
+
+        id.Value.Should().Be("OpenAI_primary-1");
+        id.ToString().Should().Be("OpenAI_primary-1");
+        FluentActions.Invoking(() => new AgentModelProfileId(""))
+            .Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new AgentModelProfileId("-invalid"))
+            .Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new AgentModelProfileId("contains space"))
+            .Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new AgentModelProfileId(new string('a', 65)))
+            .Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void LegacyRunProfileKeepsCompatibleCapabilitiesAndNoIdentity()
+    {
+        var profile = new AgentRunProfile(
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions());
+
+        profile.ModelIdentity.Should().BeNull();
+        profile.Capabilities.Should().Be(
+            AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling);
+    }
+
+    [Fact]
     public async Task StaticConstructorKeepsExistingClientOptionsAndTranscriptBehavior()
     {
         using var deadline = CreateDeadline();
@@ -27,6 +56,8 @@ public sealed class AgentRunProfileTests
             (ChatRole.User, "second question"));
         result.Transcript.Version.Should().Be(2);
         result.Transcript.Turns.Should().HaveCount(2);
+        result.ModelIdentity.Should().BeNull();
+        result.Transcript.Turns.Should().OnlyContain(static turn => turn.ModelIdentity == null);
     }
 
     [Fact]
@@ -51,6 +82,83 @@ public sealed class AgentRunProfileTests
         firstLease.DisposeCount.Should().Be(1);
         secondLease.DisposeCount.Should().Be(1);
         result.Transcript.Turns.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task SuccessfulRunCommitsCapturedModelIdentityToResultAndTranscript()
+    {
+        using var deadline = CreateDeadline();
+        var identity = new AgentModelIdentity(
+            new AgentModelProfileId("claude"),
+            "Anthropic",
+            "claude-model");
+        var profile = new AgentRunProfile(
+            new ScriptedChatClient((_, _) => StreamAsync("answer")),
+            new AgentSessionOptions(),
+            identity,
+            AgentModelCapabilities.StreamingText);
+        var session = new AgentSession(new QueueProfileProvider(new TrackingProfileLease(profile)));
+
+        var result = await CompleteTurnAsync(session, "question", deadline.Token);
+
+        result.ModelIdentity.Should().Be(identity);
+        result.Transcript.Turns.Should().ContainSingle();
+        result.Transcript.Turns[0].ModelIdentity.Should().Be(identity);
+        session.GetTranscriptSnapshot().Turns[0].ModelIdentity.Should().Be(identity);
+    }
+
+    [Fact]
+    public async Task MissingStreamingCapabilityFailsBeforeProviderInvocation()
+    {
+        using var deadline = CreateDeadline();
+        var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
+        var identity = new AgentModelIdentity(new AgentModelProfileId("metadata"), "Test", "metadata-only");
+        var lease = new TrackingProfileLease(new AgentRunProfile(
+            client,
+            new AgentSessionOptions(),
+            identity,
+            AgentModelCapabilities.None));
+        var session = new AgentSession(new QueueProfileProvider(lease));
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        var failure = (await run.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentModelCapabilityException>()).Which;
+
+        failure.RequiredCapability.Should().Be(AgentModelCapabilities.StreamingText);
+        failure.ModelIdentity.Should().Be(identity);
+        client.Requests.Should().BeEmpty();
+        lease.DisposeCount.Should().Be(1);
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task MissingFunctionCallingCapabilityFailsBeforeProviderInvocationWhenToolsExist()
+    {
+        using var deadline = CreateDeadline();
+        var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
+        var identity = new AgentModelIdentity(new AgentModelProfileId("text"), "Test", "text-only");
+        var lease = new TrackingProfileLease(new AgentRunProfile(
+            client,
+            new AgentSessionOptions(),
+            identity,
+            AgentModelCapabilities.StreamingText));
+        var session = new AgentSession(
+            new QueueProfileProvider(lease),
+            [new SuccessfulTool()]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("use a tool"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        var failure = (await run.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentModelCapabilityException>()).Which;
+
+        failure.RequiredCapability.Should().Be(AgentModelCapabilities.FunctionCalling);
+        failure.ModelIdentity.Should().Be(identity);
+        client.Requests.Should().BeEmpty();
+        lease.DisposeCount.Should().Be(1);
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
     [Fact]

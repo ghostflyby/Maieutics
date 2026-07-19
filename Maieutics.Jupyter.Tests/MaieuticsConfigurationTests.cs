@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers;
@@ -140,7 +141,7 @@ public sealed class MaieuticsConfigurationTests
 
             var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var registration = configuration.GetReloadToken().RegisterChangeCallback(
-                static state => ((TaskCompletionSource)state!).TrySetResult(),
+                static state => ((TaskCompletionSource?)state)?.TrySetResult(),
                 changed);
             await File.WriteAllTextAsync(
                 configurationFile,
@@ -197,8 +198,115 @@ public sealed class MaieuticsConfigurationTests
             using var host = builder.Build();
 
             builder.Configuration["Maieutics:Model:Name"].Should().Be("command-model");
-            builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"].Should()
+            builder.Configuration["Maieutics:Sources:openai:ApiFlavor"].Should()
                 .Be(nameof(OpenAiApiFlavor.ChatCompletions));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void NamedConfigurationAliasesUseStandardEnvironmentAndCommandLinePrecedence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-named-config-order-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        File.WriteAllText(configurationFile, new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = "json-profile",
+                ["Sources"] = new JsonObject
+                {
+                    ["anthropic"] = new JsonObject
+                    {
+                        ["Provider"] = "Anthropic",
+                        ["ApiKey"] = "json-key"
+                    }
+                }
+            }
+        }.ToJsonString());
+
+        using var environment = new EnvironmentVariableScope(new Dictionary<string, string?>
+        {
+            ["MAIEUTICS_CONFIG"] = null,
+            ["MAIEUTICS_PROFILE"] = "alias-profile",
+            ["ANTHROPIC_API_KEY"] = "alias-key",
+            ["ANTHROPIC_BASE_URL"] = "https://alias.example",
+            ["Maieutics__DefaultProfile"] = "standard-profile",
+            ["Maieutics__Sources__anthropic__ApiKey"] = "standard-key",
+            ["Maieutics__Sources__anthropic__Endpoint"] = "https://standard.example"
+        });
+
+        try
+        {
+            var builder = MaieuticsHost.CreateApplicationBuilder(
+                ["--config", configurationFile, "--profile", "command-profile"]);
+            using var host = builder.Build();
+
+            builder.Configuration["Maieutics:DefaultProfile"].Should().Be("command-profile");
+            builder.Configuration["Maieutics:Sources:anthropic:ApiKey"].Should().Be("standard-key");
+            builder.Configuration["Maieutics:Sources:anthropic:Endpoint"].Should()
+                .Be("https://standard.example");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("OpenAI", "ApiFlavor", "Responses", "UnexpectedAnthropicField")]
+    [InlineData("Anthropic", "ApiKey", "test-key", "UnexpectedOpenAiField")]
+    public async Task ProviderSourcesRejectUnknownProviderSpecificFields(
+        string provider,
+        string requiredField,
+        string requiredValue,
+        string unknownField)
+    {
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-provider-fields-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
+            connectionFile,
+            TestContext.Current.CancellationToken);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var source = new JsonObject
+        {
+            ["Provider"] = provider,
+            ["ApiKey"] = "test-key",
+            [requiredField] = requiredValue,
+            [unknownField] = true
+        };
+        await File.WriteAllTextAsync(configurationFile, new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = "test",
+                ["Sources"] = new JsonObject { ["source"] = source },
+                ["Profiles"] = new JsonObject
+                {
+                    ["test"] = new JsonObject
+                    {
+                        ["Source"] = "source",
+                        ["Model"] = "test-model"
+                    }
+                },
+                ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
+            }
+        }.ToJsonString(), TestContext.Current.CancellationToken);
+
+        try
+        {
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var host = builder.Build();
+
+            var resolve = () => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            resolve.Should().Throw<InvalidOperationException>()
+                .WithMessage($"*{unknownField}*");
         }
         finally
         {
@@ -314,6 +422,152 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task NamedProfileCatalogSwitchesReusesAndAtomicallyReplacesGenerations()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-catalog-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateNamedConfiguration(
+                connectionFile,
+                "one",
+                new NamedProfile("one", "primary", "model-one", "primary-v1"),
+                new NamedProfile("two", "secondary", "model-two", "secondary-v1")),
+            deadline.Token);
+
+        var factory = new TrackingChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            var initialSelection = runtime.GetModelProfileSelection();
+            initialSelection.DefaultProfileId.Should().Be("one");
+            initialSelection.SelectedProfileId.Should().Be("one");
+            initialSelection.HasSessionOverride.Should().BeFalse();
+
+            var firstLease = runtime.Acquire();
+            var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+            firstLease.Profile.ModelIdentity.Should().Be(new AgentModelIdentity(
+                new AgentModelProfileId("one"), "Fake", "model-one"));
+
+            runtime.SelectModelProfile("TWO");
+            var secondLease = runtime.Acquire();
+            var secondClient = secondLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+            runtime.GetModelProfileSelection().HasSessionOverride.Should().BeTrue();
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateNamedConfiguration(
+                    connectionFile,
+                    "one",
+                    new NamedProfile("one", "primary", "model-one-v2", "primary-v2"),
+                    new NamedProfile("two", "secondary", "model-two", "secondary-v1")),
+                deadline.Token);
+
+            await using (var reusedLease = runtime.Acquire())
+            {
+                reusedLease.Profile.ChatClient.Should().BeSameAs(secondClient);
+                reusedLease.Profile.ModelIdentity?.ProfileId.Value.Should().Be("two");
+            }
+
+            firstClient.Disposed.Should().BeFalse();
+            await firstLease.DisposeAsync();
+            firstClient.Disposed.Should().BeTrue();
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateNamedConfiguration(
+                    connectionFile,
+                    "one",
+                    new NamedProfile("one", "primary", "model-one-v2", "primary-v2")),
+                deadline.Token);
+            var fallback = runtime.GetModelProfileSelection();
+            fallback.SelectedProfileId.Should().Be("one");
+            fallback.HasSessionOverride.Should().BeFalse();
+            secondClient.Disposed.Should().BeFalse();
+            await secondLease.DisposeAsync();
+            secondClient.Disposed.Should().BeTrue();
+
+            var acceptedVersion = runtime.Version;
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateNamedConfiguration(
+                    connectionFile,
+                    "a-good",
+                    new NamedProfile("a-good", "primary", "replacement", "primary-v3"),
+                    new NamedProfile("z-bad", "broken", "fail", "broken-v1")),
+                deadline.Token);
+            runtime.Version.Should().Be(acceptedVersion);
+            (await AcquireClientAsync(runtime)).Model.Should().Be("model-one-v2");
+            factory.Clients.Single(client => client.Model == "replacement").Disposed.Should().BeTrue();
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task NamedAndLegacyModelConfigurationCannotBeCombined()
+    {
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-conflict-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
+            connectionFile,
+            TestContext.Current.CancellationToken);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var configuration = JsonNode.Parse(CreateNamedConfiguration(
+            connectionFile,
+            "one",
+            new NamedProfile("one", "primary", "model-one", "primary-v1")))?.AsObject();
+        configuration?["Maieutics"]?["Model"] = new JsonObject
+        {
+            ["Provider"] = "Fake",
+            ["Name"] = "legacy"
+        };
+        await File.WriteAllTextAsync(
+            configurationFile,
+            configuration?.ToJsonString(),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+            builder.Services.AddSingleton<IConfiguredChatClientFactory>(new TrackingChatClientFactory());
+            using var host = builder.Build();
+
+            var resolve = () => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            resolve.Should().Throw<InvalidOperationException>()
+                .WithMessage("*cannot be combined*");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static async Task<TrackingChatClient> AcquireClientAsync(MaieuticsRuntimeConfiguration runtime)
     {
         await using var lease = runtime.Acquire();
@@ -382,14 +636,59 @@ public sealed class MaieuticsConfigurationTests
         return root.ToJsonString();
     }
 
+    private static string CreateNamedConfiguration(
+        string connectionFile,
+        string defaultProfile,
+        params NamedProfile[] profiles)
+    {
+        var sources = new JsonObject();
+        var profileNodes = new JsonObject();
+        foreach (var profile in profiles)
+        {
+            sources[profile.SourceId] = new JsonObject
+            {
+                ["Provider"] = "Fake",
+                ["Revision"] = profile.SourceRevision
+            };
+            profileNodes[profile.Id] = new JsonObject
+            {
+                ["Source"] = profile.SourceId,
+                ["Model"] = profile.Model
+            };
+        }
+
+        return new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = defaultProfile,
+                ["Sources"] = sources,
+                ["Profiles"] = profileNodes,
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        }.ToJsonString();
+    }
+
     private static Dictionary<string, string?> ClearedProviderEnvironment() => new()
     {
         ["MAIEUTICS_CONFIG"] = null,
+        ["MAIEUTICS_PROFILE"] = null,
         ["MAIEUTICS_PROVIDER"] = null,
         ["MAIEUTICS_MODEL"] = null,
         ["MAIEUTICS_OPENAI_API"] = null,
         ["OPENAI_API_KEY"] = null,
         ["OPENAI_BASE_URL"] = null,
+        ["ANTHROPIC_API_KEY"] = null,
+        ["ANTHROPIC_BASE_URL"] = null,
+        ["Maieutics__DefaultProfile"] = null,
+        ["Maieutics__Sources__openai__ApiFlavor"] = null,
+        ["Maieutics__Sources__openai__ApiKey"] = null,
+        ["Maieutics__Sources__openai__Endpoint"] = null,
+        ["Maieutics__Sources__anthropic__ApiKey"] = null,
+        ["Maieutics__Sources__anthropic__Endpoint"] = null,
         ["Maieutics__Model__Provider"] = null,
         ["Maieutics__Model__Name"] = null,
         ["Maieutics__Providers__OpenAI__ApiFlavor"] = null,
@@ -403,18 +702,34 @@ public sealed class MaieuticsConfigurationTests
 
         public List<TrackingChatClient> Clients { get; } = [];
 
-        public object GetConfigurationKey(MaieuticsOptions options) => options.Model.Name;
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
+            new TrackingSource(this, sourceId, configuration["Revision"] ?? sourceId);
 
-        public IChatClient Create(MaieuticsOptions options)
+        private IChatClient Create(string model)
         {
-            if (options.Model.Name == "fail")
+            if (model == "fail")
             {
                 throw new InvalidOperationException("Configured provider creation failure.");
             }
 
-            var client = new TrackingChatClient(options.Model.Name);
+            var client = new TrackingChatClient(model);
             Clients.Add(client);
             return client;
+        }
+
+        private sealed class TrackingSource(
+            TrackingChatClientFactory factory,
+            string sourceId,
+            string revision) : IConfiguredChatClientSource
+        {
+            public string ProviderName => "Fake";
+
+            public object ConfigurationKey => (sourceId, revision);
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public IChatClient Create(string model) => factory.Create(model);
         }
     }
 
@@ -428,17 +743,32 @@ public sealed class MaieuticsConfigurationTests
         public TaskCompletionSource ReleaseCreation { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public object GetConfigurationKey(MaieuticsOptions options) => options.Model.Name;
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
+            new BlockingSource(this, sourceId);
 
-        public IChatClient Create(MaieuticsOptions options)
+        private IChatClient Create(string model)
         {
-            if (options.Model.Name == "one")
+            if (model == "one")
             {
                 CreateStarted.TrySetResult();
                 ReleaseCreation.Task.GetAwaiter().GetResult();
             }
 
-            return new TrackingChatClient(options.Model.Name);
+            return new TrackingChatClient(model);
+        }
+
+        private sealed class BlockingSource(
+            BlockingChatClientFactory factory,
+            string sourceId) : IConfiguredChatClientSource
+        {
+            public string ProviderName => "Fake";
+
+            public object ConfigurationKey => sourceId;
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public IChatClient Create(string model) => factory.Create(model);
         }
     }
 
@@ -464,6 +794,8 @@ public sealed class MaieuticsConfigurationTests
 
         public void Dispose() => Disposed = true;
     }
+
+    private sealed record NamedProfile(string Id, string SourceId, string Model, string SourceRevision);
 
     private sealed class EnvironmentVariableScope : IDisposable
     {

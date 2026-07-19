@@ -1,5 +1,3 @@
-using Maieutics.Providers.OpenAI;
-
 namespace Maieutics;
 
 public sealed class MaieuticsOptions
@@ -8,6 +6,12 @@ public sealed class MaieuticsOptions
 
     public string? SystemPrompt { get; set; }
 
+    public string DefaultProfile { get; set; } = string.Empty;
+
+    public Dictionary<string, MaieuticsModelProfileOptions> Profiles { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    // Legacy single-provider configuration. Removed after the compatibility window.
     public MaieuticsModelOptions Model { get; set; } = new();
 
     public MaieuticsProviderOptions Providers { get; set; } = new();
@@ -16,13 +20,18 @@ public sealed class MaieuticsOptions
 
     public MaieuticsJupyterOptions Jupyter { get; set; } = new();
 
-    internal void Validate()
+    internal void ValidateCommon()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(Model.Provider);
-        ArgumentException.ThrowIfNullOrWhiteSpace(Model.Name);
         Agent.Validate();
         Jupyter.Validate();
     }
+}
+
+public sealed class MaieuticsModelProfileOptions
+{
+    public string Source { get; set; } = string.Empty;
+
+    public string Model { get; set; } = string.Empty;
 }
 
 public sealed class MaieuticsModelOptions
@@ -34,18 +43,7 @@ public sealed class MaieuticsModelOptions
 
 public sealed class MaieuticsProviderOptions
 {
-    // ReSharper disable once InconsistentNaming
-    public MaieuticsOpenAIOptions OpenAI { get; set; } = new();
-}
-
-// ReSharper disable once InconsistentNaming
-public sealed class MaieuticsOpenAIOptions
-{
-    public OpenAiApiFlavor ApiFlavor { get; set; } = OpenAiApiFlavor.Responses;
-
-    public string ApiKey { get; set; } = string.Empty;
-
-    public Uri? Endpoint { get; set; }
+    // Provider-specific legacy sections are read by their registered factories.
 }
 
 public sealed class MaieuticsAgentOptions

@@ -5,14 +5,39 @@ namespace Maieutics.Agent;
 /// <summary>Defines the immutable model client and runtime options captured by one Agent run.</summary>
 public sealed record AgentRunProfile
 {
+    private const AgentModelCapabilities CompatibilityCapabilities =
+        AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
     /// <summary>Initializes a run profile.</summary>
     /// <param name="chatClient">The model client used for every model invocation in the run.</param>
     /// <param name="options">The instructions and limits applied to the run.</param>
     public AgentRunProfile(IChatClient chatClient, AgentSessionOptions options)
+        : this(chatClient, options, null, CompatibilityCapabilities)
     {
+    }
+
+    /// <summary>Initializes a run profile with provider-neutral model metadata.</summary>
+    /// <param name="chatClient">The model client used for every model invocation in the run.</param>
+    /// <param name="options">The instructions and limits applied to the run.</param>
+    /// <param name="modelIdentity">The configured provider and model identity, when known.</param>
+    /// <param name="capabilities">The model behaviors available to the run.</param>
+    public AgentRunProfile(
+        IChatClient chatClient,
+        AgentSessionOptions options,
+        AgentModelIdentity? modelIdentity,
+        AgentModelCapabilities capabilities)
+    {
+        if ((capabilities & ~CompatibilityCapabilities) != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capabilities), capabilities,
+                "The Agent run profile contains unknown model capabilities.");
+        }
+
         ChatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         Options = options ?? throw new ArgumentNullException(nameof(options));
         Options.Validate();
+        ModelIdentity = modelIdentity;
+        Capabilities = capabilities;
     }
 
     /// <summary>Gets the model client used for every model invocation in the run.</summary>
@@ -20,6 +45,12 @@ public sealed record AgentRunProfile
 
     /// <summary>Gets the instructions and limits applied to the run.</summary>
     public AgentSessionOptions Options { get; }
+
+    /// <summary>Gets the configured provider and model identity, when known.</summary>
+    public AgentModelIdentity? ModelIdentity { get; }
+
+    /// <summary>Gets the model behaviors available to the run.</summary>
+    public AgentModelCapabilities Capabilities { get; }
 }
 
 /// <summary>Provides an immutable profile for each newly started Agent run.</summary>

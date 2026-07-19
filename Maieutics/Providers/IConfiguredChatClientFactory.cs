@@ -1,4 +1,6 @@
+using Maieutics.Agent;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 
 namespace Maieutics.Providers;
 
@@ -6,7 +8,16 @@ internal interface IConfiguredChatClientFactory
 {
     string ProviderName { get; }
 
-    object GetConfigurationKey(MaieuticsOptions options);
+    IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration);
+}
 
-    IChatClient Create(MaieuticsOptions options);
+internal interface IConfiguredChatClientSource
+{
+    string ProviderName { get; }
+
+    object ConfigurationKey { get; }
+
+    AgentModelCapabilities Capabilities { get; }
+
+    IChatClient Create(string model);
 }

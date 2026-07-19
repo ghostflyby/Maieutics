@@ -21,10 +21,14 @@ The JSON file is followed by environment and command-line providers. The selecte
 lifetime, while its contents are monitored. Each valid Maieutics subtree is bound and validated as one immutable
 candidate. Invalid updates retain the last-known-good snapshot.
 
-Provider clients are owned by reference-counted generations. A run acquires a profile lease, and a changed Provider
-configuration is published only after its new client has been constructed successfully. Retired clients are disposed
-after their final run lease is released. Agent and Jupyter presentation options are captured at operation boundaries;
-the Jupyter connection file remains a startup-only setting.
+Provider clients are owned by reference-counted profile generations. Every new or changed generation in a candidate
+catalog is constructed before that catalog is published. Any construction or validation failure rejects the whole
+candidate. Unchanged generations are reused, while retired clients are disposed after their final run lease is released.
+Agent and Jupyter presentation options are captured at operation boundaries; the Jupyter connection file remains a
+startup-only setting.
+
+A Kernel also owns an in-memory model-profile override. Default-profile reloads affect the next run when there is no
+override. A valid override survives reload while its profile exists; removal clears it and falls back to the new default.
 
 ## Consequences
 
@@ -33,4 +37,4 @@ the Jupyter connection file remains a startup-only setting.
 - Active tool loops remain on one model client and one immutable set of limits.
 - Environment variables and command-line arguments do not hot reload.
 - Configuration errors are observable through structured logs without terminating a healthy Kernel.
-- Adding a Provider extends the executable registry and `Providers` section without changing Agent or Jupyter APIs.
+- Adding a Provider extends the executable source-factory registry without changing Agent or Jupyter APIs.

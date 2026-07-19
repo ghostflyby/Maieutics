@@ -82,6 +82,10 @@ Maieutics.Providers.OpenAI
     Current executable namespace. Selects Responses or Chat Completions while keeping OpenAI SDK types behind
     IChatClient
 
+Maieutics.Providers.Anthropic
+    Current executable namespace. Implements an AOT-safe Anthropic Messages IChatClient adapter with explicit JSON and
+    SSE mapping
+
 Maieutics.Notebook
     Ordered presentation events, artifacts, display correlation, and component contracts
 

@@ -134,6 +134,73 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
+    [Fact(Timeout = 45_000)]
+    public async Task InProcessHostCompletesAnthropicToolLoopWithoutPublishingToolLifecycle()
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-anthropic-tool-{Guid.NewGuid():N}.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await using var provider = new FakeAnthropicServer(
+            "claude-test",
+            "tool-backed answer",
+            toolFlow: true);
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--connection-file", connectionFile]);
+        builder.Configuration["Maieutics:DefaultProfile"] = "claude";
+        builder.Configuration["Maieutics:Sources:anthropic:Provider"] = "Anthropic";
+        builder.Configuration["Maieutics:Sources:anthropic:ApiKey"] = "anthropic-key";
+        builder.Configuration["Maieutics:Sources:anthropic:Endpoint"] = provider.Endpoint.ToString();
+        builder.Configuration["Maieutics:Profiles:claude:Source"] = "anthropic";
+        builder.Configuration["Maieutics:Profiles:claude:Model"] = "claude-test";
+        builder.Services.RemoveAll<IReadOnlyList<IAgentTool>>();
+        builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>([new EchoAgentTool()]);
+        using var host = builder.Build();
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+
+            var execution = await client.ExecuteAsync(new JupyterExecuteRequest("use echo"), deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
+            {
+                outputs.Add(output);
+            }
+
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle()
+                .Which.Data.Data["text/markdown"].GetString().Should().Be("tool-backed answer");
+            outputs.Where(output =>
+                    output is not JupyterExecuteInputOutput and
+                        not JupyterDisplayOutput and
+                        not JupyterDisplayUpdateOutput and
+                        not JupyterExecutionStatusChanged)
+                .Should().BeEmpty();
+            await provider.Completion.WaitAsync(deadline.Token);
+            provider.RequestBodies.Should().HaveCount(2);
+            provider.RequestBodies.Last().GetRawText().Should()
+                .Contain("tool_result").And.Contain("status").And.Contain("ok");
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await host.StopAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+            {
+            }
+
+            File.Delete(connectionFile);
+        }
+    }
+
     [Theory(Timeout = 45_000)]
     [InlineData(OpenAiApiFlavor.Responses)]
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
@@ -260,6 +327,158 @@ public sealed class MaieuticsHostIntegrationTests
             await client.ShutdownAsync(false, deadline.Token);
             await process.WaitForExitAsync(deadline.Token);
             process.ExitCode.Should().Be(0, started.FailureDetails());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory(Timeout = 60_000)]
+    [InlineData(OpenAiApiFlavor.Responses)]
+    [InlineData(OpenAiApiFlavor.ChatCompletions)]
+    public async Task NotebookSwitchesBetweenOpenAiAndAnthropicWithCanonicalHistory(OpenAiApiFlavor apiFlavor)
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-switch-{Guid.NewGuid():N}.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await using var openAi = new FakeOpenAiServer(
+            apiFlavor,
+            model: "gpt-test",
+            answer: "openai answer",
+            requestCount: 2);
+        await using var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--connection-file", connectionFile]);
+        builder.Configuration["Maieutics:DefaultProfile"] = "gpt";
+        builder.Configuration["Maieutics:Sources:openai:Provider"] = "OpenAI";
+        builder.Configuration["Maieutics:Sources:openai:ApiFlavor"] = apiFlavor.ToString();
+        builder.Configuration["Maieutics:Sources:openai:ApiKey"] = "openai-key";
+        builder.Configuration["Maieutics:Sources:openai:Endpoint"] = openAi.Endpoint.ToString();
+        builder.Configuration["Maieutics:Sources:anthropic:Provider"] = "Anthropic";
+        builder.Configuration["Maieutics:Sources:anthropic:ApiKey"] = "anthropic-key";
+        builder.Configuration["Maieutics:Sources:anthropic:Endpoint"] = anthropic.Endpoint.ToString();
+        builder.Configuration["Maieutics:Profiles:gpt:Source"] = "openai";
+        builder.Configuration["Maieutics:Profiles:gpt:Model"] = "gpt-test";
+        builder.Configuration["Maieutics:Profiles:claude:Source"] = "anthropic";
+        builder.Configuration["Maieutics:Profiles:claude:Model"] = "claude-test";
+        using var host = builder.Build();
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+
+            (await ExecuteAndGetMarkdownAsync(client, "first cell", deadline.Token)).Should().Be("openai answer");
+            (await ExecuteAndGetMarkdownAsync(client, "%maieutics model use claude", deadline.Token)).Should()
+                .Contain("Profile: `claude`");
+            (await ExecuteAndGetMarkdownAsync(client, "second cell", deadline.Token)).Should().Be("anthropic answer");
+            (await ExecuteAndGetMarkdownAsync(client, "%maieutics model use gpt", deadline.Token)).Should()
+                .Contain("Profile: `gpt`");
+            (await ExecuteAndGetMarkdownAsync(client, "third cell", deadline.Token)).Should().Be("openai answer");
+
+            await openAi.Completion.WaitAsync(deadline.Token);
+            await anthropic.Completion.WaitAsync(deadline.Token);
+            anthropic.RequestBody.GetRawText().Should()
+                .Contain("first cell").And.Contain("openai answer").And.Contain("second cell");
+            openAi.RequestBodies.Should().HaveCount(2);
+            openAi.RequestBodies.Last().GetRawText().Should()
+                .Contain("first cell").And.Contain("openai answer")
+                .And.Contain("second cell").And.Contain("anthropic answer")
+                .And.Contain("third cell");
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await host.StopAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+            {
+            }
+
+            File.Delete(connectionFile);
+        }
+    }
+
+    [Theory(Timeout = 75_000)]
+    [InlineData(OpenAiApiFlavor.Responses)]
+    [InlineData(OpenAiApiFlavor.ChatCompletions)]
+    public async Task ExternalHostSwitchesBetweenOpenAiAndAnthropic(OpenAiApiFlavor apiFlavor)
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(60));
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-process-switch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(root, "connection.json");
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await using var openAi = new FakeOpenAiServer(
+            apiFlavor,
+            model: "gpt-test",
+            answer: "openai process answer",
+            requestCount: 2);
+        await using var anthropic = new FakeAnthropicServer("claude-test", "anthropic process answer");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateMultiProviderHostConfiguration(
+                connectionFile,
+                openAi.Endpoint,
+                apiFlavor,
+                anthropic.Endpoint),
+            deadline.Token);
+        using var started = StartConfiguredHostProcess(configurationFile);
+        var process = started.Process;
+
+        var phase = "client readiness";
+        try
+        {
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            var ready = client.WaitForReadyAsync(deadline.Token);
+            var exited = process.WaitForExitAsync(deadline.Token);
+            (await Task.WhenAny(ready, exited)).Should().BeSameAs(ready, started.FailureDetails());
+            await ready;
+
+            phase = "heartbeat";
+            (await client.PingAsync(deadline.Token)).Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+            phase = "first OpenAI execution";
+            (await ExecuteAndGetMarkdownAsync(client, "first process cell", deadline.Token)).Should()
+                .Be("openai process answer");
+            phase = "select Anthropic";
+            await ExecuteAndGetMarkdownAsync(client, "%maieutics model use claude", deadline.Token);
+            phase = "Anthropic execution";
+            (await ExecuteAndGetMarkdownAsync(client, "second process cell", deadline.Token)).Should()
+                .Be("anthropic process answer");
+            phase = "select OpenAI";
+            await ExecuteAndGetMarkdownAsync(client, "%maieutics model use gpt", deadline.Token);
+            phase = "second OpenAI execution";
+            (await ExecuteAndGetMarkdownAsync(client, "third process cell", deadline.Token)).Should()
+                .Be("openai process answer");
+
+            await openAi.Completion.WaitAsync(deadline.Token);
+            await anthropic.Completion.WaitAsync(deadline.Token);
+            openAi.RequestBodies.Last().GetRawText().Should().Contain("anthropic process answer");
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await process.WaitForExitAsync(deadline.Token);
+            process.ExitCode.Should().Be(0, started.FailureDetails());
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"External multi-provider host failed during {phase}.\n{started.FailureDetails()}",
+                exception);
         }
         finally
         {
@@ -460,6 +679,52 @@ public sealed class MaieuticsHostIntegrationTests
         return root.ToJsonString();
     }
 
+    private static string CreateMultiProviderHostConfiguration(
+        string connectionFile,
+        Uri openAiEndpoint,
+        OpenAiApiFlavor apiFlavor,
+        Uri anthropicEndpoint) =>
+        new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = "gpt",
+                ["Sources"] = new JsonObject
+                {
+                    ["openai"] = new JsonObject
+                    {
+                        ["Provider"] = "OpenAI",
+                        ["ApiFlavor"] = apiFlavor.ToString(),
+                        ["ApiKey"] = "openai-key",
+                        ["Endpoint"] = openAiEndpoint.ToString()
+                    },
+                    ["anthropic"] = new JsonObject
+                    {
+                        ["Provider"] = "Anthropic",
+                        ["ApiKey"] = "anthropic-key",
+                        ["Endpoint"] = anthropicEndpoint.ToString()
+                    }
+                },
+                ["Profiles"] = new JsonObject
+                {
+                    ["gpt"] = new JsonObject
+                    {
+                        ["Source"] = "openai",
+                        ["Model"] = "gpt-test"
+                    },
+                    ["claude"] = new JsonObject
+                    {
+                        ["Source"] = "anthropic",
+                        ["Model"] = "claude-test"
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        }.ToJsonString();
+
     private static string GetManagedHostAssemblyPath()
     {
         var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name
@@ -516,17 +781,20 @@ public sealed class MaieuticsHostIntegrationTests
         private readonly CancellationTokenSource cancellation = new();
 
         private readonly bool toolFlow;
+        private readonly int requestCount;
 
         public FakeOpenAiServer(
             OpenAiApiFlavor apiFlavor,
             bool toolFlow = false,
             string model = "test-model",
-            string answer = "native answer")
+            string answer = "native answer",
+            int? requestCount = null)
         {
             this.apiFlavor = apiFlavor;
             this.toolFlow = toolFlow;
             this.model = model;
             this.answer = answer;
+            this.requestCount = requestCount ?? (toolFlow ? 2 : 1);
             listener.Start();
             var endpoint = (IPEndPoint)listener.LocalEndpoint;
             Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
@@ -559,7 +827,6 @@ public sealed class MaieuticsHostIntegrationTests
 
         private async Task ServeAsync(CancellationToken cancellationToken)
         {
-            var requestCount = toolFlow ? 2 : 1;
             for (var requestIndex = 0; requestIndex < requestCount; requestIndex++)
             {
                 using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
@@ -740,7 +1007,7 @@ public sealed class MaieuticsHostIntegrationTests
                 "\"response\":" + completedResponse + "}\n\n";
         }
 
-        private static async Task<HttpRequest> ReadRequestAsync(
+        internal static async Task<HttpRequest> ReadRequestAsync(
             NetworkStream stream,
             CancellationToken cancellationToken)
         {
@@ -802,7 +1069,127 @@ public sealed class MaieuticsHostIntegrationTests
             return new HttpRequest(requestLineParts[0], requestLineParts[1], body);
         }
 
-        private sealed record HttpRequest(string Method, string Path, JsonElement Body);
+        internal sealed record HttpRequest(string Method, string Path, JsonElement Body);
+    }
+
+    private sealed class FakeAnthropicServer : IAsyncDisposable
+    {
+        private readonly string model;
+        private readonly string answer;
+        private readonly bool toolFlow;
+        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource cancellation = new();
+
+        public FakeAnthropicServer(string model, string answer, bool toolFlow = false)
+        {
+            this.model = model;
+            this.answer = answer;
+            this.toolFlow = toolFlow;
+            listener.Start();
+            var endpoint = (IPEndPoint)listener.LocalEndpoint;
+            Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}");
+            Completion = ServeAsync(cancellation.Token);
+        }
+
+        public Uri Endpoint { get; }
+
+        public Task Completion { get; }
+
+        public ConcurrentQueue<JsonElement> RequestBodies { get; } = new();
+
+        public JsonElement RequestBody => RequestBodies.Single();
+
+        public async ValueTask DisposeAsync()
+        {
+            cancellation.Cancel();
+            listener.Stop();
+            try
+            {
+                await Completion.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+            }
+            catch (SocketException) when (cancellation.IsCancellationRequested)
+            {
+            }
+
+            cancellation.Dispose();
+        }
+
+        private async Task ServeAsync(CancellationToken cancellationToken)
+        {
+            var requestCount = toolFlow ? 2 : 1;
+            for (var requestIndex = 0; requestIndex < requestCount; requestIndex++)
+            {
+                using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                await using var stream = client.GetStream();
+                var request = await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+                request.Method.Should().Be("POST");
+                request.Path.Should().Be("/v1/messages");
+                request.Body.GetProperty("model").GetString().Should().Be(model);
+                request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
+                RequestBodies.Enqueue(request.Body);
+                if (toolFlow)
+                {
+                    request.Body.GetRawText().Should().Contain("echo");
+                }
+
+                var data = toolFlow && requestIndex == 0 ? CreateToolStream() : CreateTextStream(answer);
+                var body = Encoding.UTF8.GetBytes(data);
+                var headers = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
+                    "Connection: close\r\n\r\n");
+                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private static string CreateTextStream(string text) => """
+                                                               event: message_start
+                                                               data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+
+                                                               event: content_block_start
+                                                               data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+                                                               event: content_block_delta
+                                                               data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":TEXT_PLACEHOLDER}}
+
+                                                               event: content_block_stop
+                                                               data: {"type":"content_block_stop","index":0}
+
+                                                               event: message_delta
+                                                               data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
+
+                                                               event: message_stop
+                                                               data: {"type":"message_stop"}
+
+                                                               """.Replace("TEXT_PLACEHOLDER",
+            JsonSerializer.Serialize(text), StringComparison.Ordinal);
+
+        private static string CreateToolStream() => """
+                                                    event: message_start
+                                                    data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+
+                                                    event: content_block_start
+                                                    data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_test","name":"echo","input":{}}}
+
+                                                    event: content_block_delta
+                                                    data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\":"}}
+
+                                                    event: content_block_delta
+                                                    data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
+
+                                                    event: content_block_stop
+                                                    data: {"type":"content_block_stop","index":0}
+
+                                                    event: message_delta
+                                                    data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
+
+                                                    event: message_stop
+                                                    data: {"type":"message_stop"}
+
+                                                    """;
     }
 
     private sealed class EchoAgentTool : IAgentTool

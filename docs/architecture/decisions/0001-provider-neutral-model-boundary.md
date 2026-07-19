@@ -63,23 +63,23 @@ and must have explicit replay and fallback semantics.
 
 ## Provider selection
 
-Configuration selects a provider-neutral model definition rather than directly selecting an SDK client:
+Configuration separates provider connection sources from selectable model profiles:
 
 ```text
-Maieutics:Model
+Maieutics:Sources:<SourceId>
     Provider
-    Name
-
-Maieutics:Providers:<ProviderName>
     provider-specific API flavor, endpoint, credentials, and options
+
+Maieutics:Profiles:<ProfileId>
+    Source
+    Model
 ```
 
-The executable resolves the selected provider through an immutable factory registry. Provider-specific options remain
-inside the selected adapter. A configuration reload constructs a replacement client before publishing the new model
-profile; active runs retain their existing client lease. The runtime uses capability negotiation and fails early when a
-requested feature is unsupported.
+The executable resolves sources through an immutable factory registry and publishes an atomically validated profile
+catalog. Provider-specific options remain inside the selected adapter. Active runs retain their profile generation
+lease. The runtime uses capability negotiation and fails before a provider request when a required feature is absent.
 
-## Current OpenAI adapter
+## Current adapters
 
 The executable-owned `Maieutics.Providers.OpenAI` namespace uses the `Microsoft.Extensions.AI.OpenAI` adapters for both
 OpenAI API shapes. The configured `ApiFlavor` selects `Responses` or `ChatCompletions`; `Responses` is the default.
@@ -92,6 +92,11 @@ Both flavors explicitly send `store: false`. The current implementation does not
 `previous_response_id` or Conversations. Every turn is reconstructed from the committed Maieutics transcript, and
 provider response identifiers are not conversation authority. Prompt caching remains independent of this storage
 choice.
+
+The executable-owned `Maieutics.Providers.Anthropic` namespace implements the Messages API directly behind
+`IChatClient`. It writes request JSON explicitly and parses streaming SSE without reflection so the adapter remains
+compatible with the executable's NativeAOT requirement. Credentials and optional endpoint configuration remain inside
+its source factory. Provider wire types do not cross the `IChatClient` boundary.
 
 The OpenAI .NET Responses client and its `IChatClient` adapter are marked experimental by the current SDK. The required
 `OPENAI001` acknowledgement is isolated to the OpenAI provider factory. Upgrading that SDK requires the provider

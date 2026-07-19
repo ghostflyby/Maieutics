@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Maieutics.Agent;
+using Maieutics.Configuration;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
@@ -190,6 +191,61 @@ public sealed class AgentJupyterIntegrationTests
         await host.Completion.WaitAsync(deadline.Token);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ModelCommandsSwitchProfilesWithoutInvokingAgentOrChangingTranscript()
+    {
+        using var deadline = CreateDeadline();
+        var session = new AgentSession(new ScriptedChatClient());
+        var controller = new TestModelProfileController();
+        var application = new MaieuticsAgentKernelApplication(
+            session,
+            static () => new MaieuticsAgentKernelOptions(),
+            controller);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var listed = await client.ExecuteAsync(new JupyterExecuteRequest("%maieutics model list"), deadline.Token);
+        var listedOutputs = await ReadOutputsAsync(listed, deadline.Token);
+        (await listed.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(listedOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
+            .Contain("`gpt`").And.Contain("`claude`")
+            .And.NotContain("secret").And.NotContain("https://");
+
+        var selected = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model use CLAUDE"),
+            deadline.Token);
+        var selectedOutputs = await ReadOutputsAsync(selected, deadline.Token);
+        (await selected.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(selectedOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
+            .Contain("Profile: `claude`").And.Contain("session override");
+        controller.GetModelProfileSelection().SelectedProfileId.Should().Be("claude");
+
+        var silentReset = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model reset", Silent: true),
+            deadline.Token);
+        var resetOutputs = await ReadOutputsAsync(silentReset, deadline.Token);
+        (await silentReset.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        resetOutputs.OfType<JupyterDisplayOutput>().Should().BeEmpty();
+        controller.GetModelProfileSelection().SelectedProfileId.Should().Be("gpt");
+
+        var invalid = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model use missing"),
+            deadline.Token);
+        await ReadOutputsAsync(invalid, deadline.Token);
+        var invalidCompletion = await invalid.Completion.WaitAsync(deadline.Token);
+        invalidCompletion.Reply.Status.Should().Be("error");
+        invalidCompletion.Reply.ErrorName.Should().Be("MaieuticsCommandError");
+        controller.GetModelProfileSelection().SelectedProfileId.Should().Be("gpt");
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
     private static string? ReadMarkdown(JupyterOutput output) => output switch
     {
         JupyterDisplayOutput display => display.Data.Data["text/markdown"].GetString(),
@@ -324,6 +380,44 @@ public sealed class AgentJupyterIntegrationTests
         public override long GetTimestamp() => Volatile.Read(ref timestamp);
 
         public void Advance(TimeSpan elapsed) => Interlocked.Add(ref timestamp, elapsed.Ticks);
+    }
+
+    private sealed class TestModelProfileController : IMaieuticsModelProfileController
+    {
+        private readonly MaieuticsModelProfileInfo[] profiles =
+        [
+            new("gpt", "openai", "OpenAI", "gpt-test", IsDefault: true, IsSelected: true),
+            new("claude", "anthropic", "Anthropic", "claude-test", IsDefault: false, IsSelected: false)
+        ];
+
+        private string? sessionOverride;
+
+        public MaieuticsModelProfileSelection GetModelProfileSelection()
+        {
+            var selected = sessionOverride ?? "gpt";
+            return new MaieuticsModelProfileSelection(
+                "gpt",
+                selected,
+                sessionOverride is not null,
+                profiles.Select(profile => profile with
+                {
+                    IsSelected = string.Equals(profile.Id, selected, StringComparison.OrdinalIgnoreCase)
+                }).ToArray());
+        }
+
+        public void SelectModelProfile(string profileId)
+        {
+            var profile = profiles.SingleOrDefault(profile =>
+                string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
+            if (profile is null)
+            {
+                throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
+            }
+
+            sessionOverride = profile.Id;
+        }
+
+        public void ResetModelProfile() => sessionOverride = null;
     }
 
     private sealed class CommitBoundarySession : IAgentSession

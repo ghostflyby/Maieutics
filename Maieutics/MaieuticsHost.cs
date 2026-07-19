@@ -4,6 +4,7 @@ using Maieutics.Configuration;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Providers;
+using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -54,9 +55,10 @@ public static class MaieuticsHost
             {
                 ["--config"] = "Maieutics:ConfigurationFile",
                 ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
+                ["--profile"] = "Maieutics:DefaultProfile",
                 ["--provider"] = "Maieutics:Model:Provider",
                 ["--model"] = "Maieutics:Model:Name",
-                ["--openai-api"] = "Maieutics:Providers:OpenAI:ApiFlavor"
+                ["--openai-api"] = "Maieutics:Sources:openai:ApiFlavor"
             });
 
         builder.Logging
@@ -66,6 +68,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
         builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();
         builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
@@ -89,17 +92,21 @@ public static class MaieuticsHost
         return new MaieuticsAgentKernelApplication(
             services.GetRequiredService<IAgentSession>(),
             runtimeConfiguration.GetKernelOptions,
+            runtimeConfiguration,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()
     {
         var aliases = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        AddAlias(aliases, "MAIEUTICS_PROFILE", "Maieutics:DefaultProfile");
         AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
         AddAlias(aliases, "MAIEUTICS_MODEL", "Maieutics:Model:Name");
-        AddAlias(aliases, "MAIEUTICS_OPENAI_API", "Maieutics:Providers:OpenAI:ApiFlavor");
-        AddAlias(aliases, "OPENAI_API_KEY", "Maieutics:Providers:OpenAI:ApiKey");
-        AddAlias(aliases, "OPENAI_BASE_URL", "Maieutics:Providers:OpenAI:Endpoint");
+        AddAlias(aliases, "MAIEUTICS_OPENAI_API", "Maieutics:Sources:openai:ApiFlavor");
+        AddAlias(aliases, "OPENAI_API_KEY", "Maieutics:Sources:openai:ApiKey");
+        AddAlias(aliases, "OPENAI_BASE_URL", "Maieutics:Sources:openai:Endpoint");
+        AddAlias(aliases, "ANTHROPIC_API_KEY", "Maieutics:Sources:anthropic:ApiKey");
+        AddAlias(aliases, "ANTHROPIC_BASE_URL", "Maieutics:Sources:anthropic:Endpoint");
         return aliases;
     }
 

@@ -1,6 +1,8 @@
 using System.ClientModel;
 using System.Diagnostics;
+using Maieutics.Agent;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using OpenAI;
 using OpenAI.Chat;
 using OpenAI.Responses;
@@ -11,68 +13,88 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
 {
     public string ProviderName => "OpenAI";
 
-    public object GetConfigurationKey(MaieuticsOptions options)
+    public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
     {
-        Validate(options);
-        var openAi = options.Providers.OpenAI;
-        return new ConfigurationKey(
-            options.Model.Name,
-            openAi.ApiFlavor,
-            openAi.ApiKey,
-            openAi.Endpoint?.AbsoluteUri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceId);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var options = new OpenAiSourceOptions();
+        configuration.Bind(options, static binder => binder.ErrorOnUnknownConfiguration = true);
+        options.Validate();
+        return new OpenAiSource(options);
     }
 
-    public IChatClient Create(MaieuticsOptions options)
+    private sealed class OpenAiSource(OpenAiSourceOptions options) : IConfiguredChatClientSource
     {
-        Validate(options);
-        var openAi = options.Providers.OpenAI;
-        var credential = new ApiKeyCredential(openAi.ApiKey);
-        var openAiClient = openAi.Endpoint is null
-            ? new OpenAIClient(credential)
-            : new OpenAIClient(credential, new OpenAIClientOptions { Endpoint = openAi.Endpoint });
+        public string ProviderName => "OpenAI";
+
+        public object ConfigurationKey { get; } = new SourceKey(
+            options.ApiFlavor,
+            options.ApiKey,
+            options.Endpoint?.AbsoluteUri);
+
+        public AgentModelCapabilities Capabilities =>
+            AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+        public IChatClient Create(string model)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(model);
+            var credential = new ApiKeyCredential(options.ApiKey);
+            var openAiClient = options.Endpoint is null
+                ? new OpenAIClient(credential)
+                : new OpenAIClient(credential, new OpenAIClientOptions { Endpoint = options.Endpoint });
 
 #pragma warning disable OPENAI001 // The OpenAI .NET Responses surface is currently marked experimental.
-        var client = openAi.ApiFlavor switch
-        {
-            OpenAiApiFlavor.Responses => openAiClient.GetResponsesClient().AsIChatClient(options.Model.Name),
-            OpenAiApiFlavor.ChatCompletions => openAiClient.GetChatClient(options.Model.Name).AsIChatClient(),
-            _ => throw new UnreachableException()
-        };
-
-        return new ConfigureOptionsChatClient(client, chatOptions =>
-        {
-            chatOptions.RawRepresentationFactory = _ => openAi.ApiFlavor switch
+            var client = options.ApiFlavor switch
             {
-                OpenAiApiFlavor.Responses => new CreateResponseOptions { StoredOutputEnabled = false },
-                OpenAiApiFlavor.ChatCompletions => new ChatCompletionOptions { StoredOutputEnabled = false },
+                OpenAiApiFlavor.Responses => openAiClient.GetResponsesClient().AsIChatClient(model),
+                OpenAiApiFlavor.ChatCompletions => openAiClient.GetChatClient(model).AsIChatClient(),
                 _ => throw new UnreachableException()
             };
-        });
+
+            return new ConfigureOptionsChatClient(client, chatOptions =>
+            {
+                chatOptions.RawRepresentationFactory = _ => options.ApiFlavor switch
+                {
+                    OpenAiApiFlavor.Responses => new CreateResponseOptions { StoredOutputEnabled = false },
+                    OpenAiApiFlavor.ChatCompletions => new ChatCompletionOptions { StoredOutputEnabled = false },
+                    _ => throw new UnreachableException()
+                };
+            });
 #pragma warning restore OPENAI001
+        }
     }
 
-    private static void Validate(MaieuticsOptions options)
+    private sealed record SourceKey(OpenAiApiFlavor ApiFlavor, string ApiKey, string? Endpoint);
+}
+
+internal sealed class OpenAiSourceOptions
+{
+    public string? Provider { get; set; }
+
+    public OpenAiApiFlavor ApiFlavor { get; set; } = OpenAiApiFlavor.Responses;
+
+    public string ApiKey { get; set; } = string.Empty;
+
+    public Uri? Endpoint { get; set; }
+
+    internal void Validate()
     {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.Model.Name);
-        var openAi = options.Providers.OpenAI;
-        ArgumentException.ThrowIfNullOrWhiteSpace(openAi.ApiKey);
-        if (!Enum.IsDefined(openAi.ApiFlavor))
+        if (Provider is not null && !string.Equals(Provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentOutOfRangeException(nameof(options), openAi.ApiFlavor,
-                "Unsupported OpenAI API flavor.");
+            throw new ArgumentException("The OpenAI source Provider must be 'OpenAI'.", nameof(Provider));
         }
 
-        if (openAi.Endpoint is not null &&
-            (!openAi.Endpoint.IsAbsoluteUri || openAi.Endpoint.Scheme is not ("http" or "https")))
+        ArgumentException.ThrowIfNullOrWhiteSpace(ApiKey);
+        if (!Enum.IsDefined(ApiFlavor))
         {
-            throw new ArgumentException("The OpenAI endpoint must be an absolute HTTP or HTTPS URI.", nameof(options));
+            throw new ArgumentOutOfRangeException(nameof(ApiFlavor), ApiFlavor, "Unsupported OpenAI API flavor.");
+        }
+
+        if (Endpoint is not null &&
+            (!Endpoint.IsAbsoluteUri || Endpoint.Scheme is not ("http" or "https")))
+        {
+            throw new ArgumentException("The OpenAI endpoint must be an absolute HTTP or HTTPS URI.",
+                nameof(Endpoint));
         }
     }
-
-    private sealed record ConfigurationKey(
-        string Model,
-        OpenAiApiFlavor ApiFlavor,
-        string ApiKey,
-        string? Endpoint);
 }

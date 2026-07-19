@@ -31,6 +31,29 @@ public sealed class AgentResponseLimitExceededException(int maximumCharacters)
 public sealed class AgentProviderException(Exception innerException)
     : AgentException("The model provider failed while producing a response.", innerException);
 
+/// <summary>Indicates that the selected model profile lacks behavior required by the Agent run.</summary>
+public sealed class AgentModelCapabilityException(
+    AgentModelCapabilities requiredCapability,
+    AgentModelIdentity? modelIdentity = null)
+    : AgentException(CreateMessage(requiredCapability, modelIdentity))
+{
+    /// <summary>Gets the capability required by the run.</summary>
+    public AgentModelCapabilities RequiredCapability { get; } = requiredCapability;
+
+    /// <summary>Gets the selected model identity, when known.</summary>
+    public AgentModelIdentity? ModelIdentity { get; } = modelIdentity;
+
+    private static string CreateMessage(
+        AgentModelCapabilities requiredCapability,
+        AgentModelIdentity? modelIdentity)
+    {
+        var profile = modelIdentity is null
+            ? "The selected model profile"
+            : $"Agent model profile '{modelIdentity.ProfileId}'";
+        return $"{profile} does not support the required capability '{requiredCapability}'.";
+    }
+}
+
 /// <summary>Indicates that provider output cannot be represented by the current Agent contract.</summary>
 public sealed class AgentUnsupportedResponseException(string message) : AgentException(message);
 

@@ -10,7 +10,7 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         Channel.CreateUnbounded<JupyterTransportMessage>();
 
     private readonly List<JupyterTransportMessage> sentMessages = [];
-    private readonly object sentMessagesGate = new();
+    private readonly Lock sentMessagesGate = new();
 
     public IAsyncEnumerable<JupyterTransportMessage> IncomingMessages => incomingMessages.Reader.ReadAllAsync();
 

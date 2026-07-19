@@ -74,6 +74,77 @@ public readonly record struct AgentMessageId
     public override string ToString() => Value.ToString("N");
 }
 
+/// <summary>Identifies a configured model profile independently of any provider SDK.</summary>
+public readonly record struct AgentModelProfileId
+{
+    /// <summary>Initializes a model profile identifier.</summary>
+    public AgentModelProfileId(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        if (value.Length > 64 || !IsAsciiLetterOrDigit(value[0]) ||
+            value.AsSpan(1).ContainsAnyExcept(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"))
+        {
+            throw new ArgumentException(
+                "Agent model profile identifiers must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}.",
+                nameof(value));
+        }
+
+        Value = value;
+    }
+
+    /// <summary>Gets the configured profile identifier.</summary>
+    public string Value { get; }
+
+    /// <inheritdoc />
+    public override string ToString() => Value ?? string.Empty;
+
+    private static bool IsAsciiLetterOrDigit(char value) =>
+        value is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9';
+}
+
+/// <summary>Identifies the configured provider and model used by an Agent run.</summary>
+public sealed record AgentModelIdentity
+{
+    /// <summary>Initializes a provider-neutral model identity.</summary>
+    public AgentModelIdentity(AgentModelProfileId profileId, string provider, string model)
+    {
+        if (string.IsNullOrEmpty(profileId.Value))
+        {
+            throw new ArgumentException("Agent model profile identifiers cannot be empty.", nameof(profileId));
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(provider);
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+        ProfileId = profileId;
+        Provider = provider;
+        Model = model;
+    }
+
+    /// <summary>Gets the configured profile identifier.</summary>
+    public AgentModelProfileId ProfileId { get; }
+
+    /// <summary>Gets the provider family name.</summary>
+    public string Provider { get; }
+
+    /// <summary>Gets the provider-specific model identifier.</summary>
+    public string Model { get; }
+}
+
+/// <summary>Describes model behaviors that an Agent run may require.</summary>
+[Flags]
+public enum AgentModelCapabilities
+{
+    /// <summary>No model behavior is declared.</summary>
+    None = 0,
+
+    /// <summary>The model supports streamed textual responses.</summary>
+    StreamingText = 1,
+
+    /// <summary>The model supports function-based tool calls.</summary>
+    FunctionCalling = 2
+}
+
 /// <summary>Represents provider-neutral Agent content.</summary>
 public abstract record AgentContent;
 
@@ -198,6 +269,15 @@ public sealed record AgentTranscriptTurn
 {
     /// <summary>Initializes a complete transcript turn.</summary>
     public AgentTranscriptTurn(AgentRunId runId, ImmutableArray<AgentMessage> messages)
+        : this(runId, messages, null)
+    {
+    }
+
+    /// <summary>Initializes a complete transcript turn with its model identity.</summary>
+    public AgentTranscriptTurn(
+        AgentRunId runId,
+        ImmutableArray<AgentMessage> messages,
+        AgentModelIdentity? modelIdentity)
     {
         if (runId.Value == Guid.Empty)
         {
@@ -219,6 +299,7 @@ public sealed record AgentTranscriptTurn
 
         RunId = runId;
         Messages = messages;
+        ModelIdentity = modelIdentity;
     }
 
     /// <summary>Gets the run that produced this turn.</summary>
@@ -226,6 +307,9 @@ public sealed record AgentTranscriptTurn
 
     /// <summary>Gets all messages in provider order, including tool calls and results.</summary>
     public ImmutableArray<AgentMessage> Messages { get; }
+
+    /// <summary>Gets the configured model identity that produced the turn, when known.</summary>
+    public AgentModelIdentity? ModelIdentity { get; }
 }
 
 /// <summary>Represents the successful terminal result of one Agent run.</summary>
@@ -237,6 +321,17 @@ public sealed record AgentRunResult
         AgentMessage userMessage,
         AgentMessage assistantMessage,
         AgentTranscript transcript)
+        : this(runId, userMessage, assistantMessage, transcript, null)
+    {
+    }
+
+    /// <summary>Initializes a successful run result with its model identity.</summary>
+    public AgentRunResult(
+        AgentRunId runId,
+        AgentMessage userMessage,
+        AgentMessage assistantMessage,
+        AgentTranscript transcript,
+        AgentModelIdentity? modelIdentity)
     {
         if (runId.Value == Guid.Empty)
         {
@@ -247,6 +342,7 @@ public sealed record AgentRunResult
         UserMessage = userMessage ?? throw new ArgumentNullException(nameof(userMessage));
         AssistantMessage = assistantMessage ?? throw new ArgumentNullException(nameof(assistantMessage));
         Transcript = transcript ?? throw new ArgumentNullException(nameof(transcript));
+        ModelIdentity = modelIdentity;
     }
 
     /// <summary>Gets the run identifier.</summary>
@@ -260,6 +356,9 @@ public sealed record AgentRunResult
 
     /// <summary>Gets the transcript after commit.</summary>
     public AgentTranscript Transcript { get; }
+
+    /// <summary>Gets the configured model identity used throughout the run, when known.</summary>
+    public AgentModelIdentity? ModelIdentity { get; }
 }
 
 /// <summary>Represents one normalized event emitted by an Agent run.</summary>

@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using Maieutics.Agent;
+using Maieutics.Configuration;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,7 @@ namespace Maieutics.Jupyter;
 public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
 {
     private readonly IAgentSession session;
+    private readonly IMaieuticsModelProfileController? modelProfiles;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
     private readonly TimeProvider timeProvider;
@@ -20,18 +22,20 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
-        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), logger, timeProvider)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider)
     {
     }
 
     internal MaieuticsAgentKernelApplication(
         IAgentSession session,
         Func<MaieuticsAgentKernelOptions> getOptions,
+        IMaieuticsModelProfileController? modelProfiles,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
+        this.modelProfiles = modelProfiles;
         this.getOptions().Validate();
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -54,6 +58,12 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
             return JupyterExecuteResult.Ok;
         }
 
+        if (IsMaieuticsCommand(request.Code))
+        {
+            await ExecuteCommandAsync(context, request.Code, cancellationToken).ConfigureAwait(false);
+            return JupyterExecuteResult.Ok;
+        }
+
         try
         {
             var options = getOptions();
@@ -71,6 +81,119 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
             throw ToKernelException(exception);
         }
     }
+
+    private async ValueTask ExecuteCommandAsync(
+        JupyterExecutionContext context,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        if (modelProfiles is null)
+        {
+            throw Create("MaieuticsCommandError", "Model profile commands are not available in this host.");
+        }
+
+        var arguments = code.Split((char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (arguments.Length < 2 ||
+            !string.Equals(arguments[0], "%maieutics", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(arguments[1], "model", StringComparison.OrdinalIgnoreCase))
+        {
+            throw Create("MaieuticsCommandError", "Unknown Maieutics command.");
+        }
+
+        try
+        {
+            string output;
+            if (arguments.Length == 2 ||
+                arguments.Length == 3 && string.Equals(arguments[2], "current", StringComparison.OrdinalIgnoreCase))
+            {
+                output = RenderCurrent(modelProfiles.GetModelProfileSelection());
+            }
+            else if (arguments.Length == 3 &&
+                     string.Equals(arguments[2], "list", StringComparison.OrdinalIgnoreCase))
+            {
+                output = RenderList(modelProfiles.GetModelProfileSelection());
+            }
+            else if (arguments.Length == 4 &&
+                     string.Equals(arguments[2], "use", StringComparison.OrdinalIgnoreCase))
+            {
+                modelProfiles.SelectModelProfile(arguments[3]);
+                output = RenderCurrent(modelProfiles.GetModelProfileSelection());
+            }
+            else if (arguments.Length == 3 &&
+                     string.Equals(arguments[2], "reset", StringComparison.OrdinalIgnoreCase))
+            {
+                modelProfiles.ResetModelProfile();
+                output = RenderCurrent(modelProfiles.GetModelProfileSelection());
+            }
+            else
+            {
+                throw new ArgumentException("Unknown model command or invalid arguments.");
+            }
+
+            await context.DisplayAsync(
+                MimeBundle.FromMarkdown(output),
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (ArgumentException exception)
+        {
+            throw Create("MaieuticsCommandError", exception.Message);
+        }
+    }
+
+    private static bool IsMaieuticsCommand(string code)
+    {
+        var trimmed = code.AsSpan().TrimStart();
+        return trimmed.StartsWith("%maieutics", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string RenderCurrent(MaieuticsModelProfileSelection selection)
+    {
+        var profile = selection.Profiles.Single(profile => profile.IsSelected);
+        var selectionSource = selection.HasSessionOverride ? "session override" : "configured default";
+        return $"""
+                ### Current model
+
+                - Profile: `{EscapeCode(profile.Id)}` ({selectionSource})
+                - Source: `{EscapeCode(profile.SourceId)}`
+                - Provider: `{EscapeCode(profile.Provider)}`
+                - Model: `{EscapeCode(profile.Model)}`
+                """;
+    }
+
+    private static string RenderList(MaieuticsModelProfileSelection selection)
+    {
+        var output = new StringBuilder("### Model profiles\n\n");
+        foreach (var profile in selection.Profiles)
+        {
+            var markers = new List<string>(2);
+            if (profile.IsSelected)
+            {
+                markers.Add("selected");
+            }
+
+            if (profile.IsDefault)
+            {
+                markers.Add("default");
+            }
+
+            var suffix = markers.Count == 0 ? string.Empty : $" ({string.Join(", ", markers)})";
+            output.Append("- `")
+                .Append(EscapeCode(profile.Id))
+                .Append("`: `")
+                .Append(EscapeCode(profile.Provider))
+                .Append("` / `")
+                .Append(EscapeCode(profile.Model))
+                .Append("`, source `")
+                .Append(EscapeCode(profile.SourceId))
+                .Append('`')
+                .AppendLine(suffix);
+        }
+
+        return output.ToString();
+    }
+
+    private static string EscapeCode(string value) => value.Replace("`", "\\`", StringComparison.Ordinal);
 
     private async Task RenderTurnAsync(
         JupyterExecutionContext context,
@@ -205,6 +328,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
             "AgentToolError",
             "An Agent tool failed while processing the request."),
         AgentModelIterationLimitExceededException => Create("AgentModelIterationLimit", exception.Message),
+        AgentModelCapabilityException => Create("AgentModelCapabilityError", exception.Message),
         AgentUnsupportedResponseException => Create(
             "AgentUnsupportedResponse",
             "The model provider returned a response that this kernel does not support."),

@@ -35,11 +35,11 @@ product-specific Agent-to-Jupyter adapter and model-provider wiring.
 `Maieutics.Agent` is currently an internal product assembly and is not packed as a supported Agent SDK. Its boundary is
 kept provider- and host-neutral so that a future independent consumer can validate whether it should become one.
 
-`Maieutics.Providers.OpenAI` is an internal namespace in the executable that wires OpenAI Responses and Chat
-Completions into `IChatClient`. `Maieutics.Jupyter` is an executable-owned namespace that adapts Agent runs to the
-user-facing kernel. These are logical product modules, not independently published assemblies. Responses is the default
-OpenAI flavor. Both flavors currently send `store: false`; provider-side conversation IDs are not used as canonical
-session state.
+`Maieutics.Providers.OpenAI` and `Maieutics.Providers.Anthropic` are internal executable namespaces that wire OpenAI
+Responses, OpenAI Chat Completions, and Anthropic Messages into `IChatClient`. `Maieutics.Jupyter` is an executable-owned
+namespace that adapts Agent runs to the user-facing kernel. These are logical product modules, not independently
+published assemblies. Responses is the default OpenAI flavor. Both OpenAI flavors send `store: false`; provider-side
+conversation IDs are not used as canonical session state.
 
 Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already exist.
 The boundaries described below are target architectural boundaries. They may initially be represented by namespaces and
@@ -382,6 +382,15 @@ the notebook working directory. JSON reloads use complete validated snapshots an
 failure. Jupyter connection information is startup-only; reloadable Agent and presentation settings apply at operation
 boundaries.
 
+Model configuration uses named, case-insensitive `Sources` and `Profiles`. Sources own provider-specific credentials,
+endpoint, and API flavor; profiles reference a source and model ID. Every candidate catalog must construct all changed
+clients before atomic publication. Unchanged profile generations are reused, and retired generations remain alive until
+their final run lease ends. A Kernel-lifetime manual profile selection affects the next run, is not persisted, and falls
+back to the configured default if its profile is removed.
+
+`%maieutics model`, `list`, `current`, `use`, and `reset` cells are explicit Kernel control operations. They must not call
+a model, enter the canonical transcript, reveal credentials/endpoints, or alter an active run.
+
 The runtime should emit semantic events such as assistant text deltas, completed messages, permitted reasoning
 summaries, tool-call lifecycle events, rich values, warnings, typed failures, and input requests.
 
@@ -567,6 +576,9 @@ integration coverage.
 Use deterministic fake providers and tools. Cover plain and streamed answers, one or multiple tool calls, tool failure,
 input requests, cancellation, context compaction, provider capability differences, rich output mapping, and snapshot
 creation. Unit tests must not require a real model provider or external network access.
+
+For asynchronous exception assertions, invoke the operation through FluentAssertions `Awaiting(...)`. Do not assign an
+`async` lambda to a temporary delegate solely to call `delegate.Should().ThrowAsync(...)`.
 
 When Microsoft Agent Framework is involved, also cover early stream disposal, staging and commit, empty and unsupported
 responses, provider conversation-ID conflicts, one-run enforcement, and framework upgrade compatibility. A partially

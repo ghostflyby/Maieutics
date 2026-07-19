@@ -35,22 +35,35 @@ code defaults
 < command-line arguments
 ```
 
-For example, `Maieutics__Model__Name` overrides `MAIEUTICS_MODEL`, while `--model` overrides both.
+For example, `Maieutics__DefaultProfile` overrides `MAIEUTICS_PROFILE`, while `--profile` overrides both.
 
-## Model provider
+## Model sources and profiles
 
 ```json
 {
   "Maieutics": {
-    "Model": {
-      "Provider": "OpenAI",
-      "Name": "model-id"
-    },
-    "Providers": {
-      "OpenAI": {
+    "DefaultProfile": "gpt",
+    "Sources": {
+      "openai": {
+        "Provider": "OpenAI",
         "ApiFlavor": "Responses",
         "ApiKey": "",
         "Endpoint": null
+      },
+      "anthropic": {
+        "Provider": "Anthropic",
+        "ApiKey": "",
+        "Endpoint": null
+      }
+    },
+    "Profiles": {
+      "gpt": {
+        "Source": "openai",
+        "Model": "openai-model-id"
+      },
+      "claude": {
+        "Source": "anthropic",
+        "Model": "anthropic-model-id"
       }
     }
   }
@@ -59,14 +72,22 @@ For example, `Maieutics__Model__Name` overrides `MAIEUTICS_MODEL`, while `--mode
 
 | Setting | Environment alias | Command line | Default |
 |---|---|---|---|
-| `Maieutics:Model:Provider` | `MAIEUTICS_PROVIDER` | `--provider` | `OpenAI` |
-| `Maieutics:Model:Name` | `MAIEUTICS_MODEL` | `--model` | Required |
-| `Maieutics:Providers:OpenAI:ApiKey` | `OPENAI_API_KEY` | - | Required for OpenAI |
-| `Maieutics:Providers:OpenAI:Endpoint` | `OPENAI_BASE_URL` | - | OpenAI service endpoint |
-| `Maieutics:Providers:OpenAI:ApiFlavor` | `MAIEUTICS_OPENAI_API` | `--openai-api` | `Responses` |
+| `Maieutics:DefaultProfile` | `MAIEUTICS_PROFILE` | `--profile` | Required |
+| `Maieutics:Sources:openai:ApiKey` | `OPENAI_API_KEY` | - | Required for OpenAI |
+| `Maieutics:Sources:openai:Endpoint` | `OPENAI_BASE_URL` | - | OpenAI service endpoint |
+| `Maieutics:Sources:openai:ApiFlavor` | `MAIEUTICS_OPENAI_API` | `--openai-api` | `Responses` |
+| `Maieutics:Sources:anthropic:ApiKey` | `ANTHROPIC_API_KEY` | - | Required for Anthropic |
+| `Maieutics:Sources:anthropic:Endpoint` | `ANTHROPIC_BASE_URL` | - | Anthropic service endpoint |
 
-The current executable registers only the `OpenAI` provider factory. Supported OpenAI API flavors are `Responses` and
-`ChatCompletions`. Both explicitly send `store: false`; the canonical transcript remains local and provider-neutral.
+Source and profile identifiers are case-insensitive and must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. A source owns
+credentials, endpoint, API flavor, and connection resources. A profile selects one source and one provider model ID.
+Multiple profiles may share a source.
+
+The executable registers OpenAI and Anthropic factories. OpenAI supports `Responses` and `ChatCompletions`; both send
+`store: false`. Anthropic uses the Messages API. Neither provider owns the canonical conversation history.
+
+The legacy `Model` and `Providers:OpenAI` structure, together with `--provider`, `--model`, and `MAIEUTICS_MODEL`, is
+accepted only when the named structure is completely absent. Mixing legacy and named model configuration is rejected.
 
 Credentials may be stored in a protected user configuration file, but environment variables or an external secret
 injection mechanism are preferred. Environment variable changes require a process restart.
@@ -78,7 +99,7 @@ immutable runtime configuration version. Invalid JSON, invalid limits, unsupport
 construction failures are logged and rejected; the last valid version remains active. Repairing the file triggers a
 normal later update.
 
-Each Agent run captures one model client and options lease. Therefore these settings apply to the next turn and never
+Each Agent run captures one profile generation and options lease. Therefore these settings apply to the next turn and never
 change during an active model/tool loop:
 
 - provider, model, API flavor, endpoint, and API key;
@@ -88,8 +109,25 @@ change during an active model/tool loop:
 Jupyter flush settings are captured at the beginning of each execution. `Jupyter:ConnectionFile` is captured once at
 startup; changing it only logs that a restart is required.
 
-When Provider settings change, Maieutics constructs the replacement client before publishing the new configuration.
-The old client is retained until every active run lease has been released.
+Every added or changed profile client is constructed before a candidate catalog is published. One construction failure
+rejects the entire candidate. Unchanged profile generations are reused; removed or replaced clients remain alive until
+their final active run lease has been released.
+
+## Notebook model commands
+
+The following control cells select the profile used by the next Agent run:
+
+```text
+%maieutics model
+%maieutics model list
+%maieutics model current
+%maieutics model use <profile>
+%maieutics model reset
+```
+
+Control cells do not call a model and do not enter the Agent transcript. A manual selection lasts for the Kernel
+lifetime while that profile exists. Configuration default changes affect sessions without an override; removing the
+selected profile clears the override and falls back to the new default. Commands never display credentials or endpoints.
 
 ## Agent limits
 
@@ -115,7 +153,5 @@ Example:
 OPENAI_API_KEY=... \
 maieutics \
   --connection-file /path/to/connection.json \
-  --provider OpenAI \
-  --model model-id \
-  --openai-api Responses
+  --profile gpt
 ```

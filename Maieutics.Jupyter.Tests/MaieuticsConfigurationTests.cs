@@ -304,8 +304,8 @@ public sealed class MaieuticsConfigurationTests
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var host = builder.Build();
 
-            var resolve = () => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
-            resolve.Should().Throw<InvalidOperationException>()
+            host.Services.Invoking(services => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+                .Should().Throw<InvalidOperationException>()
                 .WithMessage($"*{unknownField}*");
         }
         finally
@@ -558,8 +558,9 @@ public sealed class MaieuticsConfigurationTests
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(new TrackingChatClientFactory());
             using var host = builder.Build();
 
-            var resolve = () => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
-            resolve.Should().Throw<InvalidOperationException>()
+            host.Services.Invoking(services =>
+                    services.GetRequiredService<MaieuticsRuntimeConfiguration>()).Should()
+                .Throw<InvalidOperationException>()
                 .WithMessage("*cannot be combined*");
         }
         finally

@@ -8,14 +8,6 @@ public sealed record AgentRunProfile
     private const AgentModelCapabilities CompatibilityCapabilities =
         AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
-    /// <summary>Initializes a run profile.</summary>
-    /// <param name="chatClient">The model client used for every model invocation in the run.</param>
-    /// <param name="options">The instructions and limits applied to the run.</param>
-    public AgentRunProfile(IChatClient chatClient, AgentSessionOptions options)
-        : this(chatClient, options, null, CompatibilityCapabilities)
-    {
-    }
-
     /// <summary>Initializes a run profile with provider-neutral model metadata.</summary>
     /// <param name="chatClient">The model client used for every model invocation in the run.</param>
     /// <param name="options">The instructions and limits applied to the run.</param>
@@ -24,8 +16,8 @@ public sealed record AgentRunProfile
     public AgentRunProfile(
         IChatClient chatClient,
         AgentSessionOptions options,
-        AgentModelIdentity? modelIdentity,
-        AgentModelCapabilities capabilities)
+        AgentModelIdentity? modelIdentity = null,
+        AgentModelCapabilities capabilities = CompatibilityCapabilities)
     {
         if ((capabilities & ~CompatibilityCapabilities) != 0)
         {

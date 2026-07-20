@@ -129,6 +129,9 @@ Control cells do not call a model and do not enter the Agent transcript. A manua
 lifetime while that profile exists. Configuration default changes affect sessions without an override; removing the
 selected profile clears the override and falls back to the new default. Commands never display credentials or endpoints.
 
+The Kernel provides Jupyter completion for the `%maieutics` command, model subcommands, and the currently configured
+profile IDs accepted by `%maieutics model use <profile>`.
+
 ## Agent limits
 
 | Setting | Default |

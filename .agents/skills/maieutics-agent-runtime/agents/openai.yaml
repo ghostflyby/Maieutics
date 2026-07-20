@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maieutics Agent Runtime"
+  short_description: "Agent runs, transcripts, tools, providers, and adapters"
+  default_prompt: "Apply the Maieutics Agent runtime boundaries to this change."

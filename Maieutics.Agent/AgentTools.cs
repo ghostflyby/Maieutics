@@ -10,7 +10,7 @@ namespace Maieutics.Agent;
 public readonly record struct AgentToolCallId
 {
     /// <summary>Initializes a tool call identifier.</summary>
-    public AgentToolCallId(Guid value)
+    private AgentToolCallId(Guid value)
     {
         if (value == Guid.Empty)
         {

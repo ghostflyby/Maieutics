@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maieutics Jupyter Protocol"
+  short_description: "Jupyter wire, Client, Kernel, and Deno interoperability"
+  default_prompt: "Apply the Maieutics Jupyter protocol workflow to this change."

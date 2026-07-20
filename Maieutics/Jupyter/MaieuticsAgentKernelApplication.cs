@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter;
 
-public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
+public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider
 {
     private readonly IAgentSession session;
     private readonly IMaieuticsModelProfileController? modelProfiles;
@@ -82,6 +82,15 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         }
     }
 
+    public ValueTask<JupyterCompletionResult> CompleteAsync(
+        JupyterCompleteRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var profiles = modelProfiles?.GetModelProfileSelection().Profiles ?? [];
+        return ValueTask.FromResult(MaieuticsCommandLanguage.Complete(request, profiles));
+    }
+
     private async ValueTask ExecuteCommandAsync(
         JupyterExecutionContext context,
         string code,
@@ -95,8 +104,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         var arguments = code.Split((char[]?)null,
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (arguments.Length < 2 ||
-            !string.Equals(arguments[0], "%maieutics", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(arguments[1], "model", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(arguments[0], MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(arguments[1], MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase))
         {
             throw Create("MaieuticsCommandError", "Unknown Maieutics command.");
         }
@@ -105,23 +114,26 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
         {
             string output;
             if (arguments.Length == 2 ||
-                arguments.Length == 3 && string.Equals(arguments[2], "current", StringComparison.OrdinalIgnoreCase))
+                arguments.Length == 3 && string.Equals(
+                    arguments[2],
+                    MaieuticsCommandLanguage.Current,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 output = RenderCurrent(modelProfiles.GetModelProfileSelection());
             }
             else if (arguments.Length == 3 &&
-                     string.Equals(arguments[2], "list", StringComparison.OrdinalIgnoreCase))
+                     string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
             {
                 output = RenderList(modelProfiles.GetModelProfileSelection());
             }
             else if (arguments.Length == 4 &&
-                     string.Equals(arguments[2], "use", StringComparison.OrdinalIgnoreCase))
+                     string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
             {
                 modelProfiles.SelectModelProfile(arguments[3]);
                 output = RenderCurrent(modelProfiles.GetModelProfileSelection());
             }
             else if (arguments.Length == 3 &&
-                     string.Equals(arguments[2], "reset", StringComparison.OrdinalIgnoreCase))
+                     string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
             {
                 modelProfiles.ResetModelProfile();
                 output = RenderCurrent(modelProfiles.GetModelProfileSelection());
@@ -144,7 +156,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication
     private static bool IsMaieuticsCommand(string code)
     {
         var trimmed = code.AsSpan().TrimStart();
-        return trimmed.StartsWith("%maieutics", StringComparison.OrdinalIgnoreCase);
+        return trimmed.StartsWith(MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string RenderCurrent(MaieuticsModelProfileSelection selection)

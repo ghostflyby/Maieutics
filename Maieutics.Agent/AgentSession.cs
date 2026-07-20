@@ -959,7 +959,7 @@ public sealed class AgentSession : IAgentSession
         {
             try
             {
-                cancellation.Cancel();
+                await cancellation.CancelAsync();
             }
             catch (ObjectDisposedException)
             {
@@ -976,7 +976,7 @@ public sealed class AgentSession : IAgentSession
                 return;
             }
 
-            cancellation.Cancel();
+            await cancellation.CancelAsync();
             await backgroundTask.ConfigureAwait(false);
             cancellation.Dispose();
         }
@@ -1084,14 +1084,15 @@ file static class ToolJson
         {
             AgentToolSuccess success => new ToolResultEnvelope(
                 "ok",
-                success.Contents.Select(static content => content switch
+                [
+                    ..success.Contents.Select(static content => content switch
                     {
                         AgentTextContent text => new ToolResultContentEnvelope("text", Text: text.Text),
                         AgentJsonContent json => new ToolResultContentEnvelope("json", Value: json.Value),
                         _ => throw new AgentUnsupportedResponseException(
                             $"Tool result content of type '{content.GetType().Name}' is not supported.")
                     })
-                    .ToImmutableArray()),
+                ]),
             AgentToolFailure failure => new ToolResultEnvelope(
                 "error",
                 Code: failure.Code,

@@ -1,59 +1,43 @@
 # AGENTS.md
 
-## Project purpose
+## Repository purpose
 
-This repository is building a notebook-native LLM agent exposed as a Jupyter kernel.
+Maieutics is a notebook-native LLM agent exposed as a Jupyter kernel.
 
-The intended user model is:
+The user model is:
 
-- one executable notebook cell is one submitted agent turn;
+- one executable notebook cell submits one Agent turn;
 - the kernel owns the authoritative live conversation state;
 - assistant text, tool activity, rich values, errors, and input requests are emitted through Jupyter messages;
-- existing notebook frontends provide editing, execution, history, and rich rendering;
-- an `.ipynb` file is a portable snapshot of the interaction, not the runtime database.
+- notebook frontends provide editing, execution, history, and rich rendering;
+- an `.ipynb` file is a portable interaction snapshot, not the runtime database.
 
-The generic Jupyter implementation must remain reusable independently of the agent runtime. Agent-specific behavior must
-be composed above the Jupyter protocol and kernel-host layers.
+The reusable Jupyter implementation must remain independent of the Agent runtime. Agent-specific behavior is composed
+above the protocol and kernel-host layers.
 
-## Current solution
+## Solution structure
 
-The repository currently contains:
+| Path | Role |
+|---|---|
+| `Maieutics.Jupyter.Shared` | Reusable, transport-independent Jupyter wire models and serialization |
+| `Maieutics.Jupyter.Client` | Reusable Jupyter client, protocol session, NetMQ transport, and local kernel manager |
+| `Maieutics.Jupyter.Kernel` | Reusable server-side Jupyter host and NetMQ transport |
+| `Maieutics.Jupyter.Tests` | Jupyter unit, transport, interoperability, and product integration tests |
+| `Maieutics.Agent` | Jupyter-independent Agent facade, run lifecycle, transcript, and tool runtime |
+| `Maieutics.Agent.Tests` | Agent runtime unit tests |
+| `Maieutics` | NativeAOT executable composition root, configuration, providers, and Agent-to-Jupyter adapter |
 
-- `Maieutics.Jupyter.Shared`
-- `Maieutics.Jupyter.Client`
-- `Maieutics.Jupyter.Kernel`
-- `Maieutics.Jupyter.Tests`
-- `Maieutics.Agent`
-- `Maieutics.Agent.Tests`
-- `Maieutics`
+`Maieutics.Agent` is currently an internal, non-packable product assembly rather than a supported Agent SDK. Its public
+boundary stays provider- and host-neutral so independent use can be evaluated later. Product-specific provider and
+Jupyter adapter namespaces remain in the executable until they have an independent consumer, publication target,
+deployment boundary, target framework, or dependency boundary.
 
-The first three projects are reusable Jupyter libraries. `Maieutics.Jupyter.Tests` owns their automated tests and
-cross-layer Agent/Jupyter integration tests. `Maieutics.Agent` owns the Jupyter-independent Agent facade and runtime;
-`Maieutics.Agent.Tests` owns its unit tests. `Maieutics` is the executable composition root and contains the
-product-specific Agent-to-Jupyter adapter and model-provider wiring.
-
-`Maieutics.Agent` is currently an internal product assembly and is not packed as a supported Agent SDK. Its boundary is
-kept provider- and host-neutral so that a future independent consumer can validate whether it should become one.
-
-`Maieutics.Providers.OpenAI` and `Maieutics.Providers.Anthropic` are internal executable namespaces that wire OpenAI
-Responses, OpenAI Chat Completions, and Anthropic Messages into `IChatClient`. `Maieutics.Jupyter` is an executable-owned
-namespace that adapts Agent runs to the user-facing kernel. These are logical product modules, not independently
-published assemblies. Responses is the default OpenAI flavor. Both OpenAI flavors send `store: false`; provider-side
-conversation IDs are not used as canonical session state.
-
-Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already exist.
-The boundaries described below are target architectural boundaries. They may initially be represented by namespaces and
-internal abstractions, but dependency direction must be preserved from the first implementation.
-
-Do not place reusable protocol, runtime, tool, or persistence logic in `Maieutics`. The executable may contain
-product-specific provider construction, Agent-to-Jupyter adaptation, configuration, dependency registration, startup,
-shutdown, and process-level hosting. Extract an adapter into a project only when it has an independent consumer,
-publication target, deployment boundary, target framework, or dependency boundary that cannot be expressed safely as
-an executable-owned namespace.
+Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already
+exist. Preserve those conceptual boundaries without creating assemblies merely to represent namespaces.
 
 ## Dependency direction
 
-The current hard dependency rule is:
+The reusable Jupyter dependency rule is:
 
 ```text
 Maieutics.Jupyter.Shared
@@ -64,591 +48,165 @@ Maieutics.Jupyter.Shared
 
 `Client` and `Kernel` must never reference each other.
 
-The target Agent dependency direction is conceptually:
+The Agent composition direction is:
 
 ```text
 IChatClient provider adapters
     |
     v
-Maieutics.Agent internal Microsoft Agent Framework orchestration
+Maieutics.Agent internal orchestration
     |
     v
-Maieutics.Agent public facade
+Maieutics.Agent facade
     ^
     |-- tool adapters
     `-- persistence adapters
 
-Maieutics executable composition root
-    |-- product-specific IChatClient provider wiring
+Maieutics executable
+    |-- product-specific provider wiring
     `-- Agent-to-Jupyter adapter
             |-- Maieutics.Agent
             `-- Maieutics.Jupyter.Kernel
 ```
 
-The exact future project names are not prescribed by this document. The boundaries are.
+The Agent runtime must not depend on Jupyter. Jupyter libraries must not depend on Agent concepts. Microsoft Agent
+Framework is an internal implementation dependency of `Maieutics.Agent`; its types must not cross into Jupyter,
+provider-neutral public contracts, Deno IPC, worker protocols, or persisted formats.
 
-The agent runtime must not depend on Jupyter. The Jupyter protocol layer must not depend on agent concepts. The adapter
-that hosts the runtime behind `JupyterKernelHost` is the only place that should understand both domains.
+Do not solve a boundary problem with a reverse project reference. Put a small interface in the lower-level owning layer.
 
-Microsoft Agent Framework is an internal implementation dependency of `Maieutics.Agent`. Framework types must not cross
-into Jupyter libraries, notebook presentation contracts, Deno extension IPC, worker protocols, or persisted Maieutics
-formats.
-
-Do not solve a boundary problem by adding a reverse project reference. Prefer a small interface in the lower-level
-owning layer.
-
-## Maieutics.Jupyter.Shared
-
-`Maieutics.Jupyter.Shared` is the transport-independent Jupyter wire-protocol foundation.
-
-Allowed responsibilities:
-
-- classic Jupyter connection-file models and validation;
-- channel names;
-- message headers and parent headers;
-- wire envelopes and routing identities;
-- multipart frame encoding and decoding;
-- HMAC signing and verification;
-- protocol message DTOs;
-- MIME bundles and binary buffers;
-- JSON serialization contracts;
-- message identifiers and correlation primitives;
-- protocol exceptions and compatibility helpers.
-
-Forbidden responsibilities:
-
-- NetMQ socket creation or lifecycle;
-- client request orchestration;
-- kernel request dispatch;
-- process launching;
-- agent execution;
-- provider, tool, or persistence concepts;
-- notebook UI state reduction.
-
-All Jupyter wire-format types belong here. Preserve routing identities in the wire envelope rather than mixing them into
-semantic message content.
-
-Use source-generated `System.Text.Json` metadata for protocol DTOs. Avoid reflection-heavy serialization in protocol hot
-paths.
-
-Prefer immutable records and explicit field names. Preserve unknown fields where forward compatibility or round-tripping
-requires it. Keep binary buffers outside JSON.
-
-Validate required fields, frame counts, delimiters, signature schemes, and HMAC at the wire boundary. Unsupported
-CurveZMQ or signature schemes must fail explicitly rather than degrade silently.
-
-## Maieutics.Jupyter.Client
-
-`Maieutics.Jupyter.Client` is a reusable client for connecting to Jupyter kernels. It must remain usable without the
-agent runtime or `Maieutics.Jupyter.Kernel`.
-
-The project has three internal layers.
-
-### Client transport
-
-The transport layer owns raw connection and socket behavior:
-
-- load validated connection information;
-- create shell, control, stdin, IOPub, and heartbeat sockets;
-- serialize and deserialize `JupyterWireMessage` values;
-- send outgoing wire messages;
-- expose one read-only incoming stream;
-- own socket thread affinity, polling, shutdown, and disposal;
-- surface backpressure and transport failure.
-
-All NetMQ sockets must be created, polled, used, and disposed by their owning I/O thread. NetMQ-specific types must not
-escape the transport implementation.
-
-The transport does not own request/reply semantics, execution aggregation, or UI concepts.
-
-### Client protocol
-
-The protocol session owns Jupyter behavior above the raw transport:
-
-- message ID generation;
-- pending request registration and completion;
-- reply matching by parent message ID, channel, and expected reply type;
-- routing IOPub output to the corresponding execution;
-- execution completion from protocol state, including reply and parented idle;
-- stdin request tracking and parent-header preservation;
-- late-output publication;
-- cancellation, disconnect, and terminal-error propagation;
-- global event fan-out.
-
-Never correlate an execution by execution count. Execution count is display/history metadata, not a request identity.
-
-Unknown messages must become controlled protocol events or errors according to their context. They must not crash the
-receive loop.
-
-### Public client API
-
-The public API exposes stable .NET semantics:
-
-- request/reply operations use `Task<TReply>`;
-- streaming execution output uses `IAsyncEnumerable<T>`;
-- broadcast event subscriptions use independent `IAsyncEnumerable<T>` streams;
-- high-frequency internal sends may use `ValueTask` when justified;
-- connection starts through an asynchronous factory, not constructor side effects.
-
-`Channel<T>` is an internal implementation detail. Never expose a writable channel from a public API.
-
-Events are allowed only in optional UI or traditional .NET adapter layers. They are not the core asynchronous
-abstraction.
-
-Execution output streams are single-consumer unless an API explicitly promises broadcast semantics. Global event
-subscribers must not consume each other's events.
-
-Local cancellation cancels local waiting. Kernel interruption is a separate, explicit manager or control-channel
-operation.
-
-## Maieutics.Jupyter.Kernel
-
-`Maieutics.Jupyter.Kernel` is the reusable server-side Jupyter host. Kernel authors should implement application
-capabilities without touching NetMQ or wire envelopes.
-
-The kernel transport owns:
-
-- ROUTER shell, control, and stdin channels;
-- XPUB IOPub publication;
-- REP heartbeat handling;
-- routing identities and multipart framing;
-- socket polling, thread affinity, and deterministic disposal;
-- bounded incoming and outgoing transport queues.
-
-`JupyterKernelHost` owns:
-
-- request dispatch;
-- shell serialization;
-- independently responsive control handling;
-- execution count;
-- busy, idle, starting, and welcome publication;
-- execution cancellation ownership;
-- interrupt and shutdown behavior;
-- conversion of application results and failures into Jupyter replies and outputs.
-
-Application capability interfaces own only domain behavior such as execution, completion, inspection, and completeness
-checks. They must not construct raw Jupyter frames or manage socket state.
-
-For each shell request, preserve the externally observable order:
-
-```text
-busy -> handler and parented output -> reply -> idle
-```
-
-`idle` must be sent from a `finally` path when a request entered the busy state. Control requests must remain responsive
-while a long shell execution is running.
-
-Interrupt cooperatively cancels the active execution through an owned `CancellationTokenSource`. Child runtimes may be
-terminated when cooperative cancellation exceeds the configured deadline.
-
-Shutdown sends its reply before stopping the host.
-
-## Jupyter compatibility
-
-The current protocol target is the classic Jupyter messaging protocol 5.5 and classic connection files.
-
-Compatibility rules:
-
-- the local kernel host advertises the protocol version it actually implements;
-- the client may accept older protocol versions announced by real kernels when the used messages are compatible;
-- protocol compatibility behavior must have an automated test;
-- readers should tolerate unknown optional fields;
-- writers should avoid unstable or unsupported fields;
-- unknown message types must not terminate transport receive loops;
-- unsupported features must return protocol-valid errors or fallback statuses.
-
-The current core includes execution, IOPub output, stdin, heartbeat, interrupt, shutdown, language services, and display
-update semantics. Do not claim support for optional Jupyter features until their full Client/Shared/Kernel behavior is
-tested.
-
-Unless a task explicitly expands scope, do not introduce history, comm, debug, subshell, Jupyter 5.6 registration,
-automatic reconnect, remote provisioners, or CurveZMQ as incidental work.
-
-## Core invariants
+## Global invariants
 
 Every change must preserve these invariants:
 
 1. The kernel owns the authoritative live conversation history.
-2. One executable cell corresponds to one submitted agent turn.
-3. Requests are correlated by Jupyter message ID, channel, and reply type where applicable.
+2. One ordinary executable cell corresponds to one submitted Agent turn.
+3. Jupyter requests are correlated by message ID, channel, and expected reply type where applicable.
 4. Shell execution is serialized unless explicit parallel semantics are designed and tested.
-5. Control interrupt and shutdown do not wait behind shell execution.
-6. IOPub output retains the causal parent message ID and wire order.
-7. Busy is published before turn output; idle is published after completed turn output.
-8. Completion is based on protocol state, never fixed delays or guessed ordering.
-9. Cancellation is cooperative through all layers and may escalate to child-process termination.
-10. Raw NetMQ frames do not cross the transport boundary.
-11. Provider-specific objects do not cross provider adapters.
-12. Tool results stay structured until an output adapter renders them.
+5. Control interrupt and shutdown remain responsive during shell execution.
+6. IOPub output retains causal parent IDs and wire order.
+7. Busy precedes parented output; reply precedes idle; idle is emitted from a `finally` path.
+8. Completion follows protocol state, never fixed delays or guessed ordering.
+9. Cancellation is cooperative through all layers and may escalate to owned child-process termination.
+10. Raw NetMQ frames do not cross transport boundaries.
+11. Provider SDK objects do not cross provider adapters.
+12. Tool results remain structured until an output adapter renders them.
 13. Notebook snapshot creation does not mutate the active session.
-14. Binary data remains binary until the target Jupyter representation requires encoding.
-15. Disposal stops owned loops, closes sockets, completes streams, and fails pending operations once.
-16. Backpressure never silently drops protocol messages.
+14. Binary data remains binary until its target Jupyter representation requires encoding.
+15. Disposal stops owned loops, closes sockets, completes streams, and fails pending operations exactly once.
+16. Backpressure never silently drops protocol messages or Agent events.
 17. Unknown protocol messages cannot crash long-running receive loops.
-18. A tool failure remains a typed failure within the current turn unless the runtime itself is unusable.
+18. Expected tool failures remain typed and recoverable within a turn unless the runtime itself is unusable.
 
-## Concurrency and lifetime
+Use structured concurrency. Every long-lived loop or child process needs an owner, cancellation source, completion task,
+and deterministic disposal path. Observe background exceptions. Do not hold locks while awaiting provider streams, tool
+calls, stdin, bounded queues, transport sends, or process exit. Multi-stage shutdown uses one total timeout budget.
 
-Use structured concurrency. Every long-lived loop or child process must have a clear owner, cancellation source,
-completion task, and disposal path.
+## Compatibility boundaries
 
-The kernel host owns channel receive loops, shell dispatch, control dispatch, IOPub publication, heartbeat, and
-child-runtime supervision.
+The Jupyter target is classic messaging protocol 5.5 and classic connection files. Readers tolerate unknown optional
+fields and compatible older protocol announcements; writers avoid unsupported fields. Unsupported capabilities return
+protocol-valid errors or fallback statuses. CurveZMQ and unsupported signature schemes fail explicitly.
 
-The client transport owns its socket thread and polling lifetime. The client protocol session owns routing and pending
-operation lifetimes.
+Unless explicitly requested, do not add history, comm, debug, subshell, Jupyter 5.6 registration, automatic reconnect,
+remote provisioners, or another ZeroMQ implementation.
 
-Avoid fire-and-forget tasks. Background task exceptions must be observed and propagated through the owning component's
-terminal state.
+The canonical Agent transcript is local and provider-neutral. Provider-side conversation state must not silently replace
+it. Disable provider storage where supported. Do not introduce Agent Framework Workflows, A2A, AG-UI, Durable Task, MCP,
+shell tools, or persistence providers without a concrete requirement and architecture review.
 
-Use bounded queues whenever producers can outrun consumers. Define queue capacity and overflow behavior. A full protocol
-queue must terminate the affected connection with a typed backpressure failure; it must not discard messages.
+The intended TypeScript runtime is a supervised real `deno jupyter` child connected through the reusable Client.
+Independent Deno extensions use a separate versioned IPC protocol; they are not Agent tools or MCP servers and do not
+reuse the Jupyter connection merely for permissions. Treat Deno execution as privileged, allowlist its environment, and
+do not describe it as an untrusted-code sandbox.
 
-Do not hold locks while awaiting:
+The live in-memory session is authoritative. Notebook snapshots and optional runtime state are separate persistence
+forms. Version persisted runtime and IPC formats, tolerate unknown fields, and document migrations for breaking changes.
 
-- provider streams;
-- tool invocation;
-- stdin replies;
-- bounded queue capacity;
-- transport sends;
-- child-process exit.
+## Security and errors
 
-Terminal transitions such as startup cancellation, socket-owner failure, backpressure, disconnect, and concurrent
-disposal must complete at most once. All pending sends, pings, requests, executions, and streams must observe the same
-terminal cause promptly.
-
-Use one total timeout budget for multi-stage shutdown flows. Do not reset the full timeout independently for request,
-process exit, forced termination, and cleanup.
-
-## Agent runtime target
-
-The agent runtime is independent of Jupyter and owns:
-
-- authoritative conversation history;
-- conversion of cell input into a turn request;
-- context construction and compaction;
-- provider selection and capability negotiation;
-- tool registration and invocation;
-- provider tool-call continuation;
-- cancellation and turn state;
-- normalized semantic output events;
-- replay and snapshot models.
-
-`Microsoft.Extensions.AI.IChatClient` is the primary model-provider abstraction. OpenAI Chat Completions, OpenAI
-Responses, Anthropic, Google, and future providers should be integrated as dedicated `IChatClient` implementations or
-adapters. Do not introduce a parallel `IModelClient` that merely mirrors `IChatClient`.
-
-`Microsoft.Agents.AI.AIAgent`, `ChatClientAgent`, `AgentSession`, response updates, context providers, and history
-providers may be used internally. The stable Maieutics boundary remains its own `IAgentSession`, `IAgentRun`, events,
-transcript, tool, and capability contracts.
-
-Maieutics, not Agent Framework, owns these externally observable semantics:
-
-- starting a run reserves the session immediately;
-- one mutating run is active per session;
-- input, response, history, event, and artifact limits;
-- cancellation and terminal completion;
-- normalized event types and correlation IDs;
-- validation and atomic commit of the canonical transcript.
-
-`StartTurnAsync` starts work independently of event enumeration. `IAgentRun.Events` is a bounded single-consumer stream;
-producers wait for capacity, and a caller that stops consuming must cancel or dispose the run. `Completion` is the only
-terminal success or failure boundary and must not complete before the session reservation is released.
-
-Each run captures one provider-neutral `AgentRunProfile` lease containing its `IChatClient` and immutable options.
-Provider, model, prompt, and limit changes may apply to the next run but must never replace the client or options inside
-an active model/tool loop. Retired provider clients remain alive until every run lease has been released.
-
-Framework history completion is only a staging point. Use a Maieutics-owned staging `ChatHistoryProvider`: load committed
-history before invocation, stage request and response messages after framework completion, and promote them only after
-the outer run validates the complete result. Empty or unsupported responses, policy rejection, output limits,
-cancellation, provider failure, and aborting tool failure must discard the staged turn.
-
-Function-calling runs use an explicitly configured, per-run `FunctionInvokingChatClient`. Keep calls serial unless a
-future policy and transcript design explicitly permits concurrency. Maieutics must enforce actual provider-iteration,
-tool-call, argument-size, result-size, and progress-event budgets independently of framework counter conventions.
-
-Do not assume framework history staging contains every intermediate function-loop message. Record the provider
-iterations inside the function-invoking decorator and commit a complete `AgentTranscriptTurn`: user first, final
-assistant last, with assistant tool-call and tool-result messages preserved in order between them.
-
-Pass an explicitly composed `IChatClient` pipeline to `ChatClientAgent`. Initially use `UseProvidedChatClientAsIs` so
-default function invocation, approval, message injection, or per-service-call history behavior cannot acquire ownership
-without an explicit design and tests.
-
-The executable selects one external `maieutics.json`: explicit `--config`, then `MAIEUTICS_CONFIG`, then an existing
-file beside the executable, otherwise the platform user application-data path. Never load configuration implicitly from
-the notebook working directory. JSON reloads use complete validated snapshots and retain the last-known-good version on
-failure. Jupyter connection information is startup-only; reloadable Agent and presentation settings apply at operation
-boundaries.
-
-Model configuration uses named, case-insensitive `Sources` and `Profiles`. Sources own provider-specific credentials,
-endpoint, and API flavor; profiles reference a source and model ID. Every candidate catalog must construct all changed
-clients before atomic publication. Unchanged profile generations are reused, and retired generations remain alive until
-their final run lease ends. A Kernel-lifetime manual profile selection affects the next run, is not persisted, and falls
-back to the configured default if its profile is removed.
-
-`%maieutics model`, `list`, `current`, `use`, and `reset` cells are explicit Kernel control operations. They must not call
-a model, enter the canonical transcript, reveal credentials/endpoints, or alter an active run.
-
-The runtime should emit semantic events such as assistant text deltas, completed messages, permitted reasoning
-summaries, tool-call lifecycle events, rich values, warnings, typed failures, and input requests.
-
-The Agent-to-Jupyter adapter maps these semantic events to Jupyter messages. Runtime code must not know about NetMQ,
-routing identities, multipart frames, or notebook frontend state.
-
-`IChatClient` provider adapters must:
-
-- translate `ChatMessage`, `AIContent`, tools, and options to provider APIs;
-- preserve streaming content needed by the Agent runtime;
-- preserve opaque provider identifiers needed for continuation;
-- report capabilities and token usage;
-- map provider failures into typed runtime errors.
-
-Provider response objects, SDK types, and authentication types must not leak into the conversation model, tool runtime,
-or Jupyter host.
-
-Use a Maieutics-owned capability descriptor. Do not assume every provider supports tools, reasoning summaries,
-multimodal inputs, continuation IDs, server-side history, or identical streaming behavior.
-
-The canonical transcript is local and provider-neutral. The default model profile must not allow a returned provider
-conversation ID to silently disable local history. Disable provider-side conversation storage where supported. Any
-future provider-managed acceleration mode must independently retain the canonical transcript and define replay, expiry,
-provider switching, and recovery.
-
-Do not adopt Agent Framework Workflows, hosting, A2A, AG-UI, Durable Task, MCP, shell tools, or persistence providers
-without a concrete requirement and an independent architecture review.
-
-## Tool runtime target
-
-Tools are invoked by the agent runtime, not directly by the notebook frontend.
-
-The tool subsystem owns:
-
-- descriptors and argument schemas;
-- argument validation;
-- invocation dispatch;
-- cancellation;
-- structured and MIME results;
-- bounded execution logs;
-- approval and policy hooks where required.
-
-`IAgentTool`, descriptors, cloned JSON arguments, context, outcomes, contents, and lifecycle events are Maieutics-owned
-contracts. Framework `AIFunction` values are internal adapters only. Expected `AgentToolFailure` values are returned to
-the model as stable JSON and may be recovered within the turn. Unknown tools, malformed arguments, configured limit
-violations, and unexpected tool exceptions terminate and roll back the entire turn while retaining already published
-partial events.
-
-Do not flatten a typed or rich result to plain text before the Jupyter output boundary. Preserve structured values and
-attach a useful `text/plain` fallback when rendering custom MIME.
-
-Treat tool input and output as untrusted. Apply explicit filesystem, workspace, network, process, and environment
-policies in the tool implementation.
-
-## Deno runtime target
-
-The primary stateful TypeScript REPL is a real `deno jupyter` kernel. The .NET process remains the user-facing Jupyter
-kernel and connects to Deno through `Maieutics.Jupyter.Client`. One Agent session owns one Deno REPL session by default.
-
-The Deno adapter owns process startup, portable kernelspec resolution, connection-file lifecycle, readiness, heartbeat,
-execution, stdin, interrupt, shutdown, forced termination, and cleanup. It maps Deno Client outputs into Maieutics model
-content and ordered notebook presentation events. Raw Deno Jupyter headers, identities, and wire messages never cross the
-adapter.
-
-Independent Deno script extensions use a separate versioned IPC protocol for REPL contributions and lifecycle hooks.
-They are not Agent tools, are not MCP servers, and do not share the Deno Jupyter connection merely to reuse permissions.
-
-Pass only explicitly allowlisted environment variables to Deno processes. Do not inherit the complete kernel
-environment by default. Treat `deno jupyter` as privileged execution, not an untrusted-code sandbox.
-
-The existing real Deno Jupyter kernel test remains an interoperability test for the reusable Client. Its kernelspec is a
-test asset at `Maieutics.Jupyter.Tests/TestData/kernels/deno/kernel.json`, resolved from the test output directory.
-Tests must not depend on a user-specific kernelspec path or absolute Deno executable path.
-
-## Persistence target
-
-The in-memory agent session is authoritative while the kernel is alive.
-
-Persistence has two distinct forms:
-
-1. Notebook snapshot: source cells, visible outputs, execution metadata, and portable session metadata.
-2. Optional runtime state: provider continuation identifiers, compacted context, tool state, and data unsuitable for
-   notebook storage.
-
-Do not assume replaying visible notebook cells reconstructs an identical provider-side session.
-
-Version serialized runtime state and Deno IPC formats. Readers should tolerate unknown fields. Breaking format changes
-require migration notes and updated fixtures.
-
-Persistence adapters must be replaceable without changing the runtime conversation model.
-
-## Output mapping
-
-The Agent-to-Jupyter adapter should use these mappings:
-
-| Agent event                | Jupyter representation                            |
-|----------------------------|---------------------------------------------------|
-| streamed assistant text    | `stream` or incrementally updated `display_data`  |
-| completed assistant answer | final `display_data` or `execute_result`          |
-| rich value                 | `display_data`                                    |
-| updated rich value         | `update_display_data`                             |
-| tool progress              | `stream`, `display_data`, or custom MIME          |
-| tool result                | structured MIME with `text/plain` fallback        |
-| input request              | `input_request` on stdin                          |
-| execution failure          | parented `error` plus an appropriate reply status |
-| kernel state               | `status`                                          |
-| clear request              | `clear_output`                                    |
-
-Preserve `display_id`, transient metadata, unknown metadata fields, and update ordering. The core Client reports ordered
-output events and does not reduce them into final UI state. Notebook frontends own `clear_output.wait` behavior and
-cross-execution display reduction.
-
-Never expose private chain-of-thought. Only provider-supported reasoning summaries that are explicitly allowed by
-product policy may be emitted or persisted.
-
-## Error model
-
-Use typed failures at subsystem boundaries. At minimum distinguish:
-
-- malformed protocol message;
-- invalid signature or unsupported security scheme;
-- unsupported message or capability;
-- transport disconnect and backpressure;
-- provider request or stream failure;
-- tool validation or execution failure;
-- user cancellation and interrupt;
-- kernel shutdown;
-- child-runtime failure;
-- persistence failure.
-
-Expected request failures must not terminate receive loops. Fatal component failures must cancel the owner lifetime,
-complete dependent queues and streams, fail pending operations, publish a protocol-valid error where possible, and make
-the executable exit non-zero when recovery is impossible.
-
-Never swallow exceptions from background tasks.
-
-## Security
-
-- Verify HMAC signatures whenever the connection key is configured.
+- Verify HMAC signatures whenever a connection key is configured.
 - Never log provider secrets, authorization headers, HMAC keys, or complete connection-file credentials.
-- Treat notebook cell input, model output, tool arguments, and tool output as untrusted data.
+- Treat notebook input, model output, tool arguments, and tool output as untrusted.
 - Execute cell text only through an explicitly selected runtime or tool.
-- Validate tool arguments before invocation.
-- Enforce workspace and filesystem boundaries inside tools.
+- Validate tool arguments and enforce filesystem, workspace, network, process, and environment policy inside tools.
 - Allowlist child-process environment variables.
-- Bound output sizes, queue capacities, retained logs, and persisted payloads.
+- Bound payloads, queues, retained logs, history, and persisted data.
 - Redact secrets before persistence where practical.
-- Do not render untrusted HTML as trusted content merely because it arrived in a MIME bundle.
-
-## Testing
-
-Use xUnit v3 and `Microsoft.NET.Test.Sdk`. Use FluentAssertions or Shouldly when they make protocol assertions clearer.
-
-All tests must be deterministic and bounded by cancellation or a deadline. Do not use fixed sleeps as protocol
-synchronization. Do not use fixed TCP ports.
-
-### Shared tests
-
-Cover frame layout, signatures, JSON names, source-generated DTO round trips, unknown fields, binary buffer ordering,
-connection-file validation, cursor conversion, MIME bundles, display IDs, and malformed input.
-
-### Client transport tests
-
-Cover socket thread ownership, all five channels, shared and distinct identities as required by the protocol, heartbeat,
-bounded queue failure, startup cancellation, disconnect, and concurrent disposal.
-
-### Client protocol tests
-
-Cover parent message correlation, channel and reply-type validation, reply/idle ordering permutations, stdin parent
-headers, output ordering, late output, concurrent requests, cancellation, and terminal failure propagation.
-
-### Kernel tests
-
-Cover busy/reply/idle ordering, shell serialization, independently responsive control, heartbeat during long execution,
-interrupt, shutdown, silent execution, stdin, language-service providers, display/update/clear output, and exception
-conversion.
-
-### Agent tests
-
-Agent runtime unit tests belong in `Maieutics.Agent.Tests`; Jupyter tests retain only adapter, kernel, and process-level
-integration coverage.
-
-Use deterministic fake providers and tools. Cover plain and streamed answers, one or multiple tool calls, tool failure,
-input requests, cancellation, context compaction, provider capability differences, rich output mapping, and snapshot
-creation. Unit tests must not require a real model provider or external network access.
-
-For asynchronous exception assertions, invoke the operation through FluentAssertions `Awaiting(...)`. Do not assign an
-`async` lambda to a temporary delegate solely to call `delegate.Should().ThrowAsync(...)`.
-
-When Microsoft Agent Framework is involved, also cover early stream disposal, staging and commit, empty and unsupported
-responses, provider conversation-ID conflicts, one-run enforcement, and framework upgrade compatibility. A partially
-consumed or failed run must leave committed history unchanged.
-
-### Integration and conformance tests
-
-Use dynamically allocated loopback TCP ports or isolated IPC-safe endpoints. Socket tests that share NetMQ process state
-must be placed in the non-parallel test collection.
-
-Keep both forms of integration coverage:
-
-- self-hosted `Maieutics.Jupyter.Kernel` connected to `Maieutics.Jupyter.Client`;
-- real portable Deno kernel connected through the copied test kernelspec and `deno` from `PATH`.
-
-The executable's NativeAOT smoke coverage must exercise the selected Agent Framework core path. Every newly adopted
-framework module or provider adapter requires a warning-free publish test for the supported runtime identifier. Do not
-work around trimming or dynamic-code failures with broad warning suppression.
-
-Integration failures should identify the failed stage, such as process start, readiness, heartbeat, request send, reply,
-output completion, shutdown, or cleanup.
-
-Do not make tests pass by adding protocol timing guesses such as `Task.Delay(250)`.
+- Never treat untrusted HTML as trusted merely because it appears in a MIME bundle.
+- Use typed failures at subsystem boundaries. Expected request failures must not kill receive loops; fatal failures must
+  cancel the owner, fail dependents consistently, emit protocol-valid errors where possible, and exit non-zero when the
+  executable cannot recover.
+- Never swallow exceptions from background tasks.
 
 ## Public API and coding style
 
 - Enable nullable reference types.
 - Prefer immutable records for protocol values, messages, events, and results.
-- Prefer `Task` for request/reply operations and `IAsyncEnumerable<T>` for streams.
-- Use `ValueTask` only for measured or clearly high-frequency paths.
+- Prefer `Task` for request/reply and `IAsyncEnumerable<T>` for streams; use `ValueTask` only when justified.
 - Accept `CancellationToken` on potentially blocking asynchronous operations.
-- Keep constructors side-effect free; use async factories for asynchronous startup.
+- Keep constructors side-effect free; use asynchronous factories for asynchronous startup.
 - Avoid global mutable state and service locators.
-- Keep dependency-injection registration in the executable composition root.
+- Keep dependency injection in the executable composition root.
 - Use explicit registries for dynamic providers and tools instead of mutating DI registrations at runtime.
-- Do not expose Microsoft Agent Framework types from Maieutics public APIs merely because the runtime uses them
-  internally.
 - Public APIs require XML documentation.
-- Comment non-obvious protocol assumptions with the relevant Jupyter concept.
 - Use explicit ownership for every disposable resource.
-- Avoid exposing `JsonElement` as the primary domain model; use it as a compatibility escape hatch.
-- Avoid inheritance structures that make protocol serialization fragile.
+- Use source-generated serialization on NativeAOT and protocol paths.
+- Keep `JsonElement` as a compatibility or structured-data escape hatch, not the primary domain model.
+- Comment only non-obvious protocol or lifecycle assumptions.
 - Keep changes scoped to the owning layer and its tests.
+
+## Scoped instructions
+
+Rules apply cumulatively from this file down to the nearest child `AGENTS.md`.
+
+| Scope | Local instructions |
+|---|---|
+| Jupyter wire types | `Maieutics.Jupyter.Shared/AGENTS.md` |
+| Jupyter client | `Maieutics.Jupyter.Client/AGENTS.md` |
+| Jupyter kernel host | `Maieutics.Jupyter.Kernel/AGENTS.md` |
+| Agent runtime | `Maieutics.Agent/AGENTS.md` |
+| Executable composition | `Maieutics/AGENTS.md` |
+| Runtime configuration | `Maieutics/Configuration/AGENTS.md` |
+| Provider adapters | `Maieutics/Providers/AGENTS.md` |
+| Agent-to-Jupyter adapter | `Maieutics/Jupyter/AGENTS.md` |
+| Agent tests | `Maieutics.Agent.Tests/AGENTS.md` |
+| Jupyter and product integration tests | `Maieutics.Jupyter.Tests/AGENTS.md` |
+
+Project-local reusable guidance belongs under `.agents/skills/<skill-name>/SKILL.md`. Skills describe domain practices
+that apply across multiple project folders; `AGENTS.md` files describe ownership and constraints for their directory.
+When a scoped file references a skill, follow both. Do not duplicate a skill verbatim into multiple `AGENTS.md` files.
+
+| Skill | Use for |
+|---|---|
+| `.agents/skills/maieutics-jupyter-protocol/SKILL.md` | Wire DTOs, Client/Kernel protocol behavior, NetMQ channels, output ordering, cursors, and Deno interoperability |
+| `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and Agent-to-Jupyter semantics |
+| `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, disposal, processes, and shutdown |
+| `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3, FluentAssertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |
 
 ## Change workflow
 
 Before editing:
 
-1. Identify the owning layer.
+1. Identify the owning layer and read its nearest `AGENTS.md`.
 2. Verify dependency direction.
 3. Locate existing tests and compatibility fixtures.
-4. Determine whether wire, public API, IPC, or persisted-format compatibility is affected.
+4. Determine whether public API, wire, IPC, or persisted-format compatibility changes.
 
 When adding behavior:
 
-1. Add or update the smallest owning model or abstraction.
-2. Implement the behavior behind the correct boundary.
-3. Adapt it at integration boundaries without leaking lower-level types.
-4. Add focused unit tests.
-5. Add socket, integration, golden, or conformance coverage for externally visible behavior.
-6. Document lifecycle or compatibility decisions that are not obvious from code.
+1. Change the smallest owning abstraction.
+2. Implement behind the correct boundary.
+3. Adapt at integration boundaries without leaking lower-level types.
+4. Add focused unit tests and externally visible integration or conformance coverage where appropriate.
+5. Document non-obvious lifecycle or compatibility decisions.
 
 Do not mix unrelated formatting, dependency upgrades, protocol refactors, provider behavior, persistence migrations, and
-tool additions in one change.
-
-Do not revert unrelated user changes in a dirty worktree.
+tool additions. Do not revert unrelated user changes in a dirty worktree.
 
 ## Verification
 
-The standard repository acceptance commands are:
+Standard repository acceptance:
 
 ```bash
 dotnet test Maieutics.slnx
@@ -656,34 +214,6 @@ dotnet build Maieutics.slnx --no-restore -warnaserror
 git diff --check
 ```
 
-For transport, process lifetime, cancellation, or timing changes, run the relevant focused tests before the full
-solution test. For wire, IPC, or persisted formats, update and review representative fixtures.
-
-Do not report work as complete when a relevant check was skipped without stating exactly what was not run and why.
-
-## Default decisions
-
-When no more specific design has been approved, use these defaults:
-
-- keep the three existing Jupyter assemblies and their dependency boundaries;
-- keep Client transport, protocol, and public API as layers inside the Client assembly;
-- keep agent runtime concepts independent of Jupyter;
-- use `IChatClient` as the provider boundary and keep Microsoft Agent Framework behind the Maieutics Agent facade;
-- keep one-run enforcement, limits, cancellation, and final transcript commit owned by Maieutics;
-- treat framework history completion as staged data until the outer run commits it;
-- keep the executable as a composition root;
-- keep product-specific provider wiring and Agent-to-Jupyter adaptation as executable-owned namespaces until they have
-  an independent consumer or publication boundary;
-- serialize shell execution and keep control independently responsive;
-- use NetMQ as the only ZeroMQ implementation;
-- use source-generated `System.Text.Json` for protocol serialization;
-- use bounded, cancellation-aware asynchronous streams;
-- use MIME bundles with a useful text fallback for rich values;
-- keep the live kernel session authoritative and `.ipynb` as a portable snapshot;
-- run the primary TypeScript REPL as a supervised `deno jupyter` child connected through Jupyter Client;
-- keep independent Deno extension hooks behind their own versioned IPC and outside the Agent tool registry;
-- use deterministic fakes before real external services;
-- preserve real Deno kernel coverage as a Client interoperability test.
-
-If a requested change conflicts with these defaults, make the tradeoff explicit in code, tests, or the change
-description.
+For transport, process lifetime, cancellation, or timing changes, run focused tests first. For wire, IPC, or persisted
+formats, update and inspect representative fixtures. NativeAOT-affecting executable or provider changes also require the
+supported RID publish check. Never report completion without naming relevant checks that were skipped.

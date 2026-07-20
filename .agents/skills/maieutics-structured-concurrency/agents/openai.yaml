@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maieutics Structured Concurrency"
+  short_description: "Cancellation, backpressure, disposal, and process lifecycle"
+  default_prompt: "Apply the Maieutics structured concurrency rules to this change."

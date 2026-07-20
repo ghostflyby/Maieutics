@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maieutics .NET Testing"
+  short_description: "xUnit v3, FluentAssertions, integration, and AOT tests"
+  default_prompt: "Apply the Maieutics .NET testing conventions and verification gates."

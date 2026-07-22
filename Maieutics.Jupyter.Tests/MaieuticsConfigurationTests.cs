@@ -4,6 +4,7 @@ using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers;
+using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -255,6 +256,39 @@ public sealed class MaieuticsConfigurationTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData("OpenAI")]
+    [InlineData("Anthropic")]
+    public void ProviderClientGenerationKeysDetectCredentialRotationWithoutRevealingCredentials(
+        string providerName)
+    {
+        const string firstApiKey = "first-secret-api-key";
+        const string rotatedApiKey = "rotated-secret-api-key";
+        IConfiguredChatClientFactory factory = providerName switch
+        {
+            "OpenAI" => new OpenAiChatClientFactory(),
+            "Anthropic" => new AnthropicChatClientFactory(),
+            _ => throw new InvalidOperationException($"Unsupported test provider '{providerName}'.")
+        };
+
+        var first = factory.BindSource(
+            "source",
+            CreateProviderSourceConfiguration(providerName, firstApiKey));
+        var unchanged = factory.BindSource(
+            "source",
+            CreateProviderSourceConfiguration(providerName, firstApiKey));
+        var rotated = factory.BindSource(
+            "source",
+            CreateProviderSourceConfiguration(providerName, rotatedApiKey));
+
+        first.ClientGenerationKey.Should().Be(unchanged.ClientGenerationKey);
+        first.ClientGenerationKey.Should().NotBe(rotated.ClientGenerationKey);
+        first.ClientGenerationKey.ToString().Should()
+            .Contain("<redacted>")
+            .And.NotContain(firstApiKey);
+        rotated.ClientGenerationKey.ToString().Should().NotContain(rotatedApiKey);
     }
 
     [Theory]
@@ -673,6 +707,24 @@ public sealed class MaieuticsConfigurationTests
         }.ToJsonString();
     }
 
+    private static IConfigurationSection CreateProviderSourceConfiguration(string providerName, string apiKey)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["Source:Provider"] = providerName,
+            ["Source:ApiKey"] = apiKey
+        };
+        if (string.Equals(providerName, "OpenAI", StringComparison.Ordinal))
+        {
+            values["Source:ApiFlavor"] = nameof(OpenAiApiFlavor.Responses);
+        }
+
+        return new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build()
+            .GetSection("Source");
+    }
+
     private static Dictionary<string, string?> ClearedProviderEnvironment() => new()
     {
         ["MAIEUTICS_CONFIG"] = null,
@@ -725,7 +777,7 @@ public sealed class MaieuticsConfigurationTests
         {
             public string ProviderName => "Fake";
 
-            public object ConfigurationKey => (sourceId, revision);
+            public object ClientGenerationKey => (sourceId, revision);
 
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
@@ -764,7 +816,7 @@ public sealed class MaieuticsConfigurationTests
         {
             public string ProviderName => "Fake";
 
-            public object ConfigurationKey => sourceId;
+            public object ClientGenerationKey => sourceId;
 
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;

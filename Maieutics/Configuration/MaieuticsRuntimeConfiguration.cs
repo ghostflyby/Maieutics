@@ -409,7 +409,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                     NormalizeIdentifier(profileId),
                     NormalizeIdentifier(source.Id),
                     source.Source.ProviderName,
-                    source.Source.ConfigurationKey,
+                    source.Source.ClientGenerationKey,
                     model)));
         }
 
@@ -454,7 +454,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 NormalizeIdentifier(profileId),
                 NormalizeIdentifier(sourceId),
                 source.ProviderName,
-                source.ConfigurationKey,
+                source.ClientGenerationKey,
                 options.Model.Name));
         return CreateCandidate(options, profileId, [profile]);
     }
@@ -562,7 +562,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 $"Provider factory '{factory.ProviderName}' returned source '{source.ProviderName}'.");
         }
 
-        ArgumentNullException.ThrowIfNull(source.ConfigurationKey);
+        ArgumentNullException.ThrowIfNull(source.ClientGenerationKey);
     }
 
     private void ValidateConfigurationFileSyntax()
@@ -650,7 +650,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         string ProfileId,
         string SourceId,
         string ProviderName,
-        object SourceConfiguration,
+        object ClientGenerationKey,
         string Model);
 
     private sealed record RuntimeKey(

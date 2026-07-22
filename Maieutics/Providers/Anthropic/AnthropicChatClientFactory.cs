@@ -32,7 +32,8 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
     {
         public string ProviderName => "Anthropic";
 
-        public object ConfigurationKey { get; } = new SourceKey(options.ApiKey, options.Endpoint?.AbsoluteUri);
+        public object ClientGenerationKey { get; } =
+            new SourceGenerationKey(options.ApiKey, options.Endpoint?.AbsoluteUri);
 
         public AgentModelCapabilities Capabilities =>
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
@@ -40,5 +41,23 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         public IChatClient Create(string model) => factory.Create(model, options);
     }
 
-    private sealed record SourceKey(string ApiKey, string? Endpoint);
+    private sealed class SourceGenerationKey(string apiKey, string? endpoint) : IEquatable<SourceGenerationKey>
+    {
+        private readonly string _apiKey = apiKey;
+        private readonly string? _endpoint = endpoint;
+
+        public bool Equals(SourceGenerationKey? other) =>
+            other is not null &&
+            string.Equals(_apiKey, other._apiKey, StringComparison.Ordinal) &&
+            string.Equals(_endpoint, other._endpoint, StringComparison.Ordinal);
+
+        public override bool Equals(object? obj) => Equals(obj as SourceGenerationKey);
+
+        public override int GetHashCode() => HashCode.Combine(
+            StringComparer.Ordinal.GetHashCode(_apiKey),
+            _endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(_endpoint));
+
+        public override string ToString() =>
+            $"SourceGenerationKey {{ ApiKey = <redacted>, Endpoint = {_endpoint ?? "<default>"} }}";
+    }
 }

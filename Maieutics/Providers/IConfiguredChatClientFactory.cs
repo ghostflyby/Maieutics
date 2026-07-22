@@ -15,7 +15,7 @@ internal interface IConfiguredChatClientSource
 {
     string ProviderName { get; }
 
-    object ConfigurationKey { get; }
+    object ClientGenerationKey { get; }
 
     AgentModelCapabilities Capabilities { get; }
 

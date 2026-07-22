@@ -27,7 +27,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
     {
         public string ProviderName => "OpenAI";
 
-        public object ConfigurationKey { get; } = new SourceKey(
+        public object ClientGenerationKey { get; } = new SourceGenerationKey(
             options.ApiFlavor,
             options.ApiKey,
             options.Endpoint?.AbsoluteUri);
@@ -64,7 +64,31 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         }
     }
 
-    private sealed record SourceKey(OpenAiApiFlavor ApiFlavor, string ApiKey, string? Endpoint);
+    private sealed class SourceGenerationKey(
+        OpenAiApiFlavor apiFlavor,
+        string apiKey,
+        string? endpoint) : IEquatable<SourceGenerationKey>
+    {
+        private readonly OpenAiApiFlavor _apiFlavor = apiFlavor;
+        private readonly string _apiKey = apiKey;
+        private readonly string? _endpoint = endpoint;
+
+        public bool Equals(SourceGenerationKey? other) =>
+            other is not null &&
+            _apiFlavor == other._apiFlavor &&
+            string.Equals(_apiKey, other._apiKey, StringComparison.Ordinal) &&
+            string.Equals(_endpoint, other._endpoint, StringComparison.Ordinal);
+
+        public override bool Equals(object? obj) => Equals(obj as SourceGenerationKey);
+
+        public override int GetHashCode() => HashCode.Combine(
+            _apiFlavor,
+            StringComparer.Ordinal.GetHashCode(_apiKey),
+            _endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(_endpoint));
+
+        public override string ToString() =>
+            $"SourceGenerationKey {{ ApiFlavor = {_apiFlavor}, ApiKey = <redacted>, Endpoint = {_endpoint ?? "<default>"} }}";
+    }
 }
 
 internal sealed class OpenAiSourceOptions

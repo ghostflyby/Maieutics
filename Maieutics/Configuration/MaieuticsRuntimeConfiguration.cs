@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
@@ -18,6 +19,11 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private readonly IReadOnlyDictionary<string, IConfiguredChatClientFactory> factories;
     private readonly ILogger<MaieuticsRuntimeConfiguration> logger;
     private readonly Lock gate = new();
+
+    private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromMinutes(5);
+
+    private readonly ConcurrentDictionary<string, CachedDiscovery> discoveryCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private readonly Channel<byte> reloadSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
     {
@@ -160,6 +166,54 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         }
     }
 
+    public async ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
+        string? sourceId = null,
+        bool refresh = false,
+        CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<(string sourceId, string provider, IConfiguredChatClientSource source)> targets;
+        lock (gate)
+        {
+            var snapshot = GetCurrent();
+            targets = snapshot.Sources
+                .Where(s => sourceId is null ||
+                            string.Equals(s.Key, sourceId, StringComparison.OrdinalIgnoreCase))
+                .Select(s => (s.Key, s.Value.ProviderName, s.Value))
+                .ToArray();
+        }
+
+        var now = DateTime.UtcNow;
+        var results = new List<DiscoveredModelGroup>(targets.Count);
+        foreach (var (sid, provider, source) in targets)
+        {
+            if (source is not IModelDiscoverySource discovery)
+            {
+                continue;
+            }
+
+            if (!refresh && discoveryCache.TryGetValue(sid, out var cached) &&
+                now - cached.CachedAt < DiscoveryCacheTtl)
+            {
+                results.Add(cached.Result);
+                continue;
+            }
+
+            try
+            {
+                var models = await discovery.GetAvailableModelsAsync(cancellationToken).ConfigureAwait(false);
+                var group = new DiscoveredModelGroup(sid, provider, null, models);
+                discoveryCache[sid] = new CachedDiscovery(group, now);
+                results.Add(group);
+            }
+            catch (Exception exception)
+            {
+                results.Add(new DiscoveredModelGroup(sid, provider, exception.Message, []));
+            }
+        }
+
+        return results;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
@@ -215,6 +269,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
     private void Reload()
     {
+        discoveryCache.Clear();
         if (configurationFile.Required &&
             configurationFile.Path is { } requiredPath &&
             !File.Exists(requiredPath))
@@ -280,6 +335,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private RuntimeSnapshot BuildSnapshot(Candidate candidate, RuntimeSnapshot? previous, long version)
     {
         var entries = new Dictionary<string, ProfileEntry>(StringComparer.OrdinalIgnoreCase);
+        var sourceMap = new Dictionary<string, IConfiguredChatClientSource>(StringComparer.OrdinalIgnoreCase);
         var created = new List<ProfileGeneration>();
         try
         {
@@ -309,6 +365,8 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                     identity,
                     profile.Source.Capabilities,
                     generation));
+
+                sourceMap.TryAdd(profile.SourceId, profile.Source);
             }
 
             return new RuntimeSnapshot(
@@ -316,6 +374,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 candidate.Options,
                 candidate.DefaultProfileId,
                 entries,
+                sourceMap,
                 candidate.Key);
         }
         catch
@@ -675,6 +734,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         MaieuticsOptions Options,
         string DefaultProfileId,
         IReadOnlyDictionary<string, ProfileEntry> Profiles,
+        IReadOnlyDictionary<string, IConfiguredChatClientSource> Sources,
         RuntimeKey Key);
 
     private sealed record ProfileEntry(
@@ -787,4 +847,8 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 ? generation.ReleaseAsync()
                 : ValueTask.CompletedTask;
     }
+
+    private sealed record CachedDiscovery(
+        DiscoveredModelGroup Result,
+        DateTime CachedAt);
 }

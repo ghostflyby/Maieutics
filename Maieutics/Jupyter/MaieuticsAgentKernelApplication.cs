@@ -12,7 +12,7 @@ namespace Maieutics.Jupyter;
 public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider
 {
     private readonly IAgentSession session;
-    private readonly IMaieuticsModelProfileController? modelProfiles;
+    private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
     private readonly TimeProvider timeProvider;
@@ -29,13 +29,13 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     internal MaieuticsAgentKernelApplication(
         IAgentSession session,
         Func<MaieuticsAgentKernelOptions> getOptions,
-        IMaieuticsModelProfileController? modelProfiles,
+        IMaieuticsRuntimeConfiguration? runtimeConfiguration,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
-        this.modelProfiles = modelProfiles;
+        this.runtimeConfiguration = runtimeConfiguration;
         this.getOptions().Validate();
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -87,8 +87,12 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var profiles = modelProfiles?.GetModelProfileSelection().Profiles ?? [];
-        return ValueTask.FromResult(MaieuticsCommandLanguage.Complete(request, profiles));
+        var profiles = runtimeConfiguration?.GetModelProfileSelection().Profiles ?? [];
+        var sourceIds = runtimeConfiguration?.GetModelProfileSelection().Profiles
+            .Select(static p => p.SourceId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? [];
+        return ValueTask.FromResult(MaieuticsCommandLanguage.Complete(request, profiles, sourceIds));
     }
 
     private async ValueTask ExecuteCommandAsync(
@@ -96,7 +100,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         string code,
         CancellationToken cancellationToken)
     {
-        if (modelProfiles is null)
+        if (runtimeConfiguration is null)
         {
             throw Create("MaieuticsCommandError", "Model profile commands are not available in this host.");
         }
@@ -113,30 +117,44 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         try
         {
             string output;
-            if (arguments.Length == 2 ||
-                arguments.Length == 3 && string.Equals(
-                    arguments[2],
-                    MaieuticsCommandLanguage.Current,
-                    StringComparison.OrdinalIgnoreCase))
+            if (arguments.Length >= 3 &&
+                string.Equals(arguments[2], MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase))
             {
-                output = RenderCurrent(modelProfiles.GetModelProfileSelection());
+                var refresh = arguments.Contains(MaieuticsCommandLanguage.RefreshFlag,
+                    StringComparer.OrdinalIgnoreCase);
+                var sourceId = arguments.FirstOrDefault(arg =>
+                    !string.Equals(arg, MaieuticsCommandLanguage.RefreshFlag, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(arg, MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(arg, MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(arg, MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase));
+                var groups = await runtimeConfiguration.GetDiscoveredModelsAsync(
+                    sourceId, refresh, cancellationToken).ConfigureAwait(false);
+                output = RenderAvailable(groups, runtimeConfiguration.GetModelProfileSelection());
+            }
+            else if (arguments.Length == 2 ||
+                     arguments.Length == 3 && string.Equals(
+                         arguments[2],
+                         MaieuticsCommandLanguage.Current,
+                         StringComparison.OrdinalIgnoreCase))
+            {
+                output = RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
             }
             else if (arguments.Length == 3 &&
                      string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
             {
-                output = RenderList(modelProfiles.GetModelProfileSelection());
+                output = RenderList(runtimeConfiguration.GetModelProfileSelection());
             }
             else if (arguments.Length == 4 &&
                      string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
             {
-                modelProfiles.SelectModelProfile(arguments[3]);
-                output = RenderCurrent(modelProfiles.GetModelProfileSelection());
+                runtimeConfiguration.SelectModelProfile(arguments[3]);
+                output = RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
             }
             else if (arguments.Length == 3 &&
                      string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
             {
-                modelProfiles.ResetModelProfile();
-                output = RenderCurrent(modelProfiles.GetModelProfileSelection());
+                runtimeConfiguration.ResetModelProfile();
+                output = RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
             }
             else
             {
@@ -206,6 +224,99 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     }
 
     private static string EscapeCode(string value) => value.Replace("`", "\\`", StringComparison.Ordinal);
+
+
+    private static string RenderAvailable(
+        IReadOnlyList<DiscoveredModelGroup> groups,
+        MaieuticsModelProfileSelection profiles)
+    {
+        if (groups.Count == 0)
+        {
+            return "### Available models\n\nNo model sources support automatic discovery.";
+        }
+
+        var output = new StringBuilder("### Available models\n\n");
+        var configuredModelIds = profiles.Profiles
+            .Select(static p => (p.SourceId, p.Model))
+            .ToHashSet(TupleComparer.Instance);
+
+        foreach (var group in groups)
+        {
+            output.Append("**")
+                .Append(EscapeCode(group.Provider))
+                .Append("** (source: `")
+                .Append(EscapeCode(group.SourceId))
+                .Append("`)");
+
+            if (group.Error is not null)
+            {
+                output.AppendLine()
+                    .Append("  ❌ API request failed: ")
+                    .AppendLine(group.Error);
+                continue;
+            }
+
+            if (group.Models.Count == 0)
+            {
+                output.AppendLine()
+                    .AppendLine("  _No models returned._");
+                continue;
+            }
+
+            output.AppendLine();
+            foreach (var model in group.Models)
+            {
+                output.Append("- `").Append(EscapeCode(model.Id)).Append('`');
+                if (model.ContextWindow.HasValue)
+                {
+                    output.Append(" (").Append(model.ContextWindow.Value).Append(" context)");
+                }
+
+                var configured = configuredModelIds
+                    .Contains((group.SourceId, model.Id));
+                if (!configured)
+                {
+                    output.Append(" ⚠️ not configured in any profile");
+                }
+
+                output.AppendLine();
+            }
+        }
+
+        var missingFromApi = profiles.Profiles
+            .Where(profile => !groups.Any(g =>
+                string.Equals(g.SourceId, profile.SourceId, StringComparison.OrdinalIgnoreCase) &&
+                g.Error is null &&
+                g.Models.Any(m => string.Equals(m.Id, profile.Model, StringComparison.OrdinalIgnoreCase))))
+            .ToArray();
+        if (missingFromApi.Length > 0)
+        {
+            output.AppendLine();
+            output.AppendLine("> ⚠️ The following configured models were not found in API results:");
+            foreach (var profile in missingFromApi)
+            {
+                output.Append("- `").Append(EscapeCode(profile.Id))
+                    .Append("`: `").Append(EscapeCode(profile.Model))
+                    .Append("` (source `").Append(EscapeCode(profile.SourceId)).AppendLine("`)");
+            }
+        }
+
+        return output.ToString();
+    }
+
+    private sealed class TupleComparer : IEqualityComparer<(string SourceId, string Model)>
+    {
+        internal static readonly TupleComparer Instance = new();
+
+        public bool Equals((string SourceId, string Model) x, (string SourceId, string Model) y) =>
+            string.Equals(x.SourceId, y.SourceId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.Model, y.Model, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string SourceId, string Model) obj) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.SourceId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Model));
+    }
 
     private async Task RenderTurnAsync(
         JupyterExecutionContext context,

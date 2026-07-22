@@ -12,17 +12,21 @@ internal static class MaieuticsCommandLanguage
     internal const string List = "list";
     internal const string Use = "use";
     internal const string Reset = "reset";
+    internal const string Available = "available";
+    internal const string RefreshFlag = "--refresh";
 
     private static readonly string[] RootMatches = [Root];
     private static readonly string[] RootCommandMatches = [Model];
-    private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset];
+    private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
 
     internal static JupyterCompletionResult Complete(
         JupyterCompleteRequest request,
-        IReadOnlyList<MaieuticsModelProfileInfo> profiles)
+        IReadOnlyList<MaieuticsModelProfileInfo> profiles,
+        IReadOnlyList<string> sourceIds)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(profiles);
+        ArgumentNullException.ThrowIfNull(sourceIds);
 
         var cursorIndex = JupyterCursorPosition.ToUtf16Index(request.Code, request.CursorPosition);
         var tokenStart = cursorIndex;
@@ -52,6 +56,11 @@ internal static class MaieuticsCommandLanguage
                      model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
                      use.Equals(Use, StringComparison.OrdinalIgnoreCase) =>
                 profiles.Select(static profile => profile.Id),
+            [var root, var model, var available]
+                when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
+                     model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
+                     available.Equals(Available, StringComparison.OrdinalIgnoreCase) =>
+                new[] { RefreshFlag }.Concat(sourceIds),
             _ => []
         };
         var matches = candidates

@@ -425,3 +425,44 @@ public sealed record AgentMessageCompleted : AgentEvent
     /// <summary>Gets the assembled assistant message.</summary>
     public AgentMessage Message { get; }
 }
+
+/// <summary>Describes one model discovered from a provider API endpoint.</summary>
+public sealed record AgentModelDescriptor
+{
+    /// <summary>Initializes a model descriptor.</summary>
+    public AgentModelDescriptor(
+        string id,
+        string provider,
+        string? ownedBy = null,
+        DateTime? createdAt = null,
+        long? contextWindow = null,
+        string? family = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(provider);
+        Id = id;
+        Provider = provider;
+        OwnedBy = ownedBy;
+        CreatedAt = createdAt;
+        ContextWindow = contextWindow;
+        Family = family;
+    }
+
+    /// <summary>Gets the provider-specific model identifier.</summary>
+    public string Id { get; }
+
+    /// <summary>Gets the provider family name.</summary>
+    public string Provider { get; }
+
+    /// <summary>Gets the organization that owns the model, when known.</summary>
+    public string? OwnedBy { get; }
+
+    /// <summary>Gets the model creation timestamp, when known.</summary>
+    public DateTime? CreatedAt { get; }
+
+    /// <summary>Gets the maximum context window size, when known.</summary>
+    public long? ContextWindow { get; }
+
+    /// <summary>Gets the model family or architecture group, when known.</summary>
+    public string? Family { get; }
+}

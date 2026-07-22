@@ -619,7 +619,7 @@ public sealed class MaieuticsConfigurationTests
         var previousAttempt = runtime.ReloadAttempt;
         var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = configuration.GetReloadToken().RegisterChangeCallback(
-            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            static state => (state as TaskCompletionSource)?.TrySetResult(),
             changed);
         await File.WriteAllTextAsync(path, contents, cancellationToken);
         await changed.Task.WaitAsync(cancellationToken);
@@ -849,6 +849,239 @@ public sealed class MaieuticsConfigurationTests
     }
 
     private sealed record NamedProfile(string Id, string SourceId, string Model, string SourceRevision);
+
+    [Fact]
+    public async Task GetDiscoveredModelsReturnsModelsFromDiscoveryEnabledSources()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateNamedConfiguration(
+                connectionFile,
+                "one",
+                new NamedProfile("one", "discovery-source", "test-model", "v1")),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+
+            var group = groups.Should().ContainSingle().Subject;
+            group.SourceId.Should().Be("discovery-source");
+            group.Provider.Should().Be("Fake");
+            group.Error.Should().BeNull();
+            group.Models.Should().HaveCount(2);
+            group.Models[0].Id.Should().Be("model-alpha");
+            group.Models[0].Provider.Should().Be("Fake");
+            group.Models[0].OwnedBy.Should().Be("test-org");
+            group.Models[1].Id.Should().Be("model-beta");
+            group.Models[1].Provider.Should().Be("Fake");
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GetDiscoveredModelsCacheRespectsRefreshFlag()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-cache-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateNamedConfiguration(
+                connectionFile,
+                "one",
+                new NamedProfile("one", "discovery-source", "test-model", "v1")),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+
+            // First call populates cache
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            factory.DiscoveryCount.Should().Be(1);
+
+            // Second call within TTL uses cache
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            factory.DiscoveryCount.Should().Be(1);
+
+            // Third call with refresh=true bypasses cache
+            await runtime.GetDiscoveredModelsAsync(refresh: true, cancellationToken: deadline.Token);
+            factory.DiscoveryCount.Should().Be(2);
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GetDiscoveredModelsSkipsSourcesWithoutDiscoverySupport()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-skip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateNamedConfiguration(
+                connectionFile,
+                "one",
+                new NamedProfile("one", "no-discovery", "test-model", "v1")),
+            deadline.Token);
+
+        var factory = new TrackingChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            groups.Should().BeEmpty();
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GetDiscoveredModelsCapturesErrorsFromFailingSources()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-error-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateNamedConfiguration(
+                connectionFile,
+                "one",
+                new NamedProfile("one", "failing-source", "test-model", "v1")),
+            deadline.Token);
+
+        var factory = new FailingDiscoveryChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+
+            var group = groups.Should().ContainSingle().Subject;
+            group.Error.Should().NotBeNull();
+            group.Error.Should().Contain("simulated");
+            group.Models.Should().BeEmpty();
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class DiscoveryChatClientFactory : IConfiguredChatClientFactory
+    {
+        public string ProviderName => "Fake";
+
+        public int DiscoveryCount { get; private set; }
+
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
+            new DiscoverySource(this, sourceId);
+
+        private sealed class DiscoverySource(
+            DiscoveryChatClientFactory factory,
+            string sourceId) : IConfiguredChatClientSource, IModelDiscoverySource
+        {
+            public string ProviderName => "Fake";
+
+            public object ClientGenerationKey => sourceId;
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public IChatClient Create(string model) =>
+                new TrackingChatClient(model);
+
+            public ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(
+                CancellationToken cancellationToken = default)
+            {
+                factory.DiscoveryCount++;
+                return new ValueTask<IReadOnlyList<AgentModelDescriptor>>([
+                    new AgentModelDescriptor("model-alpha", "Fake", "test-org"),
+                    new AgentModelDescriptor("model-beta", "Fake")
+                ]);
+            }
+        }
+    }
+
+    private sealed class FailingDiscoveryChatClientFactory : IConfiguredChatClientFactory
+    {
+        public string ProviderName => "Fake";
+
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
+            new FailingSource(sourceId);
+
+        private sealed class FailingSource(
+            string sourceId) : IConfiguredChatClientSource, IModelDiscoverySource
+        {
+            public string ProviderName => "Fake";
+
+            public object ClientGenerationKey => sourceId;
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public IChatClient Create(string model) =>
+                new TrackingChatClient(model);
+
+            public ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(
+                CancellationToken cancellationToken = default) =>
+                throw new InvalidOperationException("simulated discovery failure");
+        }
+    }
 
     private sealed class EnvironmentVariableScope : IDisposable
     {

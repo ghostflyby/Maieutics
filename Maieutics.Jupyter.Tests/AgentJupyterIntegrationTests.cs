@@ -196,7 +196,7 @@ public sealed class AgentJupyterIntegrationTests
     {
         using var deadline = CreateDeadline();
         var session = new AgentSession(new ScriptedChatClient());
-        var controller = new TestModelProfileController();
+        var controller = new TestRuntimeConfiguration();
         var application = new MaieuticsAgentKernelApplication(
             session,
             static () => new MaieuticsAgentKernelOptions(),
@@ -254,7 +254,7 @@ public sealed class AgentJupyterIntegrationTests
         var application = new MaieuticsAgentKernelApplication(
             session,
             static () => new MaieuticsAgentKernelOptions(),
-            new TestModelProfileController());
+            new TestRuntimeConfiguration());
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         await using var host = await JupyterKernelHost.StartAsync(
             connection,
@@ -280,7 +280,7 @@ public sealed class AgentJupyterIntegrationTests
         model.CursorEnd.Should().Be(13);
 
         var commands = await CompleteAsync(client, "%maieutics model ", deadline.Token);
-        commands.Matches.Should().Equal("current", "list", "reset", "use");
+        commands.Matches.Should().Equal("available", "current", "list", "reset", "use");
         commands.CursorStart.Should().Be(17);
         commands.CursorEnd.Should().Be(17);
 
@@ -441,7 +441,7 @@ public sealed class AgentJupyterIntegrationTests
         public void Advance(TimeSpan elapsed) => Interlocked.Add(ref timestamp, elapsed.Ticks);
     }
 
-    private sealed class TestModelProfileController : IMaieuticsModelProfileController
+    private sealed class TestRuntimeConfiguration : IMaieuticsRuntimeConfiguration
     {
         private readonly MaieuticsModelProfileInfo[] profiles =
         [
@@ -450,6 +450,10 @@ public sealed class AgentJupyterIntegrationTests
         ];
 
         private string? sessionOverride;
+
+        public string ConnectionFile => string.Empty;
+
+        public long Version => 1;
 
         public MaieuticsModelProfileSelection GetModelProfileSelection()
         {
@@ -477,6 +481,17 @@ public sealed class AgentJupyterIntegrationTests
         }
 
         public void ResetModelProfile() => sessionOverride = null;
+
+        public IAgentRunProfileLease Acquire() =>
+            throw new NotSupportedException();
+
+        public MaieuticsAgentKernelOptions GetKernelOptions() => new();
+
+        public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
+            string? sourceId = null,
+            bool refresh = false,
+            CancellationToken cancellationToken = default) =>
+            new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
     }
 
     private sealed class CommitBoundarySession : IAgentSession

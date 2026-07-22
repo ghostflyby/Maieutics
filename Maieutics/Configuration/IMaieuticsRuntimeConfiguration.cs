@@ -10,6 +10,16 @@ internal interface IMaieuticsRuntimeConfiguration : IAgentRunProfileProvider, IM
     long Version { get; }
 
     MaieuticsAgentKernelOptions GetKernelOptions();
+
+    /// <summary>Returns models discovered from each model source's API endpoint.</summary>
+    /// <param name="sourceId">Optional source identifier to filter by.</param>
+    /// <param name="refresh">When true, bypasses the cache and re-fetches from the API.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>The list of discovered model groups, one per source.</returns>
+    ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
+        string? sourceId = null,
+        bool refresh = false,
+        CancellationToken cancellationToken = default);
 }
 
 internal interface IMaieuticsModelProfileController
@@ -34,3 +44,10 @@ internal sealed record MaieuticsModelProfileInfo(
     string Model,
     bool IsDefault,
     bool IsSelected);
+
+/// <summary>Groups models discovered from one model source.</summary>
+internal sealed record DiscoveredModelGroup(
+    string SourceId,
+    string Provider,
+    string? Error,
+    IReadOnlyList<AgentModelDescriptor> Models);

@@ -523,6 +523,8 @@ public sealed class AgentJupyterIntegrationTests
                 }).ToArray());
         }
 
+        public IReadOnlyList<string> GetModelSourceIds() => ["openai", "anthropic"];
+
         public void SelectModelProfile(string profileId)
         {
             var profile = profiles.SingleOrDefault(profile =>
@@ -557,6 +559,8 @@ public sealed class AgentJupyterIntegrationTests
 
         public MaieuticsModelProfileSelection GetModelProfileSelection() =>
             new(string.Empty, string.Empty, false, []);
+
+        public IReadOnlyList<string> GetModelSourceIds() => [];
 
         public void SelectModelProfile(string profileId) =>
             throw new ArgumentException("No model profiles are configured.", nameof(profileId));

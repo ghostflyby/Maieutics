@@ -96,10 +96,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     {
         cancellationToken.ThrowIfCancellationRequested();
         var profiles = runtimeConfiguration?.GetModelProfileSelection().Profiles ?? [];
-        var sourceIds = runtimeConfiguration?.GetModelProfileSelection().Profiles
-            .Select(static p => p.SourceId)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray() ?? [];
+        var sourceIds = runtimeConfiguration?.GetModelSourceIds() ?? [];
         return ValueTask.FromResult(MaieuticsCommandLanguage.Complete(request, profiles, sourceIds));
     }
 

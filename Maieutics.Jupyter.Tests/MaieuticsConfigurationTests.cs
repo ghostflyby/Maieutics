@@ -150,6 +150,58 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact]
+    public async Task RuntimeInitializationRetainsSourcesWithoutProfilesForDiscovery()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-source-only-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            new JsonObject
+            {
+                ["Maieutics"] = new JsonObject
+                {
+                    ["Sources"] = new JsonObject
+                    {
+                        ["vendor"] = new JsonObject
+                        {
+                            ["Provider"] = "Fake",
+                            ["Revision"] = "one"
+                        }
+                    },
+                    ["Jupyter"] = new JsonObject
+                    {
+                        ["ConnectionFile"] = connectionFile
+                    }
+                }
+            }.ToJsonString(),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory();
+        try
+        {
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+            builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+            using var host = builder.Build();
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+
+            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
+            runtime.GetModelSourceIds().Should().Equal("vendor");
+            var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            groups.Should().ContainSingle().Which.Models.Should().HaveCount(2);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task RuntimeInitializationReconcilesConfigurationChangesDuringProviderCreation()
     {

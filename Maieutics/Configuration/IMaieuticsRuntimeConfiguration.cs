@@ -26,6 +26,8 @@ internal interface IMaieuticsModelProfileController
 {
     MaieuticsModelProfileSelection GetModelProfileSelection();
 
+    IReadOnlyList<string> GetModelSourceIds();
+
     void SelectModelProfile(string profileId);
 
     void ResetModelProfile();

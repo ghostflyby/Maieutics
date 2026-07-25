@@ -134,6 +134,16 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         }
     }
 
+    public IReadOnlyList<string> GetModelSourceIds()
+    {
+        lock (gate)
+        {
+            return GetCurrent().Sources.Keys
+                .OrderBy(static sourceId => sourceId, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+    }
+
     public void SelectModelProfile(string profileId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
@@ -344,6 +354,11 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         var created = new List<ProfileGeneration>();
         try
         {
+            foreach (var source in candidate.Sources)
+            {
+                sourceMap.Add(source.Id, source.Source);
+            }
+
             foreach (var profile in candidate.Profiles)
             {
                 ProfileGeneration generation;
@@ -370,8 +385,6 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                     identity,
                     profile.Source.Capabilities,
                     generation));
-
-                sourceMap.TryAdd(profile.SourceId, profile.Source);
             }
 
             return new RuntimeSnapshot(
@@ -401,7 +414,9 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         options.ValidateCommon();
 
         var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
-                           root.GetSection("Profiles").GetChildren().Any();
+                           root.GetSection("Profiles").GetChildren().Any() ||
+                           root.GetSection("Sources").GetChildren()
+                               .Any(static source => !string.IsNullOrWhiteSpace(source["Provider"]));
         var hasLegacySchema = root.GetSection("Model").GetChildren().Any() ||
                               root.GetSection("Providers").GetChildren().Any();
         if (hasNewSchema && hasLegacySchema)
@@ -412,7 +427,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
         if (!hasNewSchema && !hasLegacySchema)
         {
-            return CreateCandidate(options, string.Empty, []);
+            return CreateCandidate(options, string.Empty, [], []);
         }
 
         return hasNewSchema
@@ -484,7 +499,13 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
         if (profiles.Count == 0)
         {
-            throw new InvalidOperationException("At least one model profile must be configured.");
+            if (!string.IsNullOrWhiteSpace(options.DefaultProfile))
+            {
+                throw new InvalidOperationException(
+                    $"Default model profile '{options.DefaultProfile}' does not exist.");
+            }
+
+            return CreateCandidate(options, string.Empty, profiles, sources.Values.ToArray());
         }
 
         var defaultProfileId = ValidateIdentifier(options.DefaultProfile, "profile");
@@ -495,7 +516,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             throw new InvalidOperationException($"Default model profile '{defaultProfileId}' does not exist.");
         }
 
-        return CreateCandidate(options, defaultProfile.Id, profiles);
+        return CreateCandidate(options, defaultProfile.Id, profiles, sources.Values.ToArray());
     }
 
     private Candidate CreateLegacyCandidate(IConfigurationSection root, MaieuticsOptions options)
@@ -525,13 +546,14 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 source.ProviderName,
                 source.ClientGenerationKey,
                 options.Model.Name));
-        return CreateCandidate(options, profileId, [profile]);
+        return CreateCandidate(options, profileId, [profile], [new BoundSource(sourceId, source)]);
     }
 
     private static Candidate CreateCandidate(
         MaieuticsOptions options,
         string defaultProfileId,
-        IReadOnlyList<CandidateProfile> profiles)
+        IReadOnlyList<CandidateProfile> profiles,
+        IReadOnlyList<BoundSource> sources)
     {
         var key = new RuntimeKey(
             NormalizeIdentifier(defaultProfileId),
@@ -549,12 +571,14 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             Path.GetFullPath(options.Jupyter.ConnectionFile),
             options.Jupyter.FlushInterval,
             options.Jupyter.FlushCharacters);
-        return new Candidate(options, defaultProfileId, profiles, key);
+        return new Candidate(options, defaultProfileId, profiles, sources, key);
     }
 
     private static bool HasSameConfiguration(RuntimeSnapshot snapshot, Candidate candidate)
     {
-        if (snapshot.Key != candidate.Key || snapshot.Profiles.Count != candidate.Profiles.Count)
+        if (snapshot.Key != candidate.Key ||
+            snapshot.Profiles.Count != candidate.Profiles.Count ||
+            snapshot.Sources.Count != candidate.Sources.Count)
         {
             return false;
         }
@@ -563,6 +587,17 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         {
             if (!snapshot.Profiles.TryGetValue(profile.Id, out var currentProfile) ||
                 currentProfile.Key != profile.Key)
+            {
+                return false;
+            }
+        }
+
+        foreach (var source in candidate.Sources)
+        {
+            if (!snapshot.Sources.TryGetValue(source.Id, out var currentSource) ||
+                !string.Equals(currentSource.ProviderName, source.Source.ProviderName,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !Equals(currentSource.ClientGenerationKey, source.Source.ClientGenerationKey))
             {
                 return false;
             }
@@ -704,6 +739,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         MaieuticsOptions Options,
         string DefaultProfileId,
         IReadOnlyList<CandidateProfile> Profiles,
+        IReadOnlyList<BoundSource> Sources,
         RuntimeKey Key);
 
     private sealed record CandidateProfile(

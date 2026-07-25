@@ -92,6 +92,11 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             var snapshot = GetCurrent();
+            if (snapshot.Profiles.Count == 0)
+            {
+                throw new InvalidOperationException("No model profile is configured.");
+            }
+
             var profileId = sessionOverride ?? snapshot.DefaultProfileId;
             var entry = snapshot.Profiles[profileId];
             var generationLease = entry.Generation.Acquire();
@@ -403,6 +408,11 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         {
             throw new InvalidOperationException(
                 "The named Sources/Profiles configuration cannot be combined with legacy Model configuration.");
+        }
+
+        if (!hasNewSchema && !hasLegacySchema)
+        {
+            return CreateCandidate(options, string.Empty, []);
         }
 
         return hasNewSchema

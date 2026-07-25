@@ -111,6 +111,45 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact]
+    public async Task RuntimeInitializationAllowsNoModelOrProviderConfiguration()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-empty-config-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            new JsonObject
+            {
+                ["Maieutics"] = new JsonObject
+                {
+                    ["Jupyter"] = new JsonObject
+                    {
+                        ["ConnectionFile"] = connectionFile
+                    }
+                }
+            }.ToJsonString(),
+            deadline.Token);
+
+        try
+        {
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var host = builder.Build();
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+
+            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
+            (await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token)).Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task RuntimeInitializationReconcilesConfigurationChangesDuringProviderCreation()
     {

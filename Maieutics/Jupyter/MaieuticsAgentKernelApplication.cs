@@ -68,6 +68,14 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         {
             var options = getOptions();
             options.Validate();
+            if (runtimeConfiguration is not null &&
+                runtimeConfiguration.GetModelProfileSelection().Profiles.Count == 0)
+            {
+                throw Create(
+                    "AgentConfigurationError",
+                    "No model profile is configured. Configure a model before submitting an Agent turn.");
+            }
+
             await RenderTurnAsync(context, request.Code, options, cancellationToken).ConfigureAwait(false);
             return JupyterExecuteResult.Ok;
         }
@@ -179,6 +187,11 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private static string RenderCurrent(MaieuticsModelProfileSelection selection)
     {
+        if (selection.Profiles.Count == 0)
+        {
+            return "### Current model\n\nNo model profile is configured.";
+        }
+
         var profile = selection.Profiles.Single(profile => profile.IsSelected);
         var selectionSource = selection.HasSessionOverride ? "session override" : "configured default";
         return $"""
@@ -193,6 +206,11 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private static string RenderList(MaieuticsModelProfileSelection selection)
     {
+        if (selection.Profiles.Count == 0)
+        {
+            return "### Model profiles\n\nNo model profiles are configured.";
+        }
+
         var output = new StringBuilder("### Model profiles\n\n");
         foreach (var profile in selection.Profiles)
         {
@@ -232,7 +250,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     {
         if (groups.Count == 0)
         {
-            return "### Available models\n\nNo model sources support automatic discovery.";
+            var message = profiles.Profiles.Count == 0
+                ? "No model sources are configured."
+                : "No model sources support automatic discovery.";
+            return $"### Available models\n\n{message}";
         }
 
         var output = new StringBuilder("### Available models\n\n");

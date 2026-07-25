@@ -297,6 +297,61 @@ public sealed class AgentJupyterIntegrationTests
         await host.Completion.WaitAsync(deadline.Token);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ModelCommandsRemainAvailableWithoutConfiguredProfiles()
+    {
+        using var deadline = CreateDeadline();
+        var session = new AgentSession(new ScriptedChatClient());
+        var application = new MaieuticsAgentKernelApplication(
+            session,
+            static () => new MaieuticsAgentKernelOptions(),
+            new EmptyRuntimeConfiguration());
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var available = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model available"),
+            deadline.Token);
+        var availableOutputs = await ReadOutputsAsync(available, deadline.Token);
+        (await available.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(availableOutputs.OfType<JupyterDisplayOutput>().Single())
+            .Should().Contain("No model sources are configured.");
+
+        var current = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model current"),
+            deadline.Token);
+        var currentOutputs = await ReadOutputsAsync(current, deadline.Token);
+        (await current.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(currentOutputs.OfType<JupyterDisplayOutput>().Single())
+            .Should().Contain("No model profile is configured.");
+
+        var list = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model list"),
+            deadline.Token);
+        var listOutputs = await ReadOutputsAsync(list, deadline.Token);
+        (await list.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(listOutputs.OfType<JupyterDisplayOutput>().Single())
+            .Should().Contain("No model profiles are configured.");
+
+        var completion = await CompleteAsync(client, "%maieutics model ", deadline.Token);
+        completion.Matches.Should().Equal("available", "current", "list", "reset", "use");
+
+        var ordinary = await client.ExecuteAsync(
+            new JupyterExecuteRequest("ordinary text"),
+            deadline.Token);
+        await ReadOutputsAsync(ordinary, deadline.Token);
+        var ordinaryCompletion = await ordinary.Completion.WaitAsync(deadline.Token);
+        ordinaryCompletion.Reply.Status.Should().Be("error");
+        ordinaryCompletion.Reply.ErrorName.Should().Be("AgentConfigurationError");
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
     private static Task<JupyterCompleteReply> CompleteAsync(
         IJupyterClient client,
         string code,
@@ -484,6 +539,34 @@ public sealed class AgentJupyterIntegrationTests
 
         public IAgentRunProfileLease Acquire() =>
             throw new NotSupportedException();
+
+        public MaieuticsAgentKernelOptions GetKernelOptions() => new();
+
+        public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
+            string? sourceId = null,
+            bool refresh = false,
+            CancellationToken cancellationToken = default) =>
+            new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
+    }
+
+    private sealed class EmptyRuntimeConfiguration : IMaieuticsRuntimeConfiguration
+    {
+        public string ConnectionFile => string.Empty;
+
+        public long Version => 1;
+
+        public MaieuticsModelProfileSelection GetModelProfileSelection() =>
+            new(string.Empty, string.Empty, false, []);
+
+        public void SelectModelProfile(string profileId) =>
+            throw new ArgumentException("No model profiles are configured.", nameof(profileId));
+
+        public void ResetModelProfile()
+        {
+        }
+
+        public IAgentRunProfileLease Acquire() =>
+            throw new InvalidOperationException("No model profile is configured.");
 
         public MaieuticsAgentKernelOptions GetKernelOptions() => new();
 

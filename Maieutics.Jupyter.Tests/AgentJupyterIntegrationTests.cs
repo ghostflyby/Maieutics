@@ -307,6 +307,58 @@ public sealed class AgentJupyterIntegrationTests
         await host.Completion.WaitAsync(deadline.Token);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task AutomaticProfileEnablesTurnsWithoutConfiguredProfiles()
+    {
+        using var deadline = CreateDeadline();
+        var session =
+            new AgentSession(new ScriptedChatClient((_, token) => TextResponseAsync(token, "automatic response")));
+        var controller = new AutomaticRuntimeConfiguration();
+        var application = new MaieuticsAgentKernelApplication(
+            session,
+            static () => new MaieuticsAgentKernelOptions(),
+            controller);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var available = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model available"),
+            deadline.Token);
+        var availableOutputs = await ReadOutputsAsync(available, deadline.Token);
+        (await available.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(availableOutputs.OfType<JupyterDisplayOutput>().Single())
+            .Should().Contain("@vendor/model-alpha");
+
+        var selected = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model use @vendor/model-alpha"),
+            deadline.Token);
+        var selectedOutputs = await ReadOutputsAsync(selected, deadline.Token);
+        (await selected.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(selectedOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
+            .Contain("Profile: `@vendor/model-alpha`")
+            .And.Contain("automatic session override");
+
+        var turn = await client.ExecuteAsync(new JupyterExecuteRequest("hello"), deadline.Token);
+        var turnOutputs = await ReadOutputsAsync(turn, deadline.Token);
+        (await turn.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(turnOutputs.OfType<JupyterDisplayOutput>().Single()).Should().Be("automatic response");
+        session.GetTranscriptSnapshot().Turns.Should().ContainSingle();
+
+        var reset = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model reset"),
+            deadline.Token);
+        await ReadOutputsAsync(reset, deadline.Token);
+        (await reset.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        controller.GetModelProfileSelection().Profiles.Should().BeEmpty();
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
     private static string? ReadMarkdown(JupyterOutput output) => output switch
     {
         JupyterDisplayOutput display => display.Data.Data["text/markdown"].GetString(),
@@ -472,6 +524,8 @@ public sealed class AgentJupyterIntegrationTests
 
         public IReadOnlyList<string> GetModelSourceIds() => ["openai", "anthropic"];
 
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles() => [];
+
         public void SelectModelProfile(string profileId)
         {
             var profile = profiles.SingleOrDefault(profile =>
@@ -509,6 +563,8 @@ public sealed class AgentJupyterIntegrationTests
 
         public IReadOnlyList<string> GetModelSourceIds() => [];
 
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles() => [];
+
         public void SelectModelProfile(string profileId) =>
             throw new ArgumentException("No model profiles are configured.", nameof(profileId));
 
@@ -526,6 +582,69 @@ public sealed class AgentJupyterIntegrationTests
             bool refresh = false,
             CancellationToken cancellationToken = default) =>
             new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
+    }
+
+    private sealed class AutomaticRuntimeConfiguration : IMaieuticsRuntimeConfiguration
+    {
+        private const string Selector = "@vendor/model-alpha";
+        private bool selected;
+
+        public string ConnectionFile => string.Empty;
+
+        public long Version => 1;
+
+        public MaieuticsModelProfileSelection GetModelProfileSelection() => selected
+            ? new MaieuticsModelProfileSelection(
+                string.Empty,
+                Selector,
+                HasSessionOverride: true,
+                [CreateProfile(isSelected: true)])
+            : new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
+
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles() =>
+            [CreateProfile(selected)];
+
+        public IReadOnlyList<string> GetModelSourceIds() => ["vendor"];
+
+        public void SelectModelProfile(string profileId)
+        {
+            if (!string.Equals(profileId, Selector, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(profileId, "model-alpha", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException(
+                    $"The model profile or discovered model '{profileId}' does not exist.",
+                    nameof(profileId));
+            }
+
+            selected = true;
+        }
+
+        public void ResetModelProfile() => selected = false;
+
+        public IAgentRunProfileLease Acquire() => throw new NotSupportedException();
+
+        public MaieuticsAgentKernelOptions GetKernelOptions() => new();
+
+        public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
+            string? sourceId = null,
+            bool refresh = false,
+            CancellationToken cancellationToken = default) =>
+            new([
+                new DiscoveredModelGroup(
+                    "vendor",
+                    "Vendor",
+                    Error: null,
+                    [new AgentModelDescriptor("model-alpha", "Vendor")])
+            ]);
+
+        private static MaieuticsModelProfileInfo CreateProfile(bool isSelected) => new(
+            Selector,
+            "vendor",
+            "Vendor",
+            "model-alpha",
+            IsDefault: false,
+            IsSelected: isSelected,
+            IsAutomatic: true);
     }
 
     private sealed class CommitBoundarySession : IAgentSession

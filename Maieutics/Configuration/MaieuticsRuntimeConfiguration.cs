@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
@@ -37,7 +39,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private readonly IDisposable fileErrorSubscription;
     private readonly Task reloadLoop;
     private RuntimeSnapshot? current;
-    private string? sessionOverride;
+    private ProfileOverride? sessionOverride;
     private int disposed;
     private long reloadAttempt;
     private long completedReloadAttempt;
@@ -92,21 +94,29 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             var snapshot = GetCurrent();
-            if (snapshot.Profiles.Count == 0)
+            if (sessionOverride is AutomaticProfileOverride automatic)
+            {
+                return CreateRuntimeProfileLease(
+                    snapshot,
+                    automatic.Generation,
+                    automatic.Identity,
+                    automatic.Capabilities);
+            }
+
+            var profileId = sessionOverride is ConfiguredProfileOverride configured
+                ? configured.ProfileId
+                : snapshot.DefaultProfileId;
+            if (string.IsNullOrEmpty(profileId))
             {
                 throw new InvalidOperationException("No model profile is configured.");
             }
 
-            var profileId = sessionOverride ?? snapshot.DefaultProfileId;
             var entry = snapshot.Profiles[profileId];
-            var generationLease = entry.Generation.Acquire();
-            return new RuntimeProfileLease(
-                generationLease,
-                new AgentRunProfile(
-                    entry.Generation.Client,
-                    CreateAgentOptions(snapshot.Options),
-                    entry.Identity,
-                    entry.Capabilities));
+            return CreateRuntimeProfileLease(
+                snapshot,
+                entry.Generation,
+                entry.Identity,
+                entry.Capabilities);
         }
     }
 
@@ -115,7 +125,10 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             var snapshot = GetCurrent();
-            var selected = sessionOverride ?? snapshot.DefaultProfileId;
+            var configuredOverride = sessionOverride as ConfiguredProfileOverride;
+            var automaticOverride = sessionOverride as AutomaticProfileOverride;
+            var selectedConfiguredProfileId = configuredOverride?.ProfileId ??
+                                              (automaticOverride is null ? snapshot.DefaultProfileId : null);
             var profiles = snapshot.Profiles.Values
                 .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase)
                 .Select(profile => new MaieuticsModelProfileInfo(
@@ -124,13 +137,31 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                     profile.Identity.Provider,
                     profile.Identity.Model,
                     string.Equals(profile.Id, snapshot.DefaultProfileId, StringComparison.OrdinalIgnoreCase),
-                    string.Equals(profile.Id, selected, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
+                    string.Equals(profile.Id, selectedConfiguredProfileId, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (automaticOverride is not null)
+            {
+                profiles.Add(automaticOverride.ToProfileInfo(isSelected: true));
+            }
+
             return new MaieuticsModelProfileSelection(
                 snapshot.DefaultProfileId,
-                selected,
+                automaticOverride?.Selector ?? selectedConfiguredProfileId ?? string.Empty,
                 sessionOverride is not null,
                 profiles);
+        }
+    }
+
+    public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles()
+    {
+        lock (gate)
+        {
+            var snapshot = GetCurrent();
+            var selected = sessionOverride as AutomaticProfileOverride;
+            return GetAutomaticProfileCandidates(snapshot, DateTime.UtcNow)
+                .Select(candidate => candidate.ToProfileInfo(
+                    selected is not null && selected.Matches(candidate)))
+                .ToArray();
         }
     }
 
@@ -147,37 +178,84 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     public void SelectModelProfile(string profileId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        if (TrySelectConfiguredProfile(profileId))
+        {
+            ObserveCompletedRetirements();
+            return;
+        }
+
         lock (gate)
         {
-            var snapshot = GetCurrent();
-            if (snapshot.Profiles.TryGetValue(profileId, out var profile))
+            _ = GetCurrent();
+            if (sessionOverride is AutomaticProfileOverride selected &&
+                string.Equals(selected.Selector, profileId, StringComparison.OrdinalIgnoreCase))
             {
-                sessionOverride = profile.Id;
                 return;
             }
+        }
 
-            var modelMatches = snapshot.Profiles.Values
-                .Where(profileEntry => string.Equals(
-                    profileEntry.Identity.Model,
-                    profileId,
-                    StringComparison.OrdinalIgnoreCase))
-                .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            switch (modelMatches.Length)
+        var candidate = ResolveAutomaticProfile(profileId);
+        lock (gate)
+        {
+            if (sessionOverride is AutomaticProfileOverride selected && selected.Matches(candidate))
             {
-                case 1:
-                    sessionOverride = modelMatches[0].Id;
-                    return;
-                case > 1:
-                    throw new ArgumentException(
-                        $"The model '{profileId}' matches multiple model profiles: " +
-                        $"{string.Join(", ", modelMatches.Select(static profile => $"'{profile.Id}'"))}. " +
-                        "Use a profile ID.",
-                        nameof(profileId));
-                default:
-                    throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
+                return;
             }
         }
+
+        ProfileGeneration generation;
+        try
+        {
+            generation = new ProfileGeneration(candidate.Source.Create(candidate.Model), logger);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Could not create automatic model profile {ProfileSelector}.",
+                candidate.Selector);
+            throw new ArgumentException(
+                $"The automatic model profile '{candidate.Selector}' could not be created.",
+                nameof(profileId),
+                exception);
+        }
+
+        var replacement = new AutomaticProfileOverride(candidate, generation);
+        var committed = false;
+        try
+        {
+            lock (gate)
+            {
+                var snapshot = GetCurrent();
+                if (!snapshot.Sources.TryGetValue(candidate.SourceId, out var source) ||
+                    !string.Equals(source.ProviderName, candidate.Provider, StringComparison.OrdinalIgnoreCase) ||
+                    !Equals(source.ClientGenerationKey, candidate.ClientGenerationKey) ||
+                    source.Capabilities != candidate.Capabilities)
+                {
+                    throw new ArgumentException(
+                        $"The model source '{candidate.SourceId}' changed while the automatic profile was selected. " +
+                        "Run model discovery and try again.",
+                        nameof(profileId));
+                }
+
+                var previous = sessionOverride as AutomaticProfileOverride;
+                sessionOverride = replacement;
+                committed = true;
+                if (previous is not null)
+                {
+                    TrackRetirementLocked(previous.Generation);
+                }
+            }
+        }
+        finally
+        {
+            if (!committed)
+            {
+                generation.Retire().GetAwaiter().GetResult();
+            }
+        }
+
+        ObserveCompletedRetirements();
     }
 
     public void ResetModelProfile()
@@ -185,9 +263,152 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             _ = GetCurrent();
+            if (sessionOverride is AutomaticProfileOverride automatic)
+            {
+                TrackRetirementLocked(automatic.Generation);
+            }
+
             sessionOverride = null;
         }
+
+        ObserveCompletedRetirements();
     }
+
+    private bool TrySelectConfiguredProfile(string value)
+    {
+        lock (gate)
+        {
+            var snapshot = GetCurrent();
+            if (snapshot.Profiles.TryGetValue(value, out var profile))
+            {
+                SetConfiguredProfileOverrideLocked(profile.Id);
+                return true;
+            }
+
+            var modelMatches = snapshot.Profiles.Values
+                .Where(profileEntry => string.Equals(
+                    profileEntry.Identity.Model,
+                    value,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderBy(static profileEntry => profileEntry.Id, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            switch (modelMatches.Length)
+            {
+                case 0:
+                    return false;
+                case 1:
+                    SetConfiguredProfileOverrideLocked(modelMatches[0].Id);
+                    return true;
+                default:
+                    throw new ArgumentException(
+                        $"The model '{value}' matches multiple configured model profiles: " +
+                        $"{string.Join(", ", modelMatches.Select(static match => $"'{match.Id}'"))}. " +
+                        "Use a profile ID.",
+                        nameof(value));
+            }
+        }
+    }
+
+    private AutomaticProfileCandidate ResolveAutomaticProfile(string value)
+    {
+        lock (gate)
+        {
+            var snapshot = GetCurrent();
+            var candidates = GetAutomaticProfileCandidates(snapshot, DateTime.UtcNow);
+            AutomaticProfileCandidate[] matches;
+            if (value.StartsWith('@'))
+            {
+                if (!MaieuticsAutomaticProfileSelector.TryParse(value, out var sourceId, out var model))
+                {
+                    throw new ArgumentException(
+                        "Automatic model profile selectors must use the form '@source/model'.",
+                        nameof(value));
+                }
+
+                matches = candidates
+                    .Where(candidate =>
+                        string.Equals(candidate.SourceId, sourceId, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+            }
+            else
+            {
+                matches = candidates
+                    .Where(candidate => string.Equals(
+                        candidate.Model,
+                        value,
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+            }
+
+            return matches.Length switch
+            {
+                1 => matches[0],
+                > 1 => throw new ArgumentException(
+                    $"The discovered model '{value}' is available from multiple sources: " +
+                    $"{string.Join(", ", matches.Select(static match => $"'{match.Selector}'"))}. " +
+                    "Use a qualified automatic profile selector.",
+                    nameof(value)),
+                _ => throw new ArgumentException(
+                    $"The model profile or discovered model '{value}' is not available in the discovery cache. " +
+                    "Run '%maieutics model available' first.",
+                    nameof(value))
+            };
+        }
+    }
+
+    private IReadOnlyList<AutomaticProfileCandidate> GetAutomaticProfileCandidates(
+        RuntimeSnapshot snapshot,
+        DateTime now)
+    {
+        var candidates = new Dictionary<string, AutomaticProfileCandidate>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cached in discoveryCache.Values)
+        {
+            if (now - cached.CachedAt >= DiscoveryCacheTtl ||
+                cached.ConfigurationVersion != snapshot.Version ||
+                cached.Result.Error is not null ||
+                !snapshot.Sources.TryGetValue(cached.Result.SourceId, out var source) ||
+                !Equals(cached.ClientGenerationKey, source.ClientGenerationKey))
+            {
+                continue;
+            }
+
+            foreach (var model in cached.Result.Models)
+            {
+                if (string.IsNullOrWhiteSpace(model.Id))
+                {
+                    continue;
+                }
+
+                var selector = MaieuticsAutomaticProfileSelector.Format(cached.Result.SourceId, model.Id);
+                candidates.TryAdd(selector, new AutomaticProfileCandidate(
+                    selector,
+                    cached.Result.SourceId,
+                    source.ProviderName,
+                    model.Id,
+                    source.ClientGenerationKey,
+                    source.Capabilities,
+                    source));
+            }
+        }
+
+        return candidates.Values
+            .OrderBy(static candidate => candidate.Selector, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private void SetConfiguredProfileOverrideLocked(string profileId)
+    {
+        if (sessionOverride is AutomaticProfileOverride automatic)
+        {
+            TrackRetirementLocked(automatic.Generation);
+        }
+
+        sessionOverride = new ConfiguredProfileOverride(profileId);
+    }
+
+    private void TrackRetirementLocked(ProfileGeneration generation) =>
+        retiredGenerations.Add(generation.Retire());
 
     public MaieuticsAgentKernelOptions GetKernelOptions()
     {
@@ -207,7 +428,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         bool refresh = false,
         CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<(string sourceId, string provider, IConfiguredChatClientSource source)> targets;
+        IReadOnlyList<(string sourceId, string provider, IConfiguredChatClientSource source, long version)> targets;
         lock (gate)
         {
             var snapshot = GetCurrent();
@@ -216,13 +437,13 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 .. snapshot.Sources
                     .Where(s => sourceId is null ||
                                 string.Equals(s.Key, sourceId, StringComparison.OrdinalIgnoreCase))
-                    .Select(s => (s.Key, s.Value.ProviderName, s.Value))
+                    .Select(s => (s.Key, s.Value.ProviderName, s.Value, snapshot.Version))
             ];
         }
 
         var now = DateTime.UtcNow;
         var results = new List<DiscoveredModelGroup>(targets.Count);
-        foreach (var (sid, provider, source) in targets)
+        foreach (var (sid, provider, source, version) in targets)
         {
             if (source is not IModelDiscoverySource discovery)
             {
@@ -230,7 +451,9 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             }
 
             if (!refresh && discoveryCache.TryGetValue(sid, out var cached) &&
-                now - cached.CachedAt < DiscoveryCacheTtl)
+                now - cached.CachedAt < DiscoveryCacheTtl &&
+                cached.ConfigurationVersion == version &&
+                Equals(cached.ClientGenerationKey, source.ClientGenerationKey))
             {
                 results.Add(cached.Result);
                 continue;
@@ -240,7 +463,21 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             {
                 var models = await discovery.GetAvailableModelsAsync(cancellationToken).ConfigureAwait(false);
                 var group = new DiscoveredModelGroup(sid, provider, null, models);
-                discoveryCache[sid] = new CachedDiscovery(group, now);
+                lock (gate)
+                {
+                    if (current is { } snapshot &&
+                        snapshot.Version == version &&
+                        snapshot.Sources.TryGetValue(sid, out var currentSource) &&
+                        Equals(currentSource.ClientGenerationKey, source.ClientGenerationKey))
+                    {
+                        discoveryCache[sid] = new CachedDiscovery(
+                            group,
+                            now,
+                            version,
+                            source.ClientGenerationKey);
+                    }
+                }
+
                 results.Add(group);
             }
             catch (Exception exception)
@@ -269,11 +506,16 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         Task[] retired;
         lock (gate)
         {
+            var automaticGeneration = sessionOverride is AutomaticProfileOverride automatic
+                ? automatic.Generation
+                : null;
             generations = GetCurrent().Profiles.Values
                 .Select(static profile => profile.Generation)
+                .Concat(automaticGeneration is null ? [] : [automaticGeneration])
                 .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
                 .ToArray();
             current = null;
+            sessionOverride = null;
             retired = retiredGenerations.ToArray();
         }
 
@@ -307,7 +549,6 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
     private void Reload()
     {
-        discoveryCache.Clear();
         if (configurationFile is { Required: true, Path: { } requiredPath } &&
             !File.Exists(requiredPath))
         {
@@ -340,10 +581,23 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         {
             previous = GetCurrent();
             current = replacement;
-            if (sessionOverride is not null && !replacement.Profiles.ContainsKey(sessionOverride))
+            switch (sessionOverride)
             {
-                removedOverride = sessionOverride;
-                sessionOverride = null;
+                case ConfiguredProfileOverride configured
+                    when !replacement.Profiles.ContainsKey(configured.ProfileId):
+                    removedOverride = configured.ProfileId;
+                    sessionOverride = null;
+                    break;
+                case AutomaticProfileOverride automatic
+                    when !replacement.Sources.TryGetValue(automatic.SourceId, out var source) ||
+                         !string.Equals(source.ProviderName, automatic.Provider,
+                             StringComparison.OrdinalIgnoreCase) ||
+                         !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
+                         source.Capabilities != automatic.Capabilities:
+                    removedOverride = automatic.Selector;
+                    sessionOverride = null;
+                    TrackRetirementLocked(automatic.Generation);
+                    break;
             }
 
             var retained = replacement.Profiles.Values
@@ -360,7 +614,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         if (removedOverride is not null)
         {
             logger.LogWarning(
-                "The selected model profile {ProfileId} was removed; subsequent runs will use default profile {DefaultProfileId}.",
+                "The selected model profile {ProfileId} is no longer available; subsequent runs will use default profile {DefaultProfileId}.",
                 removedOverride,
                 replacement.DefaultProfileId);
         }
@@ -722,6 +976,26 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private RuntimeSnapshot GetCurrent() =>
         current ?? throw new ObjectDisposedException(nameof(MaieuticsRuntimeConfiguration));
 
+    private static RuntimeProfileLease CreateRuntimeProfileLease(
+        RuntimeSnapshot snapshot,
+        ProfileGeneration generation,
+        AgentModelIdentity identity,
+        AgentModelCapabilities capabilities) =>
+        new(
+            generation.Acquire(),
+            new AgentRunProfile(
+                generation.Client,
+                CreateAgentOptions(snapshot.Options),
+                identity,
+                capabilities));
+
+    private static AgentModelProfileId CreateAutomaticProfileId(string sourceId, string model)
+    {
+        var identity = Encoding.UTF8.GetBytes($"{sourceId}\0{model}");
+        var hash = SHA256.HashData(identity);
+        return new AgentModelProfileId($"auto-{Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant()}");
+    }
+
     private static AgentSessionOptions CreateAgentOptions(MaieuticsOptions options) => new()
     {
         SystemPrompt = options.SystemPrompt,
@@ -811,6 +1085,72 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         AgentModelIdentity Identity,
         AgentModelCapabilities Capabilities,
         ProfileGeneration Generation);
+
+    private abstract class ProfileOverride;
+
+    private sealed class ConfiguredProfileOverride(string profileId) : ProfileOverride
+    {
+        internal string ProfileId { get; } = profileId;
+    }
+
+    private sealed class AutomaticProfileOverride(
+        AutomaticProfileCandidate candidate,
+        ProfileGeneration generation) : ProfileOverride
+    {
+        internal string Selector { get; } = candidate.Selector;
+
+        internal string SourceId { get; } = candidate.SourceId;
+
+        internal string Provider { get; } = candidate.Provider;
+
+        internal string Model { get; } = candidate.Model;
+
+        internal object ClientGenerationKey { get; } = candidate.ClientGenerationKey;
+
+        internal AgentModelCapabilities Capabilities { get; } = candidate.Capabilities;
+
+        internal ProfileGeneration Generation { get; } = generation;
+
+        internal AgentModelIdentity Identity { get; } = new(
+            CreateAutomaticProfileId(candidate.SourceId, candidate.Model),
+            candidate.Provider,
+            candidate.Model);
+
+        internal bool Matches(AutomaticProfileCandidate other) =>
+            string.Equals(SourceId, other.SourceId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Model, other.Model, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Provider, other.Provider, StringComparison.OrdinalIgnoreCase) &&
+            Equals(ClientGenerationKey, other.ClientGenerationKey) &&
+            Capabilities == other.Capabilities;
+
+        internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected) => new(
+            Selector,
+            SourceId,
+            Provider,
+            Model,
+            IsDefault: false,
+            IsSelected: isSelected,
+            IsAutomatic: true);
+    }
+
+    private sealed record AutomaticProfileCandidate(
+        string Selector,
+        string SourceId,
+        string Provider,
+        string Model,
+        object ClientGenerationKey,
+        AgentModelCapabilities Capabilities,
+        IConfiguredChatClientSource Source)
+    {
+        internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected) => new(
+            Selector,
+            SourceId,
+            Provider,
+            Model,
+            IsDefault: false,
+            IsSelected: isSelected,
+            IsAutomatic: true);
+    }
 
     private sealed class RuntimeProfileLease(
         ProfileGenerationLease generationLease,
@@ -917,5 +1257,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
     private sealed record CachedDiscovery(
         DiscoveredModelGroup Result,
-        DateTime CachedAt);
+        DateTime CachedAt,
+        long ConfigurationVersion,
+        object ClientGenerationKey);
 }

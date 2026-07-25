@@ -22,10 +22,12 @@ internal static class MaieuticsCommandLanguage
     internal static JupyterCompletionResult Complete(
         JupyterCompleteRequest request,
         IReadOnlyList<MaieuticsModelProfileInfo> profiles,
+        IReadOnlyList<MaieuticsModelProfileInfo> automaticProfiles,
         IReadOnlyList<string> sourceIds)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(profiles);
+        ArgumentNullException.ThrowIfNull(automaticProfiles);
         ArgumentNullException.ThrowIfNull(sourceIds);
 
         var cursorIndex = JupyterCursorPosition.ToUtf16Index(request.Code, request.CursorPosition);
@@ -56,7 +58,17 @@ internal static class MaieuticsCommandLanguage
                 when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
                      model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
                      use.Equals(Use, StringComparison.OrdinalIgnoreCase) =>
-                profiles.SelectMany(static profile => new[] { profile.Id, profile.Model }),
+                profiles
+                    .Where(static profile => !profile.IsAutomatic)
+                    .SelectMany(static profile => new[] { profile.Id, profile.Model })
+                    .Concat(profiles
+                        .Where(static profile => profile.IsAutomatic)
+                        .Select(static profile => profile.Id))
+                    .Concat(automaticProfiles.Select(static profile => profile.Id))
+                    .Concat(automaticProfiles
+                        .GroupBy(static profile => profile.Model, StringComparer.OrdinalIgnoreCase)
+                        .Where(static group => group.Count() == 1)
+                        .Select(static group => group.Key)),
             [var root, var model, var available]
                 when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
                      model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&

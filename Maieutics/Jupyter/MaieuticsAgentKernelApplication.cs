@@ -96,8 +96,13 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     {
         cancellationToken.ThrowIfCancellationRequested();
         var profiles = runtimeConfiguration?.GetModelProfileSelection().Profiles ?? [];
+        var automaticProfiles = runtimeConfiguration?.GetCachedAutomaticModelProfiles() ?? [];
         var sourceIds = runtimeConfiguration?.GetModelSourceIds() ?? [];
-        return ValueTask.FromResult(MaieuticsCommandLanguage.Complete(request, profiles, sourceIds));
+        return ValueTask.FromResult(MaieuticsCommandLanguage.Complete(
+            request,
+            profiles,
+            automaticProfiles,
+            sourceIds));
     }
 
     private async ValueTask ExecuteCommandAsync(
@@ -190,7 +195,11 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         }
 
         var profile = selection.Profiles.Single(profile => profile.IsSelected);
-        var selectionSource = selection.HasSessionOverride ? "session override" : "configured default";
+        var selectionSource = profile.IsAutomatic
+            ? "automatic session override"
+            : selection.HasSessionOverride
+                ? "session override"
+                : "configured default";
         return $"""
                 ### Current model
 
@@ -220,6 +229,11 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             if (profile.IsDefault)
             {
                 markers.Add("default");
+            }
+
+            if (profile.IsAutomatic)
+            {
+                markers.Add("automatic");
             }
 
             var suffix = markers.Count == 0 ? string.Empty : $" ({string.Join(", ", markers)})";
@@ -255,6 +269,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
         var output = new StringBuilder("### Available models\n\n");
         var configuredModelIds = profiles.Profiles
+            .Where(static profile => !profile.IsAutomatic)
             .Select(static p => (p.SourceId, p.Model))
             .ToHashSet(TupleComparer.Instance);
 
@@ -294,7 +309,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                     .Contains((group.SourceId, model.Id));
                 if (!configured)
                 {
-                    output.Append(" ⚠️ not configured in any profile");
+                    var selector = MaieuticsAutomaticProfileSelector.Format(group.SourceId, model.Id);
+                    output.Append(" — automatic profile `")
+                        .Append(EscapeCode(selector))
+                        .Append('`');
                 }
 
                 output.AppendLine();
@@ -302,6 +320,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         }
 
         var missingFromApi = profiles.Profiles
+            .Where(static profile => !profile.IsAutomatic)
             .Where(profile => !groups.Any(g =>
                 string.Equals(g.SourceId, profile.SourceId, StringComparison.OrdinalIgnoreCase) &&
                 g.Error is null &&

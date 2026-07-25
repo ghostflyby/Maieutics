@@ -79,6 +79,60 @@ public sealed class MaieuticsCompletionTests
     }
 
     [Fact]
+    public void UseCompletesQualifiedAutomaticProfilesFromTheDiscoveryCache()
+    {
+        MaieuticsModelProfileInfo[] automaticProfiles =
+        [
+            new(
+                "@vendor/model-alpha",
+                "vendor",
+                "Vendor",
+                "model-alpha",
+                IsDefault: false,
+                IsSelected: false,
+                IsAutomatic: true),
+            new(
+                "@other/model-alpha",
+                "other",
+                "Vendor",
+                "model-alpha",
+                IsDefault: false,
+                IsSelected: false,
+                IsAutomatic: true),
+            new(
+                "@vendor/model-beta",
+                "vendor",
+                "Vendor",
+                "model-beta",
+                IsDefault: false,
+                IsSelected: false,
+                IsAutomatic: true)
+        ];
+
+        var all = Complete(
+            "%maieutics model use @",
+            automaticProfiles: automaticProfiles);
+        all.Matches.Should().Equal("@other/model-alpha", "@vendor/model-alpha", "@vendor/model-beta");
+
+        var source = Complete(
+            "%maieutics model use @ven",
+            automaticProfiles: automaticProfiles);
+        source.Matches.Should().Equal("@vendor/model-alpha", "@vendor/model-beta");
+
+        var uniqueModel = Complete(
+            "%maieutics model use model-",
+            profiles: [],
+            automaticProfiles: automaticProfiles);
+        uniqueModel.Matches.Should().Equal("model-beta");
+
+        var selectedAfterCacheExpiry = Complete(
+            "%maieutics model use @ven",
+            profiles: [automaticProfiles[2] with { IsSelected = true }],
+            automaticProfiles: []);
+        selectedAfterCacheExpiry.Matches.Should().Equal("@vendor/model-beta");
+    }
+
+    [Fact]
     public void CompletionUsesUnicodeCodePointOffsetsForCursorRanges()
     {
         const string code = "%maieutics model use claude😀";
@@ -87,7 +141,7 @@ public sealed class MaieuticsCompletionTests
             code,
             JupyterCursorPosition.FromUtf16Index(code, cursorUtf16Index));
 
-        var result = MaieuticsCommandLanguage.Complete(request, Profiles, []);
+        var result = MaieuticsCommandLanguage.Complete(request, Profiles, [], []);
 
         result.Matches.Should().Equal("claude", "claude-test");
         result.CursorStart.Should().Be(21);
@@ -128,18 +182,20 @@ public sealed class MaieuticsCompletionTests
         var use = Complete("%maieutics model use ", profiles, []);
         use.Matches.Should().Equal("a-profile", "shared", "Z-profile");
 
-        var unrelated = Complete("ordinary text", profiles, ["vendor"]);
+        var unrelated = Complete("ordinary text", profiles, sourceIds: ["vendor"]);
         unrelated.Matches.Should().BeEmpty();
     }
 
     private static JupyterCompletionResult Complete(
         string code,
         IReadOnlyList<MaieuticsModelProfileInfo>? profiles = null,
+        IReadOnlyList<MaieuticsModelProfileInfo>? automaticProfiles = null,
         IReadOnlyList<string>? sourceIds = null) =>
         MaieuticsCommandLanguage.Complete(
             new JupyterCompleteRequest(
                 code,
                 JupyterCursorPosition.FromUtf16Index(code, code.Length)),
             profiles ?? Profiles,
+            automaticProfiles ?? [],
             sourceIds ?? []);
 }

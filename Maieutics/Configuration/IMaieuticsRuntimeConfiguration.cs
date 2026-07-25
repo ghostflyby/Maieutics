@@ -26,6 +26,8 @@ internal interface IMaieuticsModelProfileController
 {
     MaieuticsModelProfileSelection GetModelProfileSelection();
 
+    IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles();
+
     IReadOnlyList<string> GetModelSourceIds();
 
     void SelectModelProfile(string profileId);
@@ -45,7 +47,33 @@ internal sealed record MaieuticsModelProfileInfo(
     string Provider,
     string Model,
     bool IsDefault,
-    bool IsSelected);
+    bool IsSelected,
+    bool IsAutomatic = false);
+
+internal static class MaieuticsAutomaticProfileSelector
+{
+    internal static string Format(string sourceId, string model) => $"@{sourceId}/{model}";
+
+    internal static bool TryParse(string value, out string sourceId, out string model)
+    {
+        sourceId = string.Empty;
+        model = string.Empty;
+        if (value.Length < 4 || value[0] != '@')
+        {
+            return false;
+        }
+
+        var separator = value.IndexOf('/');
+        if (separator <= 1 || separator == value.Length - 1)
+        {
+            return false;
+        }
+
+        sourceId = value[1..separator];
+        model = value[(separator + 1)..];
+        return !sourceId.Any(char.IsWhiteSpace) && !model.Any(char.IsWhiteSpace);
+    }
+}
 
 /// <summary>Groups models discovered from one model source.</summary>
 internal sealed record DiscoveredModelGroup(

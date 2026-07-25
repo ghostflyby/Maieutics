@@ -175,11 +175,13 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             var snapshot = GetCurrent();
-            targets = snapshot.Sources
-                .Where(s => sourceId is null ||
-                            string.Equals(s.Key, sourceId, StringComparison.OrdinalIgnoreCase))
-                .Select(s => (s.Key, s.Value.ProviderName, s.Value))
-                .ToArray();
+            targets =
+            [
+                .. snapshot.Sources
+                    .Where(s => sourceId is null ||
+                                string.Equals(s.Key, sourceId, StringComparison.OrdinalIgnoreCase))
+                    .Select(s => (s.Key, s.Value.ProviderName, s.Value))
+            ];
         }
 
         var now = DateTime.UtcNow;
@@ -270,8 +272,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private void Reload()
     {
         discoveryCache.Clear();
-        if (configurationFile.Required &&
-            configurationFile.Path is { } requiredPath &&
+        if (configurationFile is { Required: true, Path: { } requiredPath } &&
             !File.Exists(requiredPath))
         {
             throw new FileNotFoundException("The selected Maieutics configuration file no longer exists.",
@@ -298,7 +299,6 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         }
 
         var replacement = BuildSnapshot(candidate, previous, checked(previous.Version + 1));
-        List<ProfileGeneration> retired;
         string? removedOverride = null;
         lock (gate)
         {
@@ -313,7 +313,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             var retained = replacement.Profiles.Values
                 .Select(static profile => profile.Generation)
                 .ToHashSet<ProfileGeneration>(ReferenceEqualityComparer.Instance);
-            retired = previous.Profiles.Values
+            var retired = previous.Profiles.Values
                 .Select(static profile => profile.Generation)
                 .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
                 .Where(generation => !retained.Contains(generation))
@@ -574,7 +574,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             .GetSection("Source");
     }
 
-    private static void AddSection(IDictionary<string, string?> values, IConfigurationSection section)
+    private static void AddSection(Dictionary<string, string?> values, IConfigurationSection section)
     {
         foreach (var pair in section.AsEnumerable(makePathsRelative: true))
         {

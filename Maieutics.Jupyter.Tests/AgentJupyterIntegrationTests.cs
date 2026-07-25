@@ -106,8 +106,39 @@ public sealed class AgentJupyterIntegrationTests
         session.GetTranscriptSnapshot().Turns.SelectMany(turn => turn.Messages)
             .Select(message => (message.Role, Text: ReadText(message)))
             .Should().Equal(
-                (AgentMessageRole.User, "retry"),
-                (AgentMessageRole.Assistant, "recovered"));
+                (ChatRole.User, "retry"),
+                (ChatRole.Assistant, "recovered"));
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IncompatibleContentReturnsSafeUnsupportedResponseAndRollsBackHistory()
+    {
+        using var deadline = CreateDeadline();
+        var session = new AgentSession(new ScriptedChatClient((_, token) => IncompatibleContentResponseAsync(token)));
+        var application = new MaieuticsAgentKernelApplication(session);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var execution = await client.ExecuteAsync(new JupyterExecuteRequest("unsupported"), deadline.Token);
+        var outputs = await ReadOutputsAsync(execution, deadline.Token);
+        var completion = await execution.Completion.WaitAsync(deadline.Token);
+
+        completion.Reply.Status.Should().Be("error");
+        completion.Reply.ErrorName.Should().Be("AgentUnsupportedResponse");
+        completion.Reply.ErrorValue.Should().NotContain(nameof(CustomContent));
+        outputs.Where(output => output is JupyterDisplayOutput or JupyterDisplayUpdateOutput)
+            .Select(ReadMarkdown)
+            .Should().Contain("visible");
+        outputs.OfType<JupyterExecutionError>().Single().Name.Should().Be("AgentUnsupportedResponse");
+        session.GetTranscriptSnapshot().Version.Should().Be(0);
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
 
         await client.ShutdownAsync(false, deadline.Token);
         await host.Completion.WaitAsync(deadline.Token);
@@ -373,8 +404,7 @@ public sealed class AgentJupyterIntegrationTests
         _ => null
     };
 
-    private static string ReadText(AgentMessage message) => string.Concat(
-        message.Contents.OfType<AgentTextContent>().Select(content => content.Text));
+    private static string ReadText(ChatMessage message) => message.Text;
 
     private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
         IJupyterExecution execution,
@@ -430,6 +460,16 @@ public sealed class AgentJupyterIntegrationTests
         throw exception;
     }
 
+    private static async IAsyncEnumerable<ChatResponseUpdate> IncompatibleContentResponseAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await Task.Yield();
+        yield return new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [new TextContent("visible"), new CustomContent()]);
+    }
+
     private static async IAsyncEnumerable<ChatResponseUpdate> WaitAfterTextAsync(
         TaskCompletionSource responseStarted,
         [EnumeratorCancellation] CancellationToken cancellationToken,
@@ -483,6 +523,8 @@ public sealed class AgentJupyterIntegrationTests
         {
         }
     }
+
+    private sealed class CustomContent : AIContent;
 
     private sealed class ManualTimeProvider : TimeProvider
     {
@@ -675,21 +717,16 @@ public sealed class AgentJupyterIntegrationTests
         private readonly TaskCompletionSource<AgentRunResult> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly AgentMessage user;
-        private readonly AgentMessage assistant;
+        private readonly AgentMessageId assistantId = AgentMessageId.Create();
+        private readonly ChatMessage user;
+        private readonly ChatMessage assistant;
 
         public CommitBoundaryRun(AgentSessionId sessionId)
         {
             SessionId = sessionId;
             Id = AgentRunId.Create();
-            user = new AgentMessage(
-                AgentMessageId.Create(),
-                AgentMessageRole.User,
-                [new AgentTextContent("commit")]);
-            assistant = new AgentMessage(
-                AgentMessageId.Create(),
-                AgentMessageRole.Assistant,
-                [new AgentTextContent("committed")]);
+            user = new ChatMessage(ChatRole.User, "commit");
+            assistant = new ChatMessage(ChatRole.Assistant, "committed");
         }
 
         public AgentRunId Id { get; }
@@ -730,8 +767,8 @@ public sealed class AgentJupyterIntegrationTests
         private async IAsyncEnumerable<AgentEvent> ReadEventsAsync()
         {
             await Task.Yield();
-            yield return new AgentTextDelta(Id, 1, assistant.Id, "committed");
-            yield return new AgentMessageCompleted(Id, 2, assistant);
+            yield return new AgentTextDelta(Id, 1, assistantId, "committed");
+            yield return new AgentMessageCompleted(Id, 2, assistantId, assistant);
         }
     }
 }

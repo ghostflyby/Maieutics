@@ -10,10 +10,10 @@ Maieutics must support OpenAI Responses, OpenAI Chat Completions, Anthropic Mess
 model APIs. These APIs differ in request shape, streaming events, tool calls, reasoning metadata, continuation state,
 usage reporting, and multimodal support.
 
-The current runtime injects `Microsoft.Extensions.AI.IChatClient` and models public messages and events primarily as
-text. `IChatClient` already provides provider-neutral messages, polymorphic content, tools, streaming responses, usage,
-opaque provider state, additional properties, and service discovery. OpenAI Chat Completions and Responses both expose
-`IChatClient` adapters, and other providers can implement the same contract.
+The runtime injects `Microsoft.Extensions.AI.IChatClient`. Microsoft.Extensions.AI already provides provider-neutral
+`ChatMessage`, `ChatRole`, and polymorphic `AIContent` contracts for messages, tools, reasoning, usage, opaque provider
+state, additional properties, and service discovery. OpenAI Chat Completions and Responses both expose `IChatClient`
+adapters, and other providers can implement the same contract.
 
 Adding another model-client abstraction with nearly the same responsibilities would create a permanent translation
 layer without establishing a meaningfully different ownership boundary.
@@ -35,22 +35,28 @@ represented through `IChatClient`, its extension points, or a narrowly scoped ad
 
 The following semantics remain required:
 
-- `ChatMessage` and `AIContent` are accepted as the provider-facing message and content representation inside the model
-  integration layer.
-- Provider-neutral Agent events and transcript types remain Maieutics-owned API and are mapped from framework response
-  updates; Microsoft types do not become the Jupyter, worker, extension, or persistence wire contract.
+- `ChatMessage`, `ChatRole`, and `AIContent` are the message and content representation throughout the Agent facade and
+  model integration layer. Maieutics does not maintain a parallel closed content hierarchy.
+- Microsoft.Extensions.AI owns the message/content taxonomy and its JSON contracts. Maieutics owns session and run
+  lifecycles, transcript transactions, events and correlation IDs, policy filtering, and the versioned transcript
+  envelope.
+- Microsoft Agent Framework types and provider SDK types do not become Agent contracts. `ChatMessage` and `AIContent`
+  also do not become Jupyter, worker, extension, or notebook persistence wire contracts; those boundaries adapt them to
+  their own versioned representations.
 - A Maieutics capability descriptor declares tools, multimodal input, structured output, reasoning summaries,
   continuation behavior, and other optional features not safely inferred from the common interface alone.
 - Each provider API has a dedicated adapter. OpenAI Responses and OpenAI Chat Completions are separate adapters even if
   they share an SDK or configuration.
-- Provider-specific behavior may use custom `AIContent`, `AdditionalProperties`, `RawRepresentation`, `GetService`, or a
-  dedicated provider options object confined to the adapter.
+- Provider-specific behavior may use supported `AIContent`, JSON-compatible `AdditionalProperties`,
+  `RawRepresentation`, `GetService`, or a dedicated provider options object confined to the adapter. Unsupported custom
+  content cannot enter the canonical transcript unless its JSON contract is explicitly supported.
 - SDK response types, authentication types, raw JSON objects, and provider exception types stop at the adapter boundary.
 
 ## Conversation authority
 
-The canonical transcript stored by the Agent session is authoritative. Provider-side identifiers such as previous
-response or interaction IDs are opaque optional checkpoints associated with transcript state.
+The canonical transcript stored by the Agent session is authoritative. It uses a Maieutics-owned versioned envelope
+whose messages and content are serialized with the Microsoft.Extensions.AI JSON contract. Provider-side identifiers
+such as previous response or interaction IDs are opaque optional checkpoints associated with transcript state.
 
 The runtime must remain able to reconstruct a provider request from the canonical transcript when a checkpoint is
 missing, expired, incompatible with a selected provider, or intentionally discarded. Provider checkpoints may improve
@@ -104,13 +110,14 @@ conformance tests and NativeAOT publish check to pass before the version is acce
 
 ## Consequences
 
-- Agent Core can add or switch providers without changing transcript, tool, or notebook contracts.
+- Agent Core can add or switch providers without translating messages through a second content hierarchy.
 - Provider-specific features remain available without polluting common models.
 - Cross-provider continuation uses the canonical transcript rather than opaque provider state.
 - A new `IChatClient` implementation requires conformance tests for streaming content, cancellation, tool calls, usage,
   provider identifiers, and errors.
 - `IChatClient` remains injectable and directly testable even when `ChatClientAgent` performs the internal orchestration.
 - Maieutics avoids maintaining a second provider abstraction that mirrors Microsoft.Extensions.AI.
+- Changes to the Microsoft.Extensions.AI JSON contract or content taxonomy are explicit transcript compatibility inputs.
 
 ## References
 

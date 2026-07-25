@@ -51,17 +51,13 @@ extension, or persistence code.
 
 ## Content model
 
-Messages and tool results use typed content parts rather than one text field. The domain model must be able to represent:
+Agent messages use Microsoft.Extensions.AI `ChatMessage`, `ChatRole`, and `AIContent` directly. This taxonomy already
+represents text, data, media, tool calls and results, usage, annotations, and provider reasoning state. Maieutics does not
+duplicate it with `AgentMessage` or `AgentContent` variants.
 
-- text;
-- image, audio, and other media by artifact reference;
-- structured JSON or typed data;
-- tool calls and tool results;
-- provider-supported reasoning summaries permitted by policy;
-- references to notebook presentation or generated artifacts.
-
-Binary payloads are not stored repeatedly in the transcript. They are represented by an `ArtifactRef` carrying identity,
-media type, size, integrity metadata, and a resolver-independent URI.
+Maieutics still owns the semantics around those values: which inputs are accepted, tool result policy, event
+correlation, transcript commit and rollback, history limits, public redaction, and adaptation to Jupyter or future
+worker and persistence boundaries. Raw provider SDK objects remain behind provider adapters.
 
 ## Event model
 
@@ -78,12 +74,14 @@ media type, size, integrity metadata, and a resolver-independent URI.
 Notebook-specific output events are not Agent events. A runtime or tool may produce presentation data through the
 separate notebook presentation boundary described by ADR 0003.
 
-Microsoft Agent Framework `AgentResponseUpdate` and `AIContent` values are normalized at the internal runtime boundary.
-The Maieutics event model preserves semantic identity and correlation without exposing provider or framework objects.
+Microsoft Agent Framework response values are normalized at the internal runtime boundary. The Maieutics event model
+preserves semantic identity and correlation while carrying policy-cleaned `ChatMessage` or `AIContent` values where a
+complete message or content value is part of the event contract.
 
 ## Transactional transcript
 
-- The canonical transcript is an ordered collection of complete `AgentTranscriptTurn` values.
+- The canonical transcript is compact UTF-8 JSON containing a versioned Maieutics envelope and complete
+  `AgentTranscriptTurn` values. The envelope records its schema and Microsoft.Extensions.AI contract/producer version.
 - Every turn begins with the submitted user message and ends with the final assistant message.
 - Intermediate assistant tool-call messages and tool-result messages are retained in provider order so a later request
   can be reconstructed without provider-owned conversation state.
@@ -92,8 +90,16 @@ The Maieutics event model preserves semantic identity and correlation without ex
 - Cancellation, provider failure, tool failure that aborts the turn, output limits, and worker failure do not commit a
   partial turn.
 - Observable partial events and notebook outputs may remain visible even when the transcript transaction rolls back.
-- History eviction and future compaction operate on complete turns or explicit summary checkpoints.
+- History eviction uses the compact canonical message JSON UTF-8 size and operates on complete turns or explicit summary
+  checkpoints.
 - Provider checkpoint metadata is committed atomically with the transcript state it describes.
+- Canonical private state retains provider reasoning content, including opaque protected reasoning data needed for
+  replay. Public transcript snapshots, run results, events, and Jupyter output remove reasoning and provider-private
+  metadata.
+- Public snapshots are decoded into detached objects. Mutating a returned `ChatMessage`, content value, annotation, or
+  additional-property collection cannot mutate canonical state.
+- Content that the official Microsoft.Extensions.AI JSON contract cannot serialize rejects the commit and rolls back
+  the complete turn.
 
 Framework history completion is an internal staging point, not the final transaction commit. The staging provider and
 outer run owner described by ADR 0006 ensure that empty or unsupported responses, policy rejection, output limits, and
@@ -132,7 +138,8 @@ contract must describe kernel-session scope rather than global process state.
 - Starting and cancelling work no longer depends on whether a caller begins enumerating an async stream.
 - Tool loops and distributed operations have an owner and terminal completion task.
 - Multimodal and structured provider responses do not require replacing message APIs later.
-- The first-stage string-only records have been replaced by Maieutics-owned typed content and explicit run contracts.
+- The first-stage string-only records and Maieutics-owned parallel content hierarchy have been replaced by
+  Microsoft.Extensions.AI message/content contracts and explicit Maieutics run and envelope contracts.
 - Expected tool failures are committed as structured tool results only when the model subsequently produces a valid
   final answer; unexpected tool exceptions roll back the complete turn.
 - Microsoft Agent Framework can be replaced or upgraded without changing public session and run contracts.

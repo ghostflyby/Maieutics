@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FluentAssertions;
@@ -34,7 +35,7 @@ public sealed class AgentSessionTests
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
-        (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text().Should().Be("second");
+        (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("second");
     }
 
     [Fact]
@@ -53,23 +54,23 @@ public sealed class AgentSessionTests
         events.Should().OnlyContain(agentEvent => agentEvent.RunId == runId);
         var deltas = events.OfType<AgentTextDelta>().ToArray();
         deltas.Select(delta => delta.Text).Should().Equal("Hello", " world");
-        deltas.Select(delta => delta.MessageId).Should().OnlyContain(id => id == result.AssistantMessage.Id);
         var completed = events.OfType<AgentMessageCompleted>().Single();
-        completed.Message.Should().Be(result.AssistantMessage);
+        deltas.Select(delta => delta.MessageId).Should().OnlyContain(id => id == completed.AgentMessageId);
+        completed.Message.Should().BeEquivalentTo(result.AssistantMessage);
 
         result.RunId.Should().Be(run.Id);
-        result.UserMessage.Id.Value.Should().NotBe(Guid.Empty);
-        result.UserMessage.Role.Should().Be(AgentMessageRole.User);
-        result.UserMessage.Text().Should().Be("Question");
-        result.AssistantMessage.Id.Value.Should().NotBe(Guid.Empty);
-        result.AssistantMessage.Role.Should().Be(AgentMessageRole.Assistant);
-        result.AssistantMessage.Text().Should().Be("Hello world");
+        result.UserMessage.Role.Should().Be(ChatRole.User);
+        result.UserMessage.Text.Should().Be("Question");
+        result.AssistantMessage.Role.Should().Be(ChatRole.Assistant);
+        result.AssistantMessage.Text.Should().Be("Hello world");
         result.Transcript.SessionId.Should().Be(session.Id);
         result.Transcript.Version.Should().Be(1);
         result.Transcript.Turns.Should().ContainSingle();
         result.Transcript.Turns[0].RunId.Should().Be(run.Id);
-        result.Transcript.Turns[0].Messages.Should().Equal(result.UserMessage, result.AssistantMessage);
-        session.GetTranscriptSnapshot().Should().Be(result.Transcript);
+        result.Transcript.Turns[0].Messages.Select(static message => (message.Role, message.Text)).Should().Equal(
+            (result.UserMessage.Role, result.UserMessage.Text),
+            (result.AssistantMessage.Role, result.AssistantMessage.Text));
+        session.GetTranscriptSnapshot().Should().BeEquivalentTo(result.Transcript);
     }
 
     [Fact]
@@ -92,7 +93,7 @@ public sealed class AgentSessionTests
 
         await using var recoveredRun = await session.StartTurnAsync(AgentTurn.FromText("retry"), deadline.Token);
         await ReadEventsAsync(recoveredRun, deadline.Token);
-        (await recoveredRun.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text().Should().Be("recovered");
+        (await recoveredRun.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("recovered");
     }
 
     [Fact]
@@ -183,8 +184,8 @@ public sealed class AgentSessionTests
             (_, _) => StreamAsync("three"));
         var session = new AgentSession(client, new AgentSessionOptions
         {
-            MaxRetainedTurns = 2,
-            MaxHistoryCharacters = 10
+            MaxRetainedTurns = 1,
+            MaxHistoryBytes = 1_000
         });
 
         await CompleteTurnAsync(session, "a", deadline.Token);
@@ -195,8 +196,8 @@ public sealed class AgentSessionTests
         transcript.Version.Should().Be(3);
         transcript.Turns.Should().ContainSingle();
         transcript.Turns[0].Messages.Select(message => message.Role).Should()
-            .Equal(AgentMessageRole.User, AgentMessageRole.Assistant);
-        transcript.Turns[0].Messages.Select(message => message.Text()).Should().Equal("c", "three");
+            .Equal(ChatRole.User, ChatRole.Assistant);
+        transcript.Turns[0].Messages.Select(message => message.Text).Should().Equal("c", "three");
     }
 
     [Fact]
@@ -307,7 +308,7 @@ public sealed class AgentSessionTests
 
         await using var recovered = await session.StartTurnAsync(AgentTurn.FromText("retry"), deadline.Token);
         await ReadEventsAsync(recovered, deadline.Token);
-        (await recovered.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text().Should().Be("recovered");
+        (await recovered.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("recovered");
         client.Requests[1].Select(MessageTuple).Should().Equal((ChatRole.User, "retry"));
     }
 
@@ -348,10 +349,10 @@ public sealed class AgentSessionTests
             {
                 var typed = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments);
                 await context.ReportProgressAsync(
-                    new AgentTextContent("working"),
+                    new TextContent("working"),
                     cancellationToken);
                 return new AgentToolSuccess(
-                    [new AgentTextContent(typed.Text), new AgentJsonContent(ParseJson("{\"count\":1}"))]);
+                    [new TextContent(typed.Text), JsonDataContent("{\"count\":1}")]);
             });
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "echo", ("text", "hello"))),
@@ -377,21 +378,23 @@ public sealed class AgentSessionTests
         events.OfType<AgentToolRequested>().Single().Arguments
             .Deserialize(AgentTestJsonContext.Default.EchoArguments).Text.Should().Be("hello");
         events.OfType<AgentToolProgress>().Single().Content.Should()
-            .BeEquivalentTo(new AgentTextContent("working"));
+            .BeEquivalentTo(new TextContent("working"));
 
         result.Transcript.Turns.Should().ContainSingle();
         var messages = result.Transcript.Turns[0].Messages;
         messages.Select(message => message.Role).Should().Equal(
-            AgentMessageRole.User,
-            AgentMessageRole.Assistant,
-            AgentMessageRole.Tool,
-            AgentMessageRole.Assistant);
-        var call = messages[1].Contents.OfType<AgentToolCallContent>().Single();
-        var toolResult = messages[2].Contents.OfType<AgentToolResultContent>().Single();
-        toolResult.CallId.Should().Be(call.CallId);
-        toolResult.Outcome.Should().BeOfType<AgentToolSuccess>();
-        result.AssistantMessage.Should().Be(messages[^1]);
-        result.AssistantMessage.Text().Should().Be("The tool returned hello.");
+            ChatRole.User,
+            ChatRole.Assistant,
+            ChatRole.Tool,
+            ChatRole.Assistant);
+        var call = messages[1].Contents.OfType<FunctionCallContent>().Single();
+        var toolResult = messages[2].Contents.OfType<FunctionResultContent>().Single();
+        toolResult.CallId.Should().Be(call.CallId).And.Be("provider-call");
+        events.OfType<AgentToolRequested>().Single().CallId.ToString().Should().NotBe(call.CallId);
+        toolResult.Result.Should().BeOfType<JsonElement>()
+            .Which.GetProperty("status").GetString().Should().Be("ok");
+        result.AssistantMessage.Should().BeEquivalentTo(messages[^1]);
+        result.AssistantMessage.Text.Should().Be("The tool returned hello.");
 
         client.Requests.Should().HaveCount(2);
         var providerResult = client.Requests[1]
@@ -410,6 +413,10 @@ public sealed class AgentSessionTests
             ChatRole.Tool,
             ChatRole.Assistant,
             ChatRole.User);
+        client.Requests[2].SelectMany(static message => message.Contents)
+            .OfType<FunctionCallContent>().Single().CallId.Should().Be("provider-call");
+        client.Requests[2].SelectMany(static message => message.Contents)
+            .OfType<FunctionResultContent>().Single().CallId.Should().Be("provider-call");
     }
 
     [Fact]
@@ -439,9 +446,10 @@ public sealed class AgentSessionTests
 
         events.OfType<AgentToolFailed>().Single().Code.Should().Be("not_found");
         events.Should().NotContain(agentEvent => agentEvent is AgentToolCompleted);
-        result.AssistantMessage.Text().Should().Be("I could not find it.");
+        result.AssistantMessage.Text.Should().Be("I could not find it.");
         result.Transcript.Turns[0].Messages[2].Contents
-            .OfType<AgentToolResultContent>().Single().Outcome.Should().BeOfType<AgentToolFailure>();
+            .OfType<FunctionResultContent>().Single().Result.Should().BeOfType<JsonElement>()
+            .Which.GetProperty("status").GetString().Should().Be("error");
     }
 
     [Fact]
@@ -461,7 +469,7 @@ public sealed class AgentSessionTests
                 maximumActive = Math.Max(maximumActive, current);
                 await Task.Yield();
                 Interlocked.Decrement(ref active);
-                return new AgentToolSuccess([new AgentTextContent(value)]);
+                return new AgentToolSuccess([new TextContent(value)]);
             });
         var calls = new ChatResponseUpdate(
             ChatRole.Assistant,
@@ -588,7 +596,7 @@ public sealed class AgentSessionTests
                 CreateTool(
                     "large",
                     (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(
-                        new AgentToolSuccess([new AgentTextContent(new string('x', 100))])))
+                        new AgentToolSuccess([new TextContent(new string('x', 100))])))
             ]);
         await using (var run = await resultLimited.StartTurnAsync(AgentTurn.FromText("Large"), deadline.Token))
         {
@@ -609,15 +617,15 @@ public sealed class AgentSessionTests
                     "progress",
                     async (context, _, cancellationToken) =>
                     {
-                        await context.ReportProgressAsync(new AgentTextContent("one"), cancellationToken);
-                        await context.ReportProgressAsync(new AgentTextContent("two"), cancellationToken);
+                        await context.ReportProgressAsync(new TextContent("one"), cancellationToken);
+                        await context.ReportProgressAsync(new TextContent("two"), cancellationToken);
                         return new AgentToolSuccess([]);
                     })
             ]);
         await using (var run = await progressLimited.StartTurnAsync(AgentTurn.FromText("Progress"), deadline.Token))
         {
             var events = await ReadEventsAsync(run, deadline.Token);
-            events.OfType<AgentToolProgress>().Select(progress => ((AgentTextContent)progress.Content).Text)
+            events.OfType<AgentToolProgress>().Select(progress => ((TextContent)progress.Content).Text)
                 .Should().Equal("one");
             var failure = (await run.Completion.WaitAsync(deadline.Token)
                 .Invoking(static task => task)
@@ -692,7 +700,7 @@ public sealed class AgentSessionTests
         var tool = CreateTool(
             "echo",
             (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(
-                new AgentToolSuccess([new AgentTextContent("value")])));
+                new AgentToolSuccess([new TextContent("value")])));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("call", "echo")),
             (_, _) => StreamAsync("first"),
@@ -708,10 +716,10 @@ public sealed class AgentSessionTests
         var transcript = session.GetTranscriptSnapshot();
         transcript.Version.Should().Be(2);
         transcript.Turns.Should().ContainSingle();
-        transcript.Turns[0].Messages.Select(message => message.Text()).Should().Equal("plain turn", "second");
+        transcript.Turns[0].Messages.Select(message => message.Text).Should().Equal("plain turn", "second");
         transcript.Turns[0].Messages
             .SelectMany(message => message.Contents)
-            .Where(content => content is AgentToolCallContent or AgentToolResultContent)
+            .Where(content => content is FunctionCallContent or FunctionResultContent)
             .Should().BeEmpty();
     }
 
@@ -741,9 +749,9 @@ public sealed class AgentSessionTests
         var deltas = events.OfType<AgentTextDelta>().ToArray();
         var completed = events.OfType<AgentMessageCompleted>().ToArray();
         deltas.Select(delta => delta.Text).Should().Equal("checking", "done");
-        deltas[0].MessageId.Should().Be(completed[0].Message.Id);
-        deltas[1].MessageId.Should().Be(completed[^1].Message.Id);
-        completed[0].Message.Id.Should().NotBe(completed[^1].Message.Id);
+        deltas[0].MessageId.Should().Be(completed[0].AgentMessageId);
+        deltas[1].MessageId.Should().Be(completed[^1].AgentMessageId);
+        completed[0].AgentMessageId.Should().NotBe(completed[^1].AgentMessageId);
     }
 
     [Fact]
@@ -751,16 +759,13 @@ public sealed class AgentSessionTests
     {
         var runId = AgentRunId.Create();
         var messageId = AgentMessageId.Create();
-        var message = new AgentMessage(
-            messageId,
-            AgentMessageRole.Assistant,
-            [new AgentTextContent("answer")]);
+        var message = new ChatMessage(ChatRole.Assistant, "answer");
 
         var transcript = () => new AgentTranscript(default, 0, []);
         transcript.Should().Throw<ArgumentException>();
         var delta = () => new AgentTextDelta(runId, 0, messageId, "answer");
         delta.Should().Throw<ArgumentOutOfRangeException>();
-        var completed = () => new AgentMessageCompleted(default, 1, message);
+        var completed = () => new AgentMessageCompleted(default, 1, messageId, message);
         completed.Should().Throw<ArgumentException>();
     }
 
@@ -814,6 +819,9 @@ public sealed class AgentSessionTests
         using var document = JsonDocument.Parse(json);
         return document.RootElement.Clone();
     }
+
+    private static DataContent JsonDataContent(string json) =>
+        new(Encoding.UTF8.GetBytes(json), "application/json");
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] text)
     {
@@ -972,9 +980,3 @@ internal sealed record EchoArguments([property: JsonPropertyName("text")] string
 
 [JsonSerializable(typeof(EchoArguments))]
 internal sealed partial class AgentTestJsonContext : JsonSerializerContext;
-
-file static class AgentMessageAssertions
-{
-    internal static string Text(this AgentMessage message) =>
-        string.Concat(message.Contents.OfType<AgentTextContent>().Select(content => content.Text));
-}

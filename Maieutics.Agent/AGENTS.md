@@ -34,7 +34,7 @@ staging, cancellation, and atomic turn commit.
 - Framework history is staging only. Commit user, intermediate assistant tool calls, tool results, and final assistant
   atomically after complete validation. Cancellation, provider errors, unsupported content, limits, and aborting tool
   errors roll back the entire turn while preserving already emitted events.
-- History eviction removes complete turns and obeys both turn and character limits.
+- History eviction removes complete turns and obeys both turn and canonical UTF-8 byte limits.
 
 ## Provider and tool semantics
 

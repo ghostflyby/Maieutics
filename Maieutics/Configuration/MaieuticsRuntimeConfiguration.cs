@@ -686,6 +686,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         var root = configuration.GetSection(MaieuticsOptions.SectionName);
         var options = new MaieuticsOptions();
         root.Bind(options);
+        NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
 
         var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
@@ -834,7 +835,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             NormalizeIdentifier(defaultProfileId),
             options.SystemPrompt,
             options.Agent.MaxRetainedTurns,
-            options.Agent.MaxHistoryCharacters,
+            options.Agent.MaxHistoryBytes,
             options.Agent.MaxInputCharacters,
             options.Agent.MaxResponseCharacters,
             options.Agent.MaxModelIterationsPerTurn,
@@ -847,6 +848,43 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             options.Jupyter.FlushInterval,
             options.Jupyter.FlushCharacters);
         return new Candidate(options, defaultProfileId, profiles, sources, key);
+    }
+
+    private static void NormalizeAgentHistoryLimit(IConfigurationSection root, MaieuticsOptions options)
+    {
+        var agent = root.GetSection("Agent");
+        var configuredKeys = agent.GetChildren()
+            .Select(static section => section.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var hasMaxHistoryBytes = configuredKeys.Contains("MaxHistoryBytes");
+        var hasMaxHistoryCharacters = configuredKeys.Contains("MaxHistoryCharacters");
+        if (hasMaxHistoryBytes && hasMaxHistoryCharacters)
+        {
+            throw new InvalidOperationException(
+                "Maieutics:Agent:MaxHistoryBytes cannot be combined with legacy MaxHistoryCharacters.");
+        }
+
+        if (!hasMaxHistoryCharacters)
+        {
+            return;
+        }
+
+        if (options.Agent.MaxHistoryCharacters is not { } maxHistoryCharacters)
+        {
+            throw new InvalidOperationException(
+                "Legacy Maieutics:Agent:MaxHistoryCharacters must be an integer.");
+        }
+
+        try
+        {
+            options.Agent.MaxHistoryBytes = checked(maxHistoryCharacters * 2);
+        }
+        catch (OverflowException exception)
+        {
+            throw new InvalidOperationException(
+                "Legacy Maieutics:Agent:MaxHistoryCharacters is too large to convert to MaxHistoryBytes.",
+                exception);
+        }
     }
 
     private static bool HasSameConfiguration(RuntimeSnapshot snapshot, Candidate candidate)
@@ -1000,7 +1038,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     {
         SystemPrompt = options.SystemPrompt,
         MaxRetainedTurns = options.Agent.MaxRetainedTurns,
-        MaxHistoryCharacters = options.Agent.MaxHistoryCharacters,
+        MaxHistoryBytes = options.Agent.MaxHistoryBytes,
         MaxInputCharacters = options.Agent.MaxInputCharacters,
         MaxResponseCharacters = options.Agent.MaxResponseCharacters,
         MaxModelIterationsPerTurn = options.Agent.MaxModelIterationsPerTurn,
@@ -1057,7 +1095,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         string DefaultProfileId,
         string? SystemPrompt,
         int MaxRetainedTurns,
-        int MaxHistoryCharacters,
+        int MaxHistoryBytes,
         int MaxInputCharacters,
         int MaxResponseCharacters,
         int MaxModelIterationsPerTurn,

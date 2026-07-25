@@ -57,6 +57,16 @@ public sealed class AgentModelCapabilityException(
 /// <summary>Indicates that provider output cannot be represented by the current Agent contract.</summary>
 public sealed class AgentUnsupportedResponseException(string message) : AgentException(message);
 
+/// <summary>Indicates that Agent content is incompatible with the canonical transcript codec.</summary>
+public sealed class AgentContentCompatibilityException(string contentType, Exception innerException)
+    : AgentException(
+        $"Agent content of type '{contentType}' cannot be stored in the canonical transcript.",
+        innerException)
+{
+    /// <summary>Gets the incompatible runtime content type name.</summary>
+    public string ContentType { get; } = contentType;
+}
+
 /// <summary>Indicates that a configured tool-runtime budget was exceeded.</summary>
 public sealed class AgentToolLimitExceededException(string limitName, int maximum)
     : AgentException($"The Agent tool limit '{limitName}' exceeded its configured maximum of {maximum}.")

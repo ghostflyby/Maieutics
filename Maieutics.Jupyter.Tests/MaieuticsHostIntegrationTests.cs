@@ -10,6 +10,8 @@ using Maieutics.Agent;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -32,9 +34,10 @@ public sealed class MaieuticsHostIntegrationTests
         using var deadline = CreateDeadline(TimeSpan.FromSeconds(20));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-in-process-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("in-process");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         var builder = MaieuticsHost.CreateApplicationBuilder(
-            ["--connection-file", connectionFile, "--model", "test-model"]);
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
         builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
         using var host = builder.Build();
         var phase = "host start";
@@ -70,6 +73,7 @@ public sealed class MaieuticsHostIntegrationTests
             }
 
             File.Delete(connectionFile);
+            File.Delete(configurationFile);
         }
     }
 
@@ -81,10 +85,11 @@ public sealed class MaieuticsHostIntegrationTests
         using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-tool-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("tool");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         await using var provider = new FakeOpenAiServer(apiFlavor, toolFlow: true);
         var builder = MaieuticsHost.CreateApplicationBuilder(
-            ["--connection-file", connectionFile, "--model", "test-model"]);
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
         builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
         builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
         builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] = apiFlavor.ToString();
@@ -131,7 +136,118 @@ public sealed class MaieuticsHostIntegrationTests
             }
 
             File.Delete(connectionFile);
+            File.Delete(configurationFile);
         }
+    }
+
+    [Fact(Timeout = 45_000)]
+    public async Task ChatCompletionsReasoningIsPrivateAcrossTheProviderAndJupyterBoundaries()
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-reasoning-{Guid.NewGuid():N}.json");
+        var configurationFile = Path.Combine(
+            Path.GetTempPath(),
+            $"maieutics-reasoning-config-{Guid.NewGuid():N}.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await File.WriteAllTextAsync(configurationFile, "{}", deadline.Token);
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            answer: "public answer",
+            reasoning: "private reasoning");
+        var builder = MaieuticsHost.CreateApplicationBuilder(
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
+        builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
+        builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
+        builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] =
+            nameof(OpenAiApiFlavor.ChatCompletions);
+        using var host = builder.Build();
+        var hostStarted = false;
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            hostStarted = true;
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+
+            var execution = await client.ExecuteAsync(new JupyterExecuteRequest("think"), deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
+            {
+                outputs.Add(output);
+            }
+
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle()
+                .Which.Data.Data["text/markdown"].GetString().Should().Be("public answer");
+            outputs.Select(static output => output.ToString()).Should()
+                .NotContain(text => text.Contains("private reasoning", StringComparison.Ordinal));
+
+            var transcript = host.Services.GetRequiredService<IAgentSession>().GetTranscriptSnapshot();
+            transcript.Turns.Should().ContainSingle();
+            transcript.Turns.SelectMany(static turn => turn.Messages)
+                .SelectMany(static message => message.Contents)
+                .OfType<TextReasoningContent>()
+                .Should().BeEmpty();
+            transcript.Turns[0].Messages[^1].Text.Should().Be("public answer");
+            await provider.Completion.WaitAsync(deadline.Token);
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            if (hostStarted)
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await host.StopAsync(cleanup.Token);
+                }
+                catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+                {
+                }
+            }
+
+            File.Delete(connectionFile);
+            File.Delete(configurationFile);
+        }
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task OpenAiChatCompletionsMapsReasoningContent()
+    {
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            answer: "public answer",
+            reasoning: "private reasoning");
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Source:Provider"] = "OpenAI",
+                ["Source:ApiFlavor"] = nameof(OpenAiApiFlavor.ChatCompletions),
+                ["Source:ApiKey"] = "test-key",
+                ["Source:Endpoint"] = provider.Endpoint.ToString()
+            })
+            .Build();
+        var source = new OpenAiChatClientFactory().BindSource("openai", configuration.GetSection("Source"));
+        using var client = source.Create("test-model");
+
+        var updates = new List<ChatResponseUpdate>();
+        await foreach (var update in client.GetStreamingResponseAsync(
+                           "think",
+                           cancellationToken: TestContext.Current.CancellationToken))
+        {
+            updates.Add(update);
+        }
+
+        updates.SelectMany(static update => update.Contents)
+            .OfType<TextReasoningContent>()
+            .Select(static content => content.Text)
+            .Should().Contain("private reasoning");
+        string.Concat(updates.Select(static update => update.Text)).Should().Be("public answer");
+        await provider.Completion.WaitAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 45_000)]
@@ -140,12 +256,14 @@ public sealed class MaieuticsHostIntegrationTests
         using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-anthropic-tool-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("anthropic-tool");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         await using var provider = new FakeAnthropicServer(
             "claude-test",
             "tool-backed answer",
             toolFlow: true);
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--connection-file", connectionFile]);
+        var builder = MaieuticsHost.CreateApplicationBuilder(
+            ["--config", configurationFile, "--connection-file", connectionFile]);
         builder.Configuration["Maieutics:DefaultProfile"] = "claude";
         builder.Configuration["Maieutics:Sources:anthropic:Provider"] = "Anthropic";
         builder.Configuration["Maieutics:Sources:anthropic:ApiKey"] = "anthropic-key";
@@ -198,6 +316,7 @@ public sealed class MaieuticsHostIntegrationTests
             }
 
             File.Delete(connectionFile);
+            File.Delete(configurationFile);
         }
     }
 
@@ -348,6 +467,7 @@ public sealed class MaieuticsHostIntegrationTests
         using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-switch-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("switch");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         await using var openAi = new FakeOpenAiServer(
             apiFlavor,
@@ -355,7 +475,8 @@ public sealed class MaieuticsHostIntegrationTests
             answer: "openai answer",
             requestCount: 2);
         await using var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--connection-file", connectionFile]);
+        var builder = MaieuticsHost.CreateApplicationBuilder(
+            ["--config", configurationFile, "--connection-file", connectionFile]);
         builder.Configuration["Maieutics:DefaultProfile"] = "gpt";
         builder.Configuration["Maieutics:Sources:openai:Provider"] = "OpenAI";
         builder.Configuration["Maieutics:Sources:openai:ApiFlavor"] = apiFlavor.ToString();
@@ -409,6 +530,7 @@ public sealed class MaieuticsHostIntegrationTests
             }
 
             File.Delete(connectionFile);
+            File.Delete(configurationFile);
         }
     }
 
@@ -519,6 +641,7 @@ public sealed class MaieuticsHostIntegrationTests
         }
 
         var assemblyPath = executablePath is null ? GetManagedHostAssemblyPath() : null;
+        var configurationFile = CreateEmptyConfigurationFile("process");
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath ?? "dotnet",
@@ -532,6 +655,8 @@ public sealed class MaieuticsHostIntegrationTests
             startInfo.ArgumentList.Add(assemblyPath);
         }
 
+        startInfo.ArgumentList.Add("--config");
+        startInfo.ArgumentList.Add(configurationFile);
         startInfo.ArgumentList.Add("--connection-file");
         startInfo.ArgumentList.Add(connectionFile);
         startInfo.ArgumentList.Add("--model");
@@ -554,7 +679,7 @@ public sealed class MaieuticsHostIntegrationTests
             startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
         }
 
-        return StartProcess(startInfo);
+        return StartProcess(startInfo, configurationFile);
     }
 
     private static StartedHostProcess StartConfiguredHostProcess(string configurationFile)
@@ -600,7 +725,9 @@ public sealed class MaieuticsHostIntegrationTests
         return StartProcess(startInfo);
     }
 
-    private static StartedHostProcess StartProcess(ProcessStartInfo startInfo)
+    private static StartedHostProcess StartProcess(
+        ProcessStartInfo startInfo,
+        string? temporaryConfigurationFile = null)
     {
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException("Could not start the Maieutics host process.");
@@ -624,7 +751,21 @@ public sealed class MaieuticsHostIntegrationTests
         };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        return new StartedHostProcess(process, standardOutput, standardError, outputChanged);
+        return new StartedHostProcess(
+            process,
+            standardOutput,
+            standardError,
+            outputChanged,
+            temporaryConfigurationFile);
+    }
+
+    private static string CreateEmptyConfigurationFile(string scenario)
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"maieutics-{scenario}-config-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{}");
+        return path;
     }
 
     private static async Task<string> ExecuteAndGetMarkdownAsync(
@@ -746,7 +887,8 @@ public sealed class MaieuticsHostIntegrationTests
         Process process,
         ConcurrentQueue<string> standardOutput,
         ConcurrentQueue<string> standardError,
-        SemaphoreSlim outputChanged) : IDisposable
+        SemaphoreSlim outputChanged,
+        string? temporaryConfigurationFile) : IDisposable
     {
         public Process Process { get; } = process;
 
@@ -769,6 +911,10 @@ public sealed class MaieuticsHostIntegrationTests
         {
             outputChanged.Dispose();
             Process.Dispose();
+            if (temporaryConfigurationFile is not null)
+            {
+                File.Delete(temporaryConfigurationFile);
+            }
         }
     }
 
@@ -777,6 +923,7 @@ public sealed class MaieuticsHostIntegrationTests
         private readonly OpenAiApiFlavor apiFlavor;
         private readonly string model;
         private readonly string answer;
+        private readonly string? reasoning;
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource cancellation = new();
 
@@ -788,12 +935,14 @@ public sealed class MaieuticsHostIntegrationTests
             bool toolFlow = false,
             string model = "test-model",
             string answer = "native answer",
+            string? reasoning = null,
             int? requestCount = null)
         {
             this.apiFlavor = apiFlavor;
             this.toolFlow = toolFlow;
             this.model = model;
             this.answer = answer;
+            this.reasoning = reasoning;
             this.requestCount = requestCount ?? (toolFlow ? 2 : 1);
             listener.Start();
             var endpoint = (IPEndPoint)listener.LocalEndpoint;
@@ -842,7 +991,8 @@ public sealed class MaieuticsHostIntegrationTests
                     (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
                         toolFlow ? "tool-backed answer" : answer),
                     (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
-                        toolFlow ? "tool-backed answer" : answer),
+                        toolFlow ? "tool-backed answer" : answer,
+                        reasoning),
                     _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
                 };
                 var body = Encoding.UTF8.GetBytes(data);
@@ -879,7 +1029,13 @@ public sealed class MaieuticsHostIntegrationTests
             }
         }
 
-        private static string CreateChatCompletionsStream(string text) =>
+        private static string CreateChatCompletionsStream(string text, string? reasoning = null) =>
+            (reasoning is null
+                ? string.Empty
+                : "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                  "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+                  "\"role\":\"assistant\",\"reasoning_content\":" + JsonSerializer.Serialize(reasoning) +
+                  "},\"finish_reason\":null}]}\n\n") +
             "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
             "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
             "\"role\":\"assistant\",\"content\":" + JsonSerializer.Serialize(text) +
@@ -1208,7 +1364,7 @@ public sealed class MaieuticsHostIntegrationTests
             var text = arguments.Value.GetProperty("text").GetString()
                        ?? throw new InvalidDataException("The fake tool expected text.");
             return ValueTask.FromResult<AgentToolOutcome>(
-                new AgentToolSuccess([new AgentTextContent(text)]));
+                new AgentToolSuccess([new TextContent(text)]));
         }
     }
 

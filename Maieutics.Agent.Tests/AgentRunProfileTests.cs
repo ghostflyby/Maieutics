@@ -178,7 +178,7 @@ public sealed class AgentRunProfileTests
 
         var first = await CompleteTurnAsync(session, "use tool", deadline.Token);
 
-        first.AssistantMessage.Text().Should().Be("tool complete");
+        first.AssistantMessage.Text.Should().Be("tool complete");
         firstClient.Requests.Should().HaveCount(2);
         nextClient.Requests.Should().BeEmpty();
         provider.AcquireCount.Should().Be(1);
@@ -209,7 +209,7 @@ public sealed class AgentRunProfileTests
         rejectedLease.DisposeCount.Should().Be(1);
         rejectedClient.Requests.Should().BeEmpty();
         var result = await CompleteTurnAsync(session, "four", deadline.Token);
-        result.AssistantMessage.Text().Should().Be("accepted");
+        result.AssistantMessage.Text.Should().Be("accepted");
         acceptedLease.DisposeCount.Should().Be(1);
     }
 
@@ -282,7 +282,7 @@ public sealed class AgentRunProfileTests
 
         failedLease.DisposeCount.Should().Be(1);
         var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
-        recovered.AssistantMessage.Text().Should().Be("recovered");
+        recovered.AssistantMessage.Text.Should().Be("recovered");
         recoveredLease.DisposeCount.Should().Be(1);
     }
 
@@ -458,7 +458,7 @@ public sealed class AgentRunProfileTests
             AgentToolArguments arguments,
             CancellationToken cancellationToken = default) =>
             ValueTask.FromResult<AgentToolOutcome>(
-                new AgentToolSuccess(ImmutableArray.Create<AgentContent>(new AgentTextContent("ok"))));
+                new AgentToolSuccess(ImmutableArray.Create<AIContent>(new TextContent("ok"))));
 
         private static JsonElement ParseSchema()
         {
@@ -466,10 +466,4 @@ public sealed class AgentRunProfileTests
             return document.RootElement.Clone();
         }
     }
-}
-
-file static class ProfileTestMessageExtensions
-{
-    internal static string Text(this AgentMessage message) =>
-        string.Concat(message.Contents.OfType<AgentTextContent>().Select(static content => content.Text));
 }

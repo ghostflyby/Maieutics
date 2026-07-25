@@ -50,7 +50,10 @@ public sealed class MaieuticsAgentOptions
 {
     public int MaxRetainedTurns { get; set; } = 50;
 
-    public int MaxHistoryCharacters { get; set; } = 200_000;
+    public int MaxHistoryBytes { get; set; } = 400_000;
+
+    // Legacy configuration input. Normalize before validation and remove after the compatibility window.
+    public int? MaxHistoryCharacters { get; set; }
 
     public int MaxInputCharacters { get; set; } = 32_000;
 
@@ -71,7 +74,7 @@ public sealed class MaieuticsAgentOptions
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryCharacters, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxResponseCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelIterationsPerTurn, 1);

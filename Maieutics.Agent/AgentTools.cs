@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent;
 
@@ -99,13 +100,13 @@ public sealed record AgentToolArguments
 /// <summary>Provides invocation identity and progress reporting to an Agent tool.</summary>
 public sealed class AgentToolContext
 {
-    private readonly Func<AgentContent, CancellationToken, ValueTask> reportProgress;
+    private readonly Func<AIContent, CancellationToken, ValueTask> reportProgress;
 
     internal AgentToolContext(
         AgentSessionId sessionId,
         AgentRunId runId,
         AgentToolCallId callId,
-        Func<AgentContent, CancellationToken, ValueTask> reportProgress)
+        Func<AIContent, CancellationToken, ValueTask> reportProgress)
     {
         SessionId = sessionId;
         RunId = runId;
@@ -124,10 +125,11 @@ public sealed class AgentToolContext
 
     /// <summary>Reports one bounded progress item in call order.</summary>
     public ValueTask ReportProgressAsync(
-        AgentContent content,
+        AIContent content,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
+        AgentToolContent.Validate(content);
         return reportProgress(content, cancellationToken);
     }
 }
@@ -152,18 +154,24 @@ public abstract record AgentToolOutcome;
 public sealed record AgentToolSuccess : AgentToolOutcome
 {
     /// <summary>Initializes a successful tool result.</summary>
-    public AgentToolSuccess(ImmutableArray<AgentContent> contents)
+    public AgentToolSuccess(ImmutableArray<AIContent> contents)
     {
         if (contents.IsDefault)
         {
             throw new ArgumentException("Tool result contents must be initialized.", nameof(contents));
         }
 
+        foreach (var content in contents)
+        {
+            ArgumentNullException.ThrowIfNull(content);
+            AgentToolContent.Validate(content);
+        }
+
         Contents = contents;
     }
 
     /// <summary>Gets the ordered result contents.</summary>
-    public ImmutableArray<AgentContent> Contents { get; }
+    public ImmutableArray<AIContent> Contents { get; }
 }
 
 /// <summary>Represents an expected tool failure that the model may recover from.</summary>
@@ -183,78 +191,6 @@ public sealed record AgentToolFailure : AgentToolOutcome
 
     /// <summary>Gets the safe model-visible failure message.</summary>
     public string Message { get; }
-}
-
-/// <summary>Represents a provider-neutral JSON value.</summary>
-public sealed record AgentJsonContent : AgentContent
-{
-    /// <summary>Initializes JSON content.</summary>
-    public AgentJsonContent(JsonElement value)
-    {
-        if (value.ValueKind is JsonValueKind.Undefined)
-        {
-            throw new ArgumentException("Agent JSON content must be initialized.", nameof(value));
-        }
-
-        Value = value.Clone();
-    }
-
-    /// <summary>Gets the cloned JSON value.</summary>
-    public JsonElement Value { get; }
-}
-
-/// <summary>Represents an assistant request to invoke a tool.</summary>
-public sealed record AgentToolCallContent : AgentContent
-{
-    /// <summary>Initializes tool-call content.</summary>
-    public AgentToolCallContent(AgentToolCallId callId, string name, AgentToolArguments arguments)
-    {
-        if (callId.Value == Guid.Empty)
-        {
-            throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(callId));
-        }
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        CallId = callId;
-        Name = name;
-        Arguments = arguments ?? throw new ArgumentNullException(nameof(arguments));
-    }
-
-    /// <summary>Gets the Maieutics call identifier.</summary>
-    public AgentToolCallId CallId { get; }
-
-    /// <summary>Gets the invoked tool name.</summary>
-    public string Name { get; }
-
-    /// <summary>Gets the cloned call arguments.</summary>
-    public AgentToolArguments Arguments { get; }
-}
-
-/// <summary>Represents one tool result stored in the canonical transcript.</summary>
-public sealed record AgentToolResultContent : AgentContent
-{
-    /// <summary>Initializes tool-result content.</summary>
-    public AgentToolResultContent(AgentToolCallId callId, string name, AgentToolOutcome outcome)
-    {
-        if (callId.Value == Guid.Empty)
-        {
-            throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(callId));
-        }
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        CallId = callId;
-        Name = name;
-        Outcome = outcome ?? throw new ArgumentNullException(nameof(outcome));
-    }
-
-    /// <summary>Gets the Maieutics call identifier.</summary>
-    public AgentToolCallId CallId { get; }
-
-    /// <summary>Gets the invoked tool name.</summary>
-    public string Name { get; }
-
-    /// <summary>Gets the semantic tool outcome.</summary>
-    public AgentToolOutcome Outcome { get; }
 }
 
 /// <summary>Reports that the model requested a tool call.</summary>
@@ -290,7 +226,7 @@ public sealed record AgentToolProgress(
     AgentRunId RunId,
     long Sequence,
     AgentToolCallId CallId,
-    AgentContent Content) : AgentEvent(RunId, Sequence);
+    AIContent Content) : AgentEvent(RunId, Sequence);
 
 /// <summary>Reports a successful tool completion.</summary>
 /// <param name="RunId">The owning run.</param>
@@ -315,3 +251,33 @@ public sealed record AgentToolFailed(
     AgentToolCallId CallId,
     string Code,
     string Message) : AgentEvent(RunId, Sequence);
+
+file static class AgentToolContent
+{
+    internal static void Validate(AIContent content)
+    {
+        if (content is TextContent)
+        {
+            return;
+        }
+
+        if (content is DataContent data &&
+            string.Equals(data.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var _ = JsonDocument.Parse(data.Data);
+                return;
+            }
+            catch (JsonException exception)
+            {
+                throw new ArgumentException("JSON tool content must contain valid UTF-8 JSON data.", nameof(content),
+                    exception);
+            }
+        }
+
+        throw new ArgumentException(
+            "Tool content must be TextContent or application/json DataContent.",
+            nameof(content));
+    }
+}

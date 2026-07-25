@@ -17,8 +17,7 @@ public sealed class AgentSession : IAgentSession
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly Lock transcriptGate = new();
     private readonly ImmutableDictionary<string, ToolAIFunction> tools;
-    private ImmutableArray<AgentTranscriptTurn> turns = [];
-    private long transcriptVersion;
+    private byte[] canonicalState;
     private int runInProgress;
 
     /// <summary>Initializes an Agent session.</summary>
@@ -46,6 +45,7 @@ public sealed class AgentSession : IAgentSession
         this.tools = CreateToolRegistry(tools);
 
         Id = AgentSessionId.Create();
+        canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
     }
 
     /// <inheritdoc />
@@ -74,7 +74,8 @@ public sealed class AgentSession : IAgentSession
             profile.Options.Validate();
             ValidateInput(turn, profile.Options);
 
-            var userMessage = new AgentMessage(AgentMessageId.Create(), AgentMessageRole.User, turn.Contents);
+            var userMessage = AgentTranscriptCodec.DetachPrivateMessage(
+                new ChatMessage(ChatRole.User, turn.Contents.ToList()));
             var run = new AgentRun(
                 this,
                 AgentRunId.Create(),
@@ -102,7 +103,8 @@ public sealed class AgentSession : IAgentSession
     {
         lock (transcriptGate)
         {
-            return new AgentTranscript(Id, transcriptVersion, turns);
+            return AgentTranscriptCodec.CreatePublicTranscript(
+                AgentTranscriptCodec.Deserialize(canonicalState));
         }
     }
 
@@ -135,7 +137,7 @@ public sealed class AgentSession : IAgentSession
             {
                 await foreach (var _ in agent
                                    .RunStreamingAsync(
-                                       ToChatMessage(run.UserMessage),
+                                       run.UserMessage,
                                        session,
                                        runOptions,
                                        cancellationToken)
@@ -193,92 +195,59 @@ public sealed class AgentSession : IAgentSession
 
     private AgentTranscript CommitTurn(
         AgentRunId runId,
-        ImmutableArray<AgentMessage> turnMessages,
+        IReadOnlyList<ChatMessage> turnMessages,
         AgentSessionOptions options,
         AgentModelIdentity? modelIdentity)
     {
         lock (transcriptGate)
         {
-            var builder = turns.ToBuilder();
-            builder.Add(new AgentTranscriptTurn(runId, turnMessages, modelIdentity));
+            var state = AgentTranscriptCodec.Deserialize(canonicalState);
+            var builder = state.Turns.ToBuilder();
+            builder.Add(new AgentTranscriptStateTurn(runId, modelIdentity, turnMessages));
 
             while (builder.Count > options.MaxRetainedTurns ||
-                   CountCharacters(builder) > options.MaxHistoryCharacters)
+                   CountHistoryBytes(builder) > options.MaxHistoryBytes)
             {
                 builder.RemoveAt(0);
             }
 
-            turns = builder.ToImmutable();
-            transcriptVersion++;
-            return new AgentTranscript(Id, transcriptVersion, turns);
+            var committed = new AgentTranscriptState(Id, checked(state.Version + 1), builder.ToImmutable());
+            var serialized = AgentTranscriptCodec.Serialize(committed);
+            var publicTranscript = AgentTranscriptCodec.CreatePublicTranscript(
+                AgentTranscriptCodec.Deserialize(serialized));
+            canonicalState = serialized;
+            return publicTranscript;
         }
     }
 
     private AgentRunResult CommitRun(AgentRun run, PreparedRunResult prepared)
     {
         var modelIdentity = run.Profile.ModelIdentity;
+        var userMessage = AgentTranscriptCodec.CreatePublicMessage(run.UserMessage);
+        var assistantMessage = AgentTranscriptCodec.CreatePublicMessage(prepared.AssistantMessage);
         var transcript = CommitTurn(run.Id, prepared.TurnMessages, run.Profile.Options, modelIdentity);
         return new AgentRunResult(
             run.Id,
-            run.UserMessage,
-            prepared.AssistantMessage,
+            userMessage,
+            assistantMessage,
             transcript,
             modelIdentity);
     }
 
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
     {
-        ImmutableArray<AgentTranscriptTurn> snapshot;
+        AgentTranscriptState snapshot;
         lock (transcriptGate)
         {
-            snapshot = turns;
+            snapshot = AgentTranscriptCodec.Deserialize(canonicalState);
         }
 
-        return snapshot.SelectMany(static turn => turn.Messages).Select(ToChatMessage).ToArray();
-    }
-
-    private static ChatMessage ToChatMessage(AgentMessage message)
-    {
-        var role = message.Role switch
-        {
-            AgentMessageRole.User => ChatRole.User,
-            AgentMessageRole.Assistant => ChatRole.Assistant,
-            AgentMessageRole.Tool => ChatRole.Tool,
-            _ => throw new ArgumentOutOfRangeException(nameof(message), message.Role, null)
-        };
-        var contents = message.Contents.Select(ToAIContent).ToList();
-        return new ChatMessage(role, contents);
-    }
-
-    // ReSharper disable once InconsistentNaming
-    private static AIContent ToAIContent(AgentContent content) => content switch
-    {
-        AgentTextContent text => new TextContent(text.Text),
-        AgentToolCallContent call => new FunctionCallContent(
-            call.CallId.ToString(),
-            call.Name,
-            ToArgumentDictionary(call.Arguments)),
-        AgentToolResultContent result => new FunctionResultContent(
-            result.CallId.ToString(),
-            ToolJson.CreateResultEnvelope(result.Outcome)),
-        _ => throw new AgentUnsupportedResponseException(
-            $"Agent message content of type '{content.GetType().Name}' is not supported by the model adapter.")
-    };
-
-    private static Dictionary<string, object?> ToArgumentDictionary(AgentToolArguments arguments)
-    {
-        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var property in arguments.Value.EnumerateObject())
-        {
-            result.Add(property.Name, property.Value.Clone());
-        }
-
-        return result;
+        return snapshot.Turns.SelectMany(static turn => turn.Messages).ToArray();
     }
 
     private static void ValidateStagedRequest(
         IReadOnlyList<ChatMessage> requestMessages,
-        AgentMessage userMessage)
+        ChatMessage userMessage)
     {
         if (requestMessages.Count != 1 || requestMessages[0].Role != ChatRole.User)
         {
@@ -286,8 +255,7 @@ public sealed class AgentSession : IAgentSession
                 "Agent Framework staged an unexpected request message set.");
         }
 
-        var expectedText = string.Concat(
-            userMessage.Contents.OfType<AgentTextContent>().Select(static content => content.Text));
+        var expectedText = userMessage.Text;
         var requestMessage = requestMessages[0];
         if (requestMessage.Contents.Any(static content => content is not TextContent) ||
             !string.Equals(requestMessage.Text, expectedText, StringComparison.Ordinal))
@@ -297,26 +265,17 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private static void ValidateStreamingContents(IEnumerable<AIContent> contents)
-    {
-        foreach (var content in contents)
-        {
-            if (content is TextContent or UsageContent or FunctionCallContent or FunctionResultContent)
-            {
-                continue;
-            }
-
-            throw new AgentUnsupportedResponseException(
-                $"The model provider returned unsupported content of type '{content.GetType().Name}'.");
-        }
-    }
-
     private static void ValidateInput(AgentTurn turn, AgentSessionOptions options)
     {
         var characters = 0;
         foreach (var content in turn.Contents)
         {
-            if (content is not AgentTextContent text)
+            if (content is null)
+            {
+                throw new ArgumentException("Agent input contents cannot contain null items.", nameof(turn));
+            }
+
+            if (content is not TextContent text)
             {
                 throw new AgentUnsupportedResponseException(
                     $"Agent input content of type '{content.GetType().Name}' is not supported.");
@@ -348,22 +307,12 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private static int CountCharacters(IEnumerable<AgentTranscriptTurn> source)
+    private static int CountHistoryBytes(IEnumerable<AgentTranscriptStateTurn> source)
     {
         var count = 0;
-        foreach (var content in source
-                     .SelectMany(static turn => turn.Messages)
-                     .SelectMany(static message => message.Contents))
+        foreach (var turn in source)
         {
-            count = content switch
-            {
-                AgentTextContent text => checked(count + text.Text.Length),
-                AgentToolCallContent call => checked(count + call.Arguments.Value.GetRawText().Length),
-                AgentToolResultContent result => checked(count + ToolJson.CreateResultEnvelope(result.Outcome)
-                    .GetRawText().Length),
-                AgentJsonContent json => checked(count + json.Value.GetRawText().Length),
-                _ => count
-            };
+            count = checked(count + AgentTranscriptCodec.GetMessageByteCount(turn));
         }
 
         return count;
@@ -410,7 +359,7 @@ public sealed class AgentSession : IAgentSession
         private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
         private readonly Dictionary<(int Iteration, string MessageId), AgentMessageId> messageIds = [];
         private readonly HashSet<int> publishedIterations = [];
-        private readonly List<AgentMessage> intermediateMessages = [];
+        private readonly List<ChatMessage> intermediateMessages = [];
         private int responseCharacters;
         private int toolCallCount;
 
@@ -474,7 +423,11 @@ public sealed class AgentSession : IAgentSession
                     }
 
                     await run.WriteEventAsync(
-                        new AgentToolProgress(run.Id, run.NextSequence(), record.CallId, content),
+                        new AgentToolProgress(
+                            run.Id,
+                            run.NextSequence(),
+                            record.CallId,
+                            AgentTranscriptCodec.CreatePublicContent(content)),
                         token).ConfigureAwait(false);
                 });
 
@@ -517,21 +470,20 @@ public sealed class AgentSession : IAgentSession
                     options.MaxToolResultBytes);
             }
 
-            record.Outcome = outcome;
-            intermediateMessages.Add(new AgentMessage(
-                AgentMessageId.Create(),
-                AgentMessageRole.Tool,
+            intermediateMessages.Add(new ChatMessage(
+                ChatRole.Tool,
                 [
-                    new AgentToolResultContent(
-                        record.CallId,
-                        record.Tool.Descriptor.Name,
-                        outcome)
+                    new FunctionResultContent(record.ProviderCallId, envelope)
                 ]));
             switch (outcome)
             {
                 case AgentToolSuccess success:
                     await run.WriteEventAsync(
-                        new AgentToolCompleted(run.Id, run.NextSequence(), record.CallId, success),
+                        new AgentToolCompleted(
+                            run.Id,
+                            run.NextSequence(),
+                            record.CallId,
+                            CreatePublicToolSuccess(success)),
                         cancellationToken).ConfigureAwait(false);
                     break;
                 case AgentToolFailure failure:
@@ -552,12 +504,16 @@ public sealed class AgentSession : IAgentSession
             return envelope;
         }
 
+        private static AgentToolSuccess CreatePublicToolSuccess(AgentToolSuccess success) =>
+            new([
+                .. success.Contents.Select(AgentTranscriptCodec.CreatePublicContent)
+            ]);
+
         internal async ValueTask ObserveProviderUpdateAsync(
             int iteration,
             ChatResponseUpdate update,
             CancellationToken cancellationToken)
         {
-            ValidateStreamingContents(update.Contents);
             var text = update.Text;
             if (string.IsNullOrEmpty(text))
             {
@@ -579,7 +535,7 @@ public sealed class AgentSession : IAgentSession
                 cancellationToken).ConfigureAwait(false);
         }
 
-        internal async Task<ImmutableArray<AgentMessage>> BuildCompletedMessagesAsync(
+        internal async Task<IReadOnlyList<ChatMessage>> BuildCompletedMessagesAsync(
             CancellationToken cancellationToken)
         {
             var iterations = recordingClient.GetIterations();
@@ -603,13 +559,13 @@ public sealed class AgentSession : IAgentSession
             }
 
             await PublishIterationMessagesAsync(iterations.Count, cancellationToken).ConfigureAwait(false);
-            var messages = ImmutableArray.CreateBuilder<AgentMessage>();
+            var messages = new List<ChatMessage>();
             messages.Add(run.UserMessage);
             messages.AddRange(intermediateMessages);
-            if (messages[^1].Role != AgentMessageRole.Assistant ||
-                !messages[^1].Contents.OfType<AgentTextContent>().Any(static content => content.Text.Length > 0))
+            if (messages[^1].Role != ChatRole.Assistant ||
+                !messages[^1].Contents.OfType<TextContent>().Any(static content => content.Text.Length > 0))
             {
-                if (messages[^1].Contents.OfType<AgentToolCallContent>().Any())
+                if (messages[^1].Contents.OfType<FunctionCallContent>().Any())
                 {
                     throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
                 }
@@ -617,7 +573,7 @@ public sealed class AgentSession : IAgentSession
                 throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
             }
 
-            return messages.ToImmutable();
+            return messages;
         }
 
         private async Task PublishIterationMessagesAsync(int iteration, CancellationToken cancellationToken)
@@ -628,6 +584,14 @@ public sealed class AgentSession : IAgentSession
             }
 
             var recorded = recordingClient.GetIteration(iteration);
+            if (recorded.ResponseMessages
+                .SelectMany(static message => message.Contents)
+                .OfType<FunctionCallContent>()
+                .Any())
+            {
+                EnsureIterationCalls(iteration);
+            }
+
             foreach (var responseMessage in recorded.ResponseMessages)
             {
                 if (responseMessage.Role != ChatRole.Assistant)
@@ -636,50 +600,17 @@ public sealed class AgentSession : IAgentSession
                         $"The model provider returned an unsupported '{responseMessage.Role}' response message.");
                 }
 
-                var assistant = ConvertAssistantMessage(responseMessage, iteration);
+                var assistant = responseMessage.Clone();
                 intermediateMessages.Add(assistant);
+                var messageId = GetMessageId(iteration, responseMessage.MessageId);
                 await run.WriteEventAsync(
-                    new AgentMessageCompleted(run.Id, run.NextSequence(), assistant),
+                    new AgentMessageCompleted(
+                        run.Id,
+                        run.NextSequence(),
+                        messageId,
+                        AgentTranscriptCodec.CreatePublicMessage(assistant)),
                     cancellationToken).ConfigureAwait(false);
             }
-        }
-
-        private AgentMessage ConvertAssistantMessage(ChatMessage message, int iteration)
-        {
-            var contents = ImmutableArray.CreateBuilder<AgentContent>();
-            foreach (var content in message.Contents)
-            {
-                switch (content)
-                {
-                    case TextContent text when !string.IsNullOrEmpty(text.Text):
-                        contents.Add(new AgentTextContent(text.Text));
-                        break;
-                    case FunctionCallContent call:
-                    {
-                        if (!calls.TryGetValue(call.CallId, out var record))
-                        {
-                            throw new AgentToolArgumentsException(
-                                $"The model requested unknown tool '{call.Name}'.");
-                        }
-
-                        contents.Add(new AgentToolCallContent(record.CallId, call.Name, record.Arguments));
-                        break;
-                    }
-                    case UsageContent:
-                        break;
-                    default:
-                        throw new AgentUnsupportedResponseException(
-                            $"The model provider returned unsupported content of type '{content.GetType().Name}'.");
-                }
-            }
-
-            if (contents.Count == 0)
-            {
-                throw new AgentUnsupportedResponseException("The model provider returned an empty assistant message.");
-            }
-
-            var messageId = GetMessageId(iteration, message.MessageId);
-            return new AgentMessage(messageId, AgentMessageRole.Assistant, contents.ToImmutable());
         }
 
         private AgentMessageId GetMessageId(int iteration, string? providerMessageId)
@@ -739,6 +670,7 @@ public sealed class AgentSession : IAgentSession
 
                 calls.Add(call.CallId, new ToolInvocationRecord(
                     AgentToolCallId.Create(),
+                    call.CallId,
                     function.Tool,
                     arguments)
                 {
@@ -751,10 +683,13 @@ public sealed class AgentSession : IAgentSession
 
         private sealed class ToolInvocationRecord(
             AgentToolCallId callId,
+            string providerCallId,
             IAgentTool tool,
             AgentToolArguments arguments)
         {
             internal AgentToolCallId CallId { get; } = callId;
+
+            internal string ProviderCallId { get; } = providerCallId;
 
             internal IAgentTool Tool { get; } = tool;
 
@@ -763,8 +698,6 @@ public sealed class AgentSession : IAgentSession
             internal int Iteration { get; set; }
 
             internal int Index { get; set; }
-
-            internal AgentToolOutcome? Outcome { get; set; }
         }
     }
 
@@ -880,8 +813,8 @@ public sealed class AgentSession : IAgentSession
     }
 
     private sealed record PreparedRunResult(
-        ImmutableArray<AgentMessage> TurnMessages,
-        AgentMessage AssistantMessage);
+        IReadOnlyList<ChatMessage> TurnMessages,
+        ChatMessage AssistantMessage);
 
     // ReSharper disable once InconsistentNaming
     private sealed class ToolAIFunction(IAgentTool tool) : AIFunction
@@ -904,7 +837,7 @@ public sealed class AgentSession : IAgentSession
     private sealed class AgentRun(
         AgentSession owner,
         AgentRunId id,
-        AgentMessage userMessage,
+        ChatMessage userMessage,
         IAgentRunProfileLease profileLease,
         AgentRunProfile profile,
         int eventBufferCapacity) : IAgentRun
@@ -936,7 +869,7 @@ public sealed class AgentSession : IAgentSession
 
         public Task<AgentRunResult> Completion => completion.Task;
 
-        internal AgentMessage UserMessage { get; } = userMessage;
+        internal ChatMessage UserMessage { get; } = userMessage;
 
         internal AgentRunProfile Profile { get; } = profile;
 
@@ -1085,10 +1018,14 @@ file static class ToolJson
             AgentToolSuccess success => new ToolResultEnvelope(
                 "ok",
                 [
-                    ..success.Contents.Select(static content => content switch
+                    .. success.Contents.Select(static content => content switch
                     {
-                        AgentTextContent text => new ToolResultContentEnvelope("text", Text: text.Text),
-                        AgentJsonContent json => new ToolResultContentEnvelope("json", Value: json.Value),
+                        TextContent text => new ToolResultContentEnvelope("text", Text: text.Text),
+                        DataContent data when string.Equals(
+                                data.MediaType,
+                                "application/json",
+                                StringComparison.OrdinalIgnoreCase) =>
+                            new ToolResultContentEnvelope("json", Value: ParseJsonData(data)),
                         _ => throw new AgentUnsupportedResponseException(
                             $"Tool result content of type '{content.GetType().Name}' is not supported.")
                     })
@@ -1103,6 +1040,12 @@ file static class ToolJson
         return JsonSerializer.SerializeToElement(
             envelope,
             AgentToolJsonSerializerContext.Default.ToolResultEnvelope);
+    }
+
+    private static JsonElement ParseJsonData(DataContent data)
+    {
+        using var document = JsonDocument.Parse(data.Data);
+        return document.RootElement.Clone();
     }
 
     private static JsonElement ParseElement(JsonNode node)

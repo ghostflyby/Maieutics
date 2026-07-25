@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent;
 
@@ -145,27 +146,11 @@ public enum AgentModelCapabilities
     FunctionCalling = 2
 }
 
-/// <summary>Represents provider-neutral Agent content.</summary>
-public abstract record AgentContent;
-
-/// <summary>Represents plain textual Agent content.</summary>
-public sealed record AgentTextContent : AgentContent
-{
-    /// <summary>Initializes textual content.</summary>
-    public AgentTextContent(string text)
-    {
-        Text = text ?? throw new ArgumentNullException(nameof(text));
-    }
-
-    /// <summary>Gets the text.</summary>
-    public string Text { get; }
-}
-
 /// <summary>Represents the input submitted for one Agent run.</summary>
 public sealed record AgentTurn
 {
     /// <summary>Initializes a turn from typed content.</summary>
-    public AgentTurn(ImmutableArray<AgentContent> contents)
+    public AgentTurn(ImmutableArray<AIContent> contents)
     {
         if (contents.IsDefault)
         {
@@ -176,57 +161,10 @@ public sealed record AgentTurn
     }
 
     /// <summary>Gets the ordered input content.</summary>
-    public ImmutableArray<AgentContent> Contents { get; }
+    public ImmutableArray<AIContent> Contents { get; }
 
     /// <summary>Creates a text-only turn.</summary>
-    public static AgentTurn FromText(string text) => new([new AgentTextContent(text)]);
-}
-
-/// <summary>Identifies the semantic role of a transcript message.</summary>
-public enum AgentMessageRole
-{
-    /// <summary>A message supplied by the user.</summary>
-    User,
-
-    /// <summary>A message produced by the assistant.</summary>
-    Assistant,
-
-    /// <summary>A message containing the result of a model-requested tool call.</summary>
-    Tool
-}
-
-/// <summary>Represents one committed provider-neutral transcript message.</summary>
-public sealed record AgentMessage
-{
-    /// <summary>Initializes a transcript message.</summary>
-    public AgentMessage(
-        AgentMessageId id,
-        AgentMessageRole role,
-        ImmutableArray<AgentContent> contents)
-    {
-        if (id.Value == Guid.Empty)
-        {
-            throw new ArgumentException("Agent message identifiers cannot be empty.", nameof(id));
-        }
-
-        if (contents.IsDefault)
-        {
-            throw new ArgumentException("Agent message contents must be initialized and non-null.", nameof(contents));
-        }
-
-        Id = id;
-        Role = role;
-        Contents = contents;
-    }
-
-    /// <summary>Gets the message identifier.</summary>
-    public AgentMessageId Id { get; }
-
-    /// <summary>Gets the message role.</summary>
-    public AgentMessageRole Role { get; }
-
-    /// <summary>Gets the ordered message content.</summary>
-    public ImmutableArray<AgentContent> Contents { get; }
+    public static AgentTurn FromText(string text) => new([new TextContent(text)]);
 }
 
 /// <summary>Represents an immutable snapshot of committed conversation history.</summary>
@@ -268,7 +206,7 @@ public sealed record AgentTranscript
 public sealed record AgentTranscriptTurn
 {
     /// <summary>Initializes a complete transcript turn.</summary>
-    public AgentTranscriptTurn(AgentRunId runId, ImmutableArray<AgentMessage> messages)
+    public AgentTranscriptTurn(AgentRunId runId, IReadOnlyList<ChatMessage> messages)
         : this(runId, messages, null)
     {
     }
@@ -276,7 +214,7 @@ public sealed record AgentTranscriptTurn
     /// <summary>Initializes a complete transcript turn with its model identity.</summary>
     public AgentTranscriptTurn(
         AgentRunId runId,
-        ImmutableArray<AgentMessage> messages,
+        IReadOnlyList<ChatMessage> messages,
         AgentModelIdentity? modelIdentity)
     {
         if (runId.Value == Guid.Empty)
@@ -284,13 +222,14 @@ public sealed record AgentTranscriptTurn
             throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(runId));
         }
 
-        if (messages.IsDefaultOrEmpty)
+        ArgumentNullException.ThrowIfNull(messages);
+        if (messages.Count == 0)
         {
             throw new ArgumentException("Transcript turn messages must be initialized and non-empty.",
                 nameof(messages));
         }
 
-        if (messages[0].Role != AgentMessageRole.User || messages[^1].Role != AgentMessageRole.Assistant)
+        if (messages[0].Role != ChatRole.User || messages[^1].Role != ChatRole.Assistant)
         {
             throw new ArgumentException(
                 "A transcript turn must begin with a user message and end with an assistant message.",
@@ -306,7 +245,7 @@ public sealed record AgentTranscriptTurn
     public AgentRunId RunId { get; }
 
     /// <summary>Gets all messages in provider order, including tool calls and results.</summary>
-    public ImmutableArray<AgentMessage> Messages { get; }
+    public IReadOnlyList<ChatMessage> Messages { get; }
 
     /// <summary>Gets the configured model identity that produced the turn, when known.</summary>
     public AgentModelIdentity? ModelIdentity { get; }
@@ -318,8 +257,8 @@ public sealed record AgentRunResult
     /// <summary>Initializes a successful run result.</summary>
     public AgentRunResult(
         AgentRunId runId,
-        AgentMessage userMessage,
-        AgentMessage assistantMessage,
+        ChatMessage userMessage,
+        ChatMessage assistantMessage,
         AgentTranscript transcript)
         : this(runId, userMessage, assistantMessage, transcript, null)
     {
@@ -328,8 +267,8 @@ public sealed record AgentRunResult
     /// <summary>Initializes a successful run result with its model identity.</summary>
     public AgentRunResult(
         AgentRunId runId,
-        AgentMessage userMessage,
-        AgentMessage assistantMessage,
+        ChatMessage userMessage,
+        ChatMessage assistantMessage,
         AgentTranscript transcript,
         AgentModelIdentity? modelIdentity)
     {
@@ -349,10 +288,10 @@ public sealed record AgentRunResult
     public AgentRunId RunId { get; }
 
     /// <summary>Gets the committed user message.</summary>
-    public AgentMessage UserMessage { get; }
+    public ChatMessage UserMessage { get; }
 
     /// <summary>Gets the committed assistant message.</summary>
-    public AgentMessage AssistantMessage { get; }
+    public ChatMessage AssistantMessage { get; }
 
     /// <summary>Gets the transcript after commit.</summary>
     public AgentTranscript Transcript { get; }
@@ -417,13 +356,23 @@ public sealed record AgentMessageCompleted : AgentEvent
     public AgentMessageCompleted(
         AgentRunId runId,
         long sequence,
-        AgentMessage message) : base(runId, sequence)
+        AgentMessageId agentMessageId,
+        ChatMessage message) : base(runId, sequence)
     {
+        if (agentMessageId.Value == Guid.Empty)
+        {
+            throw new ArgumentException("Agent message identifiers cannot be empty.", nameof(agentMessageId));
+        }
+
+        AgentMessageId = agentMessageId;
         Message = message ?? throw new ArgumentNullException(nameof(message));
     }
 
+    /// <summary>Gets the run-local identifier used to correlate streamed text with this message.</summary>
+    public AgentMessageId AgentMessageId { get; }
+
     /// <summary>Gets the assembled assistant message.</summary>
-    public AgentMessage Message { get; }
+    public ChatMessage Message { get; }
 }
 
 /// <summary>Describes one model discovered from a provider API endpoint.</summary>

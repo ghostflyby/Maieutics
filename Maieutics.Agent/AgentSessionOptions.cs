@@ -9,8 +9,8 @@ public sealed record AgentSessionOptions
     /// <summary>Gets the maximum number of complete turns retained in committed history.</summary>
     public int MaxRetainedTurns { get; init; } = 50;
 
-    /// <summary>Gets the maximum number of UTF-16 characters retained in committed history.</summary>
-    public int MaxHistoryCharacters { get; init; } = 200_000;
+    /// <summary>Gets the maximum number of UTF-8 JSON bytes retained in committed history.</summary>
+    public int MaxHistoryBytes { get; init; } = 400_000;
 
     /// <summary>Gets the maximum number of UTF-16 characters accepted in one input.</summary>
     public int MaxInputCharacters { get; init; } = 32_000;
@@ -39,7 +39,7 @@ public sealed record AgentSessionOptions
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryCharacters, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxResponseCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelIterationsPerTurn, 1);

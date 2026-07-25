@@ -137,7 +137,7 @@ profile IDs accepted by `%maieutics model use <profile>`.
 | Setting | Default |
 |---|---:|
 | `Maieutics:Agent:MaxRetainedTurns` | `50` |
-| `Maieutics:Agent:MaxHistoryCharacters` | `200000` |
+| `Maieutics:Agent:MaxHistoryBytes` | `400000` |
 | `Maieutics:Agent:MaxInputCharacters` | `32000` |
 | `Maieutics:Agent:MaxResponseCharacters` | `64000` |
 | `Maieutics:Agent:MaxModelIterationsPerTurn` | `8` |
@@ -147,8 +147,12 @@ profile IDs accepted by `%maieutics model use <profile>`.
 | `Maieutics:Agent:MaxToolProgressEventsPerCall` | `256` |
 | `Maieutics:Agent:EventBufferCapacity` | `128` |
 
-History limits are applied when the next successful turn commits. Tool argument and result sizes are measured as UTF-8
-JSON bytes.
+History limits are applied when the next successful turn commits. `MaxHistoryBytes` measures the compact canonical
+message JSON as UTF-8 and evicts complete turns. Tool argument and result sizes are also measured as UTF-8 JSON bytes.
+
+During the configuration compatibility window, `Maieutics:Agent:MaxHistoryCharacters` is still accepted when
+`MaxHistoryBytes` is absent and is converted to bytes as `value * 2`. Configuring both fields is invalid. Invalid reloads
+retain the last-known-good runtime snapshot.
 
 Example:
 

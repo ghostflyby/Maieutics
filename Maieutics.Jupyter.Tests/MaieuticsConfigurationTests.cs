@@ -599,6 +599,175 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact]
+    public async Task LegacyMaxHistoryCharactersConvertsToMaxHistoryBytes()
+    {
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-legacy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
+            connectionFile,
+            TestContext.Current.CancellationToken);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateConfiguration(
+                connectionFile,
+                "Fake",
+                "test-model",
+                maxHistoryCharacters: 123_456),
+            TestContext.Current.CancellationToken);
+
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory, TrackingChatClientFactory>();
+        var host = builder.Build();
+
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            await using var lease = runtime.Acquire();
+            lease.Profile.Options.MaxHistoryBytes.Should().Be(246_912);
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MaxHistoryBytesCannotBeCombinedWithLegacyMaxHistoryCharacters()
+    {
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-conflict-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
+            connectionFile,
+            TestContext.Current.CancellationToken);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateConfiguration(
+                connectionFile,
+                "Fake",
+                "test-model",
+                maxHistoryBytes: 400_000,
+                maxHistoryCharacters: 200_000),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var host = builder.Build();
+
+            host.Services.Invoking(services => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*MaxHistoryBytes*MaxHistoryCharacters*");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task HistoryLimitCompatibilityParticipatesInHotReloadValidation()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-reload-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryBytes: 1_000),
+            deadline.Token);
+
+        var factory = new TrackingChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            await using (var lease = runtime.Acquire())
+            {
+                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_000);
+            }
+
+            while (runtime.CompletedReloadAttempt == 0)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryCharacters: 600),
+                deadline.Token);
+            runtime.Version.Should().Be(2);
+            await using (var lease = runtime.Acquire())
+            {
+                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_200);
+            }
+
+            var acceptedVersion = runtime.Version;
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateConfiguration(
+                    connectionFile,
+                    "Fake",
+                    "test-model",
+                    maxHistoryBytes: 1_400,
+                    maxHistoryCharacters: 700),
+                deadline.Token);
+            runtime.Version.Should().Be(acceptedVersion);
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryCharacters: int.MaxValue),
+                deadline.Token);
+            runtime.Version.Should().Be(acceptedVersion);
+
+            await using (var lease = runtime.Acquire())
+            {
+                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_200);
+            }
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryBytes: 1_400),
+                deadline.Token);
+            runtime.Version.Should().Be(acceptedVersion + 1);
+            await using (var lease = runtime.Acquire())
+            {
+                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_400);
+            }
+        }
+        finally
+        {
+            await ((IAsyncDisposable)host).DisposeAsync();
+            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task RuntimeConfigurationReloadsValidSnapshotsAndKeepsLastKnownGood()
     {
@@ -888,8 +1057,24 @@ public sealed class MaieuticsConfigurationTests
         OpenAiApiFlavor apiFlavor = OpenAiApiFlavor.Responses,
         string? systemPrompt = null,
         int maxInputCharacters = 32_000,
-        int flushCharacters = 1024)
+        int flushCharacters = 1024,
+        int? maxHistoryBytes = null,
+        int? maxHistoryCharacters = null)
     {
+        var agent = new JsonObject
+        {
+            ["MaxInputCharacters"] = maxInputCharacters
+        };
+        if (maxHistoryBytes.HasValue)
+        {
+            agent["MaxHistoryBytes"] = maxHistoryBytes.Value;
+        }
+
+        if (maxHistoryCharacters.HasValue)
+        {
+            agent["MaxHistoryCharacters"] = maxHistoryCharacters.Value;
+        }
+
         var root = new JsonObject
         {
             ["Maieutics"] = new JsonObject
@@ -908,10 +1093,7 @@ public sealed class MaieuticsConfigurationTests
                         ["ApiKey"] = "test-key"
                     }
                 },
-                ["Agent"] = new JsonObject
-                {
-                    ["MaxInputCharacters"] = maxInputCharacters
-                },
+                ["Agent"] = agent,
                 ["Jupyter"] = new JsonObject
                 {
                     ["ConnectionFile"] = connectionFile,
@@ -1022,6 +1204,8 @@ public sealed class MaieuticsConfigurationTests
         ["Maieutics__Sources__anthropic__Endpoint"] = null,
         ["Maieutics__Model__Provider"] = null,
         ["Maieutics__Model__Name"] = null,
+        ["Maieutics__Agent__MaxHistoryBytes"] = null,
+        ["Maieutics__Agent__MaxHistoryCharacters"] = null,
         ["Maieutics__Providers__OpenAI__ApiFlavor"] = null,
         ["Maieutics__Providers__OpenAI__ApiKey"] = null,
         ["Maieutics__Providers__OpenAI__Endpoint"] = null

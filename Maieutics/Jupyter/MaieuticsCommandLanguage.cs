@@ -42,6 +42,7 @@ internal static class MaieuticsCommandLanguage
         }
 
         var prefix = request.Code[tokenStart..cursorIndex];
+        var token = request.Code[tokenStart..tokenEnd];
         var precedingTokens = request.Code[..tokenStart]
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var candidates = precedingTokens switch
@@ -55,7 +56,7 @@ internal static class MaieuticsCommandLanguage
                 when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
                      model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
                      use.Equals(Use, StringComparison.OrdinalIgnoreCase) =>
-                profiles.Select(static profile => profile.Id),
+                profiles.SelectMany(static profile => new[] { profile.Id, profile.Model }),
             [var root, var model, var available]
                 when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
                      model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
@@ -63,7 +64,16 @@ internal static class MaieuticsCommandLanguage
                 new[] { RefreshFlag }.Concat(sourceIds),
             _ => []
         };
+
+        if (precedingTokens.Length == 0 &&
+            prefix.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
+            token.Equals(Root, StringComparison.OrdinalIgnoreCase))
+        {
+            candidates = [$"{Root} {Model}"];
+        }
+
         var matches = candidates
+            .Where(static candidate => !string.IsNullOrWhiteSpace(candidate))
             .Where(candidate => candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static candidate => candidate, StringComparer.OrdinalIgnoreCase)

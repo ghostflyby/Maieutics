@@ -150,12 +150,33 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         lock (gate)
         {
             var snapshot = GetCurrent();
-            if (!snapshot.Profiles.TryGetValue(profileId, out var profile))
+            if (snapshot.Profiles.TryGetValue(profileId, out var profile))
             {
-                throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
+                sessionOverride = profile.Id;
+                return;
             }
 
-            sessionOverride = profile.Id;
+            var modelMatches = snapshot.Profiles.Values
+                .Where(profileEntry => string.Equals(
+                    profileEntry.Identity.Model,
+                    profileId,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            switch (modelMatches.Length)
+            {
+                case 1:
+                    sessionOverride = modelMatches[0].Id;
+                    return;
+                case > 1:
+                    throw new ArgumentException(
+                        $"The model '{profileId}' matches multiple model profiles: " +
+                        $"{string.Join(", ", modelMatches.Select(static profile => $"'{profile.Id}'"))}. " +
+                        "Use a profile ID.",
+                        nameof(profileId));
+                default:
+                    throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
+            }
         }
     }
 

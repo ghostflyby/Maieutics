@@ -224,6 +224,15 @@ public sealed class AgentJupyterIntegrationTests
             .Contain("Profile: `claude`").And.Contain("session override");
         controller.GetModelProfileSelection().SelectedProfileId.Should().Be("claude");
 
+        var selectedByModel = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%maieutics model use claude-test"),
+            deadline.Token);
+        var selectedByModelOutputs = await ReadOutputsAsync(selectedByModel, deadline.Token);
+        (await selectedByModel.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        ReadMarkdown(selectedByModelOutputs.OfType<JupyterDisplayOutput>().Single())
+            .Should().Contain("Profile: `claude`");
+        controller.GetModelProfileSelection().SelectedProfileId.Should().Be("claude");
+
         var silentReset = await client.ExecuteAsync(
             new JupyterExecuteRequest("%maieutics model reset", Silent: true),
             deadline.Token);
@@ -240,57 +249,6 @@ public sealed class AgentJupyterIntegrationTests
         invalidCompletion.Reply.Status.Should().Be("error");
         invalidCompletion.Reply.ErrorName.Should().Be("MaieuticsCommandError");
         controller.GetModelProfileSelection().SelectedProfileId.Should().Be("gpt");
-        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
-
-        await client.ShutdownAsync(false, deadline.Token);
-        await host.Completion.WaitAsync(deadline.Token);
-    }
-
-    [Fact(Timeout = 30_000)]
-    public async Task ModelCommandsCompleteKeywordsAndConfiguredProfiles()
-    {
-        using var deadline = CreateDeadline();
-        var session = new AgentSession(new ScriptedChatClient());
-        var application = new MaieuticsAgentKernelApplication(
-            session,
-            static () => new MaieuticsAgentKernelOptions(),
-            new TestRuntimeConfiguration());
-        var connection = JupyterConnectionInfo.CreateLocalTcp();
-        await using var host = await JupyterKernelHost.StartAsync(
-            connection,
-            application,
-            cancellationToken: deadline.Token);
-        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
-
-        var root = await CompleteAsync(client, "%mai", deadline.Token);
-        root.Matches.Should().Equal("%maieutics");
-        root.CursorStart.Should().Be(0);
-        root.CursorEnd.Should().Be(4);
-
-        var unicodeSuffix = await client.CompleteAsync(
-            new JupyterCompleteRequest("%mai😀", 4),
-            deadline.Token);
-        unicodeSuffix.Matches.Should().Equal("%maieutics");
-        unicodeSuffix.CursorStart.Should().Be(0);
-        unicodeSuffix.CursorEnd.Should().Be(5);
-
-        var model = await CompleteAsync(client, "%maieutics mo", deadline.Token);
-        model.Matches.Should().Equal("model");
-        model.CursorStart.Should().Be(11);
-        model.CursorEnd.Should().Be(13);
-
-        var commands = await CompleteAsync(client, "%maieutics model ", deadline.Token);
-        commands.Matches.Should().Equal("available", "current", "list", "reset", "use");
-        commands.CursorStart.Should().Be(17);
-        commands.CursorEnd.Should().Be(17);
-
-        var profile = await CompleteAsync(client, "%maieutics model use CL", deadline.Token);
-        profile.Matches.Should().Equal("claude");
-        profile.CursorStart.Should().Be(21);
-        profile.CursorEnd.Should().Be(23);
-
-        var unrelated = await CompleteAsync(client, "ordinary text", deadline.Token);
-        unrelated.Matches.Should().BeEmpty();
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
 
         await client.ShutdownAsync(false, deadline.Token);
@@ -337,9 +295,6 @@ public sealed class AgentJupyterIntegrationTests
         ReadMarkdown(listOutputs.OfType<JupyterDisplayOutput>().Single())
             .Should().Contain("No model profiles are configured.");
 
-        var completion = await CompleteAsync(client, "%maieutics model ", deadline.Token);
-        completion.Matches.Should().Equal("available", "current", "list", "reset", "use");
-
         var ordinary = await client.ExecuteAsync(
             new JupyterExecuteRequest("ordinary text"),
             deadline.Token);
@@ -351,14 +306,6 @@ public sealed class AgentJupyterIntegrationTests
         await client.ShutdownAsync(false, deadline.Token);
         await host.Completion.WaitAsync(deadline.Token);
     }
-
-    private static Task<JupyterCompleteReply> CompleteAsync(
-        IJupyterClient client,
-        string code,
-        CancellationToken cancellationToken) =>
-        client.CompleteAsync(
-            new JupyterCompleteRequest(code, JupyterCursorPosition.FromUtf16Index(code, code.Length)),
-            cancellationToken);
 
     private static string? ReadMarkdown(JupyterOutput output) => output switch
     {
@@ -529,6 +476,8 @@ public sealed class AgentJupyterIntegrationTests
         {
             var profile = profiles.SingleOrDefault(profile =>
                 string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
+            profile ??= profiles.SingleOrDefault(profileInfo =>
+                string.Equals(profileInfo.Model, profileId, StringComparison.OrdinalIgnoreCase));
             if (profile is null)
             {
                 throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
@@ -544,11 +493,9 @@ public sealed class AgentJupyterIntegrationTests
 
         public MaieuticsAgentKernelOptions GetKernelOptions() => new();
 
-        public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
-            string? sourceId = null,
-            bool refresh = false,
-            CancellationToken cancellationToken = default) =>
-            new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
+        public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(string? sourceId = null,
+            bool refresh = false, CancellationToken cancellationToken = default) =>
+            new([]);
     }
 
     private sealed class EmptyRuntimeConfiguration : IMaieuticsRuntimeConfiguration

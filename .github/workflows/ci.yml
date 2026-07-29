@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: true
+  NUGET_XMLDOC_MODE: skip
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2022
+          - macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.x
+
+      - name: Restore
+        run: dotnet restore Maieutics.slnx
+
+      - name: Build
+        run: dotnet build Maieutics.slnx --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test Maieutics.slnx --configuration Release --no-restore --no-build
+
+  native-aot:
+    name: NativeAOT (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            rid: linux-x64
+            executable: Maieutics/bin/Release/net10.0/linux-x64/publish/maieutics
+          - os: windows-2022
+            rid: win-x64
+            executable: Maieutics/bin/Release/net10.0/win-x64/publish/maieutics.exe
+          - os: macos-15
+            rid: osx-arm64
+            executable: Maieutics/bin/Release/net10.0/osx-arm64/publish/maieutics
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore solution
+        run: dotnet restore Maieutics.slnx
+
+      - name: Restore NativeAOT runtime
+        run: dotnet restore Maieutics/Maieutics.csproj --runtime ${{ matrix.rid }}
+
+      - name: Publish NativeAOT executable
+        run: dotnet publish Maieutics/Maieutics.csproj --configuration Release --runtime ${{ matrix.rid }} --self-contained true --no-restore
+
+      - name: Smoke test published executable
+        env:
+          MAIEUTICS_TEST_HOST_EXECUTABLE: ${{ github.workspace }}/${{ matrix.executable }}
+        run: dotnet test Maieutics.Jupyter.Tests/Maieutics.Jupyter.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~GenericHostStartsRealKernelAndStopsAfterShutdown|FullyQualifiedName~ExternalHostCompletesWorkspaceFunctionLoop"

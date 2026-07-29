@@ -4,6 +4,9 @@ Status: Accepted
 
 Date: 2026-07-17
 
+Partially superseded by: ADR 0010 replaces this decision's tool definition, tool lifecycle event, and tool result-shape
+sections. The session/run ownership and transactional transcript decision remains in force.
+
 ## Context
 
 The first-stage `IAgentSession.ExecuteTurnAsync` API combines lazy execution start, streamed events, cancellation, and
@@ -45,9 +48,9 @@ The run owns a bounded single-consumer event stream. Producers wait for capacity
 that stop consuming before terminal completion must cancel or dispose the run. `Completion` becomes terminal only after
 the session reservation is released and the event writer is closed.
 
-The public interfaces above are Maieutics contracts. A `MaieuticsAgentSession` may internally own a Microsoft Agent
-Framework `AIAgent` and `AgentSession`, but framework session and response types are not returned to notebook, worker,
-extension, or persistence code.
+The public interfaces above are Maieutics contracts. The runtime may internally use Microsoft.Extensions.AI clients,
+functions, messages, and content, but provider response types are not returned to notebook, worker, extension, or
+persistence code.
 
 ## Content model
 
@@ -64,7 +67,7 @@ worker and persistence boundaries. Raw provider SDK objects remain behind provid
 `AgentEvent` is a discriminated event model. It must reserve stable semantics for:
 
 - content delta and completed content;
-- tool requested, started, progress, result, and failure;
+- tool started, bounded progress, and one finished result envelope;
 - approval or input requested;
 - artifact produced;
 - usage reported;
@@ -74,9 +77,10 @@ worker and persistence boundaries. Raw provider SDK objects remain behind provid
 Notebook-specific output events are not Agent events. A runtime or tool may produce presentation data through the
 separate notebook presentation boundary described by ADR 0003.
 
-Microsoft Agent Framework response values are normalized at the internal runtime boundary. The Maieutics event model
+Microsoft.Extensions.AI response values are normalized at the internal runtime boundary. The Maieutics event model
 preserves semantic identity and correlation while carrying policy-cleaned `ChatMessage` or `AIContent` values where a
-complete message or content value is part of the event contract.
+complete message or content value is part of the event contract. ADR 0010 defines the current three-stage tool event
+contract and model-visible JSON result envelopes.
 
 ## Transactional transcript
 
@@ -101,9 +105,10 @@ complete message or content value is part of the event contract.
 - Content that the official Microsoft.Extensions.AI JSON contract cannot serialize rejects the commit and rolls back
   the complete turn.
 
-Framework history completion is an internal staging point, not the final transaction commit. The staging provider and
-outer run owner described by ADR 0006 ensure that empty or unsupported responses, policy rejection, output limits, and
-later tool failures still roll back the complete turn.
+Provider completion and function-loop completion are preparation boundaries, not transcript commits. The run owner
+described by ADR 0010 records each provider iteration and promotes the complete message sequence only after final
+validation, so empty or unsupported responses, policy rejection, output limits, and aborting tool failures still roll
+back the complete turn.
 
 ## Identity and correlation
 
@@ -125,8 +130,7 @@ Stringly typed correlation across model, tool, worker, and notebook boundaries i
 - Model clients and connection pools are application singletons.
 - Agent session, Deno REPL session, transcript state, and notebook presentation sink are kernel-session scoped.
 - Agent runs and tool operations are per-turn owned objects.
-- The internal framework Agent may be application-scoped when it is stateless across conversations; its framework
-  `AgentSession` and Maieutics session wrapper remain kernel-session scoped.
+- Per-run function-loop decorators are owned by the run. The Maieutics session wrapper remains kernel-session scoped.
 - Shutdown stops new runs, cancels the active run, interrupts active execution targets, drains terminal events where
   possible, and then disposes child sessions and connections.
 
@@ -142,8 +146,9 @@ contract must describe kernel-session scope rather than global process state.
   Microsoft.Extensions.AI message/content contracts and explicit Maieutics run and envelope contracts.
 - Expected tool failures are committed as structured tool results only when the model subsequently produces a valid
   final answer; unexpected tool exceptions roll back the complete turn.
-- Microsoft Agent Framework can be replaced or upgraded without changing public session and run contracts.
+- Microsoft.Extensions.AI function orchestration can be replaced or upgraded without changing public session and run
+  contracts.
 
 ## References
 
-- ADR 0006: Selective Microsoft Agent Framework adoption
+- ADR 0010: Direct Microsoft.Extensions.AI function runtime

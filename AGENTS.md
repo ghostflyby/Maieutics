@@ -69,9 +69,10 @@ Maieutics executable
             `-- Maieutics.Jupyter.Kernel
 ```
 
-The Agent runtime must not depend on Jupyter. Jupyter libraries must not depend on Agent concepts. Microsoft Agent
-Framework is an internal implementation dependency of `Maieutics.Agent`; its types must not cross into Jupyter,
-provider-neutral public contracts, Deno IPC, worker protocols, or persisted formats.
+The Agent runtime must not depend on Jupyter. Jupyter libraries must not depend on Agent concepts.
+Microsoft.Extensions.AI function orchestration is an internal implementation dependency of `Maieutics.Agent`;
+provider-specific types must not cross into Jupyter, provider-neutral public contracts, Deno IPC, worker protocols, or
+persisted formats.
 
 Do not solve a boundary problem with a reverse project reference. Put a small interface in the lower-level owning layer.
 

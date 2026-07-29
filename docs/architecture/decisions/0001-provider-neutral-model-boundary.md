@@ -4,6 +4,8 @@ Status: Accepted
 
 Date: 2026-07-16
 
+Updated by: ADR 0010 removes Microsoft Agent Framework while preserving this provider boundary.
+
 ## Context
 
 Maieutics must support OpenAI Responses, OpenAI Chat Completions, Anthropic Messages, and potentially multiple Google
@@ -20,12 +22,12 @@ layer without establishing a meaningfully different ownership boundary.
 
 ## Decision
 
-`IChatClient` is the primary model-provider boundary used by Agent Core and Microsoft Agent Framework. Provider APIs are
-adapted to this interface directly:
+`IChatClient` is the primary model-provider boundary used by the Agent runtime. Provider APIs are adapted to this
+interface directly:
 
 ```text
 OpenAI Chat Completions ----\
-OpenAI Responses -----------+--> IChatClient --> ChatClientAgent
+OpenAI Responses -----------+--> IChatClient <-- RecordingChatClient <-- FunctionInvokingChatClient <-- AgentSession
 Anthropic Messages ---------+
 Google model APIs ----------/
 ```
@@ -40,9 +42,9 @@ The following semantics remain required:
 - Microsoft.Extensions.AI owns the message/content taxonomy and its JSON contracts. Maieutics owns session and run
   lifecycles, transcript transactions, events and correlation IDs, policy filtering, and the versioned transcript
   envelope.
-- Microsoft Agent Framework types and provider SDK types do not become Agent contracts. `ChatMessage` and `AIContent`
-  also do not become Jupyter, worker, extension, or notebook persistence wire contracts; those boundaries adapt them to
-  their own versioned representations.
+- Provider SDK types do not become Agent contracts. `ChatMessage` and `AIContent` also do not become Jupyter, worker,
+  extension, or notebook persistence wire contracts; those boundaries adapt them to their own versioned
+  representations.
 - A Maieutics capability descriptor declares tools, multimodal input, structured output, reasoning summaries,
   continuation behavior, and other optional features not safely inferred from the common interface alone.
 - Each provider API has a dedicated adapter. OpenAI Responses and OpenAI Chat Completions are separate adapters even if
@@ -62,10 +64,10 @@ The runtime must remain able to reconstruct a provider request from the canonica
 missing, expired, incompatible with a selected provider, or intentionally discarded. Provider checkpoints may improve
 latency or caching but must not be required for correctness.
 
-The default operating mode uses Maieutics-owned local history supplied through a framework history provider and disables
-provider-side conversation storage when an adapter would otherwise make local history and a provider conversation ID
-mutually exclusive. A future provider-managed acceleration mode must still record the canonical transcript independently
-and must have explicit replay and fallback semantics.
+The default operating mode reconstructs requests directly from Maieutics-owned committed history and disables
+provider-side conversation storage where supported. A non-empty provider conversation ID is rejected. A future
+provider-managed acceleration mode must still record the canonical transcript independently and must have explicit
+replay and fallback semantics.
 
 ## Provider selection
 
@@ -115,7 +117,8 @@ conformance tests and NativeAOT publish check to pass before the version is acce
 - Cross-provider continuation uses the canonical transcript rather than opaque provider state.
 - A new `IChatClient` implementation requires conformance tests for streaming content, cancellation, tool calls, usage,
   provider identifiers, and errors.
-- `IChatClient` remains injectable and directly testable even when `ChatClientAgent` performs the internal orchestration.
+- `IChatClient` remains injectable and directly testable behind the internal function-invocation and recording
+  decorators.
 - Maieutics avoids maintaining a second provider abstraction that mirrors Microsoft.Extensions.AI.
 - Changes to the Microsoft.Extensions.AI JSON contract or content taxonomy are explicit transcript compatibility inputs.
 

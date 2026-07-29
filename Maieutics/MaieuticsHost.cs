@@ -7,6 +7,7 @@ using Maieutics.Jupyter.Kernel;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -77,21 +78,13 @@ public static class MaieuticsHost
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
-        builder.Services.AddSingleton(WorkspaceRoot.Create(
+        builder.Services.AddSingleton(Workspace.Create(
             builder.Configuration["Maieutics:Workspace:Root"],
             startupCurrentDirectory));
         builder.Services.AddSingleton(static services =>
-            new WorkspaceContext(services.GetRequiredService<WorkspaceRoot>()));
-        builder.Services.AddSingleton<WorkspacePathResolver>();
-        builder.Services.AddSingleton<ListDirectoryTool>();
-        builder.Services.AddSingleton<ReadTextTool>();
-        builder.Services.AddSingleton<SearchTextTool>();
-        builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>(static services =>
-        [
-            services.GetRequiredService<ListDirectoryTool>(),
-            services.GetRequiredService<ReadTextTool>(),
-            services.GetRequiredService<SearchTextTool>()
-        ]);
+            new WorkspaceFunctions(services.GetRequiredService<Workspace>()));
+        builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
+            services.GetRequiredService<WorkspaceFunctions>().Functions);
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<JupyterKernelHostedService>();
@@ -101,7 +94,7 @@ public static class MaieuticsHost
     private static IAgentSession CreateAgentSession(IServiceProvider services) =>
         new AgentSession(
             services.GetRequiredService<IAgentRunProfileProvider>(),
-            services.GetRequiredService<IReadOnlyList<IAgentTool>>());
+            services.GetRequiredService<IReadOnlyList<AIFunction>>());
 
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {
@@ -111,7 +104,7 @@ public static class MaieuticsHost
             runtimeConfiguration.GetKernelOptions,
             runtimeConfiguration,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
-            workspaceContext: services.GetRequiredService<WorkspaceContext>());
+            workspace: services.GetRequiredService<Workspace>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

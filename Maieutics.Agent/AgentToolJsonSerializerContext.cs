@@ -1,22 +1,19 @@
-using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Maieutics.Agent;
 
 [JsonSourceGenerationOptions(
-    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-[JsonSerializable(typeof(ToolResultEnvelope))]
+[JsonSerializable(typeof(ToolSuccessEnvelope))]
+[JsonSerializable(typeof(ToolFailureEnvelope))]
 internal sealed partial class AgentToolJsonSerializerContext : JsonSerializerContext;
 
-internal sealed record ToolResultEnvelope(
+internal sealed record ToolSuccessEnvelope(
     string Status,
-    ImmutableArray<ToolResultContentEnvelope>? Content = null,
-    string? Code = null,
-    string? Message = null);
+    JsonElement? Value);
 
-internal sealed record ToolResultContentEnvelope(
-    string Type,
-    string? Text = null,
-    JsonElement? Value = null);
+internal sealed record ToolFailureEnvelope(
+    string Status,
+    string Code,
+    string Message);

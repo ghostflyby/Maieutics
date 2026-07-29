@@ -27,7 +27,7 @@ public sealed class AgentResponseLimitExceededException(int maximumCharacters)
     public int MaximumCharacters { get; } = maximumCharacters;
 }
 
-/// <summary>Wraps a non-cancellation provider or framework failure.</summary>
+/// <summary>Wraps a non-cancellation model-provider failure.</summary>
 public sealed class AgentProviderException(Exception innerException)
     : AgentException("The model provider failed while producing a response.", innerException);
 

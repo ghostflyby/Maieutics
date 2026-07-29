@@ -14,7 +14,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 {
     private readonly IAgentSession session;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
-    private readonly WorkspaceContext? workspaceContext;
+    private readonly Workspace? workspace;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
     private readonly TimeProvider timeProvider;
@@ -34,12 +34,12 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null,
-        WorkspaceContext? workspaceContext = null)
+        Workspace? workspace = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
         this.runtimeConfiguration = runtimeConfiguration;
-        this.workspaceContext = workspaceContext;
+        this.workspace = workspace;
         this.getOptions().Validate();
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -208,7 +208,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private string ExecuteWorkspaceCommand(string code, string[] arguments)
     {
-        if (workspaceContext is null)
+        if (workspace is null)
         {
             throw new ArgumentException("Workspace commands are not available in this host.");
         }
@@ -220,12 +220,12 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 MaieuticsCommandLanguage.Current,
                 StringComparison.OrdinalIgnoreCase))
         {
-            selection = workspaceContext.GetSnapshot();
+            selection = workspace.Capture();
         }
         else if (arguments.Length == 3 &&
                  string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
         {
-            selection = workspaceContext.Reset();
+            selection = workspace.Reset();
         }
         else if (arguments.Length >= 4 &&
                  string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
@@ -236,7 +236,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 throw new ArgumentException("A single-line workspace path is required.");
             }
 
-            selection = workspaceContext.Use(path);
+            selection = workspace.Use(path);
         }
         else
         {
@@ -305,7 +305,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         return $"""
                 ### Current workspace
 
-                - Root: {RenderInlineCode(selection.Root.Path)} ({selectionSource})
+                - Root: {RenderInlineCode(selection.RootPath)} ({selectionSource})
                 """;
     }
 

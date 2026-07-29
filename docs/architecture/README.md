@@ -20,8 +20,11 @@ flowchart LR
     Notebook[Notebook frontend] --> Kernel[Maieutics Jupyter kernel]
     Kernel --> Runtime[Agent runtime and local control plane]
 
-    Runtime --> AgentFramework[Maieutics facade over Agent Framework]
-    AgentFramework --> Models[IChatClient model gateway]
+    Runtime --> AgentSession[Maieutics AgentSession]
+    AgentSession --> FunctionLoop[MEAI function loop]
+    FunctionLoop --> Models[IChatClient model gateway]
+    FunctionLoop --> Functions[AIFunction registry]
+    Functions --> WorkspaceFunctions[Workspace functions]
     Models --> OpenAIResponses[OpenAI Responses]
     Models --> OpenAIChat[OpenAI Chat Completions]
     Models --> Anthropic[Anthropic Messages]
@@ -57,8 +60,8 @@ in the local control plane. Filesystem and process tools may execute on a select
 10. Cancellation, backpressure, terminal failure, and disposal are explicit parts of every streaming boundary.
 11. Raw provider objects, raw Jupyter messages, and raw worker protocol messages do not enter the Agent domain model.
 12. Model credentials remain in the control plane and are not forwarded to execution workers.
-13. Microsoft Agent Framework is an internal orchestration dependency and does not define Maieutics public or wire
-    contracts.
+13. Microsoft.Extensions.AI supplies the model and function primitives, while Maieutics owns run, event, limit, and
+    transcript semantics.
 14. `IChatClient` is the provider boundary; provider capability negotiation remains Maieutics-owned.
 
 ## Target logical modules
@@ -71,8 +74,8 @@ assemblies. Product-specific provider wiring and the user-facing Jupyter adapter
 ```text
 Maieutics.Agent
     Provider-neutral transcript, content, sessions, runs, events, tools, capabilities, and the internal
-    ChatClientAgent integration. Each run captures an immutable model-client/options profile lease. It is currently an
-    internal, non-packable product assembly rather than a supported SDK
+    FunctionInvokingChatClient loop. Each run captures an immutable model-client/options profile lease. It is currently
+    an internal, non-packable product assembly rather than a supported SDK
 
 Maieutics.Providers.*
     Executable-owned IChatClient construction and configuration for OpenAI Responses, OpenAI Chat Completions,
@@ -134,25 +137,27 @@ ADR 0004 retains a separate process boundary for independently deployable Deno s
 behavior or observe host lifecycle events through a dedicated IPC protocol. They are not MCP servers and are not exposed
 to the model as tools.
 
-ADR 0006 adopts Microsoft Agent Framework only inside `Maieutics.Agent`. The Maieutics session facade continues owning
-one-run enforcement, limits, transactional transcript commit, normalized events, and cancellation. Framework hosting,
-workflows, MCP, and distributed protocols are not part of this decision.
+ADR 0010 supersedes ADR 0006. `Maieutics.Agent` now uses Microsoft.Extensions.AI directly and owns one-run enforcement,
+limits, transactional transcript commit, normalized events, and cancellation without Microsoft Agent Framework.
 
 ADR 0009 keeps the initial canonical transcript process-local while fixing the future durable shape: immutable turn
 metadata and session heads reference raw content-addressed blobs rather than embedding binary bodies in JSON.
 
-The current tool loop uses a per-run `FunctionInvokingChatClient` behind `ChatClientAgent`. Maieutics exposes only its
-own `IAgentTool`, arguments, outcomes, contents, events, and transcript turns. A recording decorator preserves every
-model iteration so canonical history includes assistant tool calls and tool results instead of only the final answer.
-The executable registers `list_directory`, `read_text`, and `search_text` against one process-local workspace context.
-The startup root is fixed from configuration, while `%maieutics workspace use` may install a session override for
-subsequent tool invocations and `reset` restores the startup root. Tools capture one immutable root snapshot per call
-and expose only bounded text and structured JSON through the provider-neutral tool contract.
+The current tool loop uses a per-run `FunctionInvokingChatClient` over an immutable `AIFunction` registry. A recording
+decorator preserves every provider iteration so canonical history includes assistant function calls, provider call IDs,
+function results, and the final assistant response. Maieutics adds bounded invocation context, limits, three-stage tool
+events, and stable JSON result envelopes around the standard function contract.
+
+The executable registers `list_directory`, `read_text`, and `search_text` from one cohesive `WorkspaceFunctions`
+implementation against a process-local `Workspace` owner. The startup root is fixed from configuration, while
+`%maieutics workspace use` may install a session override for subsequent function invocations and `reset` restores the
+startup root. Each function captures one immutable workspace snapshot per call. The snapshot owns URI validation,
+`.git` denial, symbolic-link and regular-file checks, verified opening, and bounded reads.
 
 Provider-specific tool shapes are normalized at the `IChatClient` adapter boundary:
 
-- JSON-schema `IAgentTool` values map to ordinary function tools for OpenAI Responses, Chat Completions, and Anthropic;
-- a future free-form tool such as `apply_patch` remains a Maieutics tool with one canonical string argument, even when
+- JSON-schema `AIFunction` values map to ordinary function tools for OpenAI Responses, Chat Completions, and Anthropic;
+- a future free-form tool such as `apply_patch` retains one canonical Maieutics string argument, even when
   a Responses adapter can use a native custom tool before immediately normalizing its call;
 - provider-hosted search, file-library, computer, or similar tools are explicit model capabilities. A provider without
   an equivalent returns unsupported rather than silently substituting a different Maieutics tool.
@@ -168,11 +173,13 @@ transcript.
 - [ADR 0004](decisions/0004-deno-extension-protocol.md): Out-of-process Deno extensions and lifecycle hooks
 - [ADR 0005](decisions/0005-distributed-execution.md): Distributed execution control and worker planes
 - [ADR 0006](decisions/0006-selective-microsoft-agent-framework-adoption.md): Selective Microsoft Agent Framework
-  adoption
+  adoption (superseded by ADR 0010)
 - [ADR 0007](decisions/0007-runtime-configuration-and-hot-reload.md): Runtime configuration location and hot reload
 - [ADR 0008](decisions/0008-model-profile-catalog-and-session-selection.md): Model profile catalog and session selection
 - [ADR 0009](decisions/0009-volatile-transcript-and-durable-storage-shape.md): Volatile transcript and durable storage
   shape
+- [ADR 0010](decisions/0010-direct-microsoft-extensions-ai-function-runtime.md): Direct Microsoft.Extensions.AI
+  function runtime
 
 ## Explicitly deferred
 
@@ -181,7 +188,7 @@ transcript.
 - Component frontend framework and MIME type
 - Artifact-store and durable-transcript implementation
 - Provider SDK selection for future non-OpenAI adapters
-- Agent Framework Workflows, hosting, A2A, AG-UI, Durable Task, and MCP integration
+- Microsoft Agent Framework, including Workflows, hosting, A2A, AG-UI, Durable Task, and MCP integration
 - Worker scheduling, pooling, and multi-tenant deployment
 
 These choices must be made behind the boundaries above and must not require changes to Agent Core contracts.

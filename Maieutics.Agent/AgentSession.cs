@@ -5,18 +5,16 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
-using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using FrameworkAgentSession = Microsoft.Agents.AI.AgentSession;
 
 namespace Maieutics.Agent;
 
-/// <summary>Runs a provider-neutral Agent conversation over Microsoft Agent Framework.</summary>
+/// <summary>Runs a provider-neutral Agent conversation over Microsoft.Extensions.AI.</summary>
 public sealed class AgentSession : IAgentSession
 {
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly Lock transcriptGate = new();
-    private readonly ImmutableDictionary<string, ToolAIFunction> tools;
+    private readonly ImmutableDictionary<string, AIFunction> tools;
     private AgentTranscriptState canonicalState;
     private int runInProgress;
 
@@ -24,7 +22,7 @@ public sealed class AgentSession : IAgentSession
     public AgentSession(
         IChatClient chatClient,
         AgentSessionOptions? options = null,
-        IEnumerable<IAgentTool>? tools = null)
+        IEnumerable<AIFunction>? tools = null)
         : this(
             new FixedAgentRunProfileProvider(
                 new AgentRunProfile(
@@ -39,7 +37,7 @@ public sealed class AgentSession : IAgentSession
     /// <param name="tools">The immutable set of tools available to the session.</param>
     public AgentSession(
         IAgentRunProfileProvider profileProvider,
-        IEnumerable<IAgentTool>? tools = null)
+        IEnumerable<AIFunction>? tools = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.tools = CreateToolRegistry(tools);
@@ -115,84 +113,49 @@ public sealed class AgentSession : IAgentSession
         var profile = run.Profile;
         var options = profile.Options;
         ValidateModelCapabilities(profile);
-        var historyProvider = new StagingChatHistoryProvider(GetCommittedChatMessages);
-        historyProvider.BeginRun(run.Id);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
         var toolState = new RunToolState(this, run, recordingClient, options);
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
-        var agent = new ChatClientAgent(
-            profile.ChatClient,
-            new ChatClientAgentOptions
-            {
-                ChatOptions = new ChatOptions { Instructions = options.SystemPrompt },
-                ChatHistoryProvider = historyProvider,
-                UseProvidedChatClientAsIs = true,
-                ClearOnChatHistoryProviderConflict = false,
-                WarnOnChatHistoryProviderConflict = true,
-                ThrowOnChatHistoryProviderConflict = true
-            });
-        try
+        using var functionClient = new FunctionInvokingChatClient(recordingClient)
         {
-            FrameworkAgentSession session = await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
-            var runOptions = CreateRunOptions(recordingClient, toolState, options);
-            try
-            {
-                await foreach (var _ in agent
-                                   .RunStreamingAsync(
-                                       run.UserMessage,
-                                       session,
-                                       runOptions,
-                                       cancellationToken)
-                                   .ConfigureAwait(false))
-                {
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (AgentException)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                throw new AgentProviderException(exception);
-            }
-
-            var staged = historyProvider.TakeStaged(run.Id);
-            ValidateStagedRequest(staged.RequestMessages, run.UserMessage);
-            var turnMessages = await toolState.BuildCompletedMessagesAsync(cancellationToken).ConfigureAwait(false);
-            return new PreparedRunResult(turnMessages, turnMessages[^1]);
-        }
-        finally
-        {
-            historyProvider.Discard(run.Id);
-        }
-    }
-
-    private ChatClientAgentRunOptions CreateRunOptions(
-        RecordingChatClient recordingClient,
-        RunToolState toolState,
-        AgentSessionOptions options)
-    {
+            AllowConcurrentInvocation = false,
+            MaximumIterationsPerRequest = options.MaxModelIterationsPerTurn,
+            MaximumConsecutiveErrorsPerRequest = 0,
+            IncludeDetailedErrors = false,
+            TerminateOnUnknownCalls = true,
+            FunctionInvoker = toolState.InvokeAsync
+        };
+        var requestMessages = GetCommittedChatMessages().ToList();
+        requestMessages.Add(run.UserMessage);
         var chatOptions = new ChatOptions
         {
+            Instructions = options.SystemPrompt,
             Tools = tools.Values.Cast<AITool>().ToList(),
             AllowMultipleToolCalls = true
         };
-        return new ChatClientAgentRunOptions(chatOptions)
+        try
         {
-            ChatClientFactory = _ => new FunctionInvokingChatClient(recordingClient)
+            await foreach (var _ in functionClient
+                               .GetStreamingResponseAsync(requestMessages, chatOptions, cancellationToken)
+                               .ConfigureAwait(false))
             {
-                AllowConcurrentInvocation = false,
-                MaximumIterationsPerRequest = options.MaxModelIterationsPerTurn,
-                MaximumConsecutiveErrorsPerRequest = 0,
-                IncludeDetailedErrors = false,
-                TerminateOnUnknownCalls = true,
-                FunctionInvoker = toolState.InvokeAsync
             }
-        };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (AgentException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new AgentProviderException(exception);
+        }
+
+        var turnMessages = await toolState.BuildCompletedMessagesAsync(cancellationToken).ConfigureAwait(false);
+        return new PreparedRunResult(turnMessages, turnMessages[^1]);
     }
 
     private AgentTranscript CommitTurn(
@@ -250,26 +213,6 @@ public sealed class AgentSession : IAgentSession
             snapshot.Turns.SelectMany(static turn => turn.Messages).ToArray());
     }
 
-    private static void ValidateStagedRequest(
-        IReadOnlyList<ChatMessage> requestMessages,
-        ChatMessage userMessage)
-    {
-        if (requestMessages.Count != 1 || requestMessages[0].Role != ChatRole.User)
-        {
-            throw new AgentUnsupportedResponseException(
-                "Agent Framework staged an unexpected request message set.");
-        }
-
-        var expectedText = userMessage.Text;
-        var requestMessage = requestMessages[0];
-        if (requestMessage.Contents.Any(static content => content is not TextContent) ||
-            !string.Equals(requestMessage.Text, expectedText, StringComparison.Ordinal))
-        {
-            throw new AgentUnsupportedResponseException(
-                "Agent Framework staged request content that differs from the submitted turn.");
-        }
-    }
-
     private static void ValidateInput(AgentTurn turn, AgentSessionOptions options)
     {
         var characters = 0;
@@ -323,22 +266,54 @@ public sealed class AgentSession : IAgentSession
         return count;
     }
 
-    private static ImmutableDictionary<string, ToolAIFunction> CreateToolRegistry(IEnumerable<IAgentTool>? source)
+    private static ImmutableDictionary<string, AIFunction> CreateToolRegistry(IEnumerable<AIFunction>? source)
     {
-        var builder = ImmutableDictionary.CreateBuilder<string, ToolAIFunction>(StringComparer.Ordinal);
-        foreach (var tool in source ?? [])
+        var builder = ImmutableDictionary.CreateBuilder<string, AIFunction>(StringComparer.Ordinal);
+        foreach (var function in source ?? [])
         {
-            ArgumentNullException.ThrowIfNull(tool);
-            var descriptor = tool.Descriptor ??
-                             throw new ArgumentException("Agent tools must provide a descriptor.", nameof(source));
-            if (!builder.TryAdd(descriptor.Name, new ToolAIFunction(tool)))
+            ArgumentNullException.ThrowIfNull(function);
+            if (!IsValidToolName(function.Name))
             {
-                throw new ArgumentException($"An Agent tool named '{descriptor.Name}' is already registered.",
+                throw new ArgumentException(
+                    "Tool names must contain 1 to 64 ASCII letters, digits, underscores, or hyphens.",
+                    nameof(source));
+            }
+
+            if (function.JsonSchema.ValueKind != JsonValueKind.Object ||
+                !function.JsonSchema.TryGetProperty("type", out var schemaType) ||
+                schemaType.ValueKind != JsonValueKind.String ||
+                !string.Equals(schemaType.GetString(), "object", StringComparison.Ordinal))
+            {
+                throw new ArgumentException("A tool input schema must describe a JSON object.", nameof(source));
+            }
+
+            if (!builder.TryAdd(function.Name, function))
+            {
+                throw new ArgumentException($"An Agent tool named '{function.Name}' is already registered.",
                     nameof(source));
             }
         }
 
         return builder.ToImmutable();
+    }
+
+    private static bool IsValidToolName(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name.Length > 64)
+        {
+            return false;
+        }
+
+        foreach (var character in name)
+        {
+            if (character is not (>= 'A' and <= 'Z') and not (>= 'a' and <= 'z') and not (>= '0' and <= '9') and
+                not '_' and not '-')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void ReleaseRun() => Volatile.Write(ref runInProgress, 0);
@@ -372,7 +347,8 @@ public sealed class AgentSession : IAgentSession
             FunctionInvocationContext invocation,
             CancellationToken cancellationToken)
         {
-            if (invocation.Function is not ToolAIFunction function)
+            if (!owner.tools.TryGetValue(invocation.Function.Name, out var function) ||
+                !ReferenceEquals(function, invocation.Function))
             {
                 throw new AgentToolArgumentsException("The model requested an unregistered Agent tool.");
             }
@@ -395,22 +371,19 @@ public sealed class AgentSession : IAgentSession
             }
 
             if (!calls.TryGetValue(callContent.CallId, out var record) ||
-                !ReferenceEquals(record.Tool, function.Tool))
+                !ReferenceEquals(record.Function, function))
             {
                 throw new AgentToolArgumentsException(
                     "The function invoker could not correlate the requested Agent tool.");
             }
 
             await run.WriteEventAsync(
-                new AgentToolRequested(
+                new AgentToolStarted(
                     run.Id,
                     run.NextSequence(),
                     record.CallId,
-                    function.Tool.Descriptor,
+                    function.Name,
                     record.Arguments),
-                cancellationToken).ConfigureAwait(false);
-            await run.WriteEventAsync(
-                new AgentToolStarted(run.Id, run.NextSequence(), record.CallId, function.Tool.Descriptor),
                 cancellationToken).ConfigureAwait(false);
 
             var progressCount = 0;
@@ -436,15 +409,24 @@ public sealed class AgentSession : IAgentSession
                         token).ConfigureAwait(false);
                 });
 
-            AgentToolOutcome outcome;
+            invocation.Arguments.Context ??= new Dictionary<object, object?>();
+            invocation.Arguments.Context[typeof(AgentToolContext)] = context;
+
+            JsonElement envelope;
             try
             {
-                outcome = await function.Tool
-                              .InvokeAsync(context, record.Arguments, cancellationToken)
-                              .ConfigureAwait(false)
-                          ?? throw new AgentToolInvocationException(
-                              function.Name,
-                              new InvalidOperationException("The tool returned a null outcome."));
+                var result = await function.InvokeAsync(invocation.Arguments, cancellationToken).ConfigureAwait(false);
+                envelope = result switch
+                {
+                    null => ToolJson.CreateSuccessEnvelope(null),
+                    JsonElement element => ToolJson.CreateSuccessEnvelope(element),
+                    _ => throw new InvalidOperationException(
+                        $"AI function results must be JsonElement or null, but '{result.GetType().Name}' was returned.")
+                };
+            }
+            catch (AgentToolException exception)
+            {
+                envelope = ToolJson.CreateFailureEnvelope(exception.Code, exception.Message);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -452,24 +434,18 @@ public sealed class AgentSession : IAgentSession
             }
             catch (AgentException)
             {
+                await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
                 throw;
             }
             catch (Exception exception)
             {
-                await run.WriteEventAsync(
-                    new AgentToolFailed(
-                        run.Id,
-                        run.NextSequence(),
-                        record.CallId,
-                        "tool_execution_failed",
-                        "The tool failed unexpectedly."),
-                    cancellationToken).ConfigureAwait(false);
+                await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
                 throw new AgentToolInvocationException(function.Name, exception);
             }
 
-            var envelope = ToolJson.CreateResultEnvelope(outcome);
             if (Encoding.UTF8.GetByteCount(envelope.GetRawText()) > options.MaxToolResultBytes)
             {
+                await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
                 throw new AgentToolLimitExceededException(
                     nameof(AgentSessionOptions.MaxToolResultBytes),
                     options.MaxToolResultBytes);
@@ -480,39 +456,25 @@ public sealed class AgentSession : IAgentSession
                 [
                     new FunctionResultContent(record.ProviderCallId, envelope)
                 ]));
-            switch (outcome)
-            {
-                case AgentToolSuccess success:
-                    await run.WriteEventAsync(
-                        new AgentToolCompleted(
-                            run.Id,
-                            run.NextSequence(),
-                            record.CallId,
-                            CreatePublicToolSuccess(success)),
-                        cancellationToken).ConfigureAwait(false);
-                    break;
-                case AgentToolFailure failure:
-                    await run.WriteEventAsync(
-                        new AgentToolFailed(
-                            run.Id,
-                            run.NextSequence(),
-                            record.CallId,
-                            failure.Code,
-                            failure.Message),
-                        cancellationToken).ConfigureAwait(false);
-                    break;
-                default:
-                    throw new AgentUnsupportedResponseException(
-                        $"Tool '{function.Name}' returned unsupported outcome type '{outcome.GetType().Name}'.");
-            }
+            await run.WriteEventAsync(
+                new AgentToolFinished(run.Id, run.NextSequence(), record.CallId, envelope),
+                cancellationToken).ConfigureAwait(false);
 
             return envelope;
         }
 
-        private static AgentToolSuccess CreatePublicToolSuccess(AgentToolSuccess success) =>
-            new([
-                .. success.Contents.Select(AgentTranscriptCodec.CreatePublicContent)
-            ]);
+        private ValueTask PublishTerminalFailureAsync(
+            AgentToolCallId callId,
+            CancellationToken cancellationToken) =>
+            run.WriteEventAsync(
+                new AgentToolFinished(
+                    run.Id,
+                    run.NextSequence(),
+                    callId,
+                    ToolJson.CreateFailureEnvelope(
+                        "tool_execution_failed",
+                        "The tool failed unexpectedly.")),
+                cancellationToken);
 
         internal async ValueTask ObserveProviderUpdateAsync(
             int iteration,
@@ -666,7 +628,7 @@ public sealed class AgentSession : IAgentSession
                 }
 
                 var arguments = ToolJson.CreateArguments(call.Arguments ?? new Dictionary<string, object?>());
-                if (arguments.GetUtf8Size() > options.MaxToolArgumentsBytes)
+                if (Encoding.UTF8.GetByteCount(arguments.GetRawText()) > options.MaxToolArgumentsBytes)
                 {
                     throw new AgentToolLimitExceededException(
                         nameof(AgentSessionOptions.MaxToolArgumentsBytes),
@@ -676,7 +638,7 @@ public sealed class AgentSession : IAgentSession
                 calls.Add(call.CallId, new ToolInvocationRecord(
                     AgentToolCallId.Create(),
                     call.CallId,
-                    function.Tool,
+                    function,
                     arguments)
                 {
                     Iteration = iteration,
@@ -689,16 +651,16 @@ public sealed class AgentSession : IAgentSession
         private sealed class ToolInvocationRecord(
             AgentToolCallId callId,
             string providerCallId,
-            IAgentTool tool,
-            AgentToolArguments arguments)
+            AIFunction function,
+            JsonElement arguments)
         {
             internal AgentToolCallId CallId { get; } = callId;
 
             internal string ProviderCallId { get; } = providerCallId;
 
-            internal IAgentTool Tool { get; } = tool;
+            internal AIFunction Function { get; } = function;
 
-            internal AgentToolArguments Arguments { get; } = arguments;
+            internal JsonElement Arguments { get; } = arguments;
 
             internal int Iteration { get; set; }
 
@@ -722,6 +684,7 @@ public sealed class AgentSession : IAgentSession
             var response = await innerClient
                 .GetResponseAsync(request, options, cancellationToken)
                 .ConfigureAwait(false);
+            ValidateConversationId(response.ConversationId);
             AddIteration(request, response.Messages);
             return response;
         }
@@ -786,6 +749,7 @@ public sealed class AgentSession : IAgentSession
                                .GetStreamingResponseAsync(request, options, cancellationToken)
                                .ConfigureAwait(false))
             {
+                ValidateConversationId(update.ConversationId);
                 updates.Add(update.Clone());
                 var observer = updateObserver;
                 if (observer is not null)
@@ -797,6 +761,15 @@ public sealed class AgentSession : IAgentSession
             }
 
             AddIteration(request, updates.ToChatResponse().Messages);
+        }
+
+        private static void ValidateConversationId(string? conversationId)
+        {
+            if (!string.IsNullOrEmpty(conversationId))
+            {
+                throw new AgentUnsupportedResponseException(
+                    "The model provider returned conversation state that conflicts with the canonical Agent transcript.");
+            }
         }
 
         private void AddIteration(
@@ -820,24 +793,6 @@ public sealed class AgentSession : IAgentSession
     private sealed record PreparedRunResult(
         IReadOnlyList<ChatMessage> TurnMessages,
         ChatMessage AssistantMessage);
-
-    // ReSharper disable once InconsistentNaming
-    private sealed class ToolAIFunction(IAgentTool tool) : AIFunction
-    {
-        internal IAgentTool Tool { get; } = tool;
-
-        public override string Name => Tool.Descriptor.Name;
-
-        public override string Description => Tool.Descriptor.Description;
-
-        public override JsonElement JsonSchema => Tool.Descriptor.InputSchema;
-
-        protected override ValueTask<object?> InvokeCoreAsync(
-            AIFunctionArguments arguments,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromException<object?>(new InvalidOperationException(
-                "Maieutics tools must be invoked through the configured FunctionInvokingChatClient."));
-    }
 
     private sealed class AgentRun(
         AgentSession owner,
@@ -1004,7 +959,7 @@ public sealed class AgentSession : IAgentSession
 
 file static class ToolJson
 {
-    internal static AgentToolArguments CreateArguments(IDictionary<string, object?> arguments)
+    internal static JsonElement CreateArguments(IDictionary<string, object?> arguments)
     {
         var root = new JsonObject();
         foreach (var (name, value) in arguments)
@@ -1012,46 +967,18 @@ file static class ToolJson
             root.Add(name, ToJsonNode(value));
         }
 
-        return new AgentToolArguments(ParseElement(root));
+        return ParseElement(root);
     }
 
-    internal static JsonElement CreateResultEnvelope(AgentToolOutcome outcome)
-    {
-        ArgumentNullException.ThrowIfNull(outcome);
-        var envelope = outcome switch
-        {
-            AgentToolSuccess success => new ToolResultEnvelope(
-                "ok",
-                [
-                    .. success.Contents.Select(static content => content switch
-                    {
-                        TextContent text => new ToolResultContentEnvelope("text", Text: text.Text),
-                        DataContent data when string.Equals(
-                                data.MediaType,
-                                "application/json",
-                                StringComparison.OrdinalIgnoreCase) =>
-                            new ToolResultContentEnvelope("json", Value: ParseJsonData(data)),
-                        _ => throw new AgentUnsupportedResponseException(
-                            $"Tool result content of type '{content.GetType().Name}' is not supported.")
-                    })
-                ]),
-            AgentToolFailure failure => new ToolResultEnvelope(
-                "error",
-                Code: failure.Code,
-                Message: failure.Message),
-            _ => throw new AgentUnsupportedResponseException(
-                $"Tool outcome type '{outcome.GetType().Name}' is not supported.")
-        };
-        return JsonSerializer.SerializeToElement(
-            envelope,
-            AgentToolJsonSerializerContext.Default.ToolResultEnvelope);
-    }
+    internal static JsonElement CreateSuccessEnvelope(JsonElement? value) =>
+        JsonSerializer.SerializeToElement(
+            new ToolSuccessEnvelope("ok", value?.Clone()),
+            AgentToolJsonSerializerContext.Default.ToolSuccessEnvelope);
 
-    private static JsonElement ParseJsonData(DataContent data)
-    {
-        using var document = JsonDocument.Parse(data.Data);
-        return document.RootElement.Clone();
-    }
+    internal static JsonElement CreateFailureEnvelope(string code, string message) =>
+        JsonSerializer.SerializeToElement(
+            new ToolFailureEnvelope("error", code, message),
+            AgentToolJsonSerializerContext.Default.ToolFailureEnvelope);
 
     private static JsonElement ParseElement(JsonNode node)
     {

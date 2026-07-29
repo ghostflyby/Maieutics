@@ -1,8 +1,10 @@
 # ADR 0006: Selective Microsoft Agent Framework Adoption
 
-Status: Accepted
+Status: Superseded by ADR 0010
 
 Date: 2026-07-16
+
+Superseded: 2026-07-29
 
 ## Context
 

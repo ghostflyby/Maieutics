@@ -233,12 +233,12 @@ public sealed class AgentJupyterIntegrationTests
         try
         {
             var session = new AgentSession(new ScriptedChatClient());
-            var workspace = new WorkspaceContext(WorkspaceRoot.Create(startup, startup));
+            var workspace = Workspace.Create(startup, startup);
             var application = new MaieuticsAgentKernelApplication(
                 session,
                 static () => new MaieuticsAgentKernelOptions(),
                 runtimeConfiguration: null,
-                workspaceContext: workspace);
+                workspace: workspace);
             var connection = JupyterConnectionInfo.CreateLocalTcp();
             await using var host = await JupyterKernelHost.StartAsync(
                 connection,
@@ -263,7 +263,7 @@ public sealed class AgentJupyterIntegrationTests
             (await selected.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
             ReadMarkdown(selectedOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
                 .Contain(other).And.Contain("session override");
-            workspace.GetSnapshot().Root.Path.Should().Be(other);
+            workspace.Capture().RootPath.Should().Be(other);
 
             var invalid = await client.ExecuteAsync(
                 new JupyterExecuteRequest("%maieutics workspace use ../missing"),
@@ -272,7 +272,7 @@ public sealed class AgentJupyterIntegrationTests
             var invalidCompletion = await invalid.Completion.WaitAsync(deadline.Token);
             invalidCompletion.Reply.Status.Should().Be("error");
             invalidCompletion.Reply.ErrorName.Should().Be("MaieuticsCommandError");
-            workspace.GetSnapshot().Root.Path.Should().Be(other);
+            workspace.Capture().RootPath.Should().Be(other);
 
             var reset = await client.ExecuteAsync(
                 new JupyterExecuteRequest("%maieutics workspace reset", Silent: true),
@@ -280,8 +280,8 @@ public sealed class AgentJupyterIntegrationTests
             var resetOutputs = await ReadOutputsAsync(reset, deadline.Token);
             (await reset.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
             resetOutputs.OfType<JupyterDisplayOutput>().Should().BeEmpty();
-            workspace.GetSnapshot().Root.Path.Should().Be(startup);
-            workspace.GetSnapshot().HasSessionOverride.Should().BeFalse();
+            workspace.Capture().RootPath.Should().Be(startup);
+            workspace.Capture().HasSessionOverride.Should().BeFalse();
 
             var restored = await client.ExecuteAsync(
                 new JupyterExecuteRequest("%maieutics workspace current"),

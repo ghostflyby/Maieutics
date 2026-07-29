@@ -33,7 +33,7 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 - Shared: frames, HMAC, JSON names, source-generated round trips, unknown fields, buffers, connection validation, MIME, display IDs, and cursor conversion.
 - Client: socket ownership, five channels, correlation, reply/idle ordering, stdin parents, output order, late output, cancellation, disconnect, and backpressure.
 - Kernel: busy/reply/idle, shell serialization, control responsiveness, heartbeat, interrupt, shutdown, silent execution, stdin, language services, and display updates.
-- Agent: run reservation, event backpressure, transcript staging/commit, tools, limits, capabilities, provider switching, and rollback.
+- Agent: run reservation, event backpressure, provider-iteration recording, transcript commit, tools, limits, capabilities, provider switching, and rollback.
 - Integration: self-hosted Client/Kernel plus the portable real Deno kernelspec.
 
 ## Verification Sequence
@@ -46,4 +46,4 @@ dotnet build Maieutics.slnx --no-restore -warnaserror
 git diff --check
 ```
 
-For executable/provider/Framework changes, also publish the supported NativeAOT RID and run the relevant process smoke test. Do not suppress trimming or dynamic-code warnings broadly.
+For executable, provider, or function-runtime changes, also publish the supported NativeAOT RID and run the relevant process smoke test. The smoke must exercise a real published-process function continuation when `AIFunctionFactory` behavior is affected. Do not suppress trimming or dynamic-code warnings broadly.

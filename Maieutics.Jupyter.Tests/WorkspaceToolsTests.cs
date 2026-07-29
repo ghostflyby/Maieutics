@@ -16,18 +16,45 @@ namespace Maieutics.Jupyter.Tests;
 public sealed class WorkspaceToolsTests
 {
     [Fact]
+    public async Task WorkspaceFunctionsExposeSeparateStrictSchemasAndTypedJsonResults()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var functions = CreateFunctions(workspace.Path).Functions;
+
+        functions.Select(static function => function.Name)
+            .Should().Equal("list_directory", "read_text", "search_text");
+        functions.Should().OnlyContain(static function =>
+            function.JsonSchema.ValueKind == JsonValueKind.Object &&
+            function.JsonSchema.GetProperty("type").GetString() == "object");
+
+        var list = functions.Single(static function => function.Name == "list_directory");
+        var result = await list.InvokeAsync(
+            Arguments("{}"),
+            TestContext.Current.CancellationToken);
+        result.Should().BeOfType<JsonElement>();
+
+        var invalid = () => list.InvokeAsync(
+            Arguments("""{"unexpected":true}"""),
+            TestContext.Current.CancellationToken).AsTask();
+        await invalid.Should().ThrowAsync<Exception>()
+            .Where(static exception =>
+                exception.GetType() == typeof(ArgumentException) ||
+                exception.GetType() == typeof(JsonException));
+    }
+
+    [Fact]
     public async Task ListDirectorySortsPagesAndBoundsEntryCount()
     {
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "c.txt"), "ccc");
         File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "a");
         Directory.CreateDirectory(Path.Combine(workspace.Path, "b"));
-        var paths = CreateResolver(workspace.Path);
-        var tool = new ListDirectoryTool(paths, maximumDirectoryEntries: 3);
+        var functions = CreateFunctions(workspace.Path, maximumDirectoryEntries: 3);
+        var tool = Function(functions, "list_directory");
 
         var first = Result<ListDirectoryResult>(await InvokeAsync(
             tool,
-            """{"pageSize":2}"""), WorkspaceToolJsonSerializerContext.Default.ListDirectoryResult);
+            """{"pageSize":2}"""), WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
 
         first.Uri.Should().Be("workspace://local/");
         first.Entries.Select(static entry => entry.Name).Should().Equal("a.txt", "b");
@@ -45,7 +72,7 @@ public sealed class WorkspaceToolsTests
         var second = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
                 $$"""{"cursor":{{JsonSerializer.Serialize(first.NextCursor)}}}"""),
-            WorkspaceToolJsonSerializerContext.Default.ListDirectoryResult);
+            WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
         second.Entries.Select(static entry => entry.Name).Should().Equal("c.txt");
         second.NextCursor.Should().BeNull();
 
@@ -71,11 +98,11 @@ public sealed class WorkspaceToolsTests
     public void WorkspaceUrisRejectNonCanonicalOrEscapingValues(string uri)
     {
         using var workspace = TemporaryWorkspace.Create();
-        var paths = CreateResolver(workspace.Path);
+        var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
 
-        var action = () => paths.Resolve(uri);
+        var action = () => snapshot.Resolve(uri);
 
-        action.Should().Throw<WorkspaceToolException>()
+        action.Should().Throw<WorkspaceException>()
             .Which.Code.Should().Be("workspace_invalid_uri");
     }
 
@@ -85,13 +112,13 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "%2e%2e"), "literal percent name");
         Directory.CreateDirectory(Path.Combine(workspace.Path, ".git"));
-        var paths = CreateResolver(workspace.Path);
-        var read = new ReadTextTool(paths);
+        var functions = CreateFunctions(workspace.Path);
+        var read = Function(functions, "read_text");
 
         var literal = Result<ReadTextResult>(await InvokeAsync(
                 read,
                 """{"uri":"workspace://local/%252e%252e"}"""),
-            WorkspaceToolJsonSerializerContext.Default.ReadTextResult);
+            WorkspaceJsonSerializerContext.Default.ReadTextResult);
         literal.Text.Should().Be("literal percent name");
 
         var git = await InvokeAsync(read, """{"uri":"workspace://local/.git/config"}""");
@@ -108,9 +135,9 @@ public sealed class WorkspaceToolsTests
             Directory.CreateSymbolicLink(Path.Combine(workspace.Path, "directory-link"), outsideDirectory);
 
             var listed = Result<ListDirectoryResult>(await InvokeAsync(
-                    new ListDirectoryTool(paths),
+                    Function(functions, "list_directory"),
                     "{}"),
-                WorkspaceToolJsonSerializerContext.Default.ListDirectoryResult);
+                WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
             listed.Entries.Where(static entry => entry.Name.EndsWith("-link", StringComparison.Ordinal))
                 .Should().OnlyContain(static entry => entry.Kind == "symbolic_link");
 
@@ -126,20 +153,52 @@ public sealed class WorkspaceToolsTests
     }
 
     [Fact]
-    public void WorkspaceRootRejectsSymbolicLinksAndResolvesRelativePathsAtStartup()
+    public void UnixSafeOpenRejectsPathComponentsReplacedWithSymbolicLinks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var workspace = TemporaryWorkspace.Create();
+        var outside = Path.Combine(workspace.ParentPath, "outside.txt");
+        File.WriteAllText(outside, "outside");
+        var directory = Directory.CreateDirectory(Path.Combine(workspace.Path, "directory")).FullName;
+        var file = Path.Combine(directory, "value.txt");
+        File.WriteAllText(file, "inside");
+        var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
+        var resolved = snapshot.Resolve("workspace://local/directory/value.txt", allowRoot: false);
+
+        File.Delete(file);
+        File.CreateSymbolicLink(file, outside);
+
+        var finalComponent = () => snapshot.OpenVerifiedRead(resolved.FullPath);
+        finalComponent.Should().Throw<WorkspaceException>()
+            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed");
+
+        File.Delete(file);
+        Directory.Delete(directory);
+        Directory.CreateSymbolicLink(directory, workspace.ParentPath);
+
+        var intermediateComponent = () => snapshot.OpenVerifiedRead(resolved.FullPath);
+        intermediateComponent.Should().Throw<IOException>();
+    }
+
+    [Fact]
+    public void WorkspaceRejectsSymbolicLinksAndResolvesRelativePathsAtStartup()
     {
         using var workspace = TemporaryWorkspace.Create();
         var child = Directory.CreateDirectory(Path.Combine(workspace.Path, "child")).FullName;
 
-        WorkspaceRoot.Create("child", workspace.Path).Path.Should().Be(child);
-        var empty = () => WorkspaceRoot.Create(" ", workspace.Path);
+        Workspace.Create("child", workspace.Path).Capture().RootPath.Should().Be(child);
+        var empty = () => Workspace.Create(" ", workspace.Path);
         empty.Should().Throw<ArgumentException>();
 
         if (!OperatingSystem.IsWindows())
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            var action = () => WorkspaceRoot.Create(link, workspace.ParentPath);
+            var action = () => Workspace.Create(link, workspace.ParentPath);
             action.Should().Throw<ArgumentException>();
         }
     }
@@ -148,14 +207,13 @@ public sealed class WorkspaceToolsTests
     public async Task ReadTextUsesLineContinuationAndRejectsInvalidOrUnboundedFiles()
     {
         using var workspace = TemporaryWorkspace.Create();
-        var paths = CreateResolver(workspace.Path);
-        var tool = new ReadTextTool(paths);
+        var tool = Function(CreateFunctions(workspace.Path), "read_text");
         File.WriteAllText(Path.Combine(workspace.Path, "lines.txt"), "零\none\ntwo\nthree", new UTF8Encoding(false));
 
         var page = Result<ReadTextResult>(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/lines.txt","startLine":2,"maxLines":2}"""),
-            WorkspaceToolJsonSerializerContext.Default.ReadTextResult);
+            WorkspaceJsonSerializerContext.Default.ReadTextResult);
         page.Should().BeEquivalentTo(new
         {
             Uri = "workspace://local/lines.txt",
@@ -169,7 +227,7 @@ public sealed class WorkspaceToolsTests
         var continuation = Result<ReadTextResult>(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/lines.txt","startLine":4}"""),
-            WorkspaceToolJsonSerializerContext.Default.ReadTextResult);
+            WorkspaceJsonSerializerContext.Default.ReadTextResult);
         continuation.Text.Should().Be("three");
         continuation.Truncated.Should().BeFalse();
 
@@ -180,7 +238,7 @@ public sealed class WorkspaceToolsTests
         var bytePage = Result<ReadTextResult>(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/byte-pages.txt"}"""),
-            WorkspaceToolJsonSerializerContext.Default.ReadTextResult);
+            WorkspaceJsonSerializerContext.Default.ReadTextResult);
         bytePage.Text.Should().HaveLength(40_000);
         bytePage.NextStartLine.Should().Be(2);
 
@@ -255,11 +313,11 @@ public sealed class WorkspaceToolsTests
                 Path.Combine(workspace.Path, "a.txt"));
         }
 
-        var tool = new SearchTextTool(CreateResolver(workspace.Path));
+        var tool = Function(CreateFunctions(workspace.Path), "search_text");
         var result = Result<SearchTextResult>(await InvokeAsync(
                 tool,
                 """{"query":"Needle"}"""),
-            WorkspaceToolJsonSerializerContext.Default.SearchTextResult);
+            WorkspaceJsonSerializerContext.Default.SearchTextResult);
 
         result.Matches.Should().HaveCount(3);
         result.SkippedBinaryFiles.Should().Be(1);
@@ -275,7 +333,7 @@ public sealed class WorkspaceToolsTests
         var regex = Result<SearchTextResult>(await InvokeAsync(
                 tool,
                 """{"query":"n[e]+dle","regex":true,"caseSensitive":false}"""),
-            WorkspaceToolJsonSerializerContext.Default.SearchTextResult);
+            WorkspaceJsonSerializerContext.Default.SearchTextResult);
         regex.Matches.Should().HaveCount(4);
     }
 
@@ -285,22 +343,24 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "none");
         File.WriteAllText(Path.Combine(workspace.Path, "b.txt"), "target");
-        var paths = CreateResolver(workspace.Path);
-
-        var fileLimited = new SearchTextTool(paths, maximumFiles: 1, maximumDirectoryEntries: 10);
+        var fileLimited = Function(
+            CreateFunctions(workspace.Path, maximumFiles: 1, maximumDirectoryEntries: 10),
+            "search_text");
         var limited = Result<SearchTextResult>(await InvokeAsync(
                 fileLimited,
                 """{"query":"target"}"""),
-            WorkspaceToolJsonSerializerContext.Default.SearchTextResult);
+            WorkspaceJsonSerializerContext.Default.SearchTextResult);
         limited.Matches.Should().BeEmpty();
         limited.Truncated.Should().BeTrue();
 
-        var directoryLimited = new SearchTextTool(paths, maximumFiles: 10, maximumDirectoryEntries: 1);
+        var directoryLimited = Function(
+            CreateFunctions(workspace.Path, maximumFiles: 10, maximumDirectoryEntries: 1),
+            "search_text");
         Failure(await InvokeAsync(directoryLimited, """{"query":"target"}"""))
             .Code.Should().Be("workspace_directory_too_large");
 
         var invalidRegex = await InvokeAsync(
-            new SearchTextTool(paths),
+            Function(CreateFunctions(workspace.Path), "search_text"),
             JsonSerializer.Serialize(new
             {
                 query = new string('x', 513),
@@ -310,16 +370,16 @@ public sealed class WorkspaceToolsTests
 
         File.WriteAllText(Path.Combine(workspace.Path, "b.txt"), "x");
         File.WriteAllText(Path.Combine(workspace.Path, "c.txt"), "x");
-        var scanLimited = new SearchTextTool(
-            paths,
+        var scanLimited = Function(CreateFunctions(
+            workspace.Path,
             maximumFiles: 10,
             maximumDirectoryEntries: 10,
             maximumFileBytes: 4,
-            maximumScanBytes: 5);
+            maximumSearchBytes: 5), "search_text");
         var scanResult = Result<SearchTextResult>(await InvokeAsync(
                 scanLimited,
                 """{"query":"x"}"""),
-            WorkspaceToolJsonSerializerContext.Default.SearchTextResult);
+            WorkspaceJsonSerializerContext.Default.SearchTextResult);
         scanResult.Matches.Should().ContainSingle().Which.Uri.Should().EndWith("/b.txt");
         scanResult.ScannedBytes.Should().Be(5);
         scanResult.Truncated.Should().BeTrue();
@@ -327,7 +387,6 @@ public sealed class WorkspaceToolsTests
         using var canceled = new CancellationTokenSource();
         await canceled.CancelAsync();
         var action = () => fileLimited.InvokeAsync(
-            null!,
             Arguments("""{"query":"target"}"""),
             canceled.Token).AsTask();
         await action.Should().ThrowAsync<OperationCanceledException>();
@@ -353,13 +412,13 @@ public sealed class WorkspaceToolsTests
             process.ExitCode.Should().Be(0);
         }
 
-        var paths = CreateResolver(workspace.Path);
+        var functions = CreateFunctions(workspace.Path);
         Failure(await InvokeAsync(
-                new ReadTextTool(paths),
+                Function(functions, "read_text"),
                 """{"uri":"workspace://local/input.fifo"}"""))
             .Code.Should().Be("workspace_not_regular_file");
         Failure(await InvokeAsync(
-                new SearchTextTool(paths),
+                Function(functions, "search_text"),
                 """{"query":"value","uri":"workspace://local/input.fifo"}"""))
             .Code.Should().Be("workspace_not_regular_file");
     }
@@ -369,7 +428,7 @@ public sealed class WorkspaceToolsTests
     {
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "note.txt"), "workspace body");
-        var paths = CreateResolver(workspace.Path);
+        var functions = CreateFunctions(workspace.Path);
         var client = new ScriptedWorkspaceChatClient(
             (_, _) => StreamUpdateAsync(ToolCallUpdate("list-call", "list_directory")),
             (messages, _) =>
@@ -393,12 +452,7 @@ public sealed class WorkspaceToolsTests
             });
         var session = new AgentSession(
             client,
-            tools:
-            [
-                new ListDirectoryTool(paths),
-                new ReadTextTool(paths),
-                new SearchTextTool(paths)
-            ]);
+            tools: functions.Functions);
 
         await using var run = await session.StartTurnAsync(
             AgentTurn.FromText("inspect the workspace"),
@@ -417,30 +471,30 @@ public sealed class WorkspaceToolsTests
     }
 
     [Fact]
-    public async Task WorkspaceContextSwitchesFutureToolInvocationsAndInvalidatesCursors()
+    public async Task WorkspaceSwitchesFutureFunctionInvocationsAndInvalidatesCursors()
     {
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "startup a");
         File.WriteAllText(Path.Combine(workspace.Path, "b.txt"), "startup b");
         var other = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "other workspace")).FullName;
         File.WriteAllText(Path.Combine(other, "other.txt"), "other");
-        var context = new WorkspaceContext(WorkspaceRoot.Create(workspace.Path, workspace.Path));
-        var tool = new ListDirectoryTool(new WorkspacePathResolver(context));
+        var context = Workspace.Create(workspace.Path, workspace.Path);
+        var tool = Function(new WorkspaceFunctions(context), "list_directory");
 
         var startup = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
                 """{"pageSize":1}"""),
-            WorkspaceToolJsonSerializerContext.Default.ListDirectoryResult);
+            WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
         startup.Entries.Should().ContainSingle().Which.Name.Should().Be("a.txt");
         startup.NextCursor.Should().NotBeNull();
 
         var selected = context.Use("../other workspace");
-        selected.Root.Path.Should().Be(other);
+        selected.RootPath.Should().Be(other);
         selected.HasSessionOverride.Should().BeTrue();
         var switched = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
                 "{}"),
-            WorkspaceToolJsonSerializerContext.Default.ListDirectoryResult);
+            WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
         switched.Entries.Should().ContainSingle().Which.Name.Should().Be("other.txt");
 
         var staleCursor = await InvokeAsync(
@@ -449,12 +503,12 @@ public sealed class WorkspaceToolsTests
         Failure(staleCursor).Code.Should().Be("workspace_invalid_cursor");
 
         var reset = context.Reset();
-        reset.Root.Path.Should().Be(workspace.Path);
+        reset.RootPath.Should().Be(workspace.Path);
         reset.HasSessionOverride.Should().BeFalse();
         var restored = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
                 "{}"),
-            WorkspaceToolJsonSerializerContext.Default.ListDirectoryResult);
+            WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
         restored.Entries.Select(static entry => entry.Name).Should().Equal("a.txt", "b.txt");
     }
 
@@ -479,16 +533,14 @@ public sealed class WorkspaceToolsTests
         {
             var standardBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var standardHost = standardBuilder.Build();
-            standardHost.Services.GetRequiredService<WorkspaceRoot>().Path.Should().Be(standardRoot);
-            standardHost.Services.GetRequiredService<WorkspaceContext>().GetSnapshot().Root.Path.Should()
-                .Be(standardRoot);
+            standardHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(standardRoot);
 
             var commandBuilder = MaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--workspace", commandRoot]);
             using var commandHost = commandBuilder.Build();
-            commandHost.Services.GetRequiredService<WorkspaceRoot>().Path.Should().Be(commandRoot);
-            commandHost.Services.GetRequiredService<IReadOnlyList<IAgentTool>>()
-                .Select(static tool => tool.Descriptor.Name)
+            commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(commandRoot);
+            commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
+                .Select(static function => function.Name)
                 .Should().Equal("list_directory", "read_text", "search_text");
         }
 
@@ -501,7 +553,7 @@ public sealed class WorkspaceToolsTests
         {
             var aliasBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var aliasHost = aliasBuilder.Build();
-            aliasHost.Services.GetRequiredService<WorkspaceRoot>().Path.Should().Be(aliasRoot);
+            aliasHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(aliasRoot);
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
@@ -515,7 +567,7 @@ public sealed class WorkspaceToolsTests
             WriteWorkspaceConfiguration(configurationFile, reloadRoot);
             ((IConfigurationRoot)frozenBuilder.Configuration).Reload();
             using var frozenHost = frozenBuilder.Build();
-            frozenHost.Services.GetRequiredService<WorkspaceRoot>().Path.Should().Be(jsonRoot);
+            frozenHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(jsonRoot);
         }
 
         var invalid = () => MaieuticsHost.CreateApplicationBuilder(
@@ -524,36 +576,60 @@ public sealed class WorkspaceToolsTests
     }
 
     [Fact]
-    public void WorkspaceRootUsesStartupDirectoryAndRejectsSymbolicLinkRoot()
+    public void WorkspaceUsesStartupDirectoryAndRejectsSymbolicLinkRoot()
     {
         using var workspace = TemporaryWorkspace.Create();
         var relative = Directory.CreateDirectory(Path.Combine(workspace.Path, "relative")).FullName;
 
-        WorkspaceRoot.Create(null, workspace.Path).Path.Should().Be(workspace.Path);
-        WorkspaceRoot.Create("relative", workspace.Path).Path.Should().Be(relative);
+        Workspace.Create(null, workspace.Path).Capture().RootPath.Should().Be(workspace.Path);
+        Workspace.Create("relative", workspace.Path).Capture().RootPath.Should().Be(relative);
 
         if (!OperatingSystem.IsWindows())
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            var action = () => WorkspaceRoot.Create(link, workspace.ParentPath);
+            var action = () => Workspace.Create(link, workspace.ParentPath);
             action.Should().Throw<ArgumentException>();
         }
     }
 
-    private static WorkspacePathResolver CreateResolver(string root) =>
-        new(WorkspaceRoot.Create(root, root));
+    private static WorkspaceFunctions CreateFunctions(
+        string root,
+        int maximumFiles = 10_000,
+        int maximumDirectoryEntries = 10_000,
+        int maximumFileBytes = 2 * 1_024 * 1_024,
+        long maximumSearchBytes = 64L * 1_024 * 1_024) =>
+        new(
+            Workspace.Create(root, root),
+            maximumFiles,
+            maximumDirectoryEntries,
+            maximumFileBytes,
+            maximumSearchBytes);
 
-    private static AgentToolArguments Arguments(string json)
+    private static AIFunction Function(WorkspaceFunctions functions, string name) =>
+        functions.Functions.Single(function => function.Name == name);
+
+    private static AIFunctionArguments Arguments(string json)
     {
         using var document = JsonDocument.Parse(json);
-        return new AgentToolArguments(document.RootElement);
+        return new AIFunctionArguments(document.RootElement.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone()));
     }
 
-    private static ValueTask<AgentToolOutcome> InvokeAsync(
-        IAgentTool tool,
-        string json) =>
-        tool.InvokeAsync(null!, Arguments(json), TestContext.Current.CancellationToken);
+    private static async ValueTask<ToolInvocation> InvokeAsync(AIFunction function, string json)
+    {
+        try
+        {
+            return new ToolInvocation(
+                await function.InvokeAsync(Arguments(json), TestContext.Current.CancellationToken),
+                null);
+        }
+        catch (AgentToolException exception)
+        {
+            return new ToolInvocation(null, exception);
+        }
+    }
 
     private static ChatResponseUpdate ToolCallUpdate(
         string callId,
@@ -574,18 +650,18 @@ public sealed class WorkspaceToolsTests
         yield return update;
     }
 
-    private static AgentToolFailure Failure(AgentToolOutcome outcome) =>
-        outcome.Should().BeOfType<AgentToolFailure>().Which;
+    private static AgentToolException Failure(ToolInvocation invocation) =>
+        invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
 
-    private static T Result<T>(AgentToolOutcome outcome, JsonTypeInfo<T> jsonTypeInfo)
+    private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)
     {
-        var success = outcome.Should().BeOfType<AgentToolSuccess>().Which;
-        var data = success.Contents.Should().ContainSingle().Which
-            .Should().BeOfType<DataContent>().Which;
-        data.MediaType.Should().Be("application/json");
-        return JsonSerializer.Deserialize(data.Data.Span, jsonTypeInfo)
+        invocation.Failure.Should().BeNull();
+        var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
+        return JsonSerializer.Deserialize(result, jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }
+
+    private sealed record ToolInvocation(object? Result, AgentToolException? Failure);
 
     private static void WriteWorkspaceConfiguration(string path, string root)
     {

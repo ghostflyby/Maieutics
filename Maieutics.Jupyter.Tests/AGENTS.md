@@ -30,5 +30,6 @@ self-hosted kernel, real Deno, process, and NativeAOT integration behavior. Agen
 - Process tests use external temporary configuration and connection files and must not contact real model services.
 - Provider conformance uses deterministic fake HTTP/SSE servers for OpenAI Responses, Chat Completions, and Anthropic
   Messages, including tool continuation and cancellation.
-- NativeAOT smoke tests must execute the selected Agent Framework and provider paths in the published binary. Do not
-  suppress new trimming or dynamic-code warnings broadly to make them pass.
+- NativeAOT smoke tests must execute the Microsoft.Extensions.AI function runtime and provider paths in the published
+  binary, including a real `AIFunctionFactory` workspace function continuation. Do not suppress new trimming or
+  dynamic-code warnings broadly to make them pass.

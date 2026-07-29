@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FluentAssertions;
@@ -266,7 +265,7 @@ public sealed class AgentSessionTests
     }
 
     [Fact]
-    public async Task FrameworkHistoryRequestsContainSystemPromptAndCommittedTurnsOnly()
+    public async Task DirectHistoryRequestsContainSystemPromptAndCommittedTurnsOnly()
     {
         using var deadline = CreateDeadline();
         var client = new ScriptedChatClient(
@@ -287,7 +286,7 @@ public sealed class AgentSessionTests
     }
 
     [Fact]
-    public async Task ProviderConversationIdConflictRollsBackAndRecreatesFrameworkSession()
+    public async Task ProviderConversationIdConflictRollsBackAndAllowsNextRun()
     {
         using var deadline = CreateDeadline();
         var conflicting = new ChatResponseUpdate(ChatRole.Assistant, "conflict")
@@ -303,13 +302,40 @@ public sealed class AgentSessionTests
         await ReadEventsAsync(failed, deadline.Token);
         await failed.Completion.WaitAsync(deadline.Token)
             .Invoking(static task => task)
-            .Should().ThrowAsync<AgentProviderException>();
+            .Should().ThrowAsync<AgentUnsupportedResponseException>();
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
 
         await using var recovered = await session.StartTurnAsync(AgentTurn.FromText("retry"), deadline.Token);
         await ReadEventsAsync(recovered, deadline.Token);
         (await recovered.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("recovered");
         client.Requests[1].Select(MessageTuple).Should().Equal((ChatRole.User, "retry"));
+    }
+
+    [Fact]
+    public void ConstructorRejectsInvalidDuplicateAndNonObjectFunctionMetadata()
+    {
+        var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
+        var valid = CreateTool(
+            "echo",
+            (_, _, _) => ValueTask.FromResult<JsonElement?>(null));
+
+        var invalidName = () => new AgentSession(
+            client,
+            tools: [new MetadataAIFunction(valid, "invalid name", valid.JsonSchema)]);
+        invalidName.Should().Throw<ArgumentException>().WithMessage("*Tool names*");
+
+        var duplicateName = () => new AgentSession(client, tools: [valid, valid]);
+        duplicateName.Should().Throw<ArgumentException>().WithMessage("*already registered*");
+
+        var invalidSchema = () => new AgentSession(
+            client,
+            tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("[]"))]);
+        invalidSchema.Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
+
+        var wrongSchemaType = () => new AgentSession(
+            client,
+            tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("{\"type\":\"string\"}"))]);
+        wrongSchemaType.Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
     }
 
     [Fact]
@@ -347,12 +373,13 @@ public sealed class AgentSessionTests
             "echo",
             async (context, arguments, cancellationToken) =>
             {
-                var typed = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments);
+                var typed = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)!;
                 await context.ReportProgressAsync(
                     new TextContent("working"),
                     cancellationToken);
-                return new AgentToolSuccess(
-                    [new TextContent(typed.Text), JsonDataContent("{\"count\":1}")]);
+                return JsonSerializer.SerializeToElement(
+                    new EchoResult(typed.Text, 1),
+                    AgentTestJsonContext.Default.EchoResult);
             });
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "echo", ("text", "hello"))),
@@ -368,15 +395,14 @@ public sealed class AgentSessionTests
             .Equal(Enumerable.Range(1, events.Count).Select(static value => (long)value));
         events.Select(agentEvent => agentEvent.GetType()).Should().Equal(
             typeof(AgentMessageCompleted),
-            typeof(AgentToolRequested),
             typeof(AgentToolStarted),
             typeof(AgentToolProgress),
-            typeof(AgentToolCompleted),
+            typeof(AgentToolFinished),
             typeof(AgentTextDelta),
             typeof(AgentMessageCompleted));
         events.OfType<AgentMessageCompleted>().Should().HaveCount(2);
-        events.OfType<AgentToolRequested>().Single().Arguments
-            .Deserialize(AgentTestJsonContext.Default.EchoArguments).Text.Should().Be("hello");
+        events.OfType<AgentToolStarted>().Single().Arguments
+            .Deserialize(AgentTestJsonContext.Default.EchoArguments)!.Text.Should().Be("hello");
         events.OfType<AgentToolProgress>().Single().Content.Should()
             .BeEquivalentTo(new TextContent("working"));
 
@@ -390,9 +416,11 @@ public sealed class AgentSessionTests
         var call = messages[1].Contents.OfType<FunctionCallContent>().Single();
         var toolResult = messages[2].Contents.OfType<FunctionResultContent>().Single();
         toolResult.CallId.Should().Be(call.CallId).And.Be("provider-call");
-        events.OfType<AgentToolRequested>().Single().CallId.ToString().Should().NotBe(call.CallId);
-        toolResult.Result.Should().BeOfType<JsonElement>()
-            .Which.GetProperty("status").GetString().Should().Be("ok");
+        events.OfType<AgentToolStarted>().Single().CallId.ToString().Should().NotBe(call.CallId);
+        var resultEnvelope = toolResult.Result.Should().BeOfType<JsonElement>().Which;
+        resultEnvelope.GetProperty("status").GetString().Should().Be("ok");
+        resultEnvelope.GetProperty("value").GetProperty("text").GetString().Should().Be("hello");
+        events.OfType<AgentToolFinished>().Single().Result.GetRawText().Should().Be(resultEnvelope.GetRawText());
         result.AssistantMessage.Should().BeEquivalentTo(messages[^1]);
         result.AssistantMessage.Text.Should().Be("The tool returned hello.");
 
@@ -425,8 +453,8 @@ public sealed class AgentSessionTests
         using var deadline = CreateDeadline();
         var tool = CreateTool(
             "lookup",
-            (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(
-                new AgentToolFailure("not_found", "No matching value was found.")));
+            (_, _, _) => ValueTask.FromException<JsonElement?>(
+                new AgentToolException("not_found", "No matching value was found.")));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("call", "lookup")),
             (messages, _) =>
@@ -444,8 +472,9 @@ public sealed class AgentSessionTests
         var events = await ReadEventsAsync(run, deadline.Token);
         var result = await run.Completion.WaitAsync(deadline.Token);
 
-        events.OfType<AgentToolFailed>().Single().Code.Should().Be("not_found");
-        events.Should().NotContain(agentEvent => agentEvent is AgentToolCompleted);
+        var finished = events.OfType<AgentToolFinished>().Single().Result;
+        finished.GetProperty("status").GetString().Should().Be("error");
+        finished.GetProperty("code").GetString().Should().Be("not_found");
         result.AssistantMessage.Text.Should().Be("I could not find it.");
         result.Transcript.Turns[0].Messages[2].Contents
             .OfType<FunctionResultContent>().Single().Result.Should().BeOfType<JsonElement>()
@@ -463,13 +492,13 @@ public sealed class AgentSessionTests
             "record",
             async (_, arguments, _) =>
             {
-                var value = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments).Text;
+                var value = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)!.Text;
                 order.Add(value);
                 var current = Interlocked.Increment(ref active);
                 maximumActive = Math.Max(maximumActive, current);
                 await Task.Yield();
                 Interlocked.Decrement(ref active);
-                return new AgentToolSuccess([new TextContent(value)]);
+                return JsonSerializer.SerializeToElement(value, AgentTestJsonContext.Default.String);
             });
         var calls = new ChatResponseUpdate(
             ChatRole.Assistant,
@@ -488,8 +517,8 @@ public sealed class AgentSessionTests
 
         order.Should().Equal("one", "two");
         maximumActive.Should().Be(1);
-        events.OfType<AgentToolRequested>().Select(requested =>
-                requested.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments).Text)
+        events.OfType<AgentToolStarted>().Select(started =>
+                started.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)!.Text)
             .Should().Equal("one", "two");
     }
 
@@ -499,7 +528,7 @@ public sealed class AgentSessionTests
         using var deadline = CreateDeadline();
         var tool = CreateTool(
             "explode",
-            (_, _, _) => ValueTask.FromException<AgentToolOutcome>(new InvalidOperationException("secret detail")));
+            (_, _, _) => ValueTask.FromException<JsonElement?>(new InvalidOperationException("secret detail")));
         var session = new AgentSession(
             new ScriptedChatClient((_, _) => StreamAsync(ToolCallUpdate("call", "explode"))),
             tools: [tool]);
@@ -512,7 +541,40 @@ public sealed class AgentSessionTests
 
         failure.ToolName.Should().Be("explode");
         failure.InnerException.Should().BeOfType<InvalidOperationException>();
-        events.OfType<AgentToolFailed>().Single().Message.Should().Be("The tool failed unexpectedly.");
+        var finished = events.OfType<AgentToolFinished>().Single().Result;
+        finished.GetProperty("status").GetString().Should().Be("error");
+        finished.GetProperty("message").GetString().Should().Be("The tool failed unexpectedly.");
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task NonJsonFunctionResultFailsDeterministicallyAndRollsBackWholeTurn()
+    {
+        using var deadline = CreateDeadline();
+        var tool = AIFunctionFactory.Create(
+            (string value) => value,
+            new AIFunctionFactoryOptions
+            {
+                Name = "raw_result",
+                SerializerOptions = AgentTestJsonContext.Default.Options,
+                ExcludeResultSchema = true,
+                MarshalResult = static (result, _, _) => ValueTask.FromResult(result)
+            });
+        var session = new AgentSession(
+            new ScriptedChatClient((_, _) => StreamAsync(ToolCallUpdate("call", "raw_result", ("value", "raw")))),
+            tools: [tool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Return raw"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        var failure = (await run.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentToolInvocationException>()).Which;
+
+        failure.InnerException.Should().BeOfType<InvalidOperationException>()
+            .Which.Message.Should().Contain("JsonElement or null");
+        events.OfType<AgentToolStarted>().Should().ContainSingle();
+        events.OfType<AgentToolFinished>().Single().Result.GetProperty("status").GetString()
+            .Should().Be("error");
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
@@ -526,7 +588,7 @@ public sealed class AgentSessionTests
             (_, _, _) =>
             {
                 invoked = true;
-                return ValueTask.FromResult<AgentToolOutcome>(new AgentToolSuccess([]));
+                return ValueTask.FromResult<JsonElement?>(null);
             });
         var session = new AgentSession(
             new ScriptedChatClient((_, _) => StreamAsync(ToolCallUpdate("call", "echo", ("text", "too large")))),
@@ -595,8 +657,10 @@ public sealed class AgentSessionTests
             [
                 CreateTool(
                     "large",
-                    (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(
-                        new AgentToolSuccess([new TextContent(new string('x', 100))])))
+                    (_, _, _) => ValueTask.FromResult<JsonElement?>(
+                        JsonSerializer.SerializeToElement(
+                            new string('x', 100),
+                            AgentTestJsonContext.Default.String)))
             ]);
         await using (var run = await resultLimited.StartTurnAsync(AgentTurn.FromText("Large"), deadline.Token))
         {
@@ -619,7 +683,7 @@ public sealed class AgentSessionTests
                     {
                         await context.ReportProgressAsync(new TextContent("one"), cancellationToken);
                         await context.ReportProgressAsync(new TextContent("two"), cancellationToken);
-                        return new AgentToolSuccess([]);
+                        return null;
                     })
             ]);
         await using (var run = await progressLimited.StartTurnAsync(AgentTurn.FromText("Progress"), deadline.Token))
@@ -656,7 +720,7 @@ public sealed class AgentSessionTests
                     (_, _, _) =>
                     {
                         Interlocked.Increment(ref invoked);
-                        return ValueTask.FromResult<AgentToolOutcome>(new AgentToolSuccess([]));
+                        return ValueTask.FromResult<JsonElement?>(null);
                     })
             ]);
         await using (var run = await callLimited.StartTurnAsync(AgentTurn.FromText("Count"), deadline.Token))
@@ -679,7 +743,7 @@ public sealed class AgentSessionTests
             [
                 CreateTool(
                     "again",
-                    (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(new AgentToolSuccess([])))
+                    (_, _, _) => ValueTask.FromResult<JsonElement?>(null))
             ]);
         await using (var run = await iterationLimited.StartTurnAsync(AgentTurn.FromText("Again"), deadline.Token))
         {
@@ -699,8 +763,8 @@ public sealed class AgentSessionTests
         using var deadline = CreateDeadline();
         var tool = CreateTool(
             "echo",
-            (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(
-                new AgentToolSuccess([new TextContent("value")])));
+            (_, _, _) => ValueTask.FromResult<JsonElement?>(
+                JsonSerializer.SerializeToElement("value", AgentTestJsonContext.Default.String)));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("call", "echo")),
             (_, _) => StreamAsync("first"),
@@ -739,7 +803,7 @@ public sealed class AgentSessionTests
             [
                 CreateTool(
                     "echo",
-                    (_, _, _) => ValueTask.FromResult<AgentToolOutcome>(new AgentToolSuccess([])))
+                    (_, _, _) => ValueTask.FromResult<JsonElement?>(null))
             ]);
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Check"), deadline.Token);
@@ -794,12 +858,34 @@ public sealed class AgentSessionTests
     private static (ChatRole Role, string Text) MessageTuple(ChatMessage message) =>
         (message.Role, message.Text);
 
-    private static AgentTool CreateTool(
+    private static AIFunction CreateTool(
         string name,
-        Func<AgentToolContext, AgentToolArguments, CancellationToken, ValueTask<AgentToolOutcome>> invoke) =>
-        new(
-            new AgentToolDescriptor(name, $"Test tool {name}.", ParseJson("{\"type\":\"object\"}")),
-            invoke);
+        Func<AgentToolContext, JsonElement, CancellationToken, ValueTask<JsonElement?>> invoke)
+    {
+        async ValueTask<JsonElement?> InvokeAsync(
+            AIFunctionArguments arguments,
+            CancellationToken cancellationToken)
+        {
+            var detachedArguments = JsonSerializer.SerializeToElement(
+                arguments.ToDictionary(static pair => pair.Key, static pair => pair.Value),
+                AgentTestJsonContext.Default.DictionaryStringObject);
+            return await invoke(
+                    AgentToolContext.GetRequired(arguments),
+                    detachedArguments,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return AIFunctionFactory.Create(
+            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement?>>)InvokeAsync,
+            new AIFunctionFactoryOptions
+            {
+                Name = name,
+                Description = $"Test tool {name}.",
+                SerializerOptions = AgentTestJsonContext.Default.Options,
+                ExcludeResultSchema = true
+            });
+    }
 
     private static ChatResponseUpdate ToolCallUpdate(
         string callId,
@@ -820,8 +906,15 @@ public sealed class AgentSessionTests
         return document.RootElement.Clone();
     }
 
-    private static DataContent JsonDataContent(string json) =>
-        new(Encoding.UTF8.GetBytes(json), "application/json");
+    private sealed class MetadataAIFunction(
+        AIFunction innerFunction,
+        string name,
+        JsonElement jsonSchema) : DelegatingAIFunction(innerFunction)
+    {
+        public override string Name { get; } = name;
+
+        public override JsonElement JsonSchema { get; } = jsonSchema.Clone();
+    }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] text)
     {
@@ -960,23 +1053,16 @@ public sealed class AgentSessionTests
         {
         }
     }
-
-    private sealed class AgentTool(
-        AgentToolDescriptor descriptor,
-        Func<AgentToolContext, AgentToolArguments, CancellationToken, ValueTask<AgentToolOutcome>> invoke)
-        : IAgentTool
-    {
-        public AgentToolDescriptor Descriptor { get; } = descriptor;
-
-        public ValueTask<AgentToolOutcome> InvokeAsync(
-            AgentToolContext context,
-            AgentToolArguments arguments,
-            CancellationToken cancellationToken = default) =>
-            invoke(context, arguments, cancellationToken);
-    }
 }
 
 internal sealed record EchoArguments([property: JsonPropertyName("text")] string Text);
 
+internal sealed record EchoResult(string Text, int Count);
+
 [JsonSerializable(typeof(EchoArguments))]
+[JsonSerializable(typeof(EchoResult))]
+[JsonSerializable(typeof(Dictionary<string, object?>))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(JsonElement?))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 internal sealed partial class AgentTestJsonContext : JsonSerializerContext;

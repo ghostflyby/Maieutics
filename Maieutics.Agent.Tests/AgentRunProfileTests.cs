@@ -1,6 +1,4 @@
-using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 
@@ -146,7 +144,7 @@ public sealed class AgentRunProfileTests
             AgentModelCapabilities.StreamingText));
         var session = new AgentSession(
             new QueueProfileProvider(lease),
-            [new SuccessfulTool()]);
+            [CreateSuccessfulTool()]);
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("use a tool"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
@@ -174,7 +172,7 @@ public sealed class AgentRunProfileTests
         var provider = new QueueProfileProvider(
             new TrackingProfileLease(CreateProfile(firstClient, "first")),
             new TrackingProfileLease(CreateProfile(nextClient, "next")));
-        var session = new AgentSession(provider, [new SuccessfulTool()]);
+        var session = new AgentSession(provider, [CreateSuccessfulTool()]);
 
         var first = await CompleteTurnAsync(session, "use tool", deadline.Token);
 
@@ -447,23 +445,9 @@ public sealed class AgentRunProfileTests
         }
     }
 
-    private sealed class SuccessfulTool : IAgentTool
-    {
-        private static readonly JsonElement Schema = ParseSchema();
-
-        public AgentToolDescriptor Descriptor { get; } = new("echo", "Returns success.", Schema);
-
-        public ValueTask<AgentToolOutcome> InvokeAsync(
-            AgentToolContext context,
-            AgentToolArguments arguments,
-            CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<AgentToolOutcome>(
-                new AgentToolSuccess(ImmutableArray.Create<AIContent>(new TextContent("ok"))));
-
-        private static JsonElement ParseSchema()
-        {
-            using var document = JsonDocument.Parse("{\"type\":\"object\"}");
-            return document.RootElement.Clone();
-        }
-    }
+    private static AIFunction CreateSuccessfulTool() =>
+        AIFunctionFactory.Create(
+            () => "ok",
+            name: "echo",
+            description: "Returns success.");
 }

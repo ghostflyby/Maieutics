@@ -138,10 +138,27 @@ ADR 0006 adopts Microsoft Agent Framework only inside `Maieutics.Agent`. The Mai
 one-run enforcement, limits, transactional transcript commit, normalized events, and cancellation. Framework hosting,
 workflows, MCP, and distributed protocols are not part of this decision.
 
+ADR 0009 keeps the initial canonical transcript process-local while fixing the future durable shape: immutable turn
+metadata and session heads reference raw content-addressed blobs rather than embedding binary bodies in JSON.
+
 The current tool loop uses a per-run `FunctionInvokingChatClient` behind `ChatClientAgent`. Maieutics exposes only its
 own `IAgentTool`, arguments, outcomes, contents, events, and transcript turns. A recording decorator preserves every
 model iteration so canonical history includes assistant tool calls and tool results instead of only the final answer.
-The executable currently registers an empty immutable tool collection; deterministic tools exist only in tests.
+The executable registers `list_directory`, `read_text`, and `search_text` against one process-local workspace context.
+The startup root is fixed from configuration, while `%maieutics workspace use` may install a session override for
+subsequent tool invocations and `reset` restores the startup root. Tools capture one immutable root snapshot per call
+and expose only bounded text and structured JSON through the provider-neutral tool contract.
+
+Provider-specific tool shapes are normalized at the `IChatClient` adapter boundary:
+
+- JSON-schema `IAgentTool` values map to ordinary function tools for OpenAI Responses, Chat Completions, and Anthropic;
+- a future free-form tool such as `apply_patch` remains a Maieutics tool with one canonical string argument, even when
+  a Responses adapter can use a native custom tool before immediately normalizing its call;
+- provider-hosted search, file-library, computer, or similar tools are explicit model capabilities. A provider without
+  an equivalent returns unsupported rather than silently substituting a different Maieutics tool.
+
+Responses wire items, provider SDK objects, and built-in tool state never enter the public Agent API or canonical
+transcript.
 
 ## Decisions
 
@@ -152,14 +169,17 @@ The executable currently registers an empty immutable tool collection; determini
 - [ADR 0005](decisions/0005-distributed-execution.md): Distributed execution control and worker planes
 - [ADR 0006](decisions/0006-selective-microsoft-agent-framework-adoption.md): Selective Microsoft Agent Framework
   adoption
+- [ADR 0007](decisions/0007-runtime-configuration-and-hot-reload.md): Runtime configuration location and hot reload
+- [ADR 0008](decisions/0008-model-profile-catalog-and-session-selection.md): Model profile catalog and session selection
+- [ADR 0009](decisions/0009-volatile-transcript-and-durable-storage-shape.md): Volatile transcript and durable storage
+  shape
 
 ## Explicitly deferred
 
 - Exact worker message encoding and network transport
 - Exact Deno extension IPC encoding and transport
 - Component frontend framework and MIME type
-- Artifact-store implementation
-- Transcript persistence format
+- Artifact-store and durable-transcript implementation
 - Provider SDK selection for future non-OpenAI adapters
 - Agent Framework Workflows, hosting, A2A, AG-UI, Durable Task, and MCP integration
 - Worker scheduling, pooling, and multi-tenant deployment

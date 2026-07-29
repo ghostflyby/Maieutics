@@ -354,6 +354,12 @@ public sealed class MaieuticsHostIntegrationTests
             info.Implementation.Should().Be("maieutics");
             info.ProtocolVersion.Should().Be("5.5");
 
+            (await ExecuteAndGetMarkdownAsync(
+                    client,
+                    "%maieutics workspace current",
+                    deadline.Token))
+                .Should().Contain("Current workspace").And.Contain("startup root");
+
             var execution = await client.ExecuteAsync(new JupyterExecuteRequest("hello"), deadline.Token);
             var outputs = new List<JupyterOutput>();
             await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
@@ -672,8 +678,10 @@ public sealed class MaieuticsHostIntegrationTests
         startInfo.Environment.Remove("MAIEUTICS_CONFIG");
         startInfo.Environment.Remove("MAIEUTICS_PROVIDER");
         startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
+        startInfo.Environment.Remove("MAIEUTICS_WORKSPACE");
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiFlavor");
+        startInfo.Environment.Remove("Maieutics__Workspace__Root");
         if (endpoint is not null)
         {
             startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
@@ -715,6 +723,7 @@ public sealed class MaieuticsHostIntegrationTests
         startInfo.Environment.Remove("MAIEUTICS_PROVIDER");
         startInfo.Environment.Remove("MAIEUTICS_MODEL");
         startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
+        startInfo.Environment.Remove("MAIEUTICS_WORKSPACE");
         startInfo.Environment.Remove("OPENAI_API_KEY");
         startInfo.Environment.Remove("OPENAI_BASE_URL");
         startInfo.Environment.Remove("Maieutics__Model__Provider");
@@ -722,6 +731,7 @@ public sealed class MaieuticsHostIntegrationTests
         startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiFlavor");
         startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiKey");
         startInfo.Environment.Remove("Maieutics__Providers__OpenAI__Endpoint");
+        startInfo.Environment.Remove("Maieutics__Workspace__Root");
         return StartProcess(startInfo);
     }
 

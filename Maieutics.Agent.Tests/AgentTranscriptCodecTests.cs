@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Reflection.Emit;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -61,28 +63,14 @@ public sealed class AgentTranscriptCodecTests
         var sessionId = AgentSessionId.Create();
         var runId = AgentRunId.Create();
         var identity = new AgentModelIdentity(new AgentModelProfileId("deepseek"), "DeepSeek", "deepseek-reasoner");
-        var state = new AgentTranscriptState(
-            sessionId,
-            1,
-            [
-                new AgentTranscriptStateTurn(
-                    runId,
-                    identity,
-                    [new ChatMessage(ChatRole.User, "question"), assistant])
-            ]);
+        var detachedTurn = AgentTranscriptCodec.DetachPrivateTurn(
+            runId,
+            identity,
+            [new ChatMessage(ChatRole.User, "question"), assistant]);
+        var state = new AgentTranscriptState(sessionId, 1, [detachedTurn]);
 
-        var json = AgentTranscriptCodec.Serialize(state);
-        var jsonText = Encoding.UTF8.GetString(json);
-        var roundTripped = AgentTranscriptCodec.Deserialize(json);
-
-        jsonText.Should().Contain("\"schemaVersion\":1");
-        jsonText.Should().Contain(AgentTranscriptCodec.ContractVersion);
-        jsonText.Should().Contain(AgentTranscriptCodec.ProducerVersion);
-        jsonText.Should().Contain("private reasoning").And.Contain("protected-token");
-        jsonText.Should().NotContain("raw-message").And.NotContain("raw-content").And.NotContain("raw-annotation");
-        jsonText.Should().NotContain("\n");
-
-        var privateAssistant = roundTripped.Turns.Single().Messages[1];
+        detachedTurn.MessageByteCount.Should().BePositive();
+        var privateAssistant = detachedTurn.Messages[1];
         privateAssistant.MessageId.Should().Be("provider-message");
         privateAssistant.RawRepresentation.Should().BeNull();
         privateAssistant.AdditionalProperties.Should().ContainKey("provider_message");
@@ -105,7 +93,7 @@ public sealed class AgentTranscriptCodecTests
         privateAssistant.Contents.OfType<TextContent>().Single().Annotations.Should()
             .ContainSingle().Which.Should().BeOfType<CitationAnnotation>();
 
-        var publicTranscript = AgentTranscriptCodec.CreatePublicTranscript(roundTripped);
+        var publicTranscript = AgentTranscriptCodec.CreatePublicTranscript(state);
         var publicAssistant = publicTranscript.Turns.Single().Messages[1];
         publicAssistant.Contents.Should().NotContain(static content => content is TextReasoningContent);
         publicAssistant.RawRepresentation.Should().BeNull();
@@ -119,20 +107,13 @@ public sealed class AgentTranscriptCodecTests
     [Fact]
     public void CustomContentProducesTypedCompatibilityFailure()
     {
-        var state = new AgentTranscriptState(
-            AgentSessionId.Create(),
-            1,
-            [
-                new AgentTranscriptStateTurn(
-                    AgentRunId.Create(),
-                    null,
-                    [
-                        new ChatMessage(ChatRole.User, "question"),
-                        new ChatMessage(ChatRole.Assistant, [new TextContent("answer"), new CustomContent()])
-                    ])
-            ]);
-
-        var failure = FluentActions.Invoking(() => AgentTranscriptCodec.Serialize(state))
+        var failure = FluentActions.Invoking(() => AgentTranscriptCodec.DetachPrivateTurn(
+                AgentRunId.Create(),
+                null,
+                [
+                    new ChatMessage(ChatRole.User, "question"),
+                    new ChatMessage(ChatRole.Assistant, [new TextContent("answer"), new CustomContent()])
+                ]))
             .Should().Throw<AgentContentCompatibilityException>().Which;
 
         failure.ContentType.Should().Contain(nameof(CustomContent));
@@ -142,17 +123,91 @@ public sealed class AgentTranscriptCodecTests
     [Fact]
     public void MessageByteCountUsesCompactUtf8Size()
     {
-        var ascii = new AgentTranscriptStateTurn(
+        var ascii = AgentTranscriptCodec.DetachPrivateTurn(
             AgentRunId.Create(),
             null,
             [new ChatMessage(ChatRole.User, "aa"), new ChatMessage(ChatRole.Assistant, "bb")]);
-        var nonAscii = new AgentTranscriptStateTurn(
+        var nonAscii = AgentTranscriptCodec.DetachPrivateTurn(
             AgentRunId.Create(),
             null,
             [new ChatMessage(ChatRole.User, "你你"), new ChatMessage(ChatRole.Assistant, "界界")]);
 
-        AgentTranscriptCodec.GetMessageByteCount(nonAscii).Should()
-            .BeGreaterThan(AgentTranscriptCodec.GetMessageByteCount(ascii));
+        nonAscii.MessageByteCount.Should().BeGreaterThan(ascii.MessageByteCount);
+    }
+
+    [Fact]
+    public void DetachingTurnRejectsInlineBinaryContentAndBinaryMetadata()
+    {
+        var direct = FluentActions.Invoking(() => DetachAssistant(
+            new TextContent("answer"),
+            new DataContent(new byte[] { 1, 2, 3 }, "image/png")));
+        var nested = new ImageGenerationToolResultContent("image-call")
+        {
+            Outputs = [new DataContent(new byte[] { 4, 5, 6 }, "image/png")]
+        };
+        var nestedAction = FluentActions.Invoking(() => DetachAssistant(new TextContent("answer"), nested));
+        var nestedResult = new FunctionResultContent(
+            "result-call",
+            new Dictionary<string, object?>
+            {
+                ["nested"] = new object?[] { "text", new byte[] { 6, 7, 8 } }
+            });
+        var nestedResultAction = FluentActions.Invoking(() => DetachAssistant(
+            new TextContent("answer"),
+            nestedResult));
+        var invalidJsonAction = FluentActions.Invoking(() => DetachAssistant(
+            new TextContent("answer"),
+            new DataContent(Encoding.UTF8.GetBytes("not-json"), "application/json")));
+        var metadata = new TextContent("answer")
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["payload"] = new byte[] { 7, 8, 9 }
+            }
+        };
+        var metadataAction = FluentActions.Invoking(() => DetachAssistant(metadata));
+        var binaryDataMetadata = new TextContent("answer")
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["payload"] = CreateBinaryDataLikeValue()
+            }
+        };
+        var binaryDataAction = FluentActions.Invoking(() => DetachAssistant(binaryDataMetadata));
+
+        direct.Should().Throw<AgentUnsupportedResponseException>();
+        nestedAction.Should().Throw<AgentUnsupportedResponseException>();
+        nestedResultAction.Should().Throw<AgentUnsupportedResponseException>();
+        invalidJsonAction.Should().Throw<AgentUnsupportedResponseException>();
+        metadataAction.Should().Throw<AgentUnsupportedResponseException>();
+        binaryDataAction.Should().Throw<AgentUnsupportedResponseException>();
+    }
+
+    [Fact]
+    public void ProtectedReasoningDataIsThePrivateBinaryException()
+    {
+        var detached = DetachAssistant(
+            new TextReasoningContent("private") { ProtectedData = "AQID" },
+            new TextContent("answer"));
+
+        var reasoning = detached.Messages.Single().Contents.OfType<TextReasoningContent>().Single();
+        JsonSerializer.Serialize(reasoning.ProtectedData).Should().Contain("AQID");
+        AgentTranscriptCodec.CreatePublicMessage(detached.Messages.Single()).Contents.Should()
+            .NotContain(static content => content is TextReasoningContent);
+    }
+
+    private static AgentTranscriptStateTurn DetachAssistant(params AIContent[] contents) =>
+        AgentTranscriptCodec.DetachPrivateTurn(
+            AgentRunId.Create(),
+            null,
+            [new ChatMessage(ChatRole.Assistant, contents)]);
+
+    private static object CreateBinaryDataLikeValue()
+    {
+        var assemblyName = new AssemblyName($"BinaryDataStub-{Guid.NewGuid():N}");
+        var assembly = AssemblyBuilder.DefineDynamicAssembly(assemblyName, AssemblyBuilderAccess.Run);
+        var type = assembly.DefineDynamicModule(assemblyName.Name!).DefineType("System.BinaryData").CreateType();
+        return Activator.CreateInstance(type!)!;
     }
 
     private static JsonElement ParseJson(string json)
@@ -231,6 +286,38 @@ public sealed class AgentTranscriptSessionTests
     }
 
     [Fact]
+    public async Task InlineBinaryResponseRollsBackAndSessionRemainsUsable()
+    {
+        using var deadline = CreateDeadline();
+        var binary = new ChatResponseUpdate(
+            ChatRole.Assistant,
+            [new TextContent("visible"), new DataContent(new byte[] { 1, 2, 3 }, "image/png")]);
+        var client = new RecordingClient(
+            (_, _) => StreamUpdatesAsync(binary),
+            (_, _) => StreamAsync("recovered"));
+        var session = new AgentSession(client);
+
+        await using (var run = await session.StartTurnAsync(AgentTurn.FromText("image"), deadline.Token))
+        {
+            var events = await ReadEventsAsync(run, deadline.Token);
+            events.OfType<AgentTextDelta>().Select(static delta => delta.Text).Should().Equal("visible");
+            events.Should().NotContain(static agentEvent => agentEvent is AgentMessageCompleted);
+            await run.Completion.WaitAsync(deadline.Token)
+                .Invoking(static task => task)
+                .Should().ThrowAsync<AgentUnsupportedResponseException>();
+        }
+
+        var rolledBack = session.GetTranscriptSnapshot();
+        rolledBack.Version.Should().Be(0);
+        rolledBack.Turns.Should().BeEmpty();
+
+        var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
+        recovered.Result.AssistantMessage.Text.Should().Be("recovered");
+        recovered.Result.Transcript.Version.Should().Be(1);
+        recovered.Result.Transcript.Turns.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task MutatingPublicMessagesCannotChangeCanonicalReplay()
     {
         using var deadline = CreateDeadline();
@@ -255,14 +342,38 @@ public sealed class AgentTranscriptSessionTests
     }
 
     [Fact]
+    public async Task ProviderCannotMutateCanonicalReplayMessages()
+    {
+        using var deadline = CreateDeadline();
+        var client = new RecordingClient(
+            (_, _) => StreamAsync("first answer"),
+            (messages, _) =>
+            {
+                ((TextContent)messages.Single(static message => message.Role == ChatRole.Assistant)
+                    .Contents.Single()).Text = "provider mutation";
+                return StreamAsync("second answer");
+            },
+            (_, _) => StreamAsync("third answer"));
+        var session = new AgentSession(client);
+
+        await CompleteTurnAsync(session, "first question", deadline.Token);
+        await CompleteTurnAsync(session, "second question", deadline.Token);
+        await CompleteTurnAsync(session, "third question", deadline.Token);
+
+        client.Requests[2].First(static message => message.Role == ChatRole.Assistant).Text.Should()
+            .Be("first answer");
+        session.GetTranscriptSnapshot().Turns[0].Messages[1].Text.Should().Be("first answer");
+    }
+
+    [Fact]
     public async Task HistoryByteLimitEvictsCompleteOldestTurnForNonAsciiMessages()
     {
         using var deadline = CreateDeadline();
-        var sample = new AgentTranscriptStateTurn(
+        var sample = AgentTranscriptCodec.DetachPrivateTurn(
             AgentRunId.Create(),
             null,
             [new ChatMessage(ChatRole.User, "问题"), new ChatMessage(ChatRole.Assistant, "答案")]);
-        var oneTurnBytes = AgentTranscriptCodec.GetMessageByteCount(sample);
+        var oneTurnBytes = sample.MessageByteCount;
         var session = new AgentSession(
             new RecordingClient((_, _) => StreamAsync("答案"), (_, _) => StreamAsync("答案")),
             new AgentSessionOptions { MaxHistoryBytes = checked(oneTurnBytes * 2 - 1) });

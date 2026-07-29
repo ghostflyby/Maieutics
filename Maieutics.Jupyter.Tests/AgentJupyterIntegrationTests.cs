@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Execution;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
@@ -220,6 +221,84 @@ public sealed class AgentJupyterIntegrationTests
 
         await client.ShutdownAsync(false, deadline.Token);
         await host.Completion.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task WorkspaceCommandsSwitchAndResetWithoutInvokingAgentOrChangingTranscript()
+    {
+        using var deadline = CreateDeadline();
+        var parent = Path.Combine(Path.GetTempPath(), $"maieutics-workspace-command-{Guid.NewGuid():N}");
+        var startup = Directory.CreateDirectory(Path.Combine(parent, "startup")).FullName;
+        var other = Directory.CreateDirectory(Path.Combine(parent, "other workspace")).FullName;
+        try
+        {
+            var session = new AgentSession(new ScriptedChatClient());
+            var workspace = new WorkspaceContext(WorkspaceRoot.Create(startup, startup));
+            var application = new MaieuticsAgentKernelApplication(
+                session,
+                static () => new MaieuticsAgentKernelOptions(),
+                runtimeConfiguration: null,
+                workspaceContext: workspace);
+            var connection = JupyterConnectionInfo.CreateLocalTcp();
+            await using var host = await JupyterKernelHost.StartAsync(
+                connection,
+                application,
+                cancellationToken: deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(
+                connection,
+                cancellationToken: deadline.Token);
+
+            var current = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%maieutics workspace"),
+                deadline.Token);
+            var currentOutputs = await ReadOutputsAsync(current, deadline.Token);
+            (await current.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(currentOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
+                .Contain(startup).And.Contain("startup root");
+
+            var selected = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%maieutics workspace use ../other workspace"),
+                deadline.Token);
+            var selectedOutputs = await ReadOutputsAsync(selected, deadline.Token);
+            (await selected.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(selectedOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
+                .Contain(other).And.Contain("session override");
+            workspace.GetSnapshot().Root.Path.Should().Be(other);
+
+            var invalid = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%maieutics workspace use ../missing"),
+                deadline.Token);
+            await ReadOutputsAsync(invalid, deadline.Token);
+            var invalidCompletion = await invalid.Completion.WaitAsync(deadline.Token);
+            invalidCompletion.Reply.Status.Should().Be("error");
+            invalidCompletion.Reply.ErrorName.Should().Be("MaieuticsCommandError");
+            workspace.GetSnapshot().Root.Path.Should().Be(other);
+
+            var reset = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%maieutics workspace reset", Silent: true),
+                deadline.Token);
+            var resetOutputs = await ReadOutputsAsync(reset, deadline.Token);
+            (await reset.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            resetOutputs.OfType<JupyterDisplayOutput>().Should().BeEmpty();
+            workspace.GetSnapshot().Root.Path.Should().Be(startup);
+            workspace.GetSnapshot().HasSessionOverride.Should().BeFalse();
+
+            var restored = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%maieutics workspace current"),
+                deadline.Token);
+            var restoredOutputs = await ReadOutputsAsync(restored, deadline.Token);
+            (await restored.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(restoredOutputs.OfType<JupyterDisplayOutput>().Single()).Should()
+                .Contain(startup).And.Contain("startup root");
+            session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.Completion.WaitAsync(deadline.Token);
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
     }
 
     [Fact(Timeout = 30_000)]

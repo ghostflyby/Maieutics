@@ -14,9 +14,9 @@ It is the only production code allowed to understand both Agent and Jupyter doma
 ## Adapter constraints
 
 - Empty cells are successful no-ops. Ordinary non-command cells create one Agent turn.
-- `%maieutics model`, `list`, `current`, `use`, and `reset` are Kernel control cells: they do not call a model, alter
-  the
-  transcript, reveal credentials/endpoints, or affect an active run.
+- `%maieutics model` and `%maieutics workspace` subcommands are Kernel control cells: they do not call a model, alter
+  the transcript, reveal credentials/endpoints, or affect an active run. Workspace selection is process-local and
+  applies to subsequent workspace-tool invocations.
 - Completion for control commands and dynamic profile IDs must use protocol code-point cursor offsets and return exact
   replacement ranges.
 - Capture flush options at execution start. Configuration reload must not change batching during an active execution.

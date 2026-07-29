@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Execution;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 {
     private readonly IAgentSession session;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
+    private readonly WorkspaceContext? workspaceContext;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
     private readonly TimeProvider timeProvider;
@@ -22,7 +24,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
-        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null)
     {
     }
 
@@ -31,11 +33,13 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         Func<MaieuticsAgentKernelOptions> getOptions,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        WorkspaceContext? workspaceContext = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
         this.runtimeConfiguration = runtimeConfiguration;
+        this.workspaceContext = workspaceContext;
         this.getOptions().Validate();
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -110,16 +114,11 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         string code,
         CancellationToken cancellationToken)
     {
-        if (runtimeConfiguration is null)
-        {
-            throw Create("MaieuticsCommandError", "Model profile commands are not available in this host.");
-        }
-
+        cancellationToken.ThrowIfCancellationRequested();
         var arguments = code.Split((char[]?)null,
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (arguments.Length < 2 ||
-            !string.Equals(arguments[0], MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(arguments[1], MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(arguments[0], MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase))
         {
             throw Create("MaieuticsCommandError", "Unknown Maieutics command.");
         }
@@ -127,58 +126,148 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         try
         {
             string output;
-            if (arguments.Length >= 3 &&
-                string.Equals(arguments[2], MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(arguments[1], MaieuticsCommandLanguage.Workspace, StringComparison.OrdinalIgnoreCase))
             {
-                var refresh = arguments.Contains(MaieuticsCommandLanguage.RefreshFlag,
-                    StringComparer.OrdinalIgnoreCase);
-                var sourceId = arguments.FirstOrDefault(arg =>
-                    !string.Equals(arg, MaieuticsCommandLanguage.RefreshFlag, StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(arg, MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(arg, MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(arg, MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase));
-                var groups = await runtimeConfiguration.GetDiscoveredModelsAsync(
-                    sourceId, refresh, cancellationToken).ConfigureAwait(false);
-                output = RenderAvailable(groups, runtimeConfiguration.GetModelProfileSelection());
+                output = ExecuteWorkspaceCommand(code, arguments);
             }
-            else if (arguments.Length == 2 ||
-                     arguments.Length == 3 && string.Equals(
-                         arguments[2],
-                         MaieuticsCommandLanguage.Current,
-                         StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(arguments[1], MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase))
             {
-                output = RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
-            }
-            else if (arguments.Length == 3 &&
-                     string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
-            {
-                output = RenderList(runtimeConfiguration.GetModelProfileSelection());
-            }
-            else if (arguments.Length == 4 &&
-                     string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
-            {
-                runtimeConfiguration.SelectModelProfile(arguments[3]);
-                output = RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
-            }
-            else if (arguments.Length == 3 &&
-                     string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
-            {
-                runtimeConfiguration.ResetModelProfile();
-                output = RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
+                output = await ExecuteModelCommandAsync(arguments, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                throw new ArgumentException("Unknown model command or invalid arguments.");
+                throw new ArgumentException("Unknown Maieutics command.");
             }
 
             await context.DisplayAsync(
                 MimeBundle.FromMarkdown(output),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-        catch (ArgumentException exception)
+        catch (Exception exception) when (exception is ArgumentException or IOException or
+                                              UnauthorizedAccessException or NotSupportedException)
         {
             throw Create("MaieuticsCommandError", exception.Message);
         }
+    }
+
+    private async ValueTask<string> ExecuteModelCommandAsync(
+        string[] arguments,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeConfiguration is null)
+        {
+            throw new ArgumentException("Model profile commands are not available in this host.");
+        }
+
+        if (arguments.Length >= 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase))
+        {
+            var refresh = arguments.Contains(MaieuticsCommandLanguage.RefreshFlag,
+                StringComparer.OrdinalIgnoreCase);
+            var sourceId = arguments.FirstOrDefault(arg =>
+                !string.Equals(arg, MaieuticsCommandLanguage.RefreshFlag, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(arg, MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(arg, MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(arg, MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase));
+            var groups = await runtimeConfiguration.GetDiscoveredModelsAsync(
+                sourceId, refresh, cancellationToken).ConfigureAwait(false);
+            return RenderAvailable(groups, runtimeConfiguration.GetModelProfileSelection());
+        }
+
+        if (arguments.Length == 2 ||
+            arguments.Length == 3 && string.Equals(
+                arguments[2],
+                MaieuticsCommandLanguage.Current,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
+        }
+
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
+        {
+            return RenderList(runtimeConfiguration.GetModelProfileSelection());
+        }
+
+        if (arguments.Length == 4 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
+        {
+            runtimeConfiguration.SelectModelProfile(arguments[3]);
+            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
+        }
+
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
+        {
+            runtimeConfiguration.ResetModelProfile();
+            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
+        }
+
+        throw new ArgumentException("Unknown model command or invalid arguments.");
+    }
+
+    private string ExecuteWorkspaceCommand(string code, string[] arguments)
+    {
+        if (workspaceContext is null)
+        {
+            throw new ArgumentException("Workspace commands are not available in this host.");
+        }
+
+        WorkspaceSnapshot selection;
+        if (arguments.Length == 2 ||
+            arguments.Length == 3 && string.Equals(
+                arguments[2],
+                MaieuticsCommandLanguage.Current,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            selection = workspaceContext.GetSnapshot();
+        }
+        else if (arguments.Length == 3 &&
+                 string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
+        {
+            selection = workspaceContext.Reset();
+        }
+        else if (arguments.Length >= 4 &&
+                 string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
+        {
+            var path = GetRemainderAfterTokens(code, 3);
+            if (path.Length == 0 || path.IndexOfAny(['\r', '\n']) >= 0)
+            {
+                throw new ArgumentException("A single-line workspace path is required.");
+            }
+
+            selection = workspaceContext.Use(path);
+        }
+        else
+        {
+            throw new ArgumentException("Unknown workspace command or invalid arguments.");
+        }
+
+        return RenderWorkspace(selection);
+    }
+
+    private static string GetRemainderAfterTokens(string code, int tokenCount)
+    {
+        var index = 0;
+        for (var token = 0; token < tokenCount; token++)
+        {
+            while (index < code.Length && char.IsWhiteSpace(code[index]))
+            {
+                index++;
+            }
+
+            while (index < code.Length && !char.IsWhiteSpace(code[index]))
+            {
+                index++;
+            }
+        }
+
+        while (index < code.Length && char.IsWhiteSpace(code[index]))
+        {
+            index++;
+        }
+
+        return code[index..].TrimEnd();
     }
 
     private static bool IsMaieuticsCommand(string code)
@@ -208,6 +297,39 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 - Provider: `{EscapeCode(profile.Provider)}`
                 - Model: `{EscapeCode(profile.Model)}`
                 """;
+    }
+
+    private static string RenderWorkspace(WorkspaceSnapshot selection)
+    {
+        var selectionSource = selection.HasSessionOverride ? "session override" : "startup root";
+        return $"""
+                ### Current workspace
+
+                - Root: {RenderInlineCode(selection.Root.Path)} ({selectionSource})
+                """;
+    }
+
+    private static string RenderInlineCode(string value)
+    {
+        var sanitized = value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+        var longestRun = 0;
+        var currentRun = 0;
+        foreach (var character in sanitized)
+        {
+            if (character == '`')
+            {
+                longestRun = Math.Max(longestRun, ++currentRun);
+            }
+            else
+            {
+                currentRun = 0;
+            }
+        }
+
+        var delimiter = new string('`', longestRun + 1);
+        return $"{delimiter}{sanitized}{delimiter}";
     }
 
     private static string RenderList(MaieuticsModelProfileSelection selection)

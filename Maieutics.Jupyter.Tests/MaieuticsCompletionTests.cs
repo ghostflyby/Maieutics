@@ -17,7 +17,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionExpandsAnExactCommandAndHandlesPrefixes()
     {
         var exact = Complete("%maieutics");
-        exact.Matches.Should().Equal("%maieutics model");
+        exact.Matches.Should().Equal("%maieutics model", "%maieutics workspace");
         exact.CursorStart.Should().Be(0);
         exact.CursorEnd.Should().Be(10);
 
@@ -27,9 +27,23 @@ public sealed class MaieuticsCompletionTests
         prefix.CursorEnd.Should().Be(4);
 
         var afterRoot = Complete("%maieutics ");
-        afterRoot.Matches.Should().Equal("model");
+        afterRoot.Matches.Should().Equal("model", "workspace");
         afterRoot.CursorStart.Should().Be(11);
         afterRoot.CursorEnd.Should().Be(11);
+    }
+
+    [Fact]
+    public void WorkspaceSubcommandsCompleteAtBoundariesAndIgnoreCase()
+    {
+        var commands = Complete("%maieutics workspace ");
+        commands.Matches.Should().Equal("current", "reset", "use");
+        commands.CursorStart.Should().Be(21);
+        commands.CursorEnd.Should().Be(21);
+
+        var partial = Complete("%MAIEUTICS WORKSPACE R");
+        partial.Matches.Should().Equal("reset");
+        partial.CursorStart.Should().Be(21);
+        partial.CursorEnd.Should().Be(22);
     }
 
     [Fact]

@@ -8,6 +8,7 @@ internal static class MaieuticsCommandLanguage
 {
     internal const string Root = "%maieutics";
     internal const string Model = "model";
+    internal const string Workspace = "workspace";
     internal const string Current = "current";
     internal const string List = "list";
     internal const string Use = "use";
@@ -16,8 +17,9 @@ internal static class MaieuticsCommandLanguage
     internal const string RefreshFlag = "--refresh";
 
     private static readonly string[] RootMatches = [Root];
-    private static readonly string[] RootCommandMatches = [Model];
+    private static readonly string[] RootCommandMatches = [Model, Workspace];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
+    private static readonly string[] WorkspaceCommandMatches = [Current, Use, Reset];
 
     internal static JupyterCompletionResult Complete(
         JupyterCompleteRequest request,
@@ -54,6 +56,9 @@ internal static class MaieuticsCommandLanguage
             [var root, var model] when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
                                        model.Equals(Model, StringComparison.OrdinalIgnoreCase) =>
                 ModelCommandMatches,
+            [var root, var workspace] when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
+                                           workspace.Equals(Workspace, StringComparison.OrdinalIgnoreCase) =>
+                WorkspaceCommandMatches,
             [var root, var model, var use]
                 when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
                      model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
@@ -81,7 +86,7 @@ internal static class MaieuticsCommandLanguage
             prefix.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
             token.Equals(Root, StringComparison.OrdinalIgnoreCase))
         {
-            candidates = [$"{Root} {Model}"];
+            candidates = RootCommandMatches.Select(command => $"{Root} {command}");
         }
 
         var matches = candidates

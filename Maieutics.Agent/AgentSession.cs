@@ -17,7 +17,7 @@ public sealed class AgentSession : IAgentSession
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly Lock transcriptGate = new();
     private readonly ImmutableDictionary<string, ToolAIFunction> tools;
-    private byte[] canonicalState;
+    private AgentTranscriptState canonicalState;
     private int runInProgress;
 
     /// <summary>Initializes an Agent session.</summary>
@@ -101,11 +101,13 @@ public sealed class AgentSession : IAgentSession
     /// <inheritdoc />
     public AgentTranscript GetTranscriptSnapshot()
     {
+        AgentTranscriptState snapshot;
         lock (transcriptGate)
         {
-            return AgentTranscriptCodec.CreatePublicTranscript(
-                AgentTranscriptCodec.Deserialize(canonicalState));
+            snapshot = canonicalState;
         }
+
+        return AgentTranscriptCodec.CreatePublicTranscript(snapshot);
     }
 
     private async Task<PreparedRunResult> ExecuteRunAsync(AgentRun run, CancellationToken cancellationToken)
@@ -199,11 +201,12 @@ public sealed class AgentSession : IAgentSession
         AgentSessionOptions options,
         AgentModelIdentity? modelIdentity)
     {
+        var detachedTurn = AgentTranscriptCodec.DetachPrivateTurn(runId, modelIdentity, turnMessages);
+        AgentTranscriptState committed;
         lock (transcriptGate)
         {
-            var state = AgentTranscriptCodec.Deserialize(canonicalState);
-            var builder = state.Turns.ToBuilder();
-            builder.Add(new AgentTranscriptStateTurn(runId, modelIdentity, turnMessages));
+            var builder = canonicalState.Turns.ToBuilder();
+            builder.Add(detachedTurn);
 
             while (builder.Count > options.MaxRetainedTurns ||
                    CountHistoryBytes(builder) > options.MaxHistoryBytes)
@@ -211,13 +214,14 @@ public sealed class AgentSession : IAgentSession
                 builder.RemoveAt(0);
             }
 
-            var committed = new AgentTranscriptState(Id, checked(state.Version + 1), builder.ToImmutable());
-            var serialized = AgentTranscriptCodec.Serialize(committed);
-            var publicTranscript = AgentTranscriptCodec.CreatePublicTranscript(
-                AgentTranscriptCodec.Deserialize(serialized));
-            canonicalState = serialized;
-            return publicTranscript;
+            committed = new AgentTranscriptState(
+                Id,
+                checked(canonicalState.Version + 1),
+                builder.ToImmutable());
+            canonicalState = committed;
         }
+
+        return AgentTranscriptCodec.CreatePublicTranscript(committed);
     }
 
     private AgentRunResult CommitRun(AgentRun run, PreparedRunResult prepared)
@@ -239,10 +243,11 @@ public sealed class AgentSession : IAgentSession
         AgentTranscriptState snapshot;
         lock (transcriptGate)
         {
-            snapshot = AgentTranscriptCodec.Deserialize(canonicalState);
+            snapshot = canonicalState;
         }
 
-        return snapshot.Turns.SelectMany(static turn => turn.Messages).ToArray();
+        return AgentTranscriptCodec.DetachPrivateMessages(
+            snapshot.Turns.SelectMany(static turn => turn.Messages).ToArray());
     }
 
     private static void ValidateStagedRequest(
@@ -312,7 +317,7 @@ public sealed class AgentSession : IAgentSession
         var count = 0;
         foreach (var turn in source)
         {
-            count = checked(count + AgentTranscriptCodec.GetMessageByteCount(turn));
+            count = checked(count + turn.MessageByteCount);
         }
 
         return count;

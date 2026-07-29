@@ -6,6 +6,9 @@
     }
   },
   "Maieutics": {
+    "Workspace": {
+      "Root": null
+    },
     "DefaultProfile": "gpt",
     "Sources": {
       "openai": {

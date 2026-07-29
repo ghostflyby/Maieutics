@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Providers;
@@ -19,11 +20,12 @@ public static class MaieuticsHost
     {
         ArgumentNullException.ThrowIfNull(args);
         var environmentName = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? Environments.Production;
+        var startupCurrentDirectory = Directory.GetCurrentDirectory();
         var configurationFile = MaieuticsConfigurationFile.Resolve(
             args,
             Environment.GetEnvironmentVariable,
             AppContext.BaseDirectory,
-            Directory.GetCurrentDirectory(),
+            startupCurrentDirectory,
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
         ValidateInitialConfigurationFile(configurationFile);
 
@@ -55,6 +57,7 @@ public static class MaieuticsHost
             {
                 ["--config"] = "Maieutics:ConfigurationFile",
                 ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
+                ["--workspace"] = "Maieutics:Workspace:Root",
                 ["--profile"] = "Maieutics:DefaultProfile",
                 ["--provider"] = "Maieutics:Model:Provider",
                 ["--model"] = "Maieutics:Model:Name",
@@ -74,7 +77,21 @@ public static class MaieuticsHost
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
-        builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>([]);
+        builder.Services.AddSingleton(WorkspaceRoot.Create(
+            builder.Configuration["Maieutics:Workspace:Root"],
+            startupCurrentDirectory));
+        builder.Services.AddSingleton(static services =>
+            new WorkspaceContext(services.GetRequiredService<WorkspaceRoot>()));
+        builder.Services.AddSingleton<WorkspacePathResolver>();
+        builder.Services.AddSingleton<ListDirectoryTool>();
+        builder.Services.AddSingleton<ReadTextTool>();
+        builder.Services.AddSingleton<SearchTextTool>();
+        builder.Services.AddSingleton<IReadOnlyList<IAgentTool>>(static services =>
+        [
+            services.GetRequiredService<ListDirectoryTool>(),
+            services.GetRequiredService<ReadTextTool>(),
+            services.GetRequiredService<SearchTextTool>()
+        ]);
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<JupyterKernelHostedService>();
@@ -93,7 +110,8 @@ public static class MaieuticsHost
             services.GetRequiredService<IAgentSession>(),
             runtimeConfiguration.GetKernelOptions,
             runtimeConfiguration,
-            services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>());
+            services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
+            workspaceContext: services.GetRequiredService<WorkspaceContext>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()
@@ -102,6 +120,7 @@ public static class MaieuticsHost
         AddAlias(aliases, "MAIEUTICS_PROFILE", "Maieutics:DefaultProfile");
         AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
         AddAlias(aliases, "MAIEUTICS_MODEL", "Maieutics:Model:Name");
+        AddAlias(aliases, "MAIEUTICS_WORKSPACE", "Maieutics:Workspace:Root");
         AddAlias(aliases, "MAIEUTICS_OPENAI_API", "Maieutics:Sources:openai:ApiFlavor");
         AddAlias(aliases, "OPENAI_API_KEY", "Maieutics:Sources:openai:ApiKey");
         AddAlias(aliases, "OPENAI_BASE_URL", "Maieutics:Sources:openai:Endpoint");

@@ -37,11 +37,32 @@ code defaults
 
 For example, `Maieutics__DefaultProfile` overrides `MAIEUTICS_PROFILE`, while `--profile` overrides both.
 
+## Workspace tools
+
+The executable registers three read-only tools: `list_directory`, `read_text`, and `search_text`. They operate on one
+process-local workspace context whose startup root is selected when the process begins:
+
+| Setting | Environment alias | Command line | Default |
+|---|---|---|---|
+| `Maieutics:Workspace:Root` | `MAIEUTICS_WORKSPACE` | `--workspace` | Startup working directory |
+
+The startup root must be an existing directory and cannot itself be a symbolic link. Relative startup values are
+resolved against the startup working directory. Configuration is not hot reloaded; changing the JSON setting requires
+a process restart or an explicit session command.
+
+Tools accept canonical `workspace://local/...` URIs rather than operating-system absolute paths. They reject path
+traversal, `.git` metadata access, and symbolic-link traversal. Text reads and searches require regular UTF-8 files and
+apply explicit line, result, file-count, directory-entry, byte, and regular-expression limits. Binary and large values
+remain deferred to the artifact boundary.
+
 ## Model sources and profiles
 
 ```json
 {
   "Maieutics": {
+    "Workspace": {
+      "Root": null
+    },
     "DefaultProfile": "gpt",
     "Sources": {
       "openai": {
@@ -131,6 +152,25 @@ selected profile clears the override and falls back to the new default. Commands
 
 The Kernel provides Jupyter completion for the `%maieutics` command, model subcommands, and the currently configured
 profile IDs accepted by `%maieutics model use <profile>`.
+
+## Notebook workspace commands
+
+The following control cells inspect or change the workspace used by subsequent read-only tool calls:
+
+```text
+%maieutics workspace
+%maieutics workspace current
+%maieutics workspace use <path>
+%maieutics workspace reset
+```
+
+`use` accepts an absolute path or a path relative to the current workspace, including unquoted spaces. The selected
+directory must exist and cannot itself be a symbolic link. `reset` restores the startup root. The override lasts only
+for the current Kernel process: it does not edit configuration, survive restart, call a model, or enter the Agent
+transcript. Shell execution is serialized, so a command affects subsequent turns rather than an active turn.
+
+Jupyter completion covers the workspace command and its `current`, `use`, and `reset` subcommands; filesystem paths are
+not enumerated for completion.
 
 ## Agent limits
 

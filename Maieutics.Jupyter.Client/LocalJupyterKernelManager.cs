@@ -15,10 +15,22 @@ public interface IJupyterKernelManager : IAsyncDisposable
     Task RestartAsync(CancellationToken cancellationToken = default);
 
     Task ShutdownAsync(CancellationToken cancellationToken = default);
+
+    Task TerminateAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record LocalJupyterKernelManagerOptions
 {
+    /// <summary>Gets the child kernel working directory.</summary>
+    public string? WorkingDirectory { get; init; }
+
+    /// <summary>Gets whether the child starts without the host process environment.</summary>
+    public bool ClearInheritedEnvironment { get; init; }
+
+    /// <summary>Gets explicit environment values applied before kernelspec values.</summary>
+    public IReadOnlyDictionary<string, string> Environment { get; init; } =
+        new Dictionary<string, string>();
+
     public TimeSpan StartupTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(10);
@@ -90,7 +102,7 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
         try
         {
             ThrowIfDisposed();
-            await StopCoreAsync(restart: true, cancellationToken).ConfigureAwait(false);
+            await StopCoreAsync(restart: true, force: false, cancellationToken).ConfigureAwait(false);
             await StartCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -105,7 +117,21 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
         try
         {
             ThrowIfDisposed();
-            await StopCoreAsync(restart: false, cancellationToken).ConfigureAwait(false);
+            await StopCoreAsync(restart: false, force: false, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    public async Task TerminateAsync(CancellationToken cancellationToken = default)
+    {
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            await StopCoreAsync(restart: false, force: true, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -123,7 +149,7 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
         await lifecycleGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            await StopCoreAsync(restart: false, CancellationToken.None).ConfigureAwait(false);
+            await StopCoreAsync(restart: false, force: false, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
@@ -148,7 +174,10 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
         await client.WaitForReadyAsync(startup.Token).ConfigureAwait(false);
     }
 
-    private async Task StopCoreAsync(bool restart, CancellationToken cancellationToken)
+    private async Task StopCoreAsync(
+        bool restart,
+        bool force,
+        CancellationToken cancellationToken)
     {
         var currentClient = client;
         var currentProcess = process;
@@ -160,12 +189,12 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
 
         try
         {
-            if (currentClient is not null && currentProcess is { HasExited: false })
+            if (!force && currentClient is not null && currentProcess is { HasExited: false })
             {
                 await currentClient.ShutdownAsync(restart, shutdown.Token).ConfigureAwait(false);
             }
 
-            if (currentProcess is { HasExited: false })
+            if (!force && currentProcess is { HasExited: false })
             {
                 await currentProcess.WaitForExitAsync(shutdown.Token).ConfigureAwait(false);
             }
@@ -238,8 +267,19 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
             FileName = kernelSpec.Argv[0],
             RedirectStandardError = true,
             RedirectStandardOutput = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            WorkingDirectory = options.WorkingDirectory ?? string.Empty
         };
+
+        if (options.ClearInheritedEnvironment)
+        {
+            startInfo.Environment.Clear();
+        }
+
+        foreach (var environment in options.Environment)
+        {
+            startInfo.Environment[environment.Key] = environment.Value;
+        }
 
         foreach (var argument in kernelSpec.Argv.Skip(1))
         {

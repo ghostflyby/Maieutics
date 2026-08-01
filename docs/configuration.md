@@ -55,6 +55,38 @@ traversal, `.git` metadata access, and symbolic-link traversal. Text reads and s
 apply explicit line, result, file-count, directory-entry, byte, and regular-expression limits. Binary and large values
 remain deferred to the artifact boundary.
 
+## Deno REPL tools
+
+The executable also registers `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close`. The default
+REPL starts lazily; each explicitly created REPL starts one independent local `deno jupyter` process. A REPL captures the
+currently selected workspace root as its working directory when the session is created. Later workspace commands do not
+move an existing process.
+
+The configuration is captured once when the Maieutics host builder is created:
+
+| Setting | Default |
+|---|---:|
+| `Maieutics:DenoRepl:Executable` | `deno` |
+| `Maieutics:DenoRepl:MaxSessionsPerAgent` | `4` |
+| `Maieutics:DenoRepl:StartupTimeout` | `00:00:30` |
+| `Maieutics:DenoRepl:ExecutionTimeout` | `00:02:00` |
+| `Maieutics:DenoRepl:InterruptGracePeriod` | `00:00:05` |
+| `Maieutics:DenoRepl:ShutdownTimeout` | `00:00:10` |
+| `Maieutics:DenoRepl:MaxModelOutputBytes` | `131072` |
+| `Maieutics:DenoRepl:MaxPresentationTextBytes` | `1048576` |
+| `Maieutics:DenoRepl:MaxPresentationEventsPerExecution` | `256` |
+| `Maieutics:DenoRepl:MaxPresentationBundleBytes` | `16777216` |
+
+`deno jupyter` is privileged local code execution, not an untrusted-code sandbox. The child receives an allowlisted
+operational environment rather than the complete Maieutics environment; provider credentials such as
+`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited. The first implementation has no worker, target, isolation,
+pooling, retry, or automatic code-replay setting.
+
+Jupyter output types define their audience. stdout and the final expression return only to the Agent; display/update/
+clear output goes only to the notebook; stderr and execution errors go to both. Deno input requests are forwarded to
+the notebook user. The model can intentionally publish user-visible output with the standard `Deno.jupyter.display`
+API; Maieutics does not inject a proprietary Deno API.
+
 ## Model sources and profiles
 
 ```json

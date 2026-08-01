@@ -68,6 +68,9 @@ public static class MaieuticsHost
         builder.Logging
             .AddConfiguration(builder.Configuration.GetSection("Logging"))
             .AddSimpleConsole();
+        var denoReplOptions = new DenoReplOptions();
+        builder.Configuration.GetSection(DenoReplOptions.SectionName).Bind(denoReplOptions);
+        denoReplOptions.Validate();
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
@@ -81,10 +84,19 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(Workspace.Create(
             builder.Configuration["Maieutics:Workspace:Root"],
             startupCurrentDirectory));
+        builder.Services.AddSingleton(denoReplOptions);
+        builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();
+        builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
+            services.GetRequiredService<JupyterDenoReplPresentationRouter>());
+        builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
+        builder.Services.AddSingleton<DenoReplRegistry>();
+        builder.Services.AddSingleton<DenoReplFunctions>();
         builder.Services.AddSingleton(static services =>
             new WorkspaceFunctions(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
-            services.GetRequiredService<WorkspaceFunctions>().Functions);
+            services.GetRequiredService<WorkspaceFunctions>().Functions
+                .Concat(services.GetRequiredService<DenoReplFunctions>().Functions)
+                .ToArray());
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<JupyterKernelHostedService>();
@@ -104,7 +116,8 @@ public static class MaieuticsHost
             runtimeConfiguration.GetKernelOptions,
             runtimeConfiguration,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
-            workspace: services.GetRequiredService<Workspace>());
+            workspace: services.GetRequiredService<Workspace>(),
+            replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

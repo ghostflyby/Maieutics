@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
@@ -61,6 +62,82 @@ public sealed class DenoKernelIntegrationTests
             .Should().Contain(output => output.Data.Data.Values.Any(value => value.ToString().Contains('3')));
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task RealDenoSeparatesStreamsDisplayResultAndError()
+    {
+        using var deadline = CreateDeadline();
+        var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+        await using var manager = await LocalJupyterKernelManager.StartAsync(
+            spec,
+            cancellationToken: deadline.Token);
+
+        var execution = await manager.Client.ExecuteAsync(
+            new JupyterExecuteRequest(
+                "console.log('stdout-marker'); " +
+                "console.error('stderr-marker'); " +
+                "await Deno.jupyter.display({ 'text/plain': 'display-marker' }, { raw: true }); " +
+                "40 + 2"),
+            deadline.Token);
+        var outputs = await ReadOutputsAsync(execution, deadline.Token);
+        (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+
+        outputs.OfType<JupyterStdout>().Should().Contain(output => output.Text.Contains("stdout-marker"));
+        outputs.OfType<JupyterStderr>().Should().Contain(output => output.Text.Contains("stderr-marker"));
+        outputs.OfType<JupyterDisplayOutput>().Should().Contain(output =>
+            output.Data.Data["text/plain"].GetString() == "display-marker");
+        outputs.OfType<JupyterExecuteResultOutput>().Should().Contain(output =>
+            output.Data.Data.Values.Any(value => value.ToString().Contains("42", StringComparison.Ordinal)));
+
+        var errorExecution = await manager.Client.ExecuteAsync(
+            new JupyterExecuteRequest("throw new TypeError('error-marker')"),
+            deadline.Token);
+        var errorOutputs = await ReadOutputsAsync(errorExecution, deadline.Token);
+        (await errorExecution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("error");
+        errorOutputs.OfType<JupyterExecutionError>().Should().Contain(output =>
+            output.Name == "TypeError" && output.Value.Contains("error-marker", StringComparison.Ordinal));
+
+        var inputExecution = await manager.Client.ExecuteAsync(
+            new JupyterExecuteRequest("prompt('Name: ')", AllowStdin: true),
+            deadline.Token);
+        var inputOutputs = new List<JupyterOutput>();
+        await foreach (var output in inputExecution.Outputs.WithCancellation(deadline.Token))
+        {
+            inputOutputs.Add(output);
+            if (output is JupyterInputRequest input)
+            {
+                await inputExecution.ReplyInputAsync(input, "Ada", deadline.Token);
+            }
+        }
+
+        (await inputExecution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        inputOutputs.OfType<JupyterInputRequest>().Should().ContainSingle().Which.Prompt.Should().Be("Name: ");
+        inputOutputs.OfType<JupyterExecuteResultOutput>().Should().Contain(output =>
+            output.Data.Data.Values.Any(value => value.ToString().Contains("Ada", StringComparison.Ordinal)));
+    }
+
+    [Fact(Timeout = 45_000)]
+    public async Task IndependentDenoManagersUseDistinctProcessesAndRestartClearsState()
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(35));
+        var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+        await using var first = await LocalJupyterKernelManager.StartAsync(
+            spec,
+            cancellationToken: deadline.Token);
+        await using var second = await LocalJupyterKernelManager.StartAsync(
+            spec,
+            cancellationToken: deadline.Token);
+
+        var firstPid = await ExecuteTextResultAsync(first.Client, "Deno.pid", deadline.Token);
+        var secondPid = await ExecuteTextResultAsync(second.Client, "Deno.pid", deadline.Token);
+        firstPid.Should().NotBe(secondPid);
+
+        await ExecuteTextResultAsync(first.Client, "var replValue = 41; replValue", deadline.Token);
+        (await ExecuteTextResultAsync(first.Client, "replValue + 1", deadline.Token)).Should().Contain("42");
+        await first.RestartAsync(deadline.Token);
+        (await ExecuteTextResultAsync(first.Client, "typeof replValue", deadline.Token)).Should()
+            .Contain("undefined");
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task LocalManagerLifecycleAndConnectionFileCleanupAreRepeatable()
     {
@@ -89,6 +166,57 @@ public sealed class DenoKernelIntegrationTests
         finally
         {
             Directory.Delete(runtimeDirectory, recursive: true);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task LocalManagerAppliesWorkingDirectoryAndExplicitEnvironment()
+    {
+        using var deadline = CreateDeadline();
+        var workingDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-deno-cwd-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workingDirectory);
+        var inheritedName = $"MAIEUTICS_DENIED_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(inheritedName, "denied");
+        try
+        {
+            var environment = new Dictionary<string, string>
+            {
+                ["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                ["HOME"] = Environment.GetEnvironmentVariable("HOME") ?? workingDirectory,
+                ["TMPDIR"] = Path.GetTempPath(),
+                ["MAIEUTICS_DENO_ALLOWED"] = "allowed"
+            };
+            var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+            await using var manager = await LocalJupyterKernelManager.StartAsync(
+                spec,
+                new LocalJupyterKernelManagerOptions
+                {
+                    WorkingDirectory = workingDirectory,
+                    ClearInheritedEnvironment = true,
+                    Environment = environment
+                },
+                deadline.Token);
+            var execution = await manager.Client.ExecuteAsync(
+                new JupyterExecuteRequest(
+                    "console.log(JSON.stringify({ cwd: Deno.cwd(), " +
+                    "allowed: Deno.env.get('MAIEUTICS_DENO_ALLOWED'), " +
+                    $"denied: Deno.env.get('{inheritedName}') }}))"),
+                deadline.Token);
+            var outputs = await ReadOutputsAsync(execution, deadline.Token);
+            await execution.Completion.WaitAsync(deadline.Token);
+
+            using var document = JsonDocument.Parse(outputs.OfType<JupyterStdout>().Single().Text);
+            var json = document.RootElement;
+            var actualWorkingDirectory = json.GetProperty("cwd").GetString();
+            actualWorkingDirectory.Should().EndWith(Path.GetFileName(workingDirectory));
+            Directory.Exists(actualWorkingDirectory).Should().BeTrue();
+            json.GetProperty("allowed").GetString().Should().Be("allowed");
+            json.TryGetProperty("denied", out _).Should().BeFalse();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(inheritedName, null);
+            Directory.Delete(workingDirectory, recursive: true);
         }
     }
 
@@ -151,6 +279,50 @@ public sealed class DenoKernelIntegrationTests
         }
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task TerminateImmediatelyKillsBusyKernelAndDeletesConnectionFile()
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(20));
+        var runtimeDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(runtimeDirectory);
+        try
+        {
+            var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+            await using var manager = await LocalJupyterKernelManager.StartAsync(
+                spec,
+                new LocalJupyterKernelManagerOptions
+                {
+                    RuntimeDirectory = runtimeDirectory,
+                    StartupTimeout = TimeSpan.FromSeconds(10),
+                    ShutdownTimeout = TimeSpan.FromSeconds(5)
+                },
+                deadline.Token);
+            var execution = await manager.Client.ExecuteAsync(
+                new JupyterExecuteRequest("while (true) {}"),
+                deadline.Token);
+            await using var outputs = execution.Outputs.GetAsyncEnumerator(deadline.Token);
+            while (await outputs.MoveNextAsync())
+            {
+                if (outputs.Current is JupyterExecutionStatusChanged { State: JupyterKernelState.Busy })
+                {
+                    break;
+                }
+            }
+
+            var elapsed = Stopwatch.StartNew();
+            await manager.TerminateAsync(deadline.Token);
+            elapsed.Stop();
+
+            elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+            Directory.GetFiles(runtimeDirectory, "maieutics-kernel-*.json").Should().BeEmpty();
+            await execution.Completion.Invoking(static task => task).Should().ThrowAsync<Exception>();
+        }
+        finally
+        {
+            Directory.Delete(runtimeDirectory, recursive: true);
+        }
+    }
+
     private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
         IJupyterExecution execution,
         CancellationToken cancellationToken)
@@ -162,6 +334,18 @@ public sealed class DenoKernelIntegrationTests
         }
 
         return outputs;
+    }
+
+    private static async Task<string> ExecuteTextResultAsync(
+        IJupyterClient client,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        var execution = await client.ExecuteAsync(new JupyterExecuteRequest(code), cancellationToken);
+        var outputs = await ReadOutputsAsync(execution, cancellationToken);
+        (await execution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
+        var result = outputs.OfType<JupyterExecuteResultOutput>().Single();
+        return result.Data.Data["text/plain"].GetString() ?? result.Data.Data["text/plain"].GetRawText();
     }
 
     private static CancellationTokenSource CreateDeadline(TimeSpan? timeout = null)

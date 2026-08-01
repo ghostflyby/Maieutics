@@ -45,6 +45,18 @@
       "MaxToolProgressEventsPerCall": 256,
       "EventBufferCapacity": 128
     },
+    "DenoRepl": {
+      "Executable": "deno",
+      "MaxSessionsPerAgent": 4,
+      "StartupTimeout": "00:00:30",
+      "ExecutionTimeout": "00:02:00",
+      "InterruptGracePeriod": "00:00:05",
+      "ShutdownTimeout": "00:00:10",
+      "MaxModelOutputBytes": 131072,
+      "MaxPresentationTextBytes": 1048576,
+      "MaxPresentationEventsPerExecution": 256,
+      "MaxPresentationBundleBytes": 16777216
+    },
     "Jupyter": {
       "FlushInterval": "00:00:00.050",
       "FlushCharacters": 1024

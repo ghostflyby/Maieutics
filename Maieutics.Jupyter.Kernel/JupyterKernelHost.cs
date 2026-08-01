@@ -517,6 +517,18 @@ public sealed class JupyterKernelHost : IJupyterKernel
                         cancellationToken).ConfigureAwait(false);
                 }
             },
+            async (name, value, traceback, cancellationToken) =>
+            {
+                if (!request.Silent)
+                {
+                    await PublishAsync(
+                        "error",
+                        new JupyterError(name, value, traceback),
+                        JupyterJsonContext.Default.JupyterError,
+                        wireRequest.Message.Header,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            },
             (prompt, password, cancellationToken) =>
             {
                 if (!request.AllowStdin)

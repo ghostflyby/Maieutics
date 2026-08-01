@@ -41,6 +41,15 @@ public sealed class MaieuticsHostIntegrationTests
             ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
         builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
         using var host = builder.Build();
+        var functionNames = host.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
+            .Select(static function => function.Name)
+            .ToArray();
+        functionNames.Should().Contain(
+            "repl_execute",
+            "repl_create",
+            "repl_list",
+            "repl_restart",
+            "repl_close");
         var phase = "host start";
 
         try
@@ -128,6 +137,101 @@ public sealed class MaieuticsHostIntegrationTests
         finally
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await host.StopAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+            {
+            }
+
+            File.Delete(connectionFile);
+            File.Delete(configurationFile);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task InProcessHostRoutesDenoReplOutputsByJupyterMessageType()
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-repl-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("repl");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        const string code =
+            "const name = prompt('Name: '); " +
+            "console.log('private-name=' + name); " +
+            "console.log('private-stdout'); " +
+            "console.error('shared-stderr'); " +
+            "console.log('provider-secret=' + String(Deno.env.get('OPENAI_API_KEY'))); " +
+            "await Deno.jupyter.display({ 'text/plain': 'visible-display' }, { raw: true }); " +
+            "40 + 2";
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.Responses,
+            toolFlow: true,
+            toolName: "repl_execute",
+            toolArgumentsJson: JsonSerializer.Serialize(new { code }));
+        var builder = MaieuticsHost.CreateApplicationBuilder(
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
+        builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
+        builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
+        using var host = builder.Build();
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+
+            var execution = await client.ExecuteAsync(
+                new JupyterExecuteRequest("use the Deno REPL", AllowStdin: true),
+                deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
+            {
+                outputs.Add(output);
+                if (output is JupyterInputRequest input)
+                {
+                    await execution.ReplyInputAsync(input, "Ada", deadline.Token);
+                }
+            }
+
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterStdout>().Should().BeEmpty();
+            outputs.OfType<JupyterExecuteResultOutput>().Should().BeEmpty();
+            outputs.OfType<JupyterInputRequest>().Should().ContainSingle().Which.Prompt.Should().Be("Name: ");
+            outputs.OfType<JupyterStderr>().Should().Contain(output =>
+                output.Text.Contains("shared-stderr", StringComparison.Ordinal));
+            outputs.OfType<JupyterDisplayOutput>().Any(output =>
+                    output.Data.Data.TryGetValue("text/plain", out var value) &&
+                    value.ValueKind == JsonValueKind.String && value.GetString() == "visible-display")
+                .Should().BeTrue();
+            outputs.OfType<JupyterDisplayOutput>().Any(output =>
+                    output.Data.Data.TryGetValue("text/markdown", out var value) &&
+                    value.ValueKind == JsonValueKind.String && value.GetString() == "tool-backed answer")
+                .Should().BeTrue();
+
+            await provider.Completion.WaitAsync(deadline.Token);
+            var toolOutput = provider.RequestBodies.Last()
+                .GetProperty("input")
+                .EnumerateArray()
+                .Single(item => item.GetProperty("type").GetString() == "function_call_output")
+                .GetProperty("output")
+                .GetString();
+            using var toolResult = JsonDocument.Parse(toolOutput!);
+            var modelOutputs = toolResult.RootElement.GetProperty("value").GetProperty("outputs");
+            modelOutputs.EnumerateArray().Select(item => item.GetProperty("kind").GetString()).Should()
+                .Contain("stdout").And.Contain("stderr").And.Contain("result");
+            toolOutput.Should().Contain("private-name=Ada")
+                .And.Contain("shared-stderr")
+                .And.Contain("provider-secret=undefined");
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
                 await host.StopAsync(cleanup.Token);

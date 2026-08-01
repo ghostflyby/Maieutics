@@ -23,6 +23,8 @@ public sealed class JupyterExecutionContext
     private readonly Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask>
         publishResult;
 
+    private readonly Func<string, string, IReadOnlyList<string>, CancellationToken, ValueTask> publishError;
+
     private readonly Func<string, bool, CancellationToken, Task<string>> requestInput;
 
     internal JupyterExecutionContext(
@@ -36,6 +38,7 @@ public sealed class JupyterExecutionContext
             updateDisplay,
         Func<bool, CancellationToken, ValueTask> clearOutput,
         Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask> publishResult,
+        Func<string, string, IReadOnlyList<string>, CancellationToken, ValueTask> publishError,
         Func<string, bool, CancellationToken, Task<string>> requestInput)
     {
         RequestId = requestId;
@@ -46,6 +49,7 @@ public sealed class JupyterExecutionContext
         this.updateDisplay = updateDisplay;
         this.clearOutput = clearOutput;
         this.publishResult = publishResult;
+        this.publishError = publishError;
         this.requestInput = requestInput;
     }
 
@@ -89,6 +93,19 @@ public sealed class JupyterExecutionContext
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
         CancellationToken cancellationToken = default) =>
         publishResult(data, metadata ?? EmptyMetadata, cancellationToken);
+
+    /// <summary>Publishes a Jupyter execution error without failing the enclosing application execution.</summary>
+    public ValueTask PublishErrorAsync(
+        string name,
+        string value,
+        IReadOnlyList<string> traceback,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(traceback);
+        return publishError(name, value, traceback, cancellationToken);
+    }
 
     public Task<string> RequestInputAsync(
         string prompt,

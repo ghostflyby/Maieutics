@@ -106,6 +106,19 @@ public sealed class SelfHostedJupyterIntegrationTests
         invalidDisplayCompletion.Reply.Status.Should().Be("error");
         invalidDisplayOutputs.OfType<JupyterExecutionError>().Should().ContainSingle();
 
+        var publishedErrorExecution = await client.ExecuteAsync(
+            new JupyterExecuteRequest("published-error"),
+            cancellationToken);
+        var publishedErrorOutputs = await ReadOutputsAsync(publishedErrorExecution, cancellationToken);
+        (await publishedErrorExecution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
+        publishedErrorOutputs.OfType<JupyterExecutionError>().Should().ContainSingle().Which.Should().BeEquivalentTo(
+            new
+            {
+                Name = "InnerError",
+                Value = "inner failure",
+                Traceback = new[] { "frame" }
+            });
+
         var inputExecution = await client.ExecuteAsync(
             new JupyterExecuteRequest("input", AllowStdin: true),
             cancellationToken);
@@ -407,6 +420,13 @@ public sealed class SelfHostedJupyterIntegrationTests
                         default,
                         TextBundle("invalid"),
                         cancellationToken: cancellationToken);
+                    break;
+                case "published-error":
+                    await context.PublishErrorAsync(
+                        "InnerError",
+                        "inner failure",
+                        ["frame"],
+                        cancellationToken);
                     break;
                 case "wait":
                     WaitStarted.TrySetResult();

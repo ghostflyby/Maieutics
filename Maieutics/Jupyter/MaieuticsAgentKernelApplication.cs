@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Execution;
@@ -12,11 +13,14 @@ namespace Maieutics.Jupyter;
 
 public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider
 {
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
+        new Dictionary<string, JsonElement>();
     private readonly IAgentSession session;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Workspace? workspace;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
+    private readonly JupyterDenoReplPresentationRouter? replPresentationRouter;
     private readonly TimeProvider timeProvider;
 
     public MaieuticsAgentKernelApplication(
@@ -24,7 +28,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
-        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null, null)
     {
     }
 
@@ -34,12 +38,14 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null,
-        Workspace? workspace = null)
+        Workspace? workspace = null,
+        JupyterDenoReplPresentationRouter? replPresentationRouter = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
         this.runtimeConfiguration = runtimeConfiguration;
         this.workspace = workspace;
+        this.replPresentationRouter = replPresentationRouter;
         this.getOptions().Validate();
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
@@ -488,6 +494,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         JupyterDisplayId? displayId = null;
         var flushedLength = 0;
 
+        await using var presentationScope = replPresentationRouter?.Attach(session.Id, context);
+        var presentationSink = presentationScope?.Sink;
         await using var run = await session
             .StartTurnAsync(AgentTurn.FromText(input), cancellationToken)
             .ConfigureAwait(false);
@@ -501,16 +509,30 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                         response.Append(delta.Text);
                         if (displayId is null)
                         {
-                            displayId = await context.DisplayTrackedAsync(
-                                MimeBundle.FromMarkdown(response.ToString()),
-                                cancellationToken: cancellationToken).ConfigureAwait(false);
+                            displayId = JupyterDisplayId.Create();
+                            if (presentationSink is null)
+                            {
+                                await context.DisplayTrackedAsync(
+                                    MimeBundle.FromMarkdown(response.ToString()),
+                                    displayId,
+                                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await presentationSink.DisplayTrackedAsync(
+                                    MimeBundle.FromMarkdown(response.ToString()),
+                                    displayId.Value,
+                                    EmptyMetadata,
+                                    cancellationToken).ConfigureAwait(false);
+                            }
+
                             flushedLength = response.Length;
                             flushTimestamp = timeProvider.GetTimestamp();
                         }
                         else if (response.Length - flushedLength >= options.FlushCharacters ||
                                  timeProvider.GetElapsedTime(flushTimestamp) >= options.FlushInterval)
                         {
-                            await FlushAsync(context, displayId.Value, response, cancellationToken)
+                            await FlushAsync(context, presentationSink, displayId.Value, response, cancellationToken)
                                 .ConfigureAwait(false);
                             flushedLength = response.Length;
                             flushTimestamp = timeProvider.GetTimestamp();
@@ -520,11 +542,26 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                     case AgentMessageCompleted:
                         if (displayId is not null && flushedLength != response.Length)
                         {
-                            await FlushAsync(context, displayId.Value, response, cancellationToken)
+                            await FlushAsync(context, presentationSink, displayId.Value, response, cancellationToken)
                                 .ConfigureAwait(false);
                             flushedLength = response.Length;
                         }
 
+                        break;
+                    case AgentToolStarted started:
+                        if (displayId is not null && flushedLength != response.Length)
+                        {
+                            await FlushAsync(
+                                context,
+                                presentationSink,
+                                displayId.Value,
+                                response,
+                                cancellationToken).ConfigureAwait(false);
+                            flushedLength = response.Length;
+                            flushTimestamp = timeProvider.GetTimestamp();
+                        }
+
+                        replPresentationRouter?.OpenCall(session.Id, started.CallId);
                         break;
                 }
             }
@@ -536,23 +573,27 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         {
             await run.CancelAsync(CancellationToken.None).ConfigureAwait(false);
             await ObserveCompletionAsync(run).ConfigureAwait(false);
-            await TryFlushPartialAsync(context, displayId, response, flushedLength).ConfigureAwait(false);
+            await TryFlushPartialAsync(context, presentationSink, displayId, response, flushedLength)
+                .ConfigureAwait(false);
             throw;
         }
         catch
         {
-            await TryFlushPartialAsync(context, displayId, response, flushedLength).ConfigureAwait(false);
+            await TryFlushPartialAsync(context, presentationSink, displayId, response, flushedLength)
+                .ConfigureAwait(false);
             throw;
         }
 
         if (displayId is not null && flushedLength != response.Length)
         {
-            await FlushAsync(context, displayId.Value, response, cancellationToken).ConfigureAwait(false);
+            await FlushAsync(context, presentationSink, displayId.Value, response, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
     private async Task TryFlushPartialAsync(
         JupyterExecutionContext context,
+        IDenoReplPresentationSink? presentationSink,
         JupyterDisplayId? displayId,
         StringBuilder response,
         int flushedLength)
@@ -564,7 +605,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
         try
         {
-            await FlushAsync(context, displayId.Value, response, CancellationToken.None).ConfigureAwait(false);
+            await FlushAsync(context, presentationSink, displayId.Value, response, CancellationToken.None)
+                .ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -589,13 +631,19 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private static ValueTask FlushAsync(
         JupyterExecutionContext context,
+        IDenoReplPresentationSink? presentationSink,
         JupyterDisplayId displayId,
         StringBuilder response,
-        CancellationToken cancellationToken) =>
-        context.UpdateDisplayAsync(
+        CancellationToken cancellationToken) => presentationSink is null
+        ? context.UpdateDisplayAsync(
             displayId,
             MimeBundle.FromMarkdown(response.ToString()),
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken)
+        : presentationSink.UpdateDisplayAsync(
+            displayId,
+            MimeBundle.FromMarkdown(response.ToString()),
+            EmptyMetadata,
+            cancellationToken);
 
     private static JupyterKernelExecutionException ToKernelException(AgentException exception) => exception switch
     {

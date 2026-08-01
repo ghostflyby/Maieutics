@@ -149,9 +149,11 @@ function results, and the final assistant response. Maieutics adds bounded invoc
 events, and stable JSON result envelopes around the standard function contract.
 
 The executable registers `list_directory`, `read_text`, and `search_text` from one cohesive `WorkspaceFunctions`
-implementation against a process-local `Workspace` owner. The startup root is fixed from configuration, while
+implementation and `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close` from the local Deno
+REPL adapter. The startup root is fixed from configuration, while
 `%maieutics workspace use` may install a session override for subsequent function invocations and `reset` restores the
-startup root. Each function captures one immutable workspace snapshot per call. The snapshot owns URI validation,
+startup root. Workspace functions capture one immutable workspace snapshot per call; a Deno REPL captures the selected
+root once as its process working directory at session creation. The snapshot owns URI validation,
 `.git` denial, symbolic-link and regular-file checks, verified opening, and bounded reads.
 
 Provider-specific tool shapes are normalized at the `IChatClient` adapter boundary:
@@ -180,6 +182,8 @@ transcript.
   shape
 - [ADR 0010](decisions/0010-direct-microsoft-extensions-ai-function-runtime.md): Direct Microsoft.Extensions.AI
   function runtime
+- [ADR 0011](decisions/0011-deno-repl-tools-lifecycle-and-output-routing.md): Deno REPL tools, lifecycle, and output
+  routing
 
 ## Explicitly deferred
 

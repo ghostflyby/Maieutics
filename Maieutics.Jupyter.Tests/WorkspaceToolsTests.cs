@@ -541,7 +541,15 @@ public sealed class WorkspaceToolsTests
             commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(commandRoot);
             commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
                 .Select(static function => function.Name)
-                .Should().Equal("list_directory", "read_text", "search_text");
+                .Should().Equal(
+                    "list_directory",
+                    "read_text",
+                    "search_text",
+                    "repl_execute",
+                    "repl_create",
+                    "repl_list",
+                    "repl_restart",
+                    "repl_close");
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>

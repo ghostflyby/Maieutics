@@ -7,6 +7,14 @@ namespace Maieutics.Jupyter.Kernel.Transport;
 
 internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
 {
+    static NetMqJupyterKernelTransport()
+    {
+        // AsyncIO's Windows socket path uses runtime delegate marshalling that NativeAOT cannot
+        // support. The managed socket implementation is safe on every platform and is a no-op
+        // outside Windows, so select it before any NetMQ socket is created.
+        AsyncIO.ForceDotNet.Force();
+    }
+
     private readonly JupyterConnectionInfo connectionInfo;
     private readonly JupyterKernelTransportOptions options;
     private readonly Channel<JupyterKernelTransportEvent> incomingEvents;

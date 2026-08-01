@@ -8,14 +8,6 @@ namespace Maieutics.Jupyter.Client.Transport;
 
 public sealed class NetMqJupyterTransport : IJupyterTransport
 {
-    static NetMqJupyterTransport()
-    {
-        // AsyncIO's Windows socket path uses runtime delegate marshalling that NativeAOT cannot
-        // support. The managed socket implementation is safe on every platform and is a no-op
-        // outside Windows, so select it before any NetMQ socket is created.
-        AsyncIO.ForceDotNet.Force();
-    }
-
     private readonly JupyterConnectionInfo connectionInfo;
     private readonly JupyterTransportOptions options;
     private readonly Channel<JupyterTransportMessage> incomingMessages;

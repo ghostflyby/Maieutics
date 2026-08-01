@@ -545,28 +545,54 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private static JupyterOutput CreateDisplayOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var display = message.GetContent(JupyterJsonContext.Default.JupyterDisplayData);
+        JupyterDisplayId? displayId;
+        try
+        {
+            displayId = JupyterDisplayTransient.GetDisplayId(display.Transient);
+        }
+        catch (JupyterProtocolException)
+        {
+            // A display remains useful without tracking. Preserve its MIME bundle and transient data instead of
+            // terminating the client because an optional display ID was malformed.
+            displayId = null;
+        }
+
         return new JupyterDisplayOutput(requestId, new MimeBundle(display.Data), display.Metadata)
         {
             Transient = display.Transient,
-            DisplayId = JupyterDisplayTransient.GetDisplayId(display.Transient)
+            DisplayId = displayId
         };
     }
 
     private static JupyterOutput CreateDisplayUpdateOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var update = message.GetContent(JupyterJsonContext.Default.JupyterUpdateDisplayData);
-        var transient = update.Transient
-                        ?? throw new JupyterProtocolException(
-                            "Jupyter update_display_data must contain transient.display_id.");
-        var displayId = JupyterDisplayTransient.GetDisplayId(transient)
-                        ?? throw new JupyterProtocolException(
-                            "Jupyter update_display_data must contain transient.display_id.");
+        if (update.Transient is not { } transient)
+        {
+            return new JupyterMalformedOutput(requestId, message.MessageType, "missing_display_id");
+        }
+
+        JupyterDisplayId? displayId;
+        try
+        {
+            displayId = JupyterDisplayTransient.GetDisplayId(transient);
+        }
+        catch (JupyterProtocolException)
+        {
+            return new JupyterMalformedOutput(requestId, message.MessageType, "invalid_display_id");
+        }
+
+        if (displayId is null)
+        {
+            return new JupyterMalformedOutput(requestId, message.MessageType, "missing_display_id");
+        }
+
         return new JupyterDisplayUpdateOutput(
             requestId,
             new MimeBundle(update.Data),
             update.Metadata,
             transient,
-            displayId);
+            displayId.Value);
     }
 
     private static JupyterOutput CreateClearOutput(JupyterMessageId requestId, JupyterMessage message)

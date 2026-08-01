@@ -46,7 +46,12 @@ public sealed class DenoReplRegistryTests
         SchemaProperties(functions.Single(static function => function.Name == "repl_close"))
             .Should().Equal("sessionId");
         functions.Single(static function => function.Name == "repl_execute").Description.Should()
-            .Contain("private reasoning").And.Contain("Deno.jupyter.display");
+            .Contain("private reasoning")
+            .And.Contain("Deno.jupyter.display")
+            .And.Contain("raw: true")
+            .And.Contain("display_id")
+            .And.Contain("update: true")
+            .And.Contain("text/plain");
     }
 
     [Fact]

@@ -54,6 +54,11 @@ Agent cancellation and execution timeout request an explicit Jupyter interrupt. 
 the interrupt grace period, Maieutics shuts down and ultimately terminates the process tree and marks the session
 faulted. Recovery is explicit; code is never retried or replayed automatically.
 
+Non-critical malformed presentation messages do not terminate the Jupyter Client or fault the REPL. In particular, a
+display update without a usable `transient.display_id` remains ordered with its parent execution, is counted as skipped,
+and is not published to the notebook. Malformed reply, status, and input messages remain terminal because request
+correlation, completion, or user interaction cannot proceed safely without them.
+
 `deno jupyter` remains privileged code execution rather than an untrusted-code sandbox. The child starts with an
 allowlisted environment that excludes model-provider credentials. Output, event, session, and timeout limits are fixed
 at process startup.

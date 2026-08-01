@@ -28,6 +28,7 @@ public sealed class DenoReplExecutionCollectorTests
                 EmptyMetadata,
                 JupyterDisplayTransient.Create(innerDisplayId),
                 innerDisplayId),
+            new JupyterMalformedOutput(requestId, "update_display_data", "missing_display_id"),
             new JupyterClearOutput(requestId, true),
             new JupyterStderr(requestId, "shared stderr"),
             new JupyterExecuteResultOutput(requestId, JsonBundle(42), EmptyMetadata, 7),
@@ -57,7 +58,7 @@ public sealed class DenoReplExecutionCollectorTests
         result.Outputs.Single(output => output.Kind == "result").Value!.Value.GetInt32().Should().Be(42);
         JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
             .Should().NotContain("visible display").And.NotContain("visible update");
-        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 1, 1, 0));
+        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 1, 1, 1));
         sink.Displays.Should().ContainSingle().Which.Should().Be("visible display");
         sink.Updates.Should().ContainSingle().Which.Should().Be((outerDisplayId, "visible update"));
         sink.Clears.Should().Equal(true);

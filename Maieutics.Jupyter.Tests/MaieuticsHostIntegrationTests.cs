@@ -164,7 +164,14 @@ public sealed class MaieuticsHostIntegrationTests
             "console.log('private-stdout'); " +
             "console.error('shared-stderr'); " +
             "console.log('provider-secret=' + String(Deno.env.get('OPENAI_API_KEY'))); " +
-            "await Deno.jupyter.display({ 'text/plain': 'visible-display' }, { raw: true }); " +
+            "const displayId = 'host-display'; " +
+            "await Deno.jupyter.display(" +
+            "{ 'text/html': '<b>visible-display</b>', 'text/plain': 'visible-display' }, " +
+            "{ raw: true, display_id: displayId }); " +
+            "await Deno.jupyter.display(" +
+            "{ 'text/html': '<b>visible-update</b>', 'text/plain': 'visible-update' }, " +
+            "{ raw: true, display_id: displayId, update: true }); " +
+            "await Deno.jupyter.display({ 'text/plain': 'invalid-update' }, { raw: true, update: true }); " +
             "40 + 2";
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,
@@ -202,10 +209,15 @@ public sealed class MaieuticsHostIntegrationTests
             outputs.OfType<JupyterInputRequest>().Should().ContainSingle().Which.Prompt.Should().Be("Name: ");
             outputs.OfType<JupyterStderr>().Should().Contain(output =>
                 output.Text.Contains("shared-stderr", StringComparison.Ordinal));
-            outputs.OfType<JupyterDisplayOutput>().Any(output =>
-                    output.Data.Data.TryGetValue("text/plain", out var value) &&
-                    value.ValueKind == JsonValueKind.String && value.GetString() == "visible-display")
-                .Should().BeTrue();
+            var replDisplay = outputs.OfType<JupyterDisplayOutput>().Single(output =>
+                output.Data.Data.TryGetValue("text/plain", out var value) &&
+                value.ValueKind == JsonValueKind.String && value.GetString() == "visible-display");
+            replDisplay.Data.Data["text/html"].GetString().Should().Be("<b>visible-display</b>");
+            var replUpdate = outputs.OfType<JupyterDisplayUpdateOutput>().Single(output =>
+                output.Data.Data.TryGetValue("text/plain", out var value) &&
+                value.ValueKind == JsonValueKind.String && value.GetString() == "visible-update");
+            replUpdate.Data.Data["text/html"].GetString().Should().Be("<b>visible-update</b>");
+            replUpdate.DisplayId.Should().Be(replDisplay.DisplayId);
             outputs.OfType<JupyterDisplayOutput>().Any(output =>
                     output.Data.Data.TryGetValue("text/markdown", out var value) &&
                     value.ValueKind == JsonValueKind.String && value.GetString() == "tool-backed answer")
@@ -219,12 +231,21 @@ public sealed class MaieuticsHostIntegrationTests
                 .GetProperty("output")
                 .GetString();
             using var toolResult = JsonDocument.Parse(toolOutput!);
-            var modelOutputs = toolResult.RootElement.GetProperty("value").GetProperty("outputs");
+            var toolValue = toolResult.RootElement.GetProperty("value");
+            var modelOutputs = toolValue.GetProperty("outputs");
             modelOutputs.EnumerateArray().Select(item => item.GetProperty("kind").GetString()).Should()
-                .Contain("stdout").And.Contain("stderr").And.Contain("result");
+                .Contain("stdout").And.Contain("stderr");
+            toolValue.GetProperty("executionStatus").GetString().Should().Be("ok");
+            var presentation = toolValue.GetProperty("presentation");
+            presentation.GetProperty("displayCount").GetInt32().Should().Be(1);
+            presentation.GetProperty("updateCount").GetInt32().Should().Be(1);
+            presentation.GetProperty("skippedCount").GetInt32().Should().Be(1);
             toolOutput.Should().Contain("private-name=Ada")
                 .And.Contain("shared-stderr")
-                .And.Contain("provider-secret=undefined");
+                .And.Contain("provider-secret=undefined")
+                .And.NotContain("visible-display")
+                .And.NotContain("visible-update")
+                .And.NotContain("invalid-update");
 
             await client.ShutdownAsync(false, deadline.Token);
             await host.WaitForShutdownAsync(deadline.Token);

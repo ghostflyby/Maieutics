@@ -87,6 +87,26 @@ clear output goes only to the notebook; stderr and execution errors go to both. 
 the notebook user. The model can intentionally publish user-visible output with the standard `Deno.jupyter.display`
 API; Maieutics does not inject a proprietary Deno API.
 
+Raw MIME bundles must use `{ raw: true }` and should include a `text/plain` fallback. Tracked updates use the same
+snake-case `display_id` for the initial display and every replacement:
+
+```ts
+const displayId = crypto.randomUUID();
+await Deno.jupyter.display(
+  { "text/html": "<b>initial</b>", "text/plain": "initial" },
+  { raw: true, display_id: displayId },
+);
+await Deno.jupyter.display(
+  { "text/html": "<b>updated</b>", "text/plain": "updated" },
+  { raw: true, display_id: displayId, update: true },
+);
+```
+
+An `update_display_data` message without a usable `transient.display_id` is a non-critical malformed presentation
+event. Maieutics preserves its execution order as a skipped output, continues draining the execution, and keeps the REPL
+usable. Malformed completion, status, and input messages remain terminal protocol failures because execution cannot be
+completed or interacted with safely without them.
+
 ## Model sources and profiles
 
 ```json

@@ -184,8 +184,14 @@ public sealed class JupyterProtocolSessionTests
         outputs.OfType<JupyterClearOutput>().Single().Wait.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task DisplayUpdateWithoutDisplayIdFailsExecution()
+    [Theory]
+    [InlineData("null", "missing_display_id")]
+    [InlineData("missing", "missing_display_id")]
+    [InlineData("empty", "invalid_display_id")]
+    [InlineData("number", "invalid_display_id")]
+    public async Task MalformedDisplayUpdateIsOrderedAndDoesNotTerminateSession(
+        string displayIdKind,
+        string expectedErrorCode)
     {
         var transport = new FakeJupyterTransport();
         await using var session = new JupyterProtocolSession(transport);
@@ -193,17 +199,105 @@ public sealed class JupyterProtocolSessionTests
             new JupyterExecuteRequest("display()"),
             TestContext.Current.CancellationToken);
         var request = transport.SentMessages.Single().Message;
+        var outputsTask = ReadOutputsAsync(execution, TestContext.Current.CancellationToken);
+        Dictionary<string, JsonElement>? transient = displayIdKind == "null" ? null : [];
+        if (displayIdKind == "empty")
+        {
+            transient![JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement("");
+        }
+        else if (displayIdKind == "number")
+        {
+            transient![JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement(42);
+        }
+
         transport.Receive(
             JupyterTransportChannel.Iopub,
             Reply(
                 "update_display_data",
                 new JupyterUpdateDisplayData(
                     DisplayData("updated").Data,
-                    new Dictionary<string, JsonElement>()),
+                    new Dictionary<string, JsonElement>(),
+                    transient),
                 JupyterJsonContext.Default.JupyterUpdateDisplayData,
                 request));
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, request));
 
-        await execution.Completion.Invoking(static task => task).Should().ThrowAsync<JupyterProtocolException>();
+        (await execution.Completion.WaitAsync(TestContext.Current.CancellationToken)).Reply.Status.Should().Be("ok");
+        var malformed = (await outputsTask.WaitAsync(TestContext.Current.CancellationToken))
+            .OfType<JupyterMalformedOutput>().Should().ContainSingle().Which;
+        malformed.MessageType.Should().Be("update_display_data");
+        malformed.ErrorCode.Should().Be(expectedErrorCode);
+
+        var followUp = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("1 + 1"),
+            TestContext.Current.CancellationToken);
+        var followUpRequest = transport.SentMessages.Last().Message;
+        var followUpOutputs = ReadOutputsAsync(followUp, TestContext.Current.CancellationToken);
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 2),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                followUpRequest));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, followUpRequest));
+
+        (await followUp.Completion.WaitAsync(TestContext.Current.CancellationToken)).Reply.Status.Should().Be("ok");
+        (await followUpOutputs.WaitAsync(TestContext.Current.CancellationToken))
+            .OfType<JupyterMalformedOutput>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task MalformedOptionalDisplayIdFallsBackToUntrackedDisplay()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("display()"),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        var outputsTask = ReadOutputsAsync(execution, TestContext.Current.CancellationToken);
+        var transient = new Dictionary<string, JsonElement>
+        {
+            [JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement(42)
+        };
+
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "display_data",
+                DisplayData("still visible", transient),
+                JupyterJsonContext.Default.JupyterDisplayData,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, request));
+
+        (await execution.Completion.WaitAsync(TestContext.Current.CancellationToken)).Reply.Status.Should().Be("ok");
+        var display = (await outputsTask.WaitAsync(TestContext.Current.CancellationToken))
+            .OfType<JupyterDisplayOutput>().Should().ContainSingle().Which;
+        display.Data.Data["text/plain"].GetString().Should().Be("still visible");
+        display.DisplayId.Should().BeNull();
+        display.Transient.Should().ContainKey(JupyterDisplayTransient.DisplayIdPropertyName)
+            .WhoseValue.GetInt32().Should().Be(42);
     }
 
     [Fact]
@@ -235,6 +329,16 @@ public sealed class JupyterProtocolSessionTests
             Reply(
                 "update_display_data",
                 new JupyterUpdateDisplayData(
+                    DisplayData("malformed").Data,
+                    new Dictionary<string, JsonElement>(),
+                    new Dictionary<string, JsonElement>()),
+                JupyterJsonContext.Default.JupyterUpdateDisplayData,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "update_display_data",
+                new JupyterUpdateDisplayData(
                     DisplayData("late").Data,
                     new Dictionary<string, JsonElement>(),
                     JupyterDisplayTransient.Create(new JupyterDisplayId("late-display"))),
@@ -248,6 +352,11 @@ public sealed class JupyterProtocolSessionTests
                 JupyterJsonContext.Default.JupyterClearOutputContent,
                 request));
 
+        (await events.MoveNextAsync()).Should().BeTrue();
+        var malformed = events.Current.Should().BeOfType<JupyterLateOutput>().Subject;
+        malformed.Message.MessageType.Should().Be("update_display_data");
+        malformed.Output.Should().BeOfType<JupyterMalformedOutput>()
+            .Which.ErrorCode.Should().Be("missing_display_id");
         (await events.MoveNextAsync()).Should().BeTrue();
         var late = events.Current.Should().BeOfType<JupyterLateOutput>().Subject;
         late.Message.MessageType.Should().Be("update_display_data");

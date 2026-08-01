@@ -115,6 +115,47 @@ public sealed class DenoKernelIntegrationTests
             output.Data.Data.Values.Any(value => value.ToString().Contains("Ada", StringComparison.Ordinal)));
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task RealDenoDisplayUpdatesAreTypedAndMalformedUpdatesDoNotDisconnect()
+    {
+        using var deadline = CreateDeadline();
+        var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+        await using var manager = await LocalJupyterKernelManager.StartAsync(
+            spec,
+            cancellationToken: deadline.Token);
+
+        var tracked = await manager.Client.ExecuteAsync(
+            new JupyterExecuteRequest(
+                "const displayId = 'tracked-display'; " +
+                "await Deno.jupyter.display(" +
+                "{ 'text/html': '<b>initial</b>', 'text/plain': 'initial' }, " +
+                "{ raw: true, display_id: displayId }); " +
+                "await Deno.jupyter.display(" +
+                "{ 'text/html': '<b>updated</b>', 'text/plain': 'updated' }, " +
+                "{ raw: true, display_id: displayId, update: true });"),
+            deadline.Token);
+        var trackedOutputs = await ReadOutputsAsync(tracked, deadline.Token);
+        (await tracked.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+
+        var display = trackedOutputs.OfType<JupyterDisplayOutput>().Single(output =>
+            output.Data.Data["text/plain"].GetString() == "initial");
+        var update = trackedOutputs.OfType<JupyterDisplayUpdateOutput>().Single(output =>
+            output.Data.Data["text/plain"].GetString() == "updated");
+        display.Data.Data["text/html"].GetString().Should().Be("<b>initial</b>");
+        update.Data.Data["text/html"].GetString().Should().Be("<b>updated</b>");
+        update.DisplayId.Should().Be(display.DisplayId);
+
+        var malformed = await manager.Client.ExecuteAsync(
+            new JupyterExecuteRequest(
+                "await Deno.jupyter.display(" +
+                "{ 'text/plain': 'orphan update' }, { raw: true, update: true });"),
+            deadline.Token);
+        await ReadOutputsAsync(malformed, deadline.Token);
+        await malformed.Completion.WaitAsync(deadline.Token);
+
+        (await ExecuteTextResultAsync(manager.Client, "6 * 7", deadline.Token)).Should().Contain("42");
+    }
+
     [Fact(Timeout = 45_000)]
     public async Task IndependentDenoManagersUseDistinctProcessesAndRestartClearsState()
     {

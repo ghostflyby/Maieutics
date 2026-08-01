@@ -35,6 +35,17 @@ public sealed record JupyterDisplayUpdateOutput(
     IReadOnlyDictionary<string, JsonElement> Transient,
     JupyterDisplayId DisplayId) : JupyterOutput(RequestId);
 
+/// <summary>
+/// Represents a non-critical Jupyter output message that could not be projected into its typed output model.
+/// </summary>
+/// <param name="RequestId">The execution request that caused the output.</param>
+/// <param name="MessageType">The Jupyter message type that could not be projected.</param>
+/// <param name="ErrorCode">A stable diagnostic code describing why the output was rejected.</param>
+public sealed record JupyterMalformedOutput(
+    JupyterMessageId RequestId,
+    string MessageType,
+    string ErrorCode) : JupyterOutput(RequestId);
+
 public sealed record JupyterClearOutput(
     JupyterMessageId RequestId,
     bool Wait) : JupyterOutput(RequestId);

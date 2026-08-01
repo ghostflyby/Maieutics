@@ -553,6 +553,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     traceback,
                     cancellationToken).ConfigureAwait(false);
                 break;
+            case JupyterMalformedOutput malformed:
+                logger.LogDebug(
+                    "Discarded malformed late Deno output {MessageType} ({ErrorCode}) for session {SessionId}.",
+                    malformed.MessageType,
+                    malformed.ErrorCode,
+                    SessionId);
+                break;
             default:
                 logger.LogDebug(
                     "Discarded model-only late Deno output {OutputType} for session {SessionId}.",

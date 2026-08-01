@@ -22,8 +22,11 @@ internal sealed class DenoReplFunctions
                 ExecuteAsync,
                 "repl_execute",
                 "Executes TypeScript in a stateful Deno Jupyter REPL. console output and the final expression are " +
-                "private reasoning results. Use Deno.jupyter.display only for rich output that should be shown to " +
-                "the notebook user."),
+                "private reasoning results. Show rich output to the notebook user with " +
+                "Deno.jupyter.display({ 'text/html': html, 'text/plain': fallback }, { raw: true }). For updates, " +
+                "first display with { raw: true, display_id: id }, then display the replacement with " +
+                "{ raw: true, display_id: id, update: true }. The property is display_id, not displayId, and every " +
+                "rich MIME bundle should include a text/plain fallback."),
             CreateFunction(
                 (Func<AIFunctionArguments, CancellationToken, ValueTask<DenoReplSessionResult>>)CreateAsync,
                 "repl_create",

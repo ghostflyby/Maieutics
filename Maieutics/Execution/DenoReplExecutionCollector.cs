@@ -100,6 +100,9 @@ internal sealed class DenoReplExecutionCollector
             case JupyterDisplayUpdateOutput update:
                 await PresentUpdateAsync(update, CancellationToken.None).ConfigureAwait(false);
                 break;
+            case JupyterMalformedOutput { MessageType: "update_display_data" }:
+                skippedCount++;
+                break;
             case JupyterClearOutput clear:
                 if (TryReservePresentationEvent())
                 {

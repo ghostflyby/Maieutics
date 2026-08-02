@@ -191,29 +191,33 @@ their final active run lease has been released.
 The following control cells select the profile used by the next Agent run:
 
 ```text
-%maieutics model
-%maieutics model list
-%maieutics model current
-%maieutics model use <profile>
-%maieutics model reset
+%model
+%model list
+%model current
+%model use <profile>
+%model reset
 ```
 
 Control cells do not call a model and do not enter the Agent transcript. A manual selection lasts for the Kernel
 lifetime while that profile exists. Configuration default changes affect sessions without an override; removing the
 selected profile clears the override and falls back to the new default. Commands never display credentials or endpoints.
 
-The Kernel provides Jupyter completion for the `%maieutics` command, model subcommands, and the currently configured
-profile IDs accepted by `%maieutics model use <profile>`.
+The Kernel provides Jupyter completion for `%model` and `%workspace`, their subcommands, and the currently configured
+profile IDs accepted by `%model use <profile>`. Typing a leading `/` (for example `/model`) offers the same canonical
+`%` commands through completion; accepting a candidate replaces the slash token with the `%` form. Slash-prefixed text
+that is not completed remains ordinary input and never executes as a command.
+
+The legacy `%maieutics model ...` form remains accepted for existing notebooks and is deprecated.
 
 ## Notebook workspace commands
 
 The following control cells inspect or change the workspace used by subsequent read-only tool calls:
 
 ```text
-%maieutics workspace
-%maieutics workspace current
-%maieutics workspace use <path>
-%maieutics workspace reset
+%workspace
+%workspace current
+%workspace use <path>
+%workspace reset
 ```
 
 `use` accepts an absolute path or a path relative to the current workspace, including unquoted spaces. The selected
@@ -222,7 +226,7 @@ for the current Kernel process: it does not edit configuration, survive restart,
 transcript. Shell execution is serialized, so a command affects subsequent turns rather than an active turn.
 
 Jupyter completion covers the workspace command and its `current`, `use`, and `reset` subcommands; filesystem paths are
-not enumerated for completion.
+not enumerated for completion. The legacy `%maieutics workspace ...` form remains accepted and is deprecated.
 
 ## Agent limits
 

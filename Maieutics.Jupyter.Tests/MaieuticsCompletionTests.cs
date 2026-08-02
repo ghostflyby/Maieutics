@@ -200,6 +200,128 @@ public sealed class MaieuticsCompletionTests
         unrelated.Matches.Should().BeEmpty();
     }
 
+    [Fact]
+    public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
+    {
+        var all = Complete("/");
+        all.Matches.Should().Equal("%model", "%workspace");
+        all.CursorStart.Should().Be(0);
+        all.CursorEnd.Should().Be(1);
+
+        var model = Complete("/m");
+        model.Matches.Should().Equal("%model");
+        model.CursorStart.Should().Be(0);
+        model.CursorEnd.Should().Be(2);
+
+        var workspace = Complete("/workspace");
+        workspace.Matches.Should().Equal("%workspace");
+        workspace.CursorStart.Should().Be(0);
+        workspace.CursorEnd.Should().Be(10);
+
+        var caseInsensitive = Complete("/MODEL");
+        caseInsensitive.Matches.Should().Equal("%model");
+    }
+
+    [Fact]
+    public void SlashDiscoveryDoesNotHijackPathLikeInput()
+    {
+        var path = Complete("/Users/ghostflyby/repos");
+        path.Matches.Should().BeEmpty();
+
+        var device = Complete("/dev/null");
+        device.Matches.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
+    {
+        var all = Complete("%");
+        all.Matches.Should().Equal("%maieutics", "%model", "%workspace");
+
+        var sharedPrefix = Complete("%m");
+        sharedPrefix.Matches.Should().Equal("%maieutics", "%model");
+    }
+
+    [Fact]
+    public void CanonicalCommandsCompleteSubcommandsAndBoundaries()
+    {
+        var model = Complete("%model ");
+        model.Matches.Should().Equal("available", "current", "list", "reset", "use");
+        model.CursorStart.Should().Be(7);
+        model.CursorEnd.Should().Be(7);
+
+        var partial = Complete("%MODEL U");
+        partial.Matches.Should().Equal("use");
+        partial.CursorStart.Should().Be(7);
+        partial.CursorEnd.Should().Be(8);
+
+        var workspace = Complete("%workspace ");
+        workspace.Matches.Should().Equal("current", "reset", "use");
+        workspace.CursorStart.Should().Be(11);
+        workspace.CursorEnd.Should().Be(11);
+    }
+
+    [Fact]
+    public void CanonicalCommandsCompleteUseAndAvailable()
+    {
+        var use = Complete("%model use ");
+        use.Matches.Should().Equal("claude", "claude-test", "gpt", "gpt-test");
+        use.CursorStart.Should().Be(11);
+        use.CursorEnd.Should().Be(11);
+
+        var available = Complete("%model available ", sourceIds: ["zeta", "vendor"]);
+        available.Matches.Should().Equal("--refresh", "vendor", "zeta");
+        available.CursorStart.Should().Be(17);
+        available.CursorEnd.Should().Be(17);
+
+        MaieuticsModelProfileInfo[] automaticProfiles =
+        [
+            new(
+                "@vendor/model-alpha",
+                "vendor",
+                "Vendor",
+                "model-alpha",
+                IsDefault: false,
+                IsSelected: false,
+                IsAutomatic: true),
+            new(
+                "@other/model-alpha",
+                "other",
+                "Vendor",
+                "model-alpha",
+                IsDefault: false,
+                IsSelected: false,
+                IsAutomatic: true),
+            new(
+                "@vendor/model-beta",
+                "vendor",
+                "Vendor",
+                "model-beta",
+                IsDefault: false,
+                IsSelected: false,
+                IsAutomatic: true)
+        ];
+
+        var qualified = Complete("%model use @", automaticProfiles: automaticProfiles);
+        qualified.Matches.Should().Equal("@other/model-alpha", "@vendor/model-alpha", "@vendor/model-beta");
+    }
+
+    [Fact]
+    public void CanonicalCompletionUsesUnicodeCodePointOffsets()
+    {
+        const string code = "%model use claude😀";
+        var cursorUtf16Index = code.IndexOf("claude", StringComparison.Ordinal) + 2;
+        var request = new JupyterCompleteRequest(
+            code,
+            JupyterCursorPosition.FromUtf16Index(code, cursorUtf16Index));
+
+        var result = MaieuticsCommandLanguage.Complete(request, Profiles, [], []);
+
+        result.Matches.Should().Equal("claude", "claude-test");
+        result.CursorStart.Should().Be(11);
+        result.CursorEnd.Should().Be(18);
+    }
+
     private static JupyterCompletionResult Complete(
         string code,
         IReadOnlyList<MaieuticsModelProfileInfo>? profiles = null,

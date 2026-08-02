@@ -302,6 +302,90 @@ public sealed class AgentJupyterIntegrationTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task CanonicalCommandsAndSlashPromptsRouteThroughFlatSyntax()
+    {
+        using var deadline = CreateDeadline();
+        var parent = Path.Combine(Path.GetTempPath(), $"maieutics-flat-command-{Guid.NewGuid():N}");
+        var startup = Directory.CreateDirectory(Path.Combine(parent, "startup")).FullName;
+        var other = Directory.CreateDirectory(Path.Combine(parent, "other workspace")).FullName;
+        try
+        {
+            var session = new AgentSession(
+                new ScriptedChatClient((_, token) => TextResponseAsync(token, "slash prompt reply")));
+            var controller = new TestRuntimeConfiguration();
+            var workspace = Workspace.Create(startup, startup);
+            var application = new MaieuticsAgentKernelApplication(
+                session,
+                static () => new MaieuticsAgentKernelOptions(),
+                runtimeConfiguration: controller,
+                workspace: workspace);
+            var connection = JupyterConnectionInfo.CreateLocalTcp();
+            await using var host = await JupyterKernelHost.StartAsync(
+                connection,
+                application,
+                cancellationToken: deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(
+                connection,
+                cancellationToken: deadline.Token);
+
+            var listed = await client.ExecuteAsync(new JupyterExecuteRequest("%model list"), deadline.Token);
+            var listedOutputs = await ReadOutputsAsync(listed, deadline.Token);
+            (await listed.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(listedOutputs.OfType<JupyterDisplayOutput>().Single())
+                .Should().Contain("`gpt`").And.Contain("`claude`");
+
+            var selected = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%model use CLAUDE"),
+                deadline.Token);
+            var selectedOutputs = await ReadOutputsAsync(selected, deadline.Token);
+            (await selected.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(selectedOutputs.OfType<JupyterDisplayOutput>().Single())
+                .Should().Contain("Profile: `claude`").And.Contain("session override");
+            controller.GetModelProfileSelection().SelectedProfileId.Should().Be("claude");
+
+            var current = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%workspace current"),
+                deadline.Token);
+            var currentOutputs = await ReadOutputsAsync(current, deadline.Token);
+            (await current.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(currentOutputs.OfType<JupyterDisplayOutput>().Single())
+                .Should().Contain(startup).And.Contain("startup root");
+
+            var selectedWorkspace = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%workspace use ../other workspace"),
+                deadline.Token);
+            var selectedWorkspaceOutputs = await ReadOutputsAsync(selectedWorkspace, deadline.Token);
+            (await selectedWorkspace.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(selectedWorkspaceOutputs.OfType<JupyterDisplayOutput>().Single())
+                .Should().Contain(other).And.Contain("session override");
+            workspace.Capture().RootPath.Should().Be(other);
+
+            var resetWorkspace = await client.ExecuteAsync(
+                new JupyterExecuteRequest("%workspace reset"),
+                deadline.Token);
+            await ReadOutputsAsync(resetWorkspace, deadline.Token);
+            (await resetWorkspace.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            workspace.Capture().RootPath.Should().Be(startup);
+
+            var slashPrompt = await client.ExecuteAsync(
+                new JupyterExecuteRequest("/Users/ghostflyby/repos/tests/Maieutics 请分析这个仓库"),
+                deadline.Token);
+            var slashPromptOutputs = await ReadOutputsAsync(slashPrompt, deadline.Token);
+            (await slashPrompt.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(slashPromptOutputs.OfType<JupyterDisplayOutput>().Single())
+                .Should().Be("slash prompt reply");
+            session.GetTranscriptSnapshot().Turns.Should().ContainSingle();
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.Completion.WaitAsync(deadline.Token);
+        }
+        finally
+        {
+            Directory.Delete(parent, recursive: true);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task ModelCommandsSwitchProfilesWithoutInvokingAgentOrChangingTranscript()
     {
         using var deadline = CreateDeadline();

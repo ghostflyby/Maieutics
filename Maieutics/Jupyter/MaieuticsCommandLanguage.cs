@@ -6,7 +6,10 @@ namespace Maieutics.Jupyter;
 
 internal static class MaieuticsCommandLanguage
 {
-    internal const string Root = "%maieutics";
+    internal const string LegacyRoot = "%maieutics";
+    internal const string CanonicalModelCommand = "%model";
+    internal const string CanonicalWorkspaceCommand = "%workspace";
+    internal const string SlashLeader = "/";
     internal const string Model = "model";
     internal const string Workspace = "workspace";
     internal const string Current = "current";
@@ -16,10 +19,80 @@ internal static class MaieuticsCommandLanguage
     internal const string Available = "available";
     internal const string RefreshFlag = "--refresh";
 
-    private static readonly string[] RootMatches = [Root];
+    private static readonly string[] CommandPrefixes =
+        [CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
+
+    private static readonly string[] RootCompletionMatches =
+        [CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
+
+    private static readonly string[] SlashCompletionMatches =
+        [CanonicalModelCommand, CanonicalWorkspaceCommand];
+
     private static readonly string[] RootCommandMatches = [Model, Workspace];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
     private static readonly string[] WorkspaceCommandMatches = [Current, Use, Reset];
+
+    internal static bool IsCommandCell(string code)
+    {
+        ArgumentNullException.ThrowIfNull(code);
+
+        var trimmed = code.AsSpan().TrimStart();
+        if (trimmed.IsEmpty)
+        {
+            return false;
+        }
+
+        var firstTokenEnd = 0;
+        while (firstTokenEnd < trimmed.Length && !char.IsWhiteSpace(trimmed[firstTokenEnd]))
+        {
+            firstTokenEnd++;
+        }
+
+        var firstToken = trimmed[..firstTokenEnd];
+        foreach (var prefix in CommandPrefixes)
+        {
+            if (firstToken.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static string[]? NormalizeCommandArguments(string[] arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+
+        if (arguments.Length == 0)
+        {
+            return null;
+        }
+
+        if (arguments[0].Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            return [LegacyRoot, Model, .. arguments[1..]];
+        }
+
+        if (arguments[0].Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            return [LegacyRoot, Workspace, .. arguments[1..]];
+        }
+
+        if (arguments[0].Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            if (arguments.Length >= 2 &&
+                (arguments[1].Equals(Model, StringComparison.OrdinalIgnoreCase) ||
+                 arguments[1].Equals(Workspace, StringComparison.OrdinalIgnoreCase)))
+            {
+                return [.. arguments];
+            }
+
+            return null;
+        }
+
+        return null;
+    }
 
     internal static JupyterCompletionResult Complete(
         JupyterCompleteRequest request,
@@ -49,55 +122,103 @@ internal static class MaieuticsCommandLanguage
         var token = request.Code[tokenStart..tokenEnd];
         var precedingTokens = request.Code[..tokenStart]
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var candidates = precedingTokens switch
-        {
-            [] => RootMatches,
-            [var root] when root.Equals(Root, StringComparison.OrdinalIgnoreCase) => RootCommandMatches,
-            [var root, var model] when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
-                                       model.Equals(Model, StringComparison.OrdinalIgnoreCase) =>
-                ModelCommandMatches,
-            [var root, var workspace] when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
-                                           workspace.Equals(Workspace, StringComparison.OrdinalIgnoreCase) =>
-                WorkspaceCommandMatches,
-            [var root, var model, var use]
-                when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
-                     model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
-                     use.Equals(Use, StringComparison.OrdinalIgnoreCase) =>
-                profiles
-                    .Where(static profile => !profile.IsAutomatic)
-                    .SelectMany(static profile => new[] { profile.Id, profile.Model })
-                    .Concat(profiles
-                        .Where(static profile => profile.IsAutomatic)
-                        .Select(static profile => profile.Id))
-                    .Concat(automaticProfiles.Select(static profile => profile.Id))
-                    .Concat(automaticProfiles
-                        .GroupBy(static profile => profile.Model, StringComparer.OrdinalIgnoreCase)
-                        .Where(static group => group.Count() == 1)
-                        .Select(static group => group.Key)),
-            [var root, var model, var available]
-                when root.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
-                     model.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
-                     available.Equals(Available, StringComparison.OrdinalIgnoreCase) =>
-                new[] { RefreshFlag }.Concat(sourceIds),
-            _ => []
-        };
 
-        if (precedingTokens.Length == 0 &&
-            prefix.Equals(Root, StringComparison.OrdinalIgnoreCase) &&
-            token.Equals(Root, StringComparison.OrdinalIgnoreCase))
-        {
-            candidates = RootCommandMatches.Select(command => $"{Root} {command}");
-        }
+        var matches = precedingTokens.Length == 0 && token.StartsWith(SlashLeader, StringComparison.Ordinal)
+            ? CompleteSlashDiscovery(token)
+            : CompletePrefixed(precedingTokens, prefix, token, profiles, automaticProfiles, sourceIds);
 
-        var matches = candidates
-            .Where(static candidate => !string.IsNullOrWhiteSpace(candidate))
-            .Where(candidate => candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(static candidate => candidate, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
         return new JupyterCompletionResult(
             matches,
             JupyterCursorPosition.FromUtf16Index(request.Code, tokenStart),
             JupyterCursorPosition.FromUtf16Index(request.Code, tokenEnd));
     }
+
+    private static string[] CompleteSlashDiscovery(string token)
+    {
+        var commandName = token[SlashLeader.Length..];
+        return SlashCompletionMatches
+            .Where(candidate => candidate.AsSpan(1).StartsWith(commandName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
+    private static string[] CompletePrefixed(
+        string[] precedingTokens,
+        string prefix,
+        string token,
+        IReadOnlyList<MaieuticsModelProfileInfo> profiles,
+        IReadOnlyList<MaieuticsModelProfileInfo> automaticProfiles,
+        IReadOnlyList<string> sourceIds)
+    {
+        var candidates = CompleteCandidates(precedingTokens, profiles, automaticProfiles, sourceIds);
+        if (precedingTokens.Length == 0 &&
+            prefix.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+            token.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            candidates = RootCommandMatches.Select(command => $"{LegacyRoot} {command}");
+        }
+
+        return candidates
+            .Where(static candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Where(candidate => candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static candidate => candidate, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static IEnumerable<string> CompleteCandidates(
+        string[] precedingTokens,
+        IReadOnlyList<MaieuticsModelProfileInfo> profiles,
+        IReadOnlyList<MaieuticsModelProfileInfo> automaticProfiles,
+        IReadOnlyList<string> sourceIds) => precedingTokens switch
+    {
+        [] => RootCompletionMatches,
+        [var command] when command.Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase) =>
+            ModelCommandMatches,
+        [var command] when command.Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase) =>
+            WorkspaceCommandMatches,
+        [var command, var subcommand]
+            when command.Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase) &&
+                 subcommand.Equals(Use, StringComparison.OrdinalIgnoreCase) =>
+            ProfileCandidates(profiles, automaticProfiles),
+        [var command, var subcommand]
+            when command.Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase) &&
+                 subcommand.Equals(Available, StringComparison.OrdinalIgnoreCase) =>
+            new[] { RefreshFlag }.Concat(sourceIds),
+        [var command] when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) =>
+            RootCommandMatches,
+        [var command, var family]
+            when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                 family.Equals(Model, StringComparison.OrdinalIgnoreCase) =>
+            ModelCommandMatches,
+        [var command, var family]
+            when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                 family.Equals(Workspace, StringComparison.OrdinalIgnoreCase) =>
+            WorkspaceCommandMatches,
+        [var command, var family, var subcommand]
+            when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                 family.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
+                 subcommand.Equals(Use, StringComparison.OrdinalIgnoreCase) =>
+            ProfileCandidates(profiles, automaticProfiles),
+        [var command, var family, var subcommand]
+            when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                 family.Equals(Model, StringComparison.OrdinalIgnoreCase) &&
+                 subcommand.Equals(Available, StringComparison.OrdinalIgnoreCase) =>
+            new[] { RefreshFlag }.Concat(sourceIds),
+        _ => []
+    };
+
+    private static IEnumerable<string> ProfileCandidates(
+        IReadOnlyList<MaieuticsModelProfileInfo> profiles,
+        IReadOnlyList<MaieuticsModelProfileInfo> automaticProfiles) =>
+        profiles
+            .Where(static profile => !profile.IsAutomatic)
+            .SelectMany(static profile => new[] { profile.Id, profile.Model })
+            .Concat(profiles
+                .Where(static profile => profile.IsAutomatic)
+                .Select(static profile => profile.Id))
+            .Concat(automaticProfiles.Select(static profile => profile.Id))
+            .Concat(automaticProfiles
+                .GroupBy(static profile => profile.Model, StringComparer.OrdinalIgnoreCase)
+                .Where(static group => group.Count() == 1)
+                .Select(static group => group.Key));
 }

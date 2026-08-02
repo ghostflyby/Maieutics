@@ -143,6 +143,9 @@ limits, transactional transcript commit, normalized events, and cancellation wit
 ADR 0009 keeps the initial canonical transcript process-local while fixing the future durable shape: immutable turn
 metadata and session heads reference raw content-addressed blobs rather than embedding binary bodies in JSON.
 
+ADR 0012 supersedes the notebook control cell syntax examples in ADR 0008: the canonical cell forms are `%model` and
+`%workspace`, `%maieutics` remains a deprecated alias, and a leading slash only triggers completion discovery.
+
 The current tool loop uses a per-run `FunctionInvokingChatClient` over an immutable `AIFunction` registry. A recording
 decorator preserves every provider iteration so canonical history includes assistant function calls, provider call IDs,
 function results, and the final assistant response. Maieutics adds bounded invocation context, limits, three-stage tool
@@ -151,7 +154,7 @@ events, and stable JSON result envelopes around the standard function contract.
 The executable registers `list_directory`, `read_text`, and `search_text` from one cohesive `WorkspaceFunctions`
 implementation and `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close` from the local Deno
 REPL adapter. The startup root is fixed from configuration, while
-`%maieutics workspace use` may install a session override for subsequent function invocations and `reset` restores the
+`%workspace use` may install a session override for subsequent function invocations and `reset` restores the
 startup root. Workspace functions capture one immutable workspace snapshot per call; a Deno REPL captures the selected
 root once as its process working directory at session creation. The snapshot owns URI validation,
 `.git` denial, symbolic-link and regular-file checks, verified opening, and bounded reads.
@@ -184,6 +187,8 @@ transcript.
   function runtime
 - [ADR 0011](decisions/0011-deno-repl-tools-lifecycle-and-output-routing.md): Deno REPL tools, lifecycle, and output
   routing
+- [ADR 0012](decisions/0012-flat-notebook-command-syntax-and-slash-completion.md): Flat notebook command syntax and
+  slash completion
 
 ## Explicitly deferred
 

@@ -15,6 +15,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 {
     private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
         new Dictionary<string, JsonElement>();
+
     private readonly IAgentSession session;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Workspace? workspace;

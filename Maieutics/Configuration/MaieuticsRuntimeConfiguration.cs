@@ -351,7 +351,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                     nameof(value)),
                 _ => throw new ArgumentException(
                     $"The model profile or discovered model '{value}' is not available in the discovery cache. " +
-                    "Run '%maieutics model available' first.",
+                    "Run '%model available' first.",
                     nameof(value))
             };
         }

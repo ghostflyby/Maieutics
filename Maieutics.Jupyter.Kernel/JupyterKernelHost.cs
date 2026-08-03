@@ -73,6 +73,16 @@ public sealed class JupyterKernelHost : IJupyterKernel
         lifetime.Dispose();
     }
 
+    /// <summary>
+    /// Requests cooperative cancellation of the currently executing request without a Jupyter
+    /// control-channel round trip. This mirrors the <c>interrupt_request</c> control message and
+    /// is a no-op when no request is executing.
+    /// </summary>
+    /// <remarks>
+    /// The request is idempotent, thread-safe, and safe to call concurrently with shutdown.
+    /// </remarks>
+    public void RequestInterrupt() => CancelCurrentExecution();
+
     private async Task RouteIncomingAsync()
     {
         Exception? failure = null;

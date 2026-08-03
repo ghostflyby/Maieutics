@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -142,6 +143,12 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
         builder.Services.AddHostedService<JupyterKernelHostedService>();
+        builder.Services.AddSingleton<KernelInterruptCoordinator>();
+        builder.Services.AddSingleton<IKernelInterruptCoordinator>(static services =>
+            services.GetRequiredService<KernelInterruptCoordinator>());
+        // SIGINT interrupts the current kernel execution; SIGQUIT/SIGTERM keep graceful shutdown.
+        builder.Services.RemoveAll<IHostLifetime>();
+        builder.Services.AddSingleton<IHostLifetime, JupyterKernelLifetime>();
         return builder;
     }
 

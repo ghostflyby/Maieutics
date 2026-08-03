@@ -10,6 +10,7 @@ internal sealed class JupyterKernelHostedService(
     IJupyterKernelApplication application,
     IMaieuticsRuntimeConfiguration configuration,
     IHostApplicationLifetime applicationLifetime,
+    IKernelInterruptCoordinator interruptCoordinator,
     ILogger<JupyterKernelHostedService> logger) : BackgroundService
 {
     private JupyterKernelHost? kernelHost;
@@ -26,12 +27,14 @@ internal sealed class JupyterKernelHostedService(
                 application,
                 cancellationToken: stoppingToken).ConfigureAwait(false);
             kernelHost = host;
+            interruptCoordinator.SetHost(host);
             logger.LogInformation("Maieutics Jupyter kernel started.");
             await host.Completion.ConfigureAwait(false);
         }
         finally
         {
             kernelHost = null;
+            interruptCoordinator.Clear();
             applicationLifetime.StopApplication();
         }
     }

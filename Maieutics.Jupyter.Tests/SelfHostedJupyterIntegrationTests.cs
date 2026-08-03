@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Maieutics;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
@@ -158,6 +159,67 @@ public sealed class SelfHostedJupyterIntegrationTests
         var shutdown = await client.ShutdownAsync(false, cancellationToken);
         shutdown.Restart.Should().BeFalse();
         shutdown.Status.Should().Be("ok");
+        await host.Completion.WaitAsync(cancellationToken);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task HostRequestInterruptAbortsWaitingExecution()
+    {
+        using var deadline = CreateDeadline();
+        var cancellationToken = deadline.Token;
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var application = new TestKernelApplication();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: cancellationToken);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: cancellationToken);
+
+        var waiting = await client.ExecuteAsync(
+            new JupyterExecuteRequest("wait"),
+            cancellationToken);
+        var waitOutputs = ReadOutputsAsync(waiting, cancellationToken);
+        await application.WaitStarted.Task.WaitAsync(cancellationToken);
+
+        host.RequestInterrupt();
+
+        (await waiting.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("aborted");
+        await waitOutputs.WaitAsync(cancellationToken);
+        (await client.PingAsync(cancellationToken)).Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+
+        await client.ShutdownAsync(false, cancellationToken);
+        await host.Completion.WaitAsync(cancellationToken);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task InterruptCoordinatorForwardsInterruptToActiveHost()
+    {
+        using var deadline = CreateDeadline();
+        var cancellationToken = deadline.Token;
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var application = new TestKernelApplication();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: cancellationToken);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: cancellationToken);
+        var coordinator = new KernelInterruptCoordinator();
+        coordinator.SetHost(host);
+
+        var waiting = await client.ExecuteAsync(
+            new JupyterExecuteRequest("wait"),
+            cancellationToken);
+        var waitOutputs = ReadOutputsAsync(waiting, cancellationToken);
+        await application.WaitStarted.Task.WaitAsync(cancellationToken);
+
+        coordinator.RequestInterrupt();
+
+        (await waiting.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("aborted");
+        await waitOutputs.WaitAsync(cancellationToken);
+        coordinator.Clear();
+        coordinator.RequestInterrupt();
+
+        await client.ShutdownAsync(false, cancellationToken);
         await host.Completion.WaitAsync(cancellationToken);
     }
 

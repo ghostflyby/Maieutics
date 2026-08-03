@@ -207,7 +207,7 @@ public sealed class AgentTranscriptCodecTests
         var assemblyName = new AssemblyName($"BinaryDataStub-{Guid.NewGuid():N}");
         var assembly = AssemblyBuilder.DefineDynamicAssembly(assemblyName, AssemblyBuilderAccess.Run);
         var type = assembly.DefineDynamicModule(assemblyName.Name!).DefineType("System.BinaryData").CreateType();
-        return Activator.CreateInstance(type!)!;
+        return Activator.CreateInstance(type)!;
     }
 
     private static JsonElement ParseJson(string json)

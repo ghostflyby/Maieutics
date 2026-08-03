@@ -18,6 +18,8 @@ public sealed class MaieuticsOptions
 
     public MaieuticsAgentOptions Agent { get; set; } = new();
 
+    public MaieuticsMcpOptions Mcp { get; set; } = new();
+
     public MaieuticsJupyterOptions Jupyter { get; set; } = new();
 
     internal void ValidateCommon()
@@ -25,6 +27,44 @@ public sealed class MaieuticsOptions
         Agent.Validate();
         Jupyter.Validate();
     }
+}
+
+public sealed class MaieuticsMcpOptions
+{
+    public Dictionary<string, MaieuticsMcpServerOptions> Servers { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class MaieuticsMcpServerOptions
+{
+    public bool Enabled { get; set; }
+
+    public string Transport { get; set; } = string.Empty;
+
+    public string? Command { get; set; }
+
+    public string[] Arguments { get; set; } = [];
+
+    public string? WorkingDirectory { get; set; }
+
+    public Dictionary<string, string?> EnvironmentVariables { get; set; } =
+        new(StringComparer.Ordinal);
+
+    public string? Endpoint { get; set; }
+
+    public Dictionary<string, string> Headers { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public Dictionary<string, string> Tools { get; set; } =
+        new(StringComparer.Ordinal);
+
+    public TimeSpan InitializationTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
 }
 
 public sealed class MaieuticsModelProfileOptions

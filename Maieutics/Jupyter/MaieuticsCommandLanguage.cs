@@ -7,9 +7,11 @@ namespace Maieutics.Jupyter;
 internal static class MaieuticsCommandLanguage
 {
     internal const string LegacyRoot = "%maieutics";
+    internal const string CanonicalMcpCommand = "%mcp";
     internal const string CanonicalModelCommand = "%model";
     internal const string CanonicalWorkspaceCommand = "%workspace";
     internal const string SlashLeader = "/";
+    internal const string Mcp = "mcp";
     internal const string Model = "model";
     internal const string Workspace = "workspace";
     internal const string Current = "current";
@@ -20,15 +22,16 @@ internal static class MaieuticsCommandLanguage
     internal const string RefreshFlag = "--refresh";
 
     private static readonly string[] CommandPrefixes =
-        [CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
 
     private static readonly string[] RootCompletionMatches =
-        [CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
 
     private static readonly string[] SlashCompletionMatches =
-        [CanonicalModelCommand, CanonicalWorkspaceCommand];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalWorkspaceCommand];
 
-    private static readonly string[] RootCommandMatches = [Model, Workspace];
+    private static readonly string[] RootCommandMatches = [Mcp, Model, Workspace];
+    private static readonly string[] McpCommandMatches = [List];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
     private static readonly string[] WorkspaceCommandMatches = [Current, Use, Reset];
 
@@ -74,6 +77,11 @@ internal static class MaieuticsCommandLanguage
             return [LegacyRoot, Model, .. arguments[1..]];
         }
 
+        if (arguments[0].Equals(CanonicalMcpCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            return [LegacyRoot, Mcp, .. arguments[1..]];
+        }
+
         if (arguments[0].Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase))
         {
             return [LegacyRoot, Workspace, .. arguments[1..]];
@@ -82,7 +90,8 @@ internal static class MaieuticsCommandLanguage
         if (arguments[0].Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase))
         {
             if (arguments.Length >= 2 &&
-                (arguments[1].Equals(Model, StringComparison.OrdinalIgnoreCase) ||
+                (arguments[1].Equals(Mcp, StringComparison.OrdinalIgnoreCase) ||
+                 arguments[1].Equals(Model, StringComparison.OrdinalIgnoreCase) ||
                  arguments[1].Equals(Workspace, StringComparison.OrdinalIgnoreCase)))
             {
                 return [.. arguments];
@@ -172,6 +181,8 @@ internal static class MaieuticsCommandLanguage
         IReadOnlyList<string> sourceIds) => precedingTokens switch
     {
         [] => RootCompletionMatches,
+        [var command] when command.Equals(CanonicalMcpCommand, StringComparison.OrdinalIgnoreCase) =>
+            McpCommandMatches,
         [var command] when command.Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase) =>
             ModelCommandMatches,
         [var command] when command.Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase) =>
@@ -186,6 +197,10 @@ internal static class MaieuticsCommandLanguage
             new[] { RefreshFlag }.Concat(sourceIds),
         [var command] when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) =>
             RootCommandMatches,
+        [var command, var family]
+            when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                 family.Equals(Mcp, StringComparison.OrdinalIgnoreCase) =>
+            McpCommandMatches,
         [var command, var family]
             when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
                  family.Equals(Model, StringComparison.OrdinalIgnoreCase) =>

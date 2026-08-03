@@ -14,7 +14,7 @@ public sealed class AgentSession : IAgentSession
 {
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly Lock transcriptGate = new();
-    private readonly ImmutableDictionary<string, AIFunction> tools;
+    private readonly ImmutableArray<AIFunction> fixedTools;
     private AgentTranscriptState canonicalState;
     private int runInProgress;
 
@@ -27,8 +27,8 @@ public sealed class AgentSession : IAgentSession
             new FixedAgentRunProfileProvider(
                 new AgentRunProfile(
                     chatClient ?? throw new ArgumentNullException(nameof(chatClient)),
-                    options ?? new AgentSessionOptions())),
-            tools)
+                    options ?? new AgentSessionOptions(),
+                    tools: CreateToolRegistry(tools).Values)))
     {
     }
 
@@ -40,7 +40,7 @@ public sealed class AgentSession : IAgentSession
         IEnumerable<AIFunction>? tools = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
-        this.tools = CreateToolRegistry(tools);
+        fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
 
         Id = AgentSessionId.Create();
         canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
@@ -70,6 +70,7 @@ public sealed class AgentSession : IAgentSession
             var profile = profileLease.Profile ??
                           throw new InvalidOperationException("The Agent run profile lease returned a null profile.");
             profile.Options.Validate();
+            var tools = CreateToolRegistry(profile.Tools.Concat(fixedTools));
             ValidateInput(turn, profile.Options);
 
             var userMessage = AgentTranscriptCodec.DetachPrivateMessage(
@@ -80,6 +81,7 @@ public sealed class AgentSession : IAgentSession
                 userMessage,
                 profileLease,
                 profile,
+                tools,
                 profile.Options.EventBufferCapacity);
             run.Start();
             return run;
@@ -112,7 +114,7 @@ public sealed class AgentSession : IAgentSession
     {
         var profile = run.Profile;
         var options = profile.Options;
-        ValidateModelCapabilities(profile);
+        ValidateModelCapabilities(profile, run.Tools.Count);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
         var toolState = new RunToolState(this, run, recordingClient, options);
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
@@ -130,7 +132,7 @@ public sealed class AgentSession : IAgentSession
         var chatOptions = new ChatOptions
         {
             Instructions = options.SystemPrompt,
-            Tools = tools.Values.Cast<AITool>().ToList(),
+            Tools = run.Tools.Values.Cast<AITool>().ToList(),
             AllowMultipleToolCalls = true
         };
         try
@@ -238,7 +240,7 @@ public sealed class AgentSession : IAgentSession
         }
     }
 
-    private void ValidateModelCapabilities(AgentRunProfile profile)
+    private static void ValidateModelCapabilities(AgentRunProfile profile, int toolCount)
     {
         if ((profile.Capabilities & AgentModelCapabilities.StreamingText) == 0)
         {
@@ -247,7 +249,7 @@ public sealed class AgentSession : IAgentSession
                 profile.ModelIdentity);
         }
 
-        if (tools.Count > 0 && (profile.Capabilities & AgentModelCapabilities.FunctionCalling) == 0)
+        if (toolCount > 0 && (profile.Capabilities & AgentModelCapabilities.FunctionCalling) == 0)
         {
             throw new AgentModelCapabilityException(
                 AgentModelCapabilities.FunctionCalling,
@@ -347,7 +349,7 @@ public sealed class AgentSession : IAgentSession
             FunctionInvocationContext invocation,
             CancellationToken cancellationToken)
         {
-            if (!owner.tools.TryGetValue(invocation.Function.Name, out var function) ||
+            if (!run.Tools.TryGetValue(invocation.Function.Name, out var function) ||
                 !ReferenceEquals(function, invocation.Function))
             {
                 throw new AgentToolArgumentsException("The model requested an unregistered Agent tool.");
@@ -607,7 +609,7 @@ public sealed class AgentSession : IAgentSession
                     continue;
                 }
 
-                if (!owner.tools.TryGetValue(call.Name, out var function))
+                if (!run.Tools.TryGetValue(call.Name, out var function))
                 {
                     throw new AgentToolArgumentsException(
                         $"The model requested unregistered tool '{call.Name}'.");
@@ -800,6 +802,7 @@ public sealed class AgentSession : IAgentSession
         ChatMessage userMessage,
         IAgentRunProfileLease profileLease,
         AgentRunProfile profile,
+        ImmutableDictionary<string, AIFunction> tools,
         int eventBufferCapacity) : IAgentRun
     {
         private readonly CancellationTokenSource cancellation = new();
@@ -832,6 +835,8 @@ public sealed class AgentSession : IAgentSession
         internal ChatMessage UserMessage { get; } = userMessage;
 
         internal AgentRunProfile Profile { get; } = profile;
+
+        internal ImmutableDictionary<string, AIFunction> Tools { get; } = tools;
 
         internal void Start()
         {

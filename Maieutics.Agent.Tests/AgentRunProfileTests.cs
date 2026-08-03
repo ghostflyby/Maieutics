@@ -187,6 +187,39 @@ public sealed class AgentRunProfileTests
     }
 
     [Fact]
+    public async Task DynamicProfilesExposeDifferentRunLocalToolRegistries()
+    {
+        using var deadline = CreateDeadline();
+        var firstClient = new ScriptedChatClient(
+            (_, _) => StreamAsync(new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent("first-call", "first_tool", new Dictionary<string, object?>())])),
+            (_, _) => StreamAsync("first complete"));
+        var secondClient = new ScriptedChatClient(
+            (_, _) => StreamAsync(new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent("second-call", "second_tool", new Dictionary<string, object?>())])),
+            (_, _) => StreamAsync("second complete"));
+        var firstLease = new TrackingProfileLease(new AgentRunProfile(
+            firstClient,
+            new AgentSessionOptions(),
+            tools: [CreateSuccessfulTool("first_tool")]));
+        var secondLease = new TrackingProfileLease(new AgentRunProfile(
+            secondClient,
+            new AgentSessionOptions(),
+            tools: [CreateSuccessfulTool("second_tool")]));
+        var session = new AgentSession(new QueueProfileProvider(firstLease, secondLease));
+
+        await CompleteTurnAsync(session, "first", deadline.Token);
+        await CompleteTurnAsync(session, "second", deadline.Token);
+
+        firstClient.ToolNames.Should().AllSatisfy(static names => names.Should().Equal("first_tool"));
+        secondClient.ToolNames.Should().AllSatisfy(static names => names.Should().Equal("second_tool"));
+        firstLease.DisposeCount.Should().Be(1);
+        secondLease.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task InputLimitIsRunLocalAndRejectedStartReleasesItsLease()
     {
         using var deadline = CreateDeadline();
@@ -422,6 +455,8 @@ public sealed class AgentRunProfileTests
 
         public List<string?> Instructions { get; } = [];
 
+        public List<string[]> ToolNames { get; } = [];
+
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
@@ -435,6 +470,7 @@ public sealed class AgentRunProfileTests
         {
             Requests.Add(messages.Select(static message => message.Clone()).ToArray());
             Instructions.Add(options?.Instructions);
+            ToolNames.Add(options?.Tools?.OfType<AIFunction>().Select(static tool => tool.Name).ToArray() ?? []);
             return responses.Dequeue()(Requests[^1], cancellationToken);
         }
 
@@ -445,9 +481,9 @@ public sealed class AgentRunProfileTests
         }
     }
 
-    private static AIFunction CreateSuccessfulTool() =>
+    private static AIFunction CreateSuccessfulTool(string name = "echo") =>
         AIFunctionFactory.Create(
             () => "ok",
-            name: "echo",
+            name: name,
             description: "Returns success.");
 }

@@ -4,6 +4,7 @@ using Maieutics.Configuration;
 using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
+using Maieutics.Mcp;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
@@ -74,12 +75,16 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
+        builder.Services.AddSingleton(new McpStartupDirectory(startupCurrentDirectory));
+        builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();
         builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
+            services.GetRequiredService<MaieuticsRuntimeConfiguration>());
+        builder.Services.AddSingleton<IMaieuticsMcpController>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton(Workspace.Create(
             builder.Configuration["Maieutics:Workspace:Root"],
@@ -99,14 +104,13 @@ public static class MaieuticsHost
                 .ToArray());
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
+        builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
         builder.Services.AddHostedService<JupyterKernelHostedService>();
         return builder;
     }
 
     private static IAgentSession CreateAgentSession(IServiceProvider services) =>
-        new AgentSession(
-            services.GetRequiredService<IAgentRunProfileProvider>(),
-            services.GetRequiredService<IReadOnlyList<AIFunction>>());
+        new AgentSession(services.GetRequiredService<IAgentRunProfileProvider>());
 
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {
@@ -117,7 +121,8 @@ public static class MaieuticsHost
             runtimeConfiguration,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
             workspace: services.GetRequiredService<Workspace>(),
-            replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>());
+            replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
+            mcpController: services.GetRequiredService<IMaieuticsMcpController>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

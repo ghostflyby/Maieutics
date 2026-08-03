@@ -6,6 +6,7 @@ using Maieutics.Execution;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
+using Maieutics.Mcp;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Jupyter.Tests;
@@ -299,6 +300,39 @@ public sealed class AgentJupyterIntegrationTests
         {
             Directory.Delete(parent, recursive: true);
         }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task McpListCommandsRenderCommittedSafeStateWithoutChangingTranscript()
+    {
+        using var deadline = CreateDeadline();
+        var session = new AgentSession(new ScriptedChatClient());
+        var application = new MaieuticsAgentKernelApplication(
+            session,
+            static () => new MaieuticsAgentKernelOptions(),
+            runtimeConfiguration: null,
+            mcpController: new TestMcpController());
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        foreach (var command in new[] { "%mcp list", "%maieutics mcp list" })
+        {
+            var execution = await client.ExecuteAsync(new JupyterExecuteRequest(command), deadline.Token);
+            var outputs = await ReadOutputsAsync(execution, deadline.Token);
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            ReadMarkdown(outputs.OfType<JupyterDisplayOutput>().Single()).Should()
+                .Contain("`filesystem`").And.Contain("`read_file` → `filesystem_read_file`")
+                .And.Contain("Reconnecting").And.Contain("unavailable")
+                .And.NotContain("secret-header").And.NotContain("raw exception");
+        }
+
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
     }
 
     [Fact(Timeout = 30_000)]
@@ -850,6 +884,25 @@ public sealed class AgentJupyterIntegrationTests
             IsDefault: false,
             IsSelected: isSelected,
             IsAutomatic: true);
+    }
+
+    private sealed class TestMcpController : IMaieuticsMcpController
+    {
+        public IReadOnlyList<MaieuticsMcpServerInfo> GetMcpServers() =>
+        [
+            new(
+                "filesystem",
+                "Stdio",
+                MaieuticsMcpServerState.Connected,
+                null,
+                [new MaieuticsMcpToolInfo("read_file", "filesystem_read_file", true)]),
+            new(
+                "remote",
+                "Http",
+                MaieuticsMcpServerState.Reconnecting,
+                TimeSpan.FromSeconds(2),
+                [new MaieuticsMcpToolInfo("lookup", "remote_lookup", false)])
+        ];
     }
 
     private sealed class CommitBoundarySession : IAgentSession

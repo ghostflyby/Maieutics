@@ -45,6 +45,39 @@
       "MaxToolProgressEventsPerCall": 256,
       "EventBufferCapacity": 128
     },
+    "Mcp": {
+      "Servers": {
+        "filesystem": {
+          "Enabled": false,
+          "Transport": "Stdio",
+          "Command": "npx",
+          "Arguments": [
+            "-y",
+            "example-mcp-server"
+          ],
+          "WorkingDirectory": null,
+          "EnvironmentVariables": {},
+          "Tools": {
+            "read_file": "filesystem_read_file"
+          },
+          "InitializationTimeout": "00:00:30",
+          "RequestTimeout": "00:02:00",
+          "ShutdownTimeout": "00:00:05"
+        },
+        "remote": {
+          "Enabled": false,
+          "Transport": "Http",
+          "Endpoint": "https://example.test/mcp",
+          "Headers": {},
+          "Tools": {
+            "lookup": "remote_lookup"
+          },
+          "ConnectionTimeout": "00:00:30",
+          "InitializationTimeout": "00:00:30",
+          "RequestTimeout": "00:02:00"
+        }
+      }
+    },
     "DenoRepl": {
       "Executable": "deno",
       "MaxSessionsPerAgent": 4,

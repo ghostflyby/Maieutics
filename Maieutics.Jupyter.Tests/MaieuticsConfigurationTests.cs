@@ -1023,6 +1023,71 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact]
+    public async Task McpConfigurationValidatesTransportsAllowlistHttpsAndGlobalToolNames()
+    {
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-config-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
+            connectionFile,
+            TestContext.Current.CancellationToken);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+
+        try
+        {
+            AssertRejected(
+                new JsonObject
+                {
+                    ["remote"] = HttpMcpServer("https://example.test/mcp", new JsonObject())
+                },
+                "*non-empty Tools*");
+            AssertRejected(
+                new JsonObject
+                {
+                    ["remote"] = HttpMcpServer("http://example.test/mcp", ToolMap("lookup", "remote_lookup"))
+                },
+                "*must use HTTPS*");
+
+            var invalidStdio = StdioMcpServer("one", "shared_tool");
+            invalidStdio["Endpoint"] = "https://example.test/mcp";
+            AssertRejected(new JsonObject { ["stdio"] = invalidStdio }, "*not valid for MCP server*");
+
+            AssertRejected(
+                new JsonObject
+                {
+                    ["one"] = StdioMcpServer("one", "shared_tool"),
+                    ["two"] = StdioMcpServer("two", "shared_tool")
+                },
+                "*configured more than once*");
+
+            var validServers = new JsonObject
+            {
+                ["stdio"] = StdioMcpServer("read", "stdio_read"),
+                ["http"] = HttpMcpServer("http://127.0.0.1:65535/mcp", ToolMap("lookup", "http_lookup"))
+            };
+            File.WriteAllText(configurationFile, CreateMcpConfiguration(connectionFile, validServers));
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var host = builder.Build();
+            host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        void AssertRejected(JsonObject servers, string expectedMessage)
+        {
+            File.WriteAllText(configurationFile, CreateMcpConfiguration(connectionFile, servers));
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var host = builder.Build();
+            host.Services.Invoking(static services =>
+                    services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+                .Should().Throw<Exception>().WithMessage(expectedMessage);
+        }
+    }
+
     private static async Task<TrackingChatClient> AcquireClientAsync(MaieuticsRuntimeConfiguration runtime)
     {
         await using var lease = runtime.Acquire();
@@ -1103,6 +1168,40 @@ public sealed class MaieuticsConfigurationTests
         };
         return root.ToJsonString();
     }
+
+    private static string CreateMcpConfiguration(string connectionFile, JsonObject servers) =>
+        new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["Mcp"] = new JsonObject { ["Servers"] = servers },
+                ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
+            }
+        }.ToJsonString();
+
+    private static JsonObject StdioMcpServer(string remoteName, string exposedName) => new()
+    {
+        ["Enabled"] = true,
+        ["Transport"] = "Stdio",
+        ["Command"] = "/usr/bin/false",
+        ["Arguments"] = new JsonArray(),
+        ["EnvironmentVariables"] = new JsonObject(),
+        ["Tools"] = ToolMap(remoteName, exposedName)
+    };
+
+    private static JsonObject HttpMcpServer(string endpoint, JsonObject tools) => new()
+    {
+        ["Enabled"] = true,
+        ["Transport"] = "Http",
+        ["Endpoint"] = endpoint,
+        ["Headers"] = new JsonObject(),
+        ["Tools"] = tools
+    };
+
+    private static JsonObject ToolMap(string remoteName, string exposedName) => new()
+    {
+        [remoteName] = exposedName
+    };
 
     private static string CreateNamedConfiguration(
         string connectionFile,

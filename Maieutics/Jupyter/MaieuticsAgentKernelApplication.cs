@@ -6,6 +6,7 @@ using Maieutics.Configuration;
 using Maieutics.Execution;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
+using Maieutics.Mcp;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,6 +19,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private readonly IAgentSession session;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
+    private readonly IMaieuticsMcpController? mcpController;
     private readonly Workspace? workspace;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
@@ -29,7 +31,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
-        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null, null)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null, null, null)
     {
     }
 
@@ -40,14 +42,19 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null,
         Workspace? workspace = null,
-        JupyterDenoReplPresentationRouter? replPresentationRouter = null)
+        JupyterDenoReplPresentationRouter? replPresentationRouter = null,
+        IMaieuticsMcpController? mcpController = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
         this.runtimeConfiguration = runtimeConfiguration;
+        this.mcpController = mcpController;
         this.workspace = workspace;
         this.replPresentationRouter = replPresentationRouter;
-        this.getOptions().Validate();
+        if (runtimeConfiguration is null)
+        {
+            this.getOptions().Validate();
+        }
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -122,10 +129,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var arguments = code.Split((char[]?)null,
+        var originalArguments = code.Split((char[]?)null,
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (arguments.Length < 2 ||
-            !string.Equals(arguments[0], MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase))
+        var arguments = MaieuticsCommandLanguage.NormalizeCommandArguments(originalArguments);
+        if (arguments is null)
         {
             throw Create("MaieuticsCommandError", "Unknown Maieutics command.");
         }
@@ -135,11 +142,20 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             string output;
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Workspace, StringComparison.OrdinalIgnoreCase))
             {
-                output = ExecuteWorkspaceCommand(code, arguments);
+                var pathTokenCount = originalArguments[0].Equals(
+                    MaieuticsCommandLanguage.LegacyRoot,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? 3
+                    : 2;
+                output = ExecuteWorkspaceCommand(code, arguments, pathTokenCount);
             }
             else if (string.Equals(arguments[1], MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase))
             {
                 output = await ExecuteModelCommandAsync(arguments, cancellationToken).ConfigureAwait(false);
+            }
+            else if (string.Equals(arguments[1], MaieuticsCommandLanguage.Mcp, StringComparison.OrdinalIgnoreCase))
+            {
+                output = ExecuteMcpCommand(arguments);
             }
             else
             {
@@ -173,7 +189,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 StringComparer.OrdinalIgnoreCase);
             var sourceId = arguments.FirstOrDefault(arg =>
                 !string.Equals(arg, MaieuticsCommandLanguage.RefreshFlag, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(arg, MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(arg, MaieuticsCommandLanguage.LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(arg, MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(arg, MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase));
             var groups = await runtimeConfiguration.GetDiscoveredModelsAsync(
@@ -213,7 +229,23 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         throw new ArgumentException("Unknown model command or invalid arguments.");
     }
 
-    private string ExecuteWorkspaceCommand(string code, string[] arguments)
+    private string ExecuteMcpCommand(string[] arguments)
+    {
+        if (mcpController is null)
+        {
+            throw new ArgumentException("MCP commands are not available in this host.");
+        }
+
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
+        {
+            return RenderMcpList(mcpController.GetMcpServers());
+        }
+
+        throw new ArgumentException("Unknown MCP command or invalid arguments.");
+    }
+
+    private string ExecuteWorkspaceCommand(string code, string[] arguments, int pathTokenCount)
     {
         if (workspace is null)
         {
@@ -237,7 +269,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         else if (arguments.Length >= 4 &&
                  string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
         {
-            var path = GetRemainderAfterTokens(code, 3);
+            var path = GetRemainderAfterTokens(code, pathTokenCount);
             if (path.Length == 0 || path.IndexOfAny(['\r', '\n']) >= 0)
             {
                 throw new ArgumentException("A single-line workspace path is required.");
@@ -278,10 +310,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     }
 
     private static bool IsMaieuticsCommand(string code)
-    {
-        var trimmed = code.AsSpan().TrimStart();
-        return trimmed.StartsWith(MaieuticsCommandLanguage.Root, StringComparison.OrdinalIgnoreCase);
-    }
+        => MaieuticsCommandLanguage.IsCommandCell(code);
 
     private static string RenderCurrent(MaieuticsModelProfileSelection selection)
     {
@@ -314,6 +343,51 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
                 - Root: {RenderInlineCode(selection.RootPath)} ({selectionSource})
                 """;
+    }
+
+    private static string RenderMcpList(IReadOnlyList<MaieuticsMcpServerInfo> servers)
+    {
+        if (servers.Count == 0)
+        {
+            return "### MCP servers\n\nNo MCP servers are enabled.";
+        }
+
+        var output = new StringBuilder("### MCP servers\n\n");
+        foreach (var server in servers)
+        {
+            output.Append("- `")
+                .Append(EscapeCode(server.Id))
+                .Append("` — transport `")
+                .Append(EscapeCode(server.Transport))
+                .Append("`, state `")
+                .Append(server.State)
+                .Append('`');
+            if (server.State == MaieuticsMcpServerState.Reconnecting &&
+                server.NextReconnectDelay is { } reconnectDelay)
+            {
+                output.Append(", next reconnect in `")
+                    .Append(reconnectDelay)
+                    .Append('`');
+            }
+
+            output.AppendLine();
+            foreach (var tool in server.Tools)
+            {
+                output.Append("  - `")
+                    .Append(EscapeCode(tool.RemoteName))
+                    .Append("` → `")
+                    .Append(EscapeCode(tool.ExposedName))
+                    .Append('`');
+                if (!tool.Available)
+                {
+                    output.Append(" (unavailable)");
+                }
+
+                output.AppendLine();
+            }
+        }
+
+        return output.ToString();
     }
 
     private static string RenderInlineCode(string value)

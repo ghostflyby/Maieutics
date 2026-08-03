@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent;
@@ -13,11 +14,13 @@ public sealed record AgentRunProfile
     /// <param name="options">The instructions and limits applied to the run.</param>
     /// <param name="modelIdentity">The configured provider and model identity, when known.</param>
     /// <param name="capabilities">The model behaviors available to the run.</param>
+    /// <param name="tools">The immutable tools available for the complete run.</param>
     public AgentRunProfile(
         IChatClient chatClient,
         AgentSessionOptions options,
         AgentModelIdentity? modelIdentity = null,
-        AgentModelCapabilities capabilities = CompatibilityCapabilities)
+        AgentModelCapabilities capabilities = CompatibilityCapabilities,
+        IEnumerable<AIFunction>? tools = null)
     {
         if ((capabilities & ~CompatibilityCapabilities) != 0)
         {
@@ -30,6 +33,7 @@ public sealed record AgentRunProfile
         Options.Validate();
         ModelIdentity = modelIdentity;
         Capabilities = capabilities;
+        Tools = tools?.ToImmutableArray() ?? [];
     }
 
     /// <summary>Gets the model client used for every model invocation in the run.</summary>
@@ -43,6 +47,9 @@ public sealed record AgentRunProfile
 
     /// <summary>Gets the model behaviors available to the run.</summary>
     public AgentModelCapabilities Capabilities { get; }
+
+    /// <summary>Gets the immutable tools available for the complete run.</summary>
+    public IReadOnlyList<AIFunction> Tools { get; }
 }
 
 /// <summary>Provides an immutable profile for each newly started Agent run.</summary>

@@ -570,6 +570,67 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task ExternalHostCompletesMcpFunctionLoopWhenTestServerIsConfigured()
+    {
+        var mcpServer = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE");
+        if (string.IsNullOrWhiteSpace(mcpServer))
+        {
+            return;
+        }
+
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-native-mcp-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(root, "connection.json");
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.Responses,
+            toolFlow: true,
+            toolName: "mcp_echo",
+            toolArgumentsJson: "{\"value\":\"native mcp value\"}",
+            expectedToolResultText: "native mcp value");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateMcpHostConfiguration(connectionFile, provider.Endpoint, Path.GetFullPath(mcpServer)),
+            deadline.Token);
+        using var started = StartConfiguredHostProcess(configurationFile);
+        var process = started.Process;
+
+        try
+        {
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            var ready = client.WaitForReadyAsync(deadline.Token);
+            var exited = process.WaitForExitAsync(deadline.Token);
+            (await Task.WhenAny(ready, exited)).Should().BeSameAs(ready, started.FailureDetails());
+            await ready;
+
+            (await ExecuteAndGetMarkdownAsync(client, "%mcp list", deadline.Token)).Should()
+                .Contain("`echo` → `mcp_echo`").And.Contain("Connected");
+            (await ExecuteAndGetMarkdownAsync(client, "call the MCP echo tool", deadline.Token)).Should()
+                .Be("tool-backed answer");
+            await provider.Completion.WaitAsync(deadline.Token);
+            provider.RequestBodies.Last().GetRawText().Should()
+                .Contain("status").And.Contain("ok").And.Contain("native mcp value");
+
+            await client.ShutdownAsync(false, deadline.Token);
+            await process.WaitForExitAsync(deadline.Token);
+            process.ExitCode.Should().Be(0, started.FailureDetails());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Theory(Timeout = 60_000)]
     [InlineData(OpenAiApiFlavor.Responses)]
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
@@ -1017,6 +1078,44 @@ public sealed class MaieuticsHostIntegrationTests
         };
         return root.ToJsonString();
     }
+
+    private static string CreateMcpHostConfiguration(string connectionFile, Uri endpoint, string mcpServer) =>
+        new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["Model"] = new JsonObject
+                {
+                    ["Provider"] = "OpenAI",
+                    ["Name"] = "test-model"
+                },
+                ["Providers"] = new JsonObject
+                {
+                    ["OpenAI"] = new JsonObject
+                    {
+                        ["ApiFlavor"] = OpenAiApiFlavor.Responses.ToString(),
+                        ["ApiKey"] = "test-key",
+                        ["Endpoint"] = endpoint.ToString()
+                    }
+                },
+                ["Mcp"] = new JsonObject
+                {
+                    ["Servers"] = new JsonObject
+                    {
+                        ["test"] = new JsonObject
+                        {
+                            ["Enabled"] = true,
+                            ["Transport"] = "Stdio",
+                            ["Command"] = mcpServer,
+                            ["Arguments"] = new JsonArray(),
+                            ["EnvironmentVariables"] = new JsonObject(),
+                            ["Tools"] = new JsonObject { ["echo"] = "mcp_echo" }
+                        }
+                    }
+                },
+                ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
+            }
+        }.ToJsonString();
 
     private static string CreateMultiProviderHostConfiguration(
         string connectionFile,

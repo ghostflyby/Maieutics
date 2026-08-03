@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Jupyter;
+using Maieutics.Mcp;
 using Maieutics.Providers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -13,14 +14,23 @@ using Microsoft.Extensions.Primitives;
 
 namespace Maieutics.Configuration;
 
-internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfiguration, IAsyncDisposable
+internal sealed class MaieuticsRuntimeConfiguration :
+    IMaieuticsRuntimeConfiguration,
+    IMaieuticsMcpController,
+    IAsyncDisposable
 {
     private readonly IConfiguration configuration;
     private readonly MaieuticsConfigurationFile configurationFile;
     private readonly MaieuticsConfigurationFileErrors fileErrors;
     private readonly IReadOnlyDictionary<string, IConfiguredChatClientFactory> factories;
+    private readonly IReadOnlyList<AIFunction> builtInTools;
+    private readonly ILoggerFactory loggerFactory;
     private readonly ILogger<MaieuticsRuntimeConfiguration> logger;
+    private readonly McpStartupDirectory startupDirectory;
+    private readonly TimeProvider timeProvider;
+    private readonly McpClientTransportFactory? mcpTransportFactory;
     private readonly Lock gate = new();
+    private readonly Lock initializationGate = new();
 
     private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromMinutes(5);
 
@@ -35,9 +45,10 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     });
 
     private readonly List<Task> retiredGenerations = [];
-    private readonly IDisposable reloadSubscription;
-    private readonly IDisposable fileErrorSubscription;
-    private readonly Task reloadLoop;
+    private IDisposable? reloadSubscription;
+    private IDisposable? fileErrorSubscription;
+    private Task reloadLoop = Task.CompletedTask;
+    private Task? initialization;
     private RuntimeSnapshot? current;
     private ProfileOverride? sessionOverride;
     private int disposed;
@@ -49,22 +60,31 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         MaieuticsConfigurationFile configurationFile,
         MaieuticsConfigurationFileErrors fileErrors,
         IEnumerable<IConfiguredChatClientFactory> factories,
-        ILogger<MaieuticsRuntimeConfiguration> logger)
+        IReadOnlyList<AIFunction> builtInTools,
+        McpStartupDirectory startupDirectory,
+        TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
+        ILogger<MaieuticsRuntimeConfiguration> logger,
+        McpClientTransportFactory? mcpTransportFactory = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
         this.fileErrors = fileErrors ?? throw new ArgumentNullException(nameof(fileErrors));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        this.startupDirectory = startupDirectory ?? throw new ArgumentNullException(nameof(startupDirectory));
+        this.mcpTransportFactory = mcpTransportFactory;
         this.factories = CreateFactoryRegistry(factories);
+        this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
 
         var candidate = CreateCandidate();
-        current = BuildSnapshot(candidate, previous: null, version: 1);
         ConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
-
-        fileErrorSubscription = fileErrors.RegisterSignal(SignalReload);
-        reloadSubscription = ChangeToken.OnChange(configuration.GetReloadToken, SignalReload);
-        reloadLoop = Task.Run(ProcessReloadsAsync);
-        SignalReload();
+        if (candidate.McpServers.Count == 0)
+        {
+            current = BuildSnapshot(candidate, previous: null, version: 1, new Dictionary<string, McpServerGeneration>());
+            StartReloadLoop();
+        }
 
         logger.LogInformation(
             "Using Maieutics configuration file {ConfigurationPath} selected from {ConfigurationSource}.",
@@ -117,6 +137,30 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 entry.Generation,
                 entry.Identity,
                 entry.Capabilities);
+        }
+    }
+
+    internal Task InitializeAsync(CancellationToken cancellationToken)
+    {
+        lock (initializationGate)
+        {
+            if (current is not null)
+            {
+                return Task.CompletedTask;
+            }
+
+            return initialization ??= InitializeCoreAsync(cancellationToken);
+        }
+    }
+
+    public IReadOnlyList<MaieuticsMcpServerInfo> GetMcpServers()
+    {
+        lock (gate)
+        {
+            return GetCurrent().McpServers.Values
+                .OrderBy(static generation => generation.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(static generation => generation.GetInfo())
+                .ToArray();
         }
     }
 
@@ -493,34 +537,121 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
+            await ObserveInitializationAsync().ConfigureAwait(false);
             await reloadLoop.ConfigureAwait(false);
             return;
         }
 
-        reloadSubscription.Dispose();
-        fileErrorSubscription.Dispose();
+        reloadSubscription?.Dispose();
+        fileErrorSubscription?.Dispose();
         reloadSignals.Writer.TryComplete();
         await reloadLoop.ConfigureAwait(false);
+        await ObserveInitializationAsync().ConfigureAwait(false);
 
-        ProfileGeneration[] generations;
+        ProfileGeneration[] generations = [];
+        McpServerGeneration[] mcpGenerations = [];
         Task[] retired;
         lock (gate)
         {
-            var automaticGeneration = sessionOverride is AutomaticProfileOverride automatic
-                ? automatic.Generation
-                : null;
-            generations = GetCurrent().Profiles.Values
-                .Select(static profile => profile.Generation)
-                .Concat(automaticGeneration is null ? [] : [automaticGeneration])
-                .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
-                .ToArray();
+            if (current is { } snapshot)
+            {
+                var automaticGeneration = sessionOverride is AutomaticProfileOverride automatic
+                    ? automatic.Generation
+                    : null;
+                generations = snapshot.Profiles.Values
+                    .Select(static profile => profile.Generation)
+                    .Concat(automaticGeneration is null ? [] : [automaticGeneration])
+                    .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+                    .ToArray();
+                mcpGenerations = snapshot.McpServers.Values
+                    .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
+                    .ToArray();
+            }
+
             current = null;
             sessionOverride = null;
             retired = retiredGenerations.ToArray();
         }
 
-        var currentRetirements = generations.Select(static generation => generation.Retire());
+        var currentRetirements = generations.Select(static generation => generation.Retire())
+            .Concat(mcpGenerations.Select(static generation => generation.Retire()));
         await Task.WhenAll(retired.Concat(currentRetirements)).ConfigureAwait(false);
+    }
+
+    private async Task InitializeCoreAsync(CancellationToken cancellationToken)
+    {
+        var candidate = CreateCandidate();
+        RuntimeSnapshot? snapshot = await BuildSnapshotAsync(candidate, previous: null, version: 1, cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            lock (gate)
+            {
+                ObjectDisposedException.ThrowIf(disposed != 0, this);
+                current = snapshot;
+                snapshot = null;
+            }
+
+            StartReloadLoop();
+        }
+        finally
+        {
+            if (snapshot is not null)
+            {
+                await RetireSnapshotAsync(snapshot).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task ObserveInitializationAsync()
+    {
+        Task? task;
+        lock (initializationGate)
+        {
+            task = initialization;
+        }
+
+        if (task is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Host startup observes readiness failures. Disposal only needs to observe terminal completion.
+        }
+    }
+
+    private static Task RetireSnapshotAsync(RuntimeSnapshot snapshot)
+    {
+        var modelRetirements = snapshot.Profiles.Values
+            .Select(static profile => profile.Generation)
+            .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+            .Select(static generation => generation.Retire());
+        var mcpRetirements = snapshot.McpServers.Values
+            .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
+            .Select(static generation => generation.Retire());
+        return Task.WhenAll(modelRetirements.Concat(mcpRetirements));
+    }
+
+    private void StartReloadLoop()
+    {
+        lock (initializationGate)
+        {
+            if (reloadSubscription is not null)
+            {
+                return;
+            }
+
+            fileErrorSubscription = fileErrors.RegisterSignal(SignalReload);
+            reloadSubscription = ChangeToken.OnChange(configuration.GetReloadToken, SignalReload);
+            reloadLoop = Task.Run(ProcessReloadsAsync);
+            SignalReload();
+        }
     }
 
     private void SignalReload() => reloadSignals.Writer.TryWrite(0);
@@ -533,7 +664,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             var loadError = fileErrors.TakeLatest();
             try
             {
-                Reload();
+                await ReloadAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -547,7 +678,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         }
     }
 
-    private void Reload()
+    private async Task ReloadAsync()
     {
         if (configurationFile is { Required: true, Path: { } requiredPath } &&
             !File.Exists(requiredPath))
@@ -575,7 +706,11 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             }
         }
 
-        var replacement = BuildSnapshot(candidate, previous, checked(previous.Version + 1));
+        var replacement = await BuildSnapshotAsync(
+            candidate,
+            previous,
+            checked(previous.Version + 1),
+            CancellationToken.None).ConfigureAwait(false);
         string? removedOverride = null;
         lock (gate)
         {
@@ -609,6 +744,13 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 .Where(generation => !retained.Contains(generation))
                 .ToList();
             retiredGenerations.AddRange(retired.Select(static generation => generation.Retire()));
+
+            var retainedMcp = replacement.McpServers.Values
+                .ToHashSet<McpServerGeneration>(ReferenceEqualityComparer.Instance);
+            var retiredMcp = previous.McpServers.Values
+                .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
+                .Where(generation => !retainedMcp.Contains(generation));
+            retiredGenerations.AddRange(retiredMcp.Select(static generation => generation.Retire()));
         }
 
         if (removedOverride is not null)
@@ -622,7 +764,50 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         logger.LogInformation("Applied Maieutics configuration version {ConfigurationVersion}.", replacement.Version);
     }
 
-    private RuntimeSnapshot BuildSnapshot(Candidate candidate, RuntimeSnapshot? previous, long version)
+    private async Task<RuntimeSnapshot> BuildSnapshotAsync(
+        Candidate candidate,
+        RuntimeSnapshot? previous,
+        long version,
+        CancellationToken cancellationToken)
+    {
+        var mcpServers = new Dictionary<string, McpServerGeneration>(StringComparer.OrdinalIgnoreCase);
+        var created = new List<McpServerGeneration>();
+        try
+        {
+            foreach (var server in candidate.McpServers)
+            {
+                if (previous is not null &&
+                    previous.McpServers.TryGetValue(server.Id, out var previousGeneration) &&
+                    string.Equals(previousGeneration.GenerationKey, server.GenerationKey, StringComparison.Ordinal))
+                {
+                    mcpServers.Add(server.Id, previousGeneration);
+                    continue;
+                }
+
+                var generation = await McpServerGeneration.CreateAsync(
+                    server,
+                    loggerFactory,
+                    timeProvider,
+                    cancellationToken,
+                    mcpTransportFactory).ConfigureAwait(false);
+                created.Add(generation);
+                mcpServers.Add(server.Id, generation);
+            }
+
+            return BuildSnapshot(candidate, previous, version, mcpServers);
+        }
+        catch
+        {
+            await Task.WhenAll(created.Select(static generation => generation.Retire())).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private RuntimeSnapshot BuildSnapshot(
+        Candidate candidate,
+        RuntimeSnapshot? previous,
+        long version,
+        IReadOnlyDictionary<string, McpServerGeneration> mcpServers)
     {
         var entries = new Dictionary<string, ProfileEntry>(StringComparer.OrdinalIgnoreCase);
         var sourceMap = new Dictionary<string, IConfiguredChatClientSource>(StringComparer.OrdinalIgnoreCase);
@@ -668,6 +853,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 candidate.DefaultProfileId,
                 entries,
                 sourceMap,
+                mcpServers,
                 candidate.Key);
         }
         catch
@@ -688,6 +874,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         root.Bind(options);
         NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
+        var mcpServers = CreateMcpServers(root.GetSection("Mcp"), options.Mcp);
 
         var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
                            root.GetSection("Profiles").GetChildren().Any() ||
@@ -703,15 +890,18 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
         if (!hasNewSchema && !hasLegacySchema)
         {
-            return CreateCandidate(options, string.Empty, [], []);
+            return CreateCandidate(options, string.Empty, [], [], mcpServers);
         }
 
         return hasNewSchema
-            ? CreateNamedCandidate(root, options)
-            : CreateLegacyCandidate(root, options);
+            ? CreateNamedCandidate(root, options, mcpServers)
+            : CreateLegacyCandidate(root, options, mcpServers);
     }
 
-    private Candidate CreateNamedCandidate(IConfigurationSection root, MaieuticsOptions options)
+    private Candidate CreateNamedCandidate(
+        IConfigurationSection root,
+        MaieuticsOptions options,
+        IReadOnlyList<McpServerDefinition> mcpServers)
     {
         var sources = new Dictionary<string, BoundSource>(StringComparer.OrdinalIgnoreCase);
         foreach (var sourceSection in root.GetSection("Sources").GetChildren())
@@ -781,7 +971,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                     $"Default model profile '{options.DefaultProfile}' does not exist.");
             }
 
-            return CreateCandidate(options, string.Empty, profiles, sources.Values.ToArray());
+            return CreateCandidate(options, string.Empty, profiles, sources.Values.ToArray(), mcpServers);
         }
 
         var defaultProfileId = ValidateIdentifier(options.DefaultProfile, "profile");
@@ -792,10 +982,13 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             throw new InvalidOperationException($"Default model profile '{defaultProfileId}' does not exist.");
         }
 
-        return CreateCandidate(options, defaultProfile.Id, profiles, sources.Values.ToArray());
+        return CreateCandidate(options, defaultProfile.Id, profiles, sources.Values.ToArray(), mcpServers);
     }
 
-    private Candidate CreateLegacyCandidate(IConfigurationSection root, MaieuticsOptions options)
+    private Candidate CreateLegacyCandidate(
+        IConfigurationSection root,
+        MaieuticsOptions options,
+        IReadOnlyList<McpServerDefinition> mcpServers)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model.Name);
         var provider = string.IsNullOrWhiteSpace(options.Model.Provider) ? "OpenAI" : options.Model.Provider;
@@ -822,14 +1015,20 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 source.ProviderName,
                 source.ClientGenerationKey,
                 options.Model.Name));
-        return CreateCandidate(options, profileId, [profile], [new BoundSource(sourceId, source)]);
+        return CreateCandidate(
+            options,
+            profileId,
+            [profile],
+            [new BoundSource(sourceId, source)],
+            mcpServers);
     }
 
     private static Candidate CreateCandidate(
         MaieuticsOptions options,
         string defaultProfileId,
         IReadOnlyList<CandidateProfile> profiles,
-        IReadOnlyList<BoundSource> sources)
+        IReadOnlyList<BoundSource> sources,
+        IReadOnlyList<McpServerDefinition> mcpServers)
     {
         var key = new RuntimeKey(
             NormalizeIdentifier(defaultProfileId),
@@ -847,7 +1046,244 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
             Path.GetFullPath(options.Jupyter.ConnectionFile),
             options.Jupyter.FlushInterval,
             options.Jupyter.FlushCharacters);
-        return new Candidate(options, defaultProfileId, profiles, sources, key);
+        return new Candidate(options, defaultProfileId, profiles, sources, mcpServers, key);
+    }
+
+    private IReadOnlyList<McpServerDefinition> CreateMcpServers(
+        IConfigurationSection section,
+        MaieuticsMcpOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(options.Servers);
+        ValidateConfigurationKeys(section, "MCP configuration", "Servers");
+
+        var exposedNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var function in builtInTools)
+        {
+            ArgumentNullException.ThrowIfNull(function);
+            if (!IsValidToolName(function.Name))
+            {
+                throw new InvalidOperationException(
+                    $"The built-in tool name '{function.Name}' must contain 1 to 64 ASCII letters, digits, underscores, or hyphens.");
+            }
+
+            if (!exposedNames.Add(function.Name))
+            {
+                throw new InvalidOperationException(
+                    $"The model-visible tool name '{function.Name}' is configured more than once.");
+            }
+        }
+
+        var result = new List<McpServerDefinition>();
+        var serverIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var serverSection in section.GetSection("Servers").GetChildren())
+        {
+            var serverId = serverSection.Key;
+            if (string.IsNullOrWhiteSpace(serverId) || !serverIds.Add(serverId))
+            {
+                throw new InvalidOperationException("MCP server identifiers must be non-empty and unique.");
+            }
+
+            if (!options.Servers.TryGetValue(serverId, out var serverOptions) || !serverOptions.Enabled)
+            {
+                continue;
+            }
+
+            if (!Enum.TryParse<McpServerTransportKind>(serverOptions.Transport, ignoreCase: true, out var transport) ||
+                !Enum.IsDefined(transport))
+            {
+                throw new InvalidOperationException(
+                    $"MCP server '{serverId}' must configure Transport as 'Stdio' or 'Http'.");
+            }
+
+            var allowedKeys = transport == McpServerTransportKind.Stdio
+                ? new[]
+                {
+                    "Enabled", "Transport", "Command", "Arguments", "WorkingDirectory", "EnvironmentVariables",
+                    "Tools", "InitializationTimeout", "RequestTimeout", "ShutdownTimeout"
+                }
+                :
+                [
+                    "Enabled", "Transport", "Endpoint", "Headers", "Tools", "ConnectionTimeout",
+                    "InitializationTimeout", "RequestTimeout"
+                ];
+            ValidateConfigurationKeys(serverSection, $"MCP server '{serverId}'", allowedKeys);
+
+            ArgumentNullException.ThrowIfNull(serverOptions.Tools);
+            if (serverOptions.Tools.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Enabled MCP server '{serverId}' must configure a non-empty Tools allowlist.");
+            }
+
+            var tools = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var pair in serverOptions.Tools)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key))
+                {
+                    throw new InvalidOperationException(
+                        $"MCP server '{serverId}' contains an empty remote tool name.");
+                }
+
+                if (!IsValidToolName(pair.Value))
+                {
+                    throw new InvalidOperationException(
+                        $"The model-visible MCP tool name '{pair.Value}' must contain 1 to 64 ASCII letters, digits, underscores, or hyphens.");
+                }
+
+                if (!exposedNames.Add(pair.Value))
+                {
+                    throw new InvalidOperationException(
+                        $"The model-visible tool name '{pair.Value}' is configured more than once.");
+                }
+
+                tools.Add(pair.Key, pair.Value);
+            }
+
+            ValidatePositiveTimeout(serverOptions.InitializationTimeout, serverId, "InitializationTimeout");
+            ValidatePositiveTimeout(serverOptions.RequestTimeout, serverId, "RequestTimeout");
+
+            string? command = null;
+            IReadOnlyList<string> arguments = [];
+            string? workingDirectory = null;
+            IReadOnlyDictionary<string, string?> environmentVariables =
+                new Dictionary<string, string?>(StringComparer.Ordinal);
+            Uri? endpoint = null;
+            IReadOnlyDictionary<string, string> headers =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var shutdownTimeout = TimeSpan.Zero;
+            var connectionTimeout = TimeSpan.Zero;
+
+            if (transport == McpServerTransportKind.Stdio)
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(serverOptions.Command);
+                ArgumentNullException.ThrowIfNull(serverOptions.Arguments);
+                ArgumentNullException.ThrowIfNull(serverOptions.EnvironmentVariables);
+                command = serverOptions.Command;
+                arguments = serverOptions.Arguments.ToArray();
+                environmentVariables = new Dictionary<string, string?>(
+                    serverOptions.EnvironmentVariables,
+                    StringComparer.Ordinal);
+                if (serverSection.GetSection("WorkingDirectory").Value is not null &&
+                    string.IsNullOrWhiteSpace(serverOptions.WorkingDirectory))
+                {
+                    throw new InvalidOperationException(
+                        $"MCP server '{serverId}' WorkingDirectory cannot be empty when configured.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(serverOptions.WorkingDirectory))
+                {
+                    workingDirectory = Path.GetFullPath(serverOptions.WorkingDirectory, startupDirectory.Path);
+                }
+
+                ValidatePositiveTimeout(serverOptions.ShutdownTimeout, serverId, "ShutdownTimeout");
+                shutdownTimeout = serverOptions.ShutdownTimeout;
+            }
+            else
+            {
+                if (!Uri.TryCreate(serverOptions.Endpoint, UriKind.Absolute, out endpoint) ||
+                    !string.Equals(endpoint.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"MCP server '{serverId}' Endpoint must be an absolute HTTP or HTTPS URI.");
+                }
+
+                if (!string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                    !endpoint.IsLoopback)
+                {
+                    throw new InvalidOperationException(
+                        $"MCP server '{serverId}' must use HTTPS unless its endpoint is loopback.");
+                }
+
+                ArgumentNullException.ThrowIfNull(serverOptions.Headers);
+                foreach (var pair in serverOptions.Headers)
+                {
+                    if (string.IsNullOrWhiteSpace(pair.Key) || pair.Value is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"MCP server '{serverId}' contains an invalid HTTP header.");
+                    }
+                }
+
+                headers = new Dictionary<string, string>(serverOptions.Headers, StringComparer.OrdinalIgnoreCase);
+                ValidatePositiveTimeout(serverOptions.ConnectionTimeout, serverId, "ConnectionTimeout");
+                connectionTimeout = serverOptions.ConnectionTimeout;
+            }
+
+            var generationKey = McpServerDefinition.CreateGenerationKey(
+                transport,
+                command,
+                arguments,
+                workingDirectory,
+                environmentVariables,
+                endpoint,
+                headers,
+                tools,
+                serverOptions.InitializationTimeout,
+                serverOptions.RequestTimeout,
+                shutdownTimeout,
+                connectionTimeout);
+            result.Add(new McpServerDefinition(
+                serverId,
+                transport,
+                command,
+                arguments,
+                workingDirectory,
+                environmentVariables,
+                endpoint,
+                headers,
+                tools,
+                serverOptions.InitializationTimeout,
+                serverOptions.RequestTimeout,
+                shutdownTimeout,
+                connectionTimeout,
+                generationKey));
+        }
+
+        return result;
+    }
+
+    private static void ValidatePositiveTimeout(TimeSpan value, string serverId, string field)
+    {
+        if (value <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException(
+                $"MCP server '{serverId}' {field} must be positive.");
+        }
+    }
+
+    private static bool IsValidToolName(string? name)
+    {
+        if (string.IsNullOrEmpty(name) || name.Length > 64)
+        {
+            return false;
+        }
+
+        foreach (var character in name)
+        {
+            if (character is not (>= 'A' and <= 'Z') and not (>= 'a' and <= 'z') and not (>= '0' and <= '9') and
+                not '_' and not '-')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void ValidateConfigurationKeys(
+        IConfigurationSection section,
+        string description,
+        params string[] allowed)
+    {
+        var allowedKeys = allowed.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = section.GetChildren().FirstOrDefault(child => !allowedKeys.Contains(child.Key));
+        if (unknown is not null)
+        {
+            throw new InvalidOperationException(
+                $"Configuration field '{unknown.Path}' is not valid for {description}.");
+        }
     }
 
     private static void NormalizeAgentHistoryLimit(IConfigurationSection root, MaieuticsOptions options)
@@ -891,7 +1327,8 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     {
         if (snapshot.Key != candidate.Key ||
             snapshot.Profiles.Count != candidate.Profiles.Count ||
-            snapshot.Sources.Count != candidate.Sources.Count)
+            snapshot.Sources.Count != candidate.Sources.Count ||
+            snapshot.McpServers.Count != candidate.McpServers.Count)
         {
             return false;
         }
@@ -911,6 +1348,15 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
                 !string.Equals(currentSource.ProviderName, source.Source.ProviderName,
                     StringComparison.OrdinalIgnoreCase) ||
                 !Equals(currentSource.ClientGenerationKey, source.Source.ClientGenerationKey))
+            {
+                return false;
+            }
+        }
+
+        foreach (var server in candidate.McpServers)
+        {
+            if (!snapshot.McpServers.TryGetValue(server.Id, out var currentServer) ||
+                !string.Equals(currentServer.GenerationKey, server.GenerationKey, StringComparison.Ordinal))
             {
                 return false;
             }
@@ -1014,18 +1460,58 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
     private RuntimeSnapshot GetCurrent() =>
         current ?? throw new ObjectDisposedException(nameof(MaieuticsRuntimeConfiguration));
 
-    private static RuntimeProfileLease CreateRuntimeProfileLease(
+    private RuntimeProfileLease CreateRuntimeProfileLease(
         RuntimeSnapshot snapshot,
         ProfileGeneration generation,
         AgentModelIdentity identity,
-        AgentModelCapabilities capabilities) =>
-        new(
-            generation.Acquire(),
-            new AgentRunProfile(
-                generation.Client,
-                CreateAgentOptions(snapshot.Options),
-                identity,
-                capabilities));
+        AgentModelCapabilities capabilities)
+    {
+        var generationLease = generation.Acquire();
+        var mcpLeases = new List<McpServerGeneration.McpServerLease>();
+        try
+        {
+            var tools = new List<AIFunction>(builtInTools.Count);
+            tools.AddRange(builtInTools);
+            foreach (var server in snapshot.McpServers.Values
+                         .OrderBy(static value => value.Id, StringComparer.OrdinalIgnoreCase))
+            {
+                if (server.TryAcquire() is not { } mcpLease)
+                {
+                    continue;
+                }
+
+                mcpLeases.Add(mcpLease);
+                tools.AddRange(mcpLease.Tools);
+            }
+
+            return new RuntimeProfileLease(
+                generationLease,
+                mcpLeases,
+                new AgentRunProfile(
+                    generation.Client,
+                    CreateAgentOptions(snapshot.Options),
+                    identity,
+                    capabilities,
+                    tools));
+        }
+        catch
+        {
+            foreach (var lease in mcpLeases)
+            {
+                try
+                {
+                    lease.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "An MCP connection lease failed during run-profile acquisition rollback.");
+                }
+            }
+
+            generationLease.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            throw;
+        }
+    }
 
     private static AgentModelProfileId CreateAutomaticProfileId(string sourceId, string model)
     {
@@ -1073,6 +1559,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         string DefaultProfileId,
         IReadOnlyList<CandidateProfile> Profiles,
         IReadOnlyList<BoundSource> Sources,
+        IReadOnlyList<McpServerDefinition> McpServers,
         RuntimeKey Key);
 
     private sealed record CandidateProfile(
@@ -1114,6 +1601,7 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
         string DefaultProfileId,
         IReadOnlyDictionary<string, ProfileEntry> Profiles,
         IReadOnlyDictionary<string, IConfiguredChatClientSource> Sources,
+        IReadOnlyDictionary<string, McpServerGeneration> McpServers,
         RuntimeKey Key);
 
     private sealed record ProfileEntry(
@@ -1192,11 +1680,40 @@ internal sealed class MaieuticsRuntimeConfiguration : IMaieuticsRuntimeConfigura
 
     private sealed class RuntimeProfileLease(
         ProfileGenerationLease generationLease,
+        IReadOnlyList<McpServerGeneration.McpServerLease> mcpLeases,
         AgentRunProfile profile) : IAgentRunProfileLease
     {
+        private readonly TaskCompletionSource disposal =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int disposed;
+
         public AgentRunProfile Profile { get; } = profile;
 
-        public ValueTask DisposeAsync() => generationLease.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0)
+            {
+                _ = DisposeCoreAsync();
+            }
+
+            return new ValueTask(disposal.Task);
+        }
+
+        private async Task DisposeCoreAsync()
+        {
+            try
+            {
+                var releases = mcpLeases
+                    .Select(static lease => lease.DisposeAsync().AsTask())
+                    .Append(generationLease.DisposeAsync().AsTask());
+                await Task.WhenAll(releases).ConfigureAwait(false);
+                disposal.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                disposal.TrySetException(exception);
+            }
+        }
     }
 
     private sealed class ProfileGeneration(IChatClient client, ILogger logger)

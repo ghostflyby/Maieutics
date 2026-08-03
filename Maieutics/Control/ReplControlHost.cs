@@ -19,7 +19,7 @@ internal sealed class ReplControlHost : IAsyncDisposable
     private readonly WebApplication application;
     private readonly ILogger<ReplControlHost> logger;
     private readonly string socketPath;
-    private readonly Func<Socket, bool> peerVerifier;
+    private Func<Socket, bool> peerVerifier;
     private int stopState;
 
     private ReplControlHost(
@@ -36,6 +36,13 @@ internal sealed class ReplControlHost : IAsyncDisposable
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
     public string SocketPath => socketPath;
+
+    /// <summary>Creates a short socket path within the platform unix socket length limit.</summary>
+    internal static string CreateSocketPath()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"mc-{Guid.NewGuid():N}"[..15]);
+        return Path.Combine(directory, "sock");
+    }
 
     /// <summary>
     /// Starts the control channel. The expected process id is the spawned REPL child; connections
@@ -92,10 +99,18 @@ internal sealed class ReplControlHost : IAsyncDisposable
         });
 
         var application = builder.Build();
+        ReplControlHost? owner = null;
         application.Use(async (context, next) =>
         {
+            var current = Volatile.Read(ref owner);
+            if (current is null)
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+
             var peerSocket = GetPeerSocket(context);
-            if (peerSocket is null || !peerVerifier(peerSocket))
+            if (peerSocket is null || !current.Authorize(peerSocket))
             {
                 logger.LogWarning(
                     "Rejected control channel connection with an unexpected peer identity.");
@@ -109,6 +124,8 @@ internal sealed class ReplControlHost : IAsyncDisposable
         application.MapGet("/health", () => Results.Text("ok"));
         application.Map("/ws", HandleWebSocketAsync);
 
+        var host = new ReplControlHost(application, socketPath, peerVerifier, logger);
+        owner = host;
         try
         {
             await application.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -120,7 +137,20 @@ internal sealed class ReplControlHost : IAsyncDisposable
             throw;
         }
 
-        return new ReplControlHost(application, socketPath, peerVerifier, logger);
+        return host;
+    }
+
+    /// <summary>Rebinds the expected child process id after the child process is replaced.</summary>
+    internal void UpdateExpectedProcessId(int processId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
+        Volatile.Write(ref peerVerifier, CreateDefaultPeerVerifier(processId));
+    }
+
+    private bool Authorize(Socket socket)
+    {
+        var verifier = Volatile.Read(ref peerVerifier);
+        return verifier is not null && verifier(socket);
     }
 
     public async ValueTask StopAsync(CancellationToken cancellationToken = default)

@@ -1,10 +1,12 @@
 using Maieutics.Jupyter.Client;
+using Maieutics.Control;
+using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Execution;
 
 internal interface IDenoReplSessionFactory
 {
-    Task<IJupyterKernelManager> StartAsync(
+    Task<DenoReplStartResult> StartAsync(
         string workingDirectory,
         CancellationToken cancellationToken);
 }
@@ -32,24 +34,36 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
     ];
 
     private readonly DenoReplOptions options;
+    private readonly ILogger<ReplControlHost> logger;
 
-    public LocalDenoReplSessionFactory(DenoReplOptions options)
+    public LocalDenoReplSessionFactory(DenoReplOptions options, ILogger<ReplControlHost> logger)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public async Task<IJupyterKernelManager> StartAsync(
+    public async Task<DenoReplStartResult> StartAsync(
         string workingDirectory,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+        if (OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException(
+                "The Deno REPL control channel requires named-pipe bootstrap, which is not implemented on Windows yet.");
+        }
+
+        var socketPath = ReplControlHost.CreateSocketPath();
         var kernelSpec = new JupyterKernelSpec(
             [options.Executable, "jupyter", "--kernel", "--conn", "{connection_file}"],
             "Deno",
             "typescript",
             "signal",
-            new Dictionary<string, string>());
-        return await LocalJupyterKernelManager.StartAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [MaieuticsReplIpcEnvironmentVariable] = socketPath
+            });
+        var manager = await LocalJupyterKernelManager.StartAsync(
             kernelSpec,
             new LocalJupyterKernelManagerOptions
             {
@@ -60,7 +74,32 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
                 ShutdownTimeout = options.ShutdownTimeout
             },
             cancellationToken).ConfigureAwait(false);
+
+        ReplControlHost? controlChannel = null;
+        try
+        {
+            var processId = manager.ProcessId
+                ?? throw new InvalidOperationException("The Deno REPL child process id is unavailable.");
+            controlChannel = await ReplControlHost.StartAsync(
+                socketPath,
+                processId,
+                logger,
+                cancellationToken).ConfigureAwait(false);
+            return new DenoReplStartResult(manager, controlChannel);
+        }
+        catch
+        {
+            if (controlChannel is not null)
+            {
+                await controlChannel.DisposeAsync().ConfigureAwait(false);
+            }
+
+            await manager.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
+
+    internal const string MaieuticsReplIpcEnvironmentVariable = "MAIEUTICS_REPL_IPC";
 
     private static IReadOnlyDictionary<string, string> CaptureAllowedEnvironment()
     {

@@ -10,6 +10,9 @@ public interface IJupyterKernelManager : IAsyncDisposable
 {
     IJupyterClient Client { get; }
 
+    /// <summary>Gets the operating system process id of the local child kernel, or null when the kernel is not local.</summary>
+    int? ProcessId { get; }
+
     Task InterruptAsync(CancellationToken cancellationToken = default);
 
     Task RestartAsync(CancellationToken cancellationToken = default);
@@ -57,6 +60,8 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
 
     public IJupyterClient Client => client
                                     ?? throw new InvalidOperationException("The Jupyter kernel is not running.");
+
+    public int? ProcessId => process?.Id;
 
     public static async Task<LocalJupyterKernelManager> StartAsync(
         JupyterKernelSpec kernelSpec,

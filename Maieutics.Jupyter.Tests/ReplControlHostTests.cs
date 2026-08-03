@@ -135,6 +135,32 @@ public sealed class ReplControlHostTests
         await host.DisposeAsync();
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task UpdateExpectedProcessIdRejectsOldPeerOnLinux()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var socketPath = CreateSocketPath();
+        var host = await ReplControlHost.StartAsync(
+            socketPath,
+            Environment.ProcessId,
+            NullLogger<ReplControlHost>.Instance,
+            timeout.Token);
+        await using (host)
+        {
+            var accepted = await SendHttpRequestAsync(socketPath, "GET /health", timeout.Token);
+            accepted.Should().Contain("200");
+
+            host.UpdateExpectedProcessId(Environment.ProcessId + 1_000_000);
+            var rejected = await SendHttpRequestAsync(socketPath, "GET /health", timeout.Token);
+            rejected.Should().Contain("403");
+        }
+    }
+
     [Fact(Timeout = 90_000)]
     public async Task RealDenoClientTalksToControlChannelOverUnixSocket()
     {
@@ -218,10 +244,7 @@ public sealed class ReplControlHostTests
         """;
 
     private static string CreateSocketPath()
-    {
-        var directory = Path.Combine(Path.GetTempPath(), $"mc-{Guid.NewGuid():N}"[..15]);
-        return Path.Combine(directory, "sock");
-    }
+        => ReplControlHost.CreateSocketPath();
 
     private static async Task<string> SendHttpRequestAsync(string socketPath, string requestLine, CancellationToken ct)
     {

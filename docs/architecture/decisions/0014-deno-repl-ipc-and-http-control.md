@@ -27,28 +27,35 @@ envelope, process-bound identity, and per-generation lifecycle.
 
 ### Transport and hosting
 
-- The executable hosts one ASP.NET Core minimal API server on Kestrel.
+- Each REPL generation hosts a `WebApplication.CreateSlimBuilder()` minimal API server on Kestrel, owned by the
+  `ReplControlHost` in `Maieutics/Control/`.
 - The REPL child channel is a unix domain socket endpoint (`ListenUnixSocket`), pinned to HTTP/1.1 so WebSocket
-  upgrades are deterministic. Windows uses a named pipe endpoint (`ListenNamedPipe`) because .NET AF_UNIX sockets on
-  Windows are unreliable.
+  upgrades are deterministic. Windows is unsupported until a named-pipe bootstrap milestone; the factory throws
+  `PlatformNotSupportedException` explicitly instead of degrading silently.
 - An external control endpoint is optional and off by default. When enabled it listens on TCP loopback only, with its
   own authentication.
-- The child learns the address and a per-spawn secret from environment variables injected through `kernelSpec.Environment`
-  (for example `MAIEUTICS_REPL_IPC` and `MAIEUTICS_REPL_IPC_SECRET`). The allowlist capture is unchanged; injection is
-  explicit per spawn and never inherited.
+- The child learns only the address from `MAIEUTICS_REPL_IPC`, injected through `kernelSpec.Environment`. No secret is
+  passed over any channel on Unix; process identity replaces bearer credentials. The allowlist capture is unchanged;
+  injection is explicit per spawn and never inherited.
 - No custom raw framing is required. The child uses `Deno.createHttpClient({ proxy: { transport: "unix", path } })`
   for `fetch`. Full duplex uses `new WebSocket(url, { client, headers })`; the `client` option is experimental and must
-  be probed against the pinned Deno version before the comm feature depends on it.
+  be probed against the pinned Deno version before the comm feature depends on it. It is confirmed working on the
+  current local Deno.
+- The underlying accepted socket is reached through `IConnectionSocketFeature` (net10 does not expose
+  `ITransportSocketsFeature`). `DOTNET_USE_POLLING_FILE_WATCHER=1` is set before builder creation because the default
+  reload-on-change JSON configuration blocks in constrained sandboxes; this matches the executable's existing polling
+  configuration provider.
 
 ### Identity and permissions
 
 Connection identity is process-bound. The kernel verifies peer credentials at accept against the exact spawned child
-PID, then requires the per-spawn secret in the handshake:
+PID. No secret handshake exists on Unix:
 
 - Linux: `SO_PEERCRED` (pid/uid), optionally `/proc/<pid>/exe`.
-- macOS: `getpeereid` (uid/gid) plus the secret.
+- macOS: `getpeereid` (uid/gid) only; same-user acceptance is the accepted strength because macOS exposes no peer PID.
 - Windows: `WSAIoctl` with `SIO_AF_UNIX_GETPEERPID`; the output byte count is known to be 0 while the PID value is
-  reliable. The named-pipe alternative is `GetNamedPipeClientProcessId`.
+  reliable. The named-pipe alternative is `GetNamedPipeClientProcessId` and is the planned bootstrap that issues a
+  credential for the loopback control channel.
 
 The external endpoint uses real authentication (API key or mTLS), rate limiting, and audit. Mutating operations are
 disabled by default there; health, status, and event streaming may be enabled read-only.
@@ -76,12 +83,22 @@ The WebSocket endpoint is opened when the comm feature is implemented, not befor
 
 ### Lifecycle
 
-One listener, socket, and secret per REPL generation, created with the generation and torn down with it (same owner as
-the generation loop and connection-file cleanup). The socket directory is hardened: mode 0700, owner check, and unlink
-plus `lstat` before bind.
+One listener and socket per REPL generation, created with the generation and torn down with it (same owner as the
+generation loop and connection-file cleanup). The socket directory is hardened: mode 0700, owner check, and unlink
+before bind. `DenoReplSessionFactory` creates the socket path, injects it through `kernelSpec.Environment`, starts the
+manager, then starts the control host bound to the spawned child PID. `DenoReplSession` owns the host and rebinds the
+expected PID through `UpdateExpectedProcessId` after a Jupyter restart replaces the child process.
 
-`IJupyterKernelManager` exposes the child `ProcessId` as a read-only property so the product IPC host can verify peer
-credentials. The reusable Jupyter libraries otherwise remain unchanged.
+`IJupyterKernelManager` exposes the child `ProcessId` as a read-only nullable property so the product IPC host can
+verify peer credentials and detect Jupyter restarts. The reusable Jupyter libraries otherwise remain unchanged.
+
+## Implementation status
+
+- Landed: ASP.NET Core framework reference, `ReplControlHost` (HTTP `/health`, WebSocket `/ws` echo, peer identity
+  middleware, hardened socket lifecycle), peer-credential interop, factory wiring with `MAIEUTICS_REPL_IPC`, session
+  ownership and PID rebinding, in-process and real-Deno-child tests.
+- Pending: message envelope and API surface (not decided), tool and comm routing, WebSocket usage by the comm feature,
+  external loopback control endpoint, and the Windows named-pipe bootstrap.
 
 ## Consequences
 
@@ -89,10 +106,8 @@ credentials. The reusable Jupyter libraries otherwise remain unchanged.
   handshake.
 - The executable gains an ASP.NET Core minimal API host. This is a real HTTP requirement under `Maieutics/AGENTS.md` and
   requires NativeAOT publish plus process smoke coverage and trimming-safe source-generated JSON contexts.
-- Raw-framed duplex becomes the fallback if the pinned Deno version lacks the WebSocket `client` option or the Windows
-  unix transport.
-- Windows behavior remains pending local verification: Deno unix transport availability, and the named-pipe versus
-  AF_UNIX choice on the kernel side.
+- Raw-framed duplex becomes the fallback if the pinned Deno version lacks the WebSocket `client` option.
+- Windows fails explicitly at REPL start until the named-pipe bootstrap milestone, per the accepted decision.
 - The channel does not change Jupyter wire behavior. Extension hooks (ADR 0004) still cannot enqueue tool calls.
 
 ## References

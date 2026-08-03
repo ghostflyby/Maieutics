@@ -1,6 +1,10 @@
 using System.Text.Json;
+using Maieutics.Control;
+using Maieutics.Jupyter.Client;
 
 namespace Maieutics.Execution;
+
+internal sealed record DenoReplStartResult(IJupyterKernelManager Manager, ReplControlHost? ControlChannel);
 
 internal sealed record DenoReplSessionResult(
     string SessionId,

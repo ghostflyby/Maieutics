@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Maieutics.Agent;
+using Maieutics.Control;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Logging;
@@ -23,6 +24,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private CancellationTokenSource? generationLifetime;
     private Task? generationLoop;
     private IJupyterKernelManager? manager;
+    private ReplControlHost? controlHost;
     private DenoReplSessionState state = DenoReplSessionState.Created;
     private int disposeState;
     private int generation = 1;
@@ -92,7 +94,9 @@ internal sealed class DenoReplSession : IAsyncDisposable
             SetState(DenoReplSessionState.Starting);
             try
             {
-                manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                var started = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                manager = started.Manager;
+                controlHost = started.ControlChannel;
                 StartGenerationLoop(manager.Client);
                 SetState(DenoReplSessionState.Idle);
             }
@@ -255,11 +259,17 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 {
                     if (manager is null)
                     {
-                        manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                        var started = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                        manager = started.Manager;
+                        controlHost = started.ControlChannel;
                     }
                     else
                     {
                         await manager.RestartAsync(cancellationToken).ConfigureAwait(false);
+                        if (controlHost is not null && manager.ProcessId is { } processId)
+                        {
+                            controlHost.UpdateExpectedProcessId(processId);
+                        }
                     }
 
                     StartGenerationLoop(manager.Client);
@@ -319,6 +329,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     {
                         await currentManager.DisposeAsync().ConfigureAwait(false);
                     }
+                }
+
+                var channel = controlHost;
+                controlHost = null;
+                if (channel is not null)
+                {
+                    await channel.StopAsync(cancellationToken).ConfigureAwait(false);
                 }
 
                 SetState(DenoReplSessionState.Closed);

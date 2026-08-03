@@ -151,12 +151,12 @@ public sealed class DenoReplSessionTests
 
     private sealed class SingleManagerFactory(ControlledManager manager) : IDenoReplSessionFactory
     {
-        public Task<IJupyterKernelManager> StartAsync(
+        public Task<DenoReplStartResult> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult<IJupyterKernelManager>(manager);
+            return Task.FromResult(new DenoReplStartResult(manager, null));
         }
     }
 
@@ -165,6 +165,8 @@ public sealed class DenoReplSessionTests
         public ControlledClient ClientImpl { get; } = new(probe);
 
         public IJupyterClient Client => ClientImpl;
+
+        public int? ProcessId => null;
 
         public int InterruptCount { get; private set; }
 

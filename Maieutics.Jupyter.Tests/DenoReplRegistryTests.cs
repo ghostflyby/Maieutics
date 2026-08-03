@@ -239,14 +239,14 @@ public sealed class DenoReplRegistryTests
     {
         public List<RecordingManager> Managers { get; } = [];
 
-        public Task<IJupyterKernelManager> StartAsync(
+        public Task<DenoReplStartResult> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var manager = new RecordingManager();
             Managers.Add(manager);
-            return Task.FromResult<IJupyterKernelManager>(manager);
+            return Task.FromResult(new DenoReplStartResult(manager, null));
         }
     }
 
@@ -254,7 +254,7 @@ public sealed class DenoReplRegistryTests
     {
         public int Attempts { get; private set; }
 
-        public Task<IJupyterKernelManager> StartAsync(
+        public Task<DenoReplStartResult> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
@@ -265,7 +265,7 @@ public sealed class DenoReplRegistryTests
                 throw new FileNotFoundException("deno");
             }
 
-            return Task.FromResult<IJupyterKernelManager>(new RecordingManager());
+            return Task.FromResult(new DenoReplStartResult(new RecordingManager(), null));
         }
     }
 
@@ -273,12 +273,12 @@ public sealed class DenoReplRegistryTests
     {
         public BlockingShutdownManager Manager { get; } = new();
 
-        public Task<IJupyterKernelManager> StartAsync(
+        public Task<DenoReplStartResult> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult<IJupyterKernelManager>(Manager);
+            return Task.FromResult(new DenoReplStartResult(Manager, null));
         }
     }
 
@@ -291,6 +291,8 @@ public sealed class DenoReplRegistryTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public IJupyterClient Client { get; } = new RecordingClient();
+
+        public int? ProcessId => null;
 
         public int ShutdownCount { get; private set; }
 
@@ -324,6 +326,8 @@ public sealed class DenoReplRegistryTests
     private sealed class RecordingManager : IJupyterKernelManager
     {
         public IJupyterClient Client { get; } = new RecordingClient();
+
+        public int? ProcessId => null;
 
         public int RestartCount { get; private set; }
 

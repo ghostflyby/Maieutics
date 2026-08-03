@@ -2,70 +2,49 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Control;
 
 /// <summary>
 /// Owns the process-wide HTTP and WebSocket control channel shared by all Deno REPL children.
-/// One stateless server listens on one unix socket; each request is attributed to a REPL
+/// The channel is mapped onto the single application host; each request is attributed to a REPL
 /// session through the peer process identity resolved at accept time.
 /// </summary>
-internal sealed class ReplControlHost : IHostedService, IAsyncDisposable
+internal sealed class ReplControlHost : IDisposable
 {
     private const int WebSocketBufferSize = 16 * 1024;
+    private readonly string socketPath;
     private readonly ReplControlSessionRegistry registry;
     private readonly ILogger<ReplControlHost> logger;
-    private WebApplication? application;
-    private string? socketPath;
-    private int stopState;
 
-    public ReplControlHost(ReplControlSessionRegistry registry, ILogger<ReplControlHost> logger)
+    public ReplControlHost(
+        string socketPath,
+        ReplControlSessionRegistry registry,
+        ILogger<ReplControlHost> logger)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
+        this.socketPath = socketPath;
         this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
-    public string SocketPath => socketPath
-        ?? throw new InvalidOperationException("The REPL control channel is not started.");
+    public string SocketPath => socketPath;
 
     /// <summary>Creates a short socket path within the platform unix socket length limit.</summary>
     internal static string CreateSocketPath()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"mc-{Guid.NewGuid():N}"[..15]);
-        return Path.Combine(directory, "sock");
+        var name = $"mc-{Guid.NewGuid():N}"[..15] + ".sock";
+        return Path.Combine(Path.GetTempPath(), name);
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    /// <summary>Maps the control channel middleware and endpoints onto the application.</summary>
+    internal void MapEndpoints(WebApplication application)
     {
-        var path = CreateSocketPath();
-        EnsureSocketDirectory(path);
-
-        // The default JSON configuration sources use FSEvents-backed file watching, which can block
-        // in constrained sandboxes. Polling is deterministic and matches the executable's config provider.
-        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
-        {
-            ApplicationName = "maieutics-control"
-        });
-        builder.Configuration.Sources.Clear();
-        builder.Logging.ClearProviders();
-        builder.WebHost.ConfigureKestrel(options =>
-        {
-            options.AddServerHeader = false;
-            options.ListenUnixSocket(path, listenOptions =>
-            {
-                listenOptions.Protocols = HttpProtocols.Http1;
-            });
-        });
-
-        var built = builder.Build();
-        built.Use(async (context, next) =>
+        application.Use(async (context, next) =>
         {
             if (!Authorize(context))
             {
@@ -76,56 +55,21 @@ internal sealed class ReplControlHost : IHostedService, IAsyncDisposable
 
             await next(context).ConfigureAwait(false);
         });
-        built.UseWebSockets();
-        built.MapGet("/health", () => Results.Text("ok"));
-        built.Map("/ws", HandleWebSocketAsync);
+        application.UseWebSockets();
+        application.MapGet("/health", () => Results.Text("ok"));
+        application.Map("/ws", HandleWebSocketAsync);
+    }
 
+    public void Dispose()
+    {
         try
         {
-            await built.StartAsync(cancellationToken).ConfigureAwait(false);
+            File.Delete(socketPath);
         }
         catch
         {
-            await built.DisposeAsync().ConfigureAwait(false);
-            TryDeleteSocketFile(path);
-            throw;
+            // Kestrel removes the socket file on close; best-effort cleanup must not mask shutdown.
         }
-
-        application = built;
-        socketPath = path;
-    }
-
-    public async Task StopAsync(CancellationToken cancellationToken)
-    {
-        if (Interlocked.Exchange(ref stopState, 1) != 0)
-        {
-            return;
-        }
-
-        var current = application;
-        var path = socketPath;
-        application = null;
-        socketPath = null;
-        if (current is not null)
-        {
-            try
-            {
-                await current.StopAsync(cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                await current.DisposeAsync().ConfigureAwait(false);
-                if (path is not null)
-                {
-                    TryDeleteSocketFile(path);
-                }
-            }
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        await StopAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     private bool Authorize(HttpContext context)
@@ -178,46 +122,6 @@ internal sealed class ReplControlHost : IHostedService, IAsyncDisposable
                     received.EndOfMessage,
                     context.RequestAborted)
                 .ConfigureAwait(false);
-        }
-    }
-
-    private static void EnsureSocketDirectory(string socketPath)
-    {
-        var directory = Path.GetDirectoryName(socketPath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-            if (!OperatingSystem.IsWindows())
-            {
-                File.SetUnixFileMode(
-                    directory,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
-        }
-
-        if (Directory.Exists(socketPath))
-        {
-            throw new IOException($"The control channel socket path is a directory: '{socketPath}'.");
-        }
-
-        if (File.Exists(socketPath))
-        {
-            File.Delete(socketPath);
-        }
-    }
-
-    private static void TryDeleteSocketFile(string socketPath)
-    {
-        try
-        {
-            if (File.Exists(socketPath))
-            {
-                File.Delete(socketPath);
-            }
-        }
-        catch (Exception)
-        {
-            // Socket cleanup must not mask the primary shutdown outcome.
         }
     }
 }

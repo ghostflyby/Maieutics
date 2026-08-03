@@ -20,9 +20,13 @@ public sealed class ReplControlChannelIntegrationTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
-        var controlHost = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
-        await controlHost.StartAsync(timeout.Token);
-        await using (controlHost)
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await using (application)
         {
             var factory = new LocalDenoReplSessionFactory(new DenoReplOptions(), controlHost);
             var manager = await factory.StartAsync(Directory.GetCurrentDirectory(), timeout.Token);

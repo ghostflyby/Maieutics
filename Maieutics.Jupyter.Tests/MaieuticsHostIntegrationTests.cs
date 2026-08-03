@@ -40,7 +40,7 @@ public sealed class MaieuticsHostIntegrationTests
         var builder = MaieuticsHost.CreateApplicationBuilder(
             ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
         builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
-        using var host = builder.Build();
+        await using var host = builder.Build();
         var functionNames = host.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
             .Select(static function => function.Name)
             .ToArray();
@@ -105,7 +105,7 @@ public sealed class MaieuticsHostIntegrationTests
         builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] = apiFlavor.ToString();
         builder.Services.RemoveAll<IReadOnlyList<AIFunction>>();
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>([CreateEchoFunction()]);
-        using var host = builder.Build();
+        await using var host = builder.Build();
 
         try
         {
@@ -182,7 +182,7 @@ public sealed class MaieuticsHostIntegrationTests
             ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
         builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
         builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
-        using var host = builder.Build();
+        await using var host = builder.Build();
 
         try
         {
@@ -287,7 +287,7 @@ public sealed class MaieuticsHostIntegrationTests
         builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
         builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] =
             nameof(OpenAiApiFlavor.ChatCompletions);
-        using var host = builder.Build();
+        await using var host = builder.Build();
         var hostStarted = false;
 
         try
@@ -398,7 +398,7 @@ public sealed class MaieuticsHostIntegrationTests
         builder.Configuration["Maieutics:Profiles:claude:Model"] = "claude-test";
         builder.Services.RemoveAll<IReadOnlyList<AIFunction>>();
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>([CreateEchoFunction()]);
-        using var host = builder.Build();
+        await using var host = builder.Build();
 
         try
         {
@@ -742,7 +742,7 @@ public sealed class MaieuticsHostIntegrationTests
         builder.Configuration["Maieutics:Profiles:gpt:Model"] = "gpt-test";
         builder.Configuration["Maieutics:Profiles:claude:Source"] = "anthropic";
         builder.Configuration["Maieutics:Profiles:claude:Model"] = "claude-test";
-        using var host = builder.Build();
+        await using var host = builder.Build();
 
         try
         {

@@ -9,6 +9,9 @@ using Maieutics.Mcp;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,9 +22,12 @@ namespace Maieutics;
 
 public static class MaieuticsHost
 {
-    public static HostApplicationBuilder CreateApplicationBuilder(string[] args)
+    public static WebApplicationBuilder CreateApplicationBuilder(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
+        // The default JSON configuration sources use FSEvents-backed file watching, which can block
+        // in constrained sandboxes. Polling is deterministic and matches the executable's config provider.
+        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
         var environmentName = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? Environments.Production;
         var startupCurrentDirectory = Directory.GetCurrentDirectory();
         var configurationFile = MaieuticsConfigurationFile.Resolve(
@@ -33,13 +39,15 @@ public static class MaieuticsHost
         var mcpConfigurationPath = GetMcpConfigurationPath(configurationFile);
         ValidateInitialConfigurationFile(configurationFile, mcpConfigurationPath);
 
-        var builder = new HostApplicationBuilder(new HostApplicationBuilderSettings
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             ApplicationName = typeof(MaieuticsHost).Assembly.GetName().Name,
             ContentRootPath = AppContext.BaseDirectory,
-            DisableDefaults = true,
-            EnvironmentName = environmentName
+            EnvironmentName = environmentName,
+            Args = args
         });
+        builder.Configuration.Sources.Clear();
+        builder.Logging.ClearProviders();
         var fileErrors = new MaieuticsConfigurationFileErrors();
         var fileProvider = MaieuticsConfigurationFileProvider.Create(configurationFile.Path);
         builder.Configuration.AddJsonFile(source =>
@@ -108,8 +116,19 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
             services.GetRequiredService<JupyterDenoReplPresentationRouter>());
         builder.Services.AddSingleton<ReplControlSessionRegistry>();
-        builder.Services.AddSingleton<ReplControlHost>();
-        builder.Services.AddHostedService(static services => services.GetRequiredService<ReplControlHost>());
+        var controlSocketPath = ReplControlHost.CreateSocketPath();
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.AddServerHeader = false;
+            options.ListenUnixSocket(controlSocketPath, listenOptions =>
+            {
+                listenOptions.Protocols = HttpProtocols.Http1;
+            });
+        });
+        builder.Services.AddSingleton(services => new ReplControlHost(
+            controlSocketPath,
+            services.GetRequiredService<ReplControlSessionRegistry>(),
+            services.GetRequiredService<ILogger<ReplControlHost>>()));
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
@@ -124,6 +143,14 @@ public static class MaieuticsHost
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
         builder.Services.AddHostedService<JupyterKernelHostedService>();
         return builder;
+    }
+
+    public static WebApplication CreateApplication(string[] args)
+    {
+        var builder = CreateApplicationBuilder(args);
+        var application = builder.Build();
+        application.Services.GetRequiredService<ReplControlHost>().MapEndpoints(application);
+        return application;
     }
 
     private static IAgentSession CreateAgentSession(IServiceProvider services) =>

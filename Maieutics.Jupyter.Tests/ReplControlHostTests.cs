@@ -3,7 +3,6 @@ using System.Net.Sockets;
 using System.Text;
 using FluentAssertions;
 using Maieutics.Control;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -20,10 +19,9 @@ public sealed class ReplControlHostTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
-        var host = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
-        await using (host)
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
         {
-            await host.StartAsync(timeout.Token);
             var response = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
             response.Should().StartWith("HTTP/1.1 200");
             response.Should().Contain("ok");
@@ -41,10 +39,9 @@ public sealed class ReplControlHostTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
-        var host = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
-        await using (host)
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
         {
-            await host.StartAsync(timeout.Token);
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(host.SocketPath), timeout.Token);
             var handshake =
@@ -82,10 +79,9 @@ public sealed class ReplControlHostTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId + 1_000_000, "other-session");
-        var host = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
-        await using (host)
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
         {
-            await host.StartAsync(timeout.Token);
             var response = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
             response.Should().Contain("403");
         }
@@ -102,10 +98,9 @@ public sealed class ReplControlHostTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
-        var host = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
-        await using (host)
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
         {
-            await host.StartAsync(timeout.Token);
             var accepted = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
             accepted.Should().Contain("200");
 
@@ -117,7 +112,7 @@ public sealed class ReplControlHostTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task StopRemovesSocketFileAndIsIdempotent()
+    public async Task DisposeRemovesSocketFile()
     {
         if (OperatingSystem.IsWindows())
         {
@@ -125,17 +120,15 @@ public sealed class ReplControlHostTests
         }
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var host = new ReplControlHost(
+        var (application, host) = await ReplControlTestHost.StartAsync(
             new ReplControlSessionRegistry(),
-            NullLogger<ReplControlHost>.Instance);
-        await host.StartAsync(timeout.Token);
+            timeout.Token);
         var socketPath = host.SocketPath;
         File.Exists(socketPath).Should().BeTrue();
 
-        await host.StopAsync(timeout.Token);
+        await application.StopAsync(timeout.Token);
+        await application.DisposeAsync();
         File.Exists(socketPath).Should().BeFalse();
-        await host.StopAsync(timeout.Token);
-        await host.DisposeAsync();
     }
 
     [Fact(Timeout = 90_000)]
@@ -148,10 +141,9 @@ public sealed class ReplControlHostTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var registry = new ReplControlSessionRegistry();
-        var host = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
-        await using (host)
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
         {
-            await host.StartAsync(timeout.Token);
             var scriptPath = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-control-deno-{Guid.NewGuid():N}.ts");

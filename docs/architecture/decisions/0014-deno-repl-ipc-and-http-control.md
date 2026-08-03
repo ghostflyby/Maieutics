@@ -27,8 +27,10 @@ envelope, process-bound identity, and per-generation lifecycle.
 
 ### Transport and hosting
 
-- One process-wide `ReplControlHost` hosts a single `WebApplication.CreateSlimBuilder()` minimal API server on Kestrel,
-  registered as a hosted service in the main Generic Host. It is a stateless server: session state stays in
+- The application is a single `WebApplication`. The main host became the ASP.NET host: the control channel is mapped
+  onto the same app through `ReplControlHost.MapEndpoints` (auth middleware, `/health`, `/ws`), and the unix socket
+  endpoint is configured in the same `ConfigureKestrel`. There is exactly one host for the whole process; the previous
+  Generic Host + nested WebApplication split is removed. The server is stateless: session state stays in
   `ReplControlSessionRegistry` (child process id to session id) and is looked up per request, never baked into the
   server instance.
 - The REPL child channel is a single unix domain socket endpoint (`ListenUnixSocket`), pinned to HTTP/1.1 so WebSocket
@@ -97,9 +99,10 @@ verify peer credentials and detect Jupyter restarts. The reusable Jupyter librar
 
 ## Implementation status
 
-- Landed: ASP.NET Core framework reference, process-wide `ReplControlHost` (HTTP `/health`, WebSocket `/ws` echo, peer
-  identity middleware, hardened socket lifecycle), `ReplControlSessionRegistry`, peer-credential interop, factory wiring
-  with `MAIEUTICS_REPL_IPC`, session registration and rebinding, in-process and real-Deno-child tests.
+- Landed: ASP.NET Core framework reference, single merged `WebApplication` host with the control channel mapped onto
+  it (`ReplControlHost.MapEndpoints`: HTTP `/health`, WebSocket `/ws` echo, peer identity middleware),
+  `ReplControlSessionRegistry`, peer-credential interop, factory wiring with `MAIEUTICS_REPL_IPC`, session registration
+  and rebinding, in-process and real-Deno-child tests.
 - Pending: message envelope and API surface (not decided), tool and comm routing, WebSocket usage by the comm feature,
   external loopback control endpoint, and the Windows named-pipe bootstrap.
 

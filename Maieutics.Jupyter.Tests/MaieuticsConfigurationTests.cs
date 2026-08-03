@@ -103,7 +103,7 @@ public sealed class MaieuticsConfigurationTests
             var provider = host.Services.GetRequiredService<MaieuticsConfigurationFileProvider>();
 
             provider.IsDisposed.Should().BeFalse();
-            host.Dispose();
+            ((IDisposable)host).Dispose();
             provider.IsDisposed.Should().BeTrue();
         }
         finally
@@ -139,7 +139,7 @@ public sealed class MaieuticsConfigurationTests
         try
         {
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var host = builder.Build();
+            await using var host = builder.Build();
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
 
             runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
@@ -172,7 +172,7 @@ public sealed class MaieuticsConfigurationTests
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<IConfiguredChatClientFactory>();
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
-            using var host = builder.Build();
+            await using var host = builder.Build();
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
 
             runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
@@ -448,7 +448,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var builder = MaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--model", "command-model"]);
-            using var host = builder.Build();
+            using var host = (IDisposable)builder.Build();
 
             builder.Configuration["Maieutics:Model:Name"].Should().Be("command-model");
             builder.Configuration["Maieutics:Sources:openai:ApiFlavor"].Should()
@@ -497,7 +497,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var builder = MaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--profile", "command-profile"]);
-            using var host = builder.Build();
+            using var host = (IDisposable)builder.Build();
 
             builder.Configuration["Maieutics:DefaultProfile"].Should().Be("command-profile");
             builder.Configuration["Maieutics:Sources:anthropic:ApiKey"].Should().Be("standard-key");
@@ -588,7 +588,7 @@ public sealed class MaieuticsConfigurationTests
         try
         {
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var host = builder.Build();
+            await using var host = builder.Build();
 
             host.Services.Invoking(services => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
                 .Should().Throw<InvalidOperationException>()
@@ -662,7 +662,7 @@ public sealed class MaieuticsConfigurationTests
         try
         {
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var host = builder.Build();
+            await using var host = builder.Build();
 
             host.Services.Invoking(services => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
                 .Should().Throw<InvalidOperationException>()
@@ -1011,7 +1011,7 @@ public sealed class MaieuticsConfigurationTests
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<IConfiguredChatClientFactory>();
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(new TrackingChatClientFactory());
-            using var host = builder.Build();
+            await using var host = builder.Build();
 
             host.Services.Invoking(services =>
                     services.GetRequiredService<MaieuticsRuntimeConfiguration>()).Should()
@@ -1110,10 +1110,13 @@ public sealed class MaieuticsConfigurationTests
         {
             File.WriteAllText(mcpFile, CreateMcpFile(servers));
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var host = builder.Build();
-            host.Services.Invoking(static services =>
-                    services.GetRequiredService<MaieuticsRuntimeConfiguration>())
-                .Should().Throw<Exception>().WithMessage(expectedMessage);
+            var host = builder.Build();
+            using (IDisposable _ = host)
+            {
+                host.Services.Invoking(static services =>
+                        services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+                    .Should().Throw<Exception>().WithMessage(expectedMessage);
+            }
         }
     }
 
@@ -1163,7 +1166,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.StopAsync(deadline.Token);
-            host.Dispose();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }

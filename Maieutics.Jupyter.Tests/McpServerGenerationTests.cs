@@ -14,15 +14,11 @@ namespace Maieutics.Jupyter.Tests;
 public sealed class McpServerGenerationTests
 {
     [Fact(Timeout = 30_000)]
-    public async Task OfficialStreamServerDiscoversRenamesAndInvokesAllowlistedTool()
+    public async Task OfficialStreamServerDiscoversAndInvokesAllExposedTools()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var serverFactory = new StreamServerFactory();
-        var tools = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["echo"] = "remote_echo"
-        };
         var definition = new McpServerDefinition(
             "test",
             McpServerTransportKind.Stdio,
@@ -32,7 +28,6 @@ public sealed class McpServerGenerationTests
             new Dictionary<string, string?>(),
             null,
             new Dictionary<string, string>(),
-            tools,
             TimeSpan.FromSeconds(5),
             TimeSpan.FromSeconds(5),
             TimeSpan.FromSeconds(5),
@@ -45,7 +40,6 @@ public sealed class McpServerGenerationTests
                 [],
                 null,
                 [],
-                tools,
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
@@ -60,7 +54,7 @@ public sealed class McpServerGenerationTests
         var acquired = generation.TryAcquire();
         acquired.Should().NotBeNull();
         var lease = acquired!;
-        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("remote_echo");
+        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hello\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
             static property => property.Name,
@@ -72,10 +66,59 @@ public sealed class McpServerGenerationTests
         resultElement.TryGetProperty("isError", out _).Should().BeFalse();
         resultElement.GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hello");
         generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
-            new MaieuticsMcpToolInfo("echo", "remote_echo", true));
+            new MaieuticsMcpToolInfo("echo", "echo", true));
         var retirement = generation.Retire();
         retirement.IsCompleted.Should().BeFalse();
         await lease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ReservedToolNamesAreHiddenAndMarkedUnavailable()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = new McpServerDefinition(
+            "test",
+            McpServerTransportKind.Stdio,
+            "unused",
+            [],
+            null,
+            new Dictionary<string, string?>(),
+            null,
+            new Dictionary<string, string>(),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.Zero,
+            McpServerDefinition.CreateGenerationKey(
+                McpServerTransportKind.Stdio,
+                "unused",
+                [],
+                null,
+                [],
+                null,
+                [],
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.Zero));
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            reservedToolNames: new HashSet<string>(StringComparer.Ordinal) { "echo" });
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        acquired!.Tools.Should().BeEmpty();
+        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
+            new MaieuticsMcpToolInfo("echo", "echo", false));
+        var retirement = generation.Retire();
+        await acquired.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
     }
 

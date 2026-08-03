@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using Maieutics.Agent;
@@ -1024,7 +1025,7 @@ public sealed class MaieuticsConfigurationTests
     }
 
     [Fact]
-    public async Task McpConfigurationValidatesTransportsAllowlistHttpsAndGlobalToolNames()
+    public async Task McpFileConfigurationValidatesTransportsHttpsSseKeysAndDefaultEnablement()
     {
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-config-{Guid.NewGuid():N}");
@@ -1034,43 +1035,71 @@ public sealed class MaieuticsConfigurationTests
             connectionFile,
             TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
+        var mcpFile = Path.Combine(root, "mcp.json");
+        File.WriteAllText(configurationFile, CreateMcpHostConfigurationBase(connectionFile));
 
         try
         {
-            AssertRejected(
-                new JsonObject
-                {
-                    ["remote"] = HttpMcpServer("https://example.test/mcp", new JsonObject())
-                },
-                "*non-empty Tools*");
-            AssertRejected(
-                new JsonObject
-                {
-                    ["remote"] = HttpMcpServer("http://example.test/mcp", ToolMap("lookup", "remote_lookup"))
-                },
-                "*must use HTTPS*");
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using (var host = builder.Build())
+            {
+                host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
+            }
 
-            var invalidStdio = StdioMcpServer("one", "shared_tool");
-            invalidStdio["Endpoint"] = "https://example.test/mcp";
+            AssertRejected(
+                new JsonObject { ["remote"] = HttpMcpServer("http://example.test/mcp") },
+                "*must use HTTPS*");
+            AssertRejected(
+                new JsonObject { ["remote"] = SseMcpServer("https://example.test/mcp") },
+                "*unsupported 'sse'*");
+
+            var invalidStdio = StdioMcpServer();
+            invalidStdio["Nope"] = true;
             AssertRejected(new JsonObject { ["stdio"] = invalidStdio }, "*not valid for MCP server*");
 
-            AssertRejected(
+            File.WriteAllText(
+                mcpFile,
                 new JsonObject
                 {
-                    ["one"] = StdioMcpServer("one", "shared_tool"),
-                    ["two"] = StdioMcpServer("two", "shared_tool")
-                },
-                "*configured more than once*");
+                    ["mcpServers"] = new JsonObject { ["one"] = StdioMcpServer() },
+                    ["servers"] = new JsonObject { ["two"] = StdioMcpServer() }
+                }.ToJsonString());
+            var conflicting = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var conflictingHost = conflicting.Build();
+            conflictingHost.Services.Invoking(static services =>
+                    services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+                .Should().Throw<Exception>().WithMessage("*must not combine*");
 
-            var validServers = new JsonObject
-            {
-                ["stdio"] = StdioMcpServer("read", "stdio_read"),
-                ["http"] = HttpMcpServer("http://127.0.0.1:65535/mcp", ToolMap("lookup", "http_lookup"))
-            };
-            File.WriteAllText(configurationFile, CreateMcpConfiguration(connectionFile, validServers));
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var host = builder.Build();
-            host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
+            File.WriteAllText(mcpFile, "{");
+            var syntaxError = () => MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            syntaxError.Should().Throw<JsonException>();
+
+            // A server disabled with the VS Code convention is skipped before transport validation.
+            File.WriteAllText(
+                mcpFile,
+                CreateMcpFile(new JsonObject
+                {
+                    ["disabled"] = new JsonObject
+                    {
+                        ["enabled"] = false,
+                        ["type"] = "http",
+                        ["url"] = "not-a-url"
+                    }
+                }));
+            var disabledBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var disabledHost = disabledBuilder.Build();
+            disabledHost.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
+
+            File.WriteAllText(
+                mcpFile,
+                CreateMcpFile(new JsonObject
+                {
+                    ["stdio"] = StdioMcpServer(),
+                    ["http"] = HttpMcpServer("http://127.0.0.1:65535/mcp")
+                }));
+            var valid = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            using var validHost = valid.Build();
+            validHost.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
         }
         finally
         {
@@ -1079,12 +1108,63 @@ public sealed class MaieuticsConfigurationTests
 
         void AssertRejected(JsonObject servers, string expectedMessage)
         {
-            File.WriteAllText(configurationFile, CreateMcpConfiguration(connectionFile, servers));
+            File.WriteAllText(mcpFile, CreateMcpFile(servers));
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var host = builder.Build();
             host.Services.Invoking(static services =>
                     services.GetRequiredService<MaieuticsRuntimeConfiguration>())
                 .Should().Throw<Exception>().WithMessage(expectedMessage);
+        }
+    }
+
+    [Fact]
+    public async Task McpFileChangesTriggerReloadAndInvalidUpdatesRetainLastKnownGood()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-reload-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var mcpFile = Path.Combine(root, "mcp.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateMcpHostConfigurationBase(connectionFile),
+            deadline.Token);
+
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var host = builder.Build();
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            runtime.GetMcpServers().Should().BeEmpty();
+
+            var acceptedVersion = runtime.Version;
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                mcpFile,
+                CreateMcpFile(new JsonObject { ["remote"] = HttpMcpServer("http://example.test/mcp") }),
+                deadline.Token);
+            runtime.Version.Should().Be(acceptedVersion);
+            runtime.GetMcpServers().Should().BeEmpty();
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                mcpFile,
+                CreateMcpFile(new JsonObject { ["stdio"] = StdioMcpServer() }),
+                deadline.Token);
+            runtime.Version.Should().Be(acceptedVersion);
+            runtime.GetMcpServers().Should().BeEmpty();
+        }
+        finally
+        {
+            await host.StopAsync(deadline.Token);
+            host.Dispose();
+            Directory.Delete(root, recursive: true);
         }
     }
 
@@ -1169,38 +1249,39 @@ public sealed class MaieuticsConfigurationTests
         return root.ToJsonString();
     }
 
-    private static string CreateMcpConfiguration(string connectionFile, JsonObject servers) =>
+    private static string CreateMcpFile(JsonObject servers) =>
+        new JsonObject
+        {
+            ["mcpServers"] = servers
+        }.ToJsonString();
+
+    private static string CreateMcpHostConfigurationBase(string connectionFile) =>
         new JsonObject
         {
             ["Maieutics"] = new JsonObject
             {
-                ["Mcp"] = new JsonObject { ["Servers"] = servers },
                 ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
             }
         }.ToJsonString();
 
-    private static JsonObject StdioMcpServer(string remoteName, string exposedName) => new()
+    private static JsonObject StdioMcpServer() => new()
     {
-        ["Enabled"] = true,
-        ["Transport"] = "Stdio",
-        ["Command"] = "/usr/bin/false",
-        ["Arguments"] = new JsonArray(),
-        ["EnvironmentVariables"] = new JsonObject(),
-        ["Tools"] = ToolMap(remoteName, exposedName)
+        ["command"] = "/usr/bin/false",
+        ["args"] = new JsonArray(),
+        ["env"] = new JsonObject()
     };
 
-    private static JsonObject HttpMcpServer(string endpoint, JsonObject tools) => new()
+    private static JsonObject HttpMcpServer(string url) => new()
     {
-        ["Enabled"] = true,
-        ["Transport"] = "Http",
-        ["Endpoint"] = endpoint,
-        ["Headers"] = new JsonObject(),
-        ["Tools"] = tools
+        ["type"] = "http",
+        ["url"] = url,
+        ["headers"] = new JsonObject()
     };
 
-    private static JsonObject ToolMap(string remoteName, string exposedName) => new()
+    private static JsonObject SseMcpServer(string url) => new()
     {
-        [remoteName] = exposedName
+        ["type"] = "sse",
+        ["url"] = url
     };
 
     private static string CreateNamedConfiguration(

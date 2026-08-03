@@ -29,7 +29,8 @@ public static class MaieuticsHost
             AppContext.BaseDirectory,
             startupCurrentDirectory,
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
-        ValidateInitialConfigurationFile(configurationFile);
+        var mcpConfigurationPath = GetMcpConfigurationPath(configurationFile);
+        ValidateInitialConfigurationFile(configurationFile, mcpConfigurationPath);
 
         var builder = new HostApplicationBuilder(new HostApplicationBuilderSettings
         {
@@ -45,6 +46,18 @@ public static class MaieuticsHost
             source.FileProvider = fileProvider.Provider;
             source.Path = fileProvider.RelativePath;
             source.Optional = !configurationFile.Required;
+            source.ReloadOnChange = true;
+            source.OnLoadException = context =>
+            {
+                fileErrors.Record(context.Exception);
+                context.Ignore = true;
+            };
+        });
+        builder.Configuration.AddJsonFile(source =>
+        {
+            source.FileProvider = fileProvider.Provider;
+            source.Path = "mcp.json";
+            source.Optional = true;
             source.ReloadOnChange = true;
             source.OnLoadException = context =>
             {
@@ -149,25 +162,36 @@ public static class MaieuticsHost
         }
     }
 
-    private static void ValidateInitialConfigurationFile(MaieuticsConfigurationFile configurationFile)
+    private static string? GetMcpConfigurationPath(MaieuticsConfigurationFile configurationFile) =>
+        configurationFile.Path is null
+            ? null
+            : Path.Combine(Path.GetDirectoryName(configurationFile.Path)!, "mcp.json");
+
+    private static void ValidateInitialConfigurationFile(
+        MaieuticsConfigurationFile configurationFile,
+        string? mcpConfigurationPath)
     {
-        if (configurationFile.Path is null)
+        if (configurationFile.Path is not null)
         {
-            return;
-        }
-
-        if (!File.Exists(configurationFile.Path))
-        {
-            if (configurationFile.Required)
+            if (!File.Exists(configurationFile.Path))
             {
-                throw new FileNotFoundException("The selected Maieutics configuration file does not exist.",
-                    configurationFile.Path);
+                if (configurationFile.Required)
+                {
+                    throw new FileNotFoundException("The selected Maieutics configuration file does not exist.",
+                        configurationFile.Path);
+                }
             }
-
-            return;
+            else
+            {
+                using var stream = File.OpenRead(configurationFile.Path);
+                using var _ = JsonDocument.Parse(stream);
+            }
         }
 
-        using var stream = File.OpenRead(configurationFile.Path);
-        using var _ = JsonDocument.Parse(stream);
+        if (mcpConfigurationPath is not null && File.Exists(mcpConfigurationPath))
+        {
+            using var stream = File.OpenRead(mcpConfigurationPath);
+            using var _ = JsonDocument.Parse(stream);
+        }
     }
 }

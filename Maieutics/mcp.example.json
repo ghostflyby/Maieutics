@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "example-mcp-server"
+      ],
+      "env": {}
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://example.test/mcp",
+      "headers": {}
+    }
+  }
+}

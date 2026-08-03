@@ -189,6 +189,7 @@ transcript.
   routing
 - [ADR 0012](decisions/0012-flat-notebook-command-syntax-and-slash-completion.md): Flat notebook command syntax and
   slash completion
+- [ADR 0013](decisions/0013-mcp-configuration-file.md): Separate MCP configuration file
 
 ## Explicitly deferred
 

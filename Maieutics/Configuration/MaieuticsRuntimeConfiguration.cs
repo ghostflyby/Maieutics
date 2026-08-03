@@ -773,6 +773,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
     {
         var mcpServers = new Dictionary<string, McpServerGeneration>(StringComparer.OrdinalIgnoreCase);
         var created = new List<McpServerGeneration>();
+        var reservedToolNames = builtInTools
+            .Select(static function => function.Name)
+            .ToHashSet(StringComparer.Ordinal);
         try
         {
             foreach (var server in candidate.McpServers)
@@ -790,7 +793,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     loggerFactory,
                     timeProvider,
                     cancellationToken,
-                    mcpTransportFactory).ConfigureAwait(false);
+                    mcpTransportFactory,
+                    reservedToolNames).ConfigureAwait(false);
                 created.Add(generation);
                 mcpServers.Add(server.Id, generation);
             }
@@ -875,7 +879,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         root.Bind(options);
         NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
-        var mcpServers = CreateMcpServers(root.GetSection("Mcp"), options.Mcp);
+        var mcpServers = CreateMcpServers(GetMcpServersSection());
 
         var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
                            root.GetSection("Profiles").GetChildren().Any() ||
@@ -897,6 +901,19 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return hasNewSchema
             ? CreateNamedCandidate(root, options, mcpServers)
             : CreateLegacyCandidate(root, options, mcpServers);
+    }
+
+    private IConfigurationSection GetMcpServersSection()
+    {
+        var mcpServers = configuration.GetSection("mcpServers");
+        var servers = configuration.GetSection("servers");
+        if (mcpServers.GetChildren().Any() && servers.GetChildren().Any())
+        {
+            throw new InvalidOperationException(
+                "mcp.json must not combine the 'mcpServers' and 'servers' top-level keys.");
+        }
+
+        return mcpServers.GetChildren().Any() ? mcpServers : servers;
     }
 
     private Candidate CreateNamedCandidate(
@@ -1050,34 +1067,11 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return new Candidate(options, defaultProfileId, profiles, sources, mcpServers, key);
     }
 
-    private IReadOnlyList<McpServerDefinition> CreateMcpServers(
-        IConfigurationSection section,
-        MaieuticsMcpOptions options)
+    private IReadOnlyList<McpServerDefinition> CreateMcpServers(IConfigurationSection section)
     {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(options.Servers);
-        ValidateConfigurationKeys(section, "MCP configuration", "Servers");
-
-        var exposedNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var function in builtInTools)
-        {
-            ArgumentNullException.ThrowIfNull(function);
-            if (!IsValidToolName(function.Name))
-            {
-                throw new InvalidOperationException(
-                    $"The built-in tool name '{function.Name}' must contain 1 to 64 ASCII letters, digits, underscores, or hyphens.");
-            }
-
-            if (!exposedNames.Add(function.Name))
-            {
-                throw new InvalidOperationException(
-                    $"The model-visible tool name '{function.Name}' is configured more than once.");
-            }
-        }
-
         var result = new List<McpServerDefinition>();
         var serverIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var serverSection in section.GetSection("Servers").GetChildren())
+        foreach (var serverSection in section.GetChildren())
         {
             var serverId = serverSection.Key;
             if (string.IsNullOrWhiteSpace(serverId) || !serverIds.Add(serverId))
@@ -1085,61 +1079,26 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 throw new InvalidOperationException("MCP server identifiers must be non-empty and unique.");
             }
 
-            if (!options.Servers.TryGetValue(serverId, out var serverOptions) || !serverOptions.Enabled)
+            var serverOptions = new MaieuticsMcpServerOptions();
+            serverSection.Bind(serverOptions);
+            if (!serverOptions.Enabled)
             {
                 continue;
             }
 
-            if (!Enum.TryParse<McpServerTransportKind>(serverOptions.Transport, ignoreCase: true, out var transport) ||
-                !Enum.IsDefined(transport))
-            {
-                throw new InvalidOperationException(
-                    $"MCP server '{serverId}' must configure Transport as 'Stdio' or 'Http'.");
-            }
-
+            var transport = ResolveMcpTransport(serverId, serverSection);
             var allowedKeys = transport == McpServerTransportKind.Stdio
                 ? new[]
                 {
-                    "Enabled", "Transport", "Command", "Arguments", "WorkingDirectory", "EnvironmentVariables",
-                    "Tools", "InitializationTimeout", "RequestTimeout", "ShutdownTimeout"
+                    "Enabled", "Type", "Transport", "Command", "Arguments", "Args", "WorkingDirectory",
+                    "EnvironmentVariables", "Env", "InitializationTimeout", "RequestTimeout", "ShutdownTimeout"
                 }
                 :
                 [
-                    "Enabled", "Transport", "Endpoint", "Headers", "Tools", "ConnectionTimeout",
+                    "Enabled", "Type", "Transport", "Url", "Headers", "ConnectionTimeout",
                     "InitializationTimeout", "RequestTimeout"
                 ];
             ValidateConfigurationKeys(serverSection, $"MCP server '{serverId}'", allowedKeys);
-
-            ArgumentNullException.ThrowIfNull(serverOptions.Tools);
-            if (serverOptions.Tools.Count == 0)
-            {
-                throw new InvalidOperationException(
-                    $"Enabled MCP server '{serverId}' must configure a non-empty Tools allowlist.");
-            }
-
-            var tools = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var pair in serverOptions.Tools)
-            {
-                if (string.IsNullOrWhiteSpace(pair.Key))
-                {
-                    throw new InvalidOperationException(
-                        $"MCP server '{serverId}' contains an empty remote tool name.");
-                }
-
-                if (!IsValidToolName(pair.Value))
-                {
-                    throw new InvalidOperationException(
-                        $"The model-visible MCP tool name '{pair.Value}' must contain 1 to 64 ASCII letters, digits, underscores, or hyphens.");
-                }
-
-                if (!exposedNames.Add(pair.Value))
-                {
-                    throw new InvalidOperationException(
-                        $"The model-visible tool name '{pair.Value}' is configured more than once.");
-                }
-
-                tools.Add(pair.Key, pair.Value);
-            }
 
             ValidatePositiveTimeout(serverOptions.InitializationTimeout, serverId, "InitializationTimeout");
             ValidatePositiveTimeout(serverOptions.RequestTimeout, serverId, "RequestTimeout");
@@ -1182,12 +1141,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
             }
             else
             {
-                if (!Uri.TryCreate(serverOptions.Endpoint, UriKind.Absolute, out endpoint) ||
+                if (!Uri.TryCreate(serverOptions.Url, UriKind.Absolute, out endpoint) ||
                     !string.Equals(endpoint.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException(
-                        $"MCP server '{serverId}' Endpoint must be an absolute HTTP or HTTPS URI.");
+                        $"MCP server '{serverId}' Url must be an absolute HTTP or HTTPS URI.");
                 }
 
                 if (!string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
@@ -1220,7 +1179,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 environmentVariables,
                 endpoint,
                 headers,
-                tools,
                 serverOptions.InitializationTimeout,
                 serverOptions.RequestTimeout,
                 shutdownTimeout,
@@ -1234,7 +1192,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 environmentVariables,
                 endpoint,
                 headers,
-                tools,
                 serverOptions.InitializationTimeout,
                 serverOptions.RequestTimeout,
                 shutdownTimeout,
@@ -1245,6 +1202,34 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return result;
     }
 
+    private static McpServerTransportKind ResolveMcpTransport(
+        string serverId,
+        IConfigurationSection serverSection)
+    {
+        var configured = serverSection["Transport"] ?? serverSection["Type"];
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            if (Enum.TryParse<McpServerTransportKind>(configured, ignoreCase: true, out var transport) &&
+                Enum.IsDefined(transport))
+            {
+                return transport;
+            }
+
+            if (string.Equals(configured, "sse", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"MCP server '{serverId}' uses the unsupported 'sse' transport.");
+            }
+
+            throw new InvalidOperationException(
+                $"MCP server '{serverId}' must configure Transport as 'stdio' or 'http'.");
+        }
+
+        return !string.IsNullOrWhiteSpace(serverSection["Url"])
+            ? McpServerTransportKind.Http
+            : McpServerTransportKind.Stdio;
+    }
+
     private static void ValidatePositiveTimeout(TimeSpan value, string serverId, string field)
     {
         if (value <= TimeSpan.Zero)
@@ -1252,25 +1237,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
             throw new InvalidOperationException(
                 $"MCP server '{serverId}' {field} must be positive.");
         }
-    }
-
-    private static bool IsValidToolName(string? name)
-    {
-        if (string.IsNullOrEmpty(name) || name.Length > 64)
-        {
-            return false;
-        }
-
-        foreach (var character in name)
-        {
-            if (character is not (>= 'A' and <= 'Z') and not (>= 'a' and <= 'z') and not (>= '0' and <= '9') and
-                not '_' and not '-')
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static void ValidateConfigurationKeys(

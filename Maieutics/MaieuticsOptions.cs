@@ -18,8 +18,6 @@ public sealed class MaieuticsOptions
 
     public MaieuticsAgentOptions Agent { get; set; } = new();
 
-    public MaieuticsMcpOptions Mcp { get; set; } = new();
-
     public MaieuticsJupyterOptions Jupyter { get; set; } = new();
 
     internal void ValidateCommon()
@@ -29,17 +27,12 @@ public sealed class MaieuticsOptions
     }
 }
 
-public sealed class MaieuticsMcpOptions
-{
-    public Dictionary<string, MaieuticsMcpServerOptions> Servers { get; set; } =
-        new(StringComparer.OrdinalIgnoreCase);
-}
-
+// MCP servers live in a separate optional mcp.json beside the active maieutics.json. The file follows the
+// conventional lowercase mcpServers format used by Claude Code, Cursor, and JetBrains clients so existing
+// server blocks can be copied directly.
 public sealed class MaieuticsMcpServerOptions
 {
-    public bool Enabled { get; set; }
-
-    public string Transport { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
 
     public string? Command { get; set; }
 
@@ -50,13 +43,10 @@ public sealed class MaieuticsMcpServerOptions
     public Dictionary<string, string?> EnvironmentVariables { get; set; } =
         new(StringComparer.Ordinal);
 
-    public string? Endpoint { get; set; }
+    public string? Url { get; set; }
 
     public Dictionary<string, string> Headers { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
-
-    public Dictionary<string, string> Tools { get; set; } =
-        new(StringComparer.Ordinal);
 
     public TimeSpan InitializationTimeout { get; set; } = TimeSpan.FromSeconds(30);
 

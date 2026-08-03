@@ -585,16 +585,21 @@ public sealed class MaieuticsHostIntegrationTests
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(root, "connection.json");
         var configurationFile = Path.Combine(root, "maieutics.json");
+        var mcpFile = Path.Combine(root, "mcp.json");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,
             toolFlow: true,
-            toolName: "mcp_echo",
+            toolName: "echo",
             toolArgumentsJson: "{\"value\":\"native mcp value\"}",
             expectedToolResultText: "native mcp value");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateMcpHostConfiguration(connectionFile, provider.Endpoint, Path.GetFullPath(mcpServer)),
+            CreateMcpHostConfiguration(connectionFile, provider.Endpoint),
+            deadline.Token);
+        await File.WriteAllTextAsync(
+            mcpFile,
+            CreateMcpFile(Path.GetFullPath(mcpServer)),
             deadline.Token);
         using var started = StartConfiguredHostProcess(configurationFile);
         var process = started.Process;
@@ -608,7 +613,7 @@ public sealed class MaieuticsHostIntegrationTests
             await ready;
 
             (await ExecuteAndGetMarkdownAsync(client, "%mcp list", deadline.Token)).Should()
-                .Contain("`echo` → `mcp_echo`").And.Contain("Connected");
+                .Contain("`echo` → `echo`").And.Contain("Connected");
             (await ExecuteAndGetMarkdownAsync(client, "call the MCP echo tool", deadline.Token)).Should()
                 .Be("tool-backed answer");
             await provider.Completion.WaitAsync(deadline.Token);
@@ -1079,7 +1084,21 @@ public sealed class MaieuticsHostIntegrationTests
         return root.ToJsonString();
     }
 
-    private static string CreateMcpHostConfiguration(string connectionFile, Uri endpoint, string mcpServer) =>
+    private static string CreateMcpFile(string mcpServer) =>
+        new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                ["test"] = new JsonObject
+                {
+                    ["command"] = mcpServer,
+                    ["args"] = new JsonArray(),
+                    ["env"] = new JsonObject()
+                }
+            }
+        }.ToJsonString();
+
+    private static string CreateMcpHostConfiguration(string connectionFile, Uri endpoint) =>
         new JsonObject
         {
             ["Maieutics"] = new JsonObject
@@ -1096,21 +1115,6 @@ public sealed class MaieuticsHostIntegrationTests
                         ["ApiFlavor"] = OpenAiApiFlavor.Responses.ToString(),
                         ["ApiKey"] = "test-key",
                         ["Endpoint"] = endpoint.ToString()
-                    }
-                },
-                ["Mcp"] = new JsonObject
-                {
-                    ["Servers"] = new JsonObject
-                    {
-                        ["test"] = new JsonObject
-                        {
-                            ["Enabled"] = true,
-                            ["Transport"] = "Stdio",
-                            ["Command"] = mcpServer,
-                            ["Arguments"] = new JsonArray(),
-                            ["EnvironmentVariables"] = new JsonObject(),
-                            ["Tools"] = new JsonObject { ["echo"] = "mcp_echo" }
-                        }
                     }
                 },
                 ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }

@@ -30,7 +30,6 @@ internal sealed record McpServerDefinition(
     IReadOnlyDictionary<string, string?> EnvironmentVariables,
     Uri? Endpoint,
     IReadOnlyDictionary<string, string> Headers,
-    IReadOnlyDictionary<string, string> Tools,
     TimeSpan InitializationTimeout,
     TimeSpan RequestTimeout,
     TimeSpan ShutdownTimeout,
@@ -45,7 +44,6 @@ internal sealed record McpServerDefinition(
         IEnumerable<KeyValuePair<string, string?>> environmentVariables,
         Uri? endpoint,
         IEnumerable<KeyValuePair<string, string>> headers,
-        IEnumerable<KeyValuePair<string, string>> tools,
         TimeSpan initializationTimeout,
         TimeSpan requestTimeout,
         TimeSpan shutdownTimeout,
@@ -83,12 +81,6 @@ internal sealed record McpServerDefinition(
             Add(pair.Value);
         }
 
-        foreach (var pair in tools.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
-        {
-            Add(pair.Key);
-            Add(pair.Value);
-        }
-
         Add(initializationTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         Add(requestTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         Add(shutdownTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
@@ -107,6 +99,7 @@ internal sealed class McpServerGeneration
     private readonly ILogger logger;
     private readonly TimeProvider timeProvider;
     private readonly McpClientTransportFactory transportFactory;
+    private readonly IReadOnlySet<string>? reservedToolNames;
     private readonly CancellationTokenSource lifetime = new();
     private readonly Lock gate = new();
     private readonly List<Task> retiredConnections = [];
@@ -120,12 +113,14 @@ internal sealed class McpServerGeneration
         ILoggerFactory loggerFactory,
         TimeProvider timeProvider,
         McpClientTransportFactory transportFactory,
+        IReadOnlySet<string>? reservedToolNames,
         McpConnectionGeneration connection)
     {
         this.definition = definition;
         this.loggerFactory = loggerFactory;
         this.timeProvider = timeProvider;
         this.transportFactory = transportFactory;
+        this.reservedToolNames = reservedToolNames;
         logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
         current = connection;
     }
@@ -139,20 +134,22 @@ internal sealed class McpServerGeneration
         ILoggerFactory loggerFactory,
         TimeProvider timeProvider,
         CancellationToken cancellationToken,
-        McpClientTransportFactory? transportFactory = null)
+        McpClientTransportFactory? transportFactory = null,
+        IReadOnlySet<string>? reservedToolNames = null)
     {
         transportFactory ??= CreateTransportAsync;
         var connection = await CreateConnectionAsync(
             definition,
             loggerFactory,
             transportFactory,
-            requireAllTools: true,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            reservedToolNames).ConfigureAwait(false);
         var generation = new McpServerGeneration(
             definition,
             loggerFactory,
             timeProvider,
             transportFactory,
+            reservedToolNames,
             connection);
         generation.supervisor = generation.SuperviseAsync();
         return generation;
@@ -193,10 +190,7 @@ internal sealed class McpServerGeneration
                 definition.Transport.ToString(),
                 MaieuticsMcpServerState.Reconnecting,
                 nextReconnectDelay,
-                definition.Tools
-                    .OrderBy(static pair => pair.Value, StringComparer.Ordinal)
-                    .Select(static pair => new MaieuticsMcpToolInfo(pair.Key, pair.Value, false))
-                    .ToArray());
+                []);
         }
     }
 
@@ -287,7 +281,7 @@ internal sealed class McpServerGeneration
                     connection.DrainRefreshSignals();
                     try
                     {
-                        await connection.RefreshToolsAsync(requireAllTools: false, lifetime.Token)
+                        await connection.RefreshToolsAsync(lifetime.Token)
                             .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -342,8 +336,8 @@ internal sealed class McpServerGeneration
                     definition,
                     loggerFactory,
                     transportFactory,
-                    requireAllTools: false,
-                    lifetime.Token).ConfigureAwait(false);
+                    lifetime.Token,
+                    reservedToolNames).ConfigureAwait(false);
                 lock (gate)
                 {
                     if (retirement is null)
@@ -381,8 +375,8 @@ internal sealed class McpServerGeneration
         McpServerDefinition definition,
         ILoggerFactory loggerFactory,
         McpClientTransportFactory transportFactory,
-        bool requireAllTools,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlySet<string>? reservedToolNames)
     {
         var refreshSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
         {
@@ -415,10 +409,10 @@ internal sealed class McpServerGeneration
             clientOptions,
             loggerFactory,
             cancellationToken).ConfigureAwait(false);
-        var connection = new McpConnectionGeneration(client, definition, refreshSignals);
+        var connection = new McpConnectionGeneration(client, definition, refreshSignals, reservedToolNames);
         try
         {
-            await connection.RefreshToolsAsync(requireAllTools, cancellationToken).ConfigureAwait(false);
+            await connection.RefreshToolsAsync(cancellationToken).ConfigureAwait(false);
             return connection;
         }
         catch
@@ -486,7 +480,8 @@ internal sealed class McpServerGeneration
     internal sealed class McpConnectionGeneration(
         McpClient client,
         McpServerDefinition definition,
-        Channel<byte> refreshSignals)
+        Channel<byte> refreshSignals,
+        IReadOnlySet<string>? reservedToolNames)
     {
         private readonly Lock gate = new();
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -529,31 +524,22 @@ internal sealed class McpServerGeneration
             }
         }
 
-        internal async Task RefreshToolsAsync(bool requireAllTools, CancellationToken cancellationToken)
+        internal async Task RefreshToolsAsync(CancellationToken cancellationToken)
         {
             var discovered = await Client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-            var byName = discovered.ToDictionary(static tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
-            var exposed = ImmutableArray.CreateBuilder<AIFunction>(definition.Tools.Count);
-            var info = ImmutableArray.CreateBuilder<MaieuticsMcpToolInfo>(definition.Tools.Count);
-            foreach (var pair in definition.Tools.OrderBy(static pair => pair.Value, StringComparer.Ordinal))
+            var exposed = ImmutableArray.CreateBuilder<AIFunction>();
+            var info = ImmutableArray.CreateBuilder<MaieuticsMcpToolInfo>();
+            foreach (var tool in discovered.OrderBy(static value => value.ProtocolTool.Name, StringComparer.Ordinal))
             {
-                if (byName.TryGetValue(pair.Key, out var tool))
+                var name = tool.ProtocolTool.Name;
+                if (reservedToolNames is not null && reservedToolNames.Contains(name))
                 {
-                    exposed.Add(new TimeoutAIFunction(tool.WithName(pair.Value), definition.RequestTimeout));
-                    info.Add(new MaieuticsMcpToolInfo(pair.Key, pair.Value, true));
+                    info.Add(new MaieuticsMcpToolInfo(name, name, false));
+                    continue;
                 }
-                else
-                {
-                    info.Add(new MaieuticsMcpToolInfo(pair.Key, pair.Value, false));
-                }
-            }
 
-            if (requireAllTools && info.Any(static tool => !tool.Available))
-            {
-                var missing = string.Join(", ", info.Where(static tool => !tool.Available)
-                    .Select(static tool => $"'{tool.RemoteName}'"));
-                throw new InvalidOperationException(
-                    $"MCP server '{definition.Id}' does not expose configured tools: {missing}.");
+                exposed.Add(new TimeoutAIFunction(tool, definition.RequestTimeout));
+                info.Add(new MaieuticsMcpToolInfo(name, name, true));
             }
 
             lock (gate)
@@ -563,8 +549,8 @@ internal sealed class McpServerGeneration
                     throw new ObjectDisposedException(nameof(McpConnectionGeneration));
                 }
 
-                tools = exposed.MoveToImmutable();
-                toolInfo = info.MoveToImmutable();
+                tools = exposed.ToImmutable();
+                toolInfo = info.ToImmutable();
             }
         }
 

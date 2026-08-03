@@ -3,10 +3,8 @@ using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Mcp;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
-using ModelContextProtocol.Server;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -85,7 +83,7 @@ public sealed class McpServerGenerationTests
 
         internal ValueTask<IClientTransport> CreateTransportAsync(
             McpServerDefinition definition,
-            Microsoft.Extensions.Logging.ILoggerFactory loggerFactory,
+            ILoggerFactory loggerFactory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

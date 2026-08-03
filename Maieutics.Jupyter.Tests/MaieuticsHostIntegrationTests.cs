@@ -1191,7 +1191,9 @@ public sealed class MaieuticsHostIntegrationTests
 
         public string FailureDetails()
         {
-            var exit = Process.HasExited ? $" Exit code: {Process.ExitCode}." : string.Empty;
+            var exit = System.Diagnostics.Process.HasExited
+                ? $" Exit code: {System.Diagnostics.Process.ExitCode}."
+                : string.Empty;
             return $"Maieutics host failed.{exit}\nstdout:\n{string.Join('\n', standardOutput)}" +
                    $"\nstderr:\n{string.Join('\n', standardError)}";
         }
@@ -1207,7 +1209,7 @@ public sealed class MaieuticsHostIntegrationTests
         public void Dispose()
         {
             outputChanged.Dispose();
-            Process.Dispose();
+            System.Diagnostics.Process.Dispose();
             if (temporaryConfigurationFile is not null)
             {
                 File.Delete(temporaryConfigurationFile);

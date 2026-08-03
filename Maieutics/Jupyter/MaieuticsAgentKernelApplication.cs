@@ -31,7 +31,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
-        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null, null, null)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null, null,
+            null)
     {
     }
 
@@ -55,6 +56,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         {
             this.getOptions().Validate();
         }
+
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
     }

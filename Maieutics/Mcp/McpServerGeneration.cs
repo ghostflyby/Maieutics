@@ -1,12 +1,10 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol;
-using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
 
 namespace Maieutics.Mcp;
 
@@ -89,10 +87,10 @@ internal sealed record McpServerDefinition(
             Add(pair.Value);
         }
 
-        Add(initializationTimeout.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Add(requestTimeout.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Add(shutdownTimeout.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Add(connectionTimeout.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Add(initializationTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
+        Add(requestTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
+        Add(shutdownTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
+        Add(connectionTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 }
@@ -287,7 +285,8 @@ internal sealed class McpServerGeneration
                     connection.DrainRefreshSignals();
                     try
                     {
-                        await connection.RefreshToolsAsync(requireAllTools: false, lifetime.Token).ConfigureAwait(false);
+                        await connection.RefreshToolsAsync(requireAllTools: false, lifetime.Token)
+                            .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
                     {

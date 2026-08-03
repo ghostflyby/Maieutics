@@ -17,7 +17,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionExpandsAnExactCommandAndHandlesPrefixes()
     {
         var exact = Complete("%maieutics");
-        exact.Matches.Should().Equal("%maieutics mcp", "%maieutics model", "%maieutics workspace");
+        exact.Matches.Should().Equal("%maieutics model", "%maieutics workspace");
         exact.CursorStart.Should().Be(0);
         exact.CursorEnd.Should().Be(10);
 
@@ -27,7 +27,7 @@ public sealed class MaieuticsCompletionTests
         prefix.CursorEnd.Should().Be(4);
 
         var afterRoot = Complete("%maieutics ");
-        afterRoot.Matches.Should().Equal("mcp", "model", "workspace");
+        afterRoot.Matches.Should().Equal("model", "workspace");
         afterRoot.CursorStart.Should().Be(11);
         afterRoot.CursorEnd.Should().Be(11);
     }
@@ -58,20 +58,6 @@ public sealed class MaieuticsCompletionTests
         partial.Matches.Should().Equal("use");
         partial.CursorStart.Should().Be(17);
         partial.CursorEnd.Should().Be(18);
-    }
-
-    [Fact]
-    public void McpSubcommandsCompleteForCanonicalAndLegacyCommands()
-    {
-        var legacy = Complete("%maieutics mcp ");
-        legacy.Matches.Should().Equal("list");
-        legacy.CursorStart.Should().Be(15);
-        legacy.CursorEnd.Should().Be(15);
-
-        var canonical = Complete("%MCP L");
-        canonical.Matches.Should().Equal("list");
-        canonical.CursorStart.Should().Be(5);
-        canonical.CursorEnd.Should().Be(6);
     }
 
     [Fact]
@@ -218,12 +204,12 @@ public sealed class MaieuticsCompletionTests
     public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
     {
         var all = Complete("/");
-        all.Matches.Should().Equal("%mcp", "%model", "%workspace");
+        all.Matches.Should().Equal("%model", "%workspace");
         all.CursorStart.Should().Be(0);
         all.CursorEnd.Should().Be(1);
 
         var model = Complete("/m");
-        model.Matches.Should().Equal("%mcp", "%model");
+        model.Matches.Should().Equal("%model");
         model.CursorStart.Should().Be(0);
         model.CursorEnd.Should().Be(2);
 
@@ -250,20 +236,15 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
     {
         var all = Complete("%");
-        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%workspace");
+        all.Matches.Should().Equal("%maieutics", "%model", "%workspace");
 
         var sharedPrefix = Complete("%m");
-        sharedPrefix.Matches.Should().Equal("%maieutics", "%mcp", "%model");
+        sharedPrefix.Matches.Should().Equal("%maieutics", "%model");
     }
 
     [Fact]
     public void CanonicalCommandsCompleteSubcommandsAndBoundaries()
     {
-        var mcp = Complete("%mcp ");
-        mcp.Matches.Should().Equal("list");
-        mcp.CursorStart.Should().Be(5);
-        mcp.CursorEnd.Should().Be(5);
-
         var model = Complete("%model ");
         model.Matches.Should().Equal("available", "current", "list", "reset", "use");
         model.CursorStart.Should().Be(7);

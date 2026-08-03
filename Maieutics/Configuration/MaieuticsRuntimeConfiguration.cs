@@ -82,7 +82,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
         if (candidate.McpServers.Count == 0)
         {
-            current = BuildSnapshot(candidate, previous: null, version: 1, new Dictionary<string, McpServerGeneration>());
+            current = BuildSnapshot(candidate, previous: null, version: 1,
+                new Dictionary<string, McpServerGeneration>());
             StartReloadLoop();
         }
 
@@ -1504,7 +1505,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 }
                 catch (Exception exception)
                 {
-                    logger.LogError(exception, "An MCP connection lease failed during run-profile acquisition rollback.");
+                    logger.LogError(exception,
+                        "An MCP connection lease failed during run-profile acquisition rollback.");
                 }
             }
 
@@ -1685,6 +1687,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     {
         private readonly TaskCompletionSource disposal =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int disposed;
 
         public AgentRunProfile Profile { get; } = profile;

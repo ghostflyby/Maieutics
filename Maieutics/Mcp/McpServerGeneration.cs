@@ -5,6 +5,8 @@ using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace Maieutics.Mcp;
 

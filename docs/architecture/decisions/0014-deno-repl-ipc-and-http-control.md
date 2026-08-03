@@ -27,10 +27,14 @@ envelope, process-bound identity, and per-generation lifecycle.
 
 ### Transport and hosting
 
-- Each REPL generation hosts a `WebApplication.CreateSlimBuilder()` minimal API server on Kestrel, owned by the
-  `ReplControlHost` in `Maieutics/Control/`.
-- The REPL child channel is a unix domain socket endpoint (`ListenUnixSocket`), pinned to HTTP/1.1 so WebSocket
-  upgrades are deterministic. Windows is unsupported until a named-pipe bootstrap milestone; the factory throws
+- One process-wide `ReplControlHost` hosts a single `WebApplication.CreateSlimBuilder()` minimal API server on Kestrel,
+  registered as a hosted service in the main Generic Host. It is a stateless server: session state stays in
+  `ReplControlSessionRegistry` (child process id to session id) and is looked up per request, never baked into the
+  server instance.
+- The REPL child channel is a single unix domain socket endpoint (`ListenUnixSocket`), pinned to HTTP/1.1 so WebSocket
+  upgrades are deterministic. All REPL children share one socket; requests are attributed to a session through the
+  peer process identity resolved at accept time (Linux `SO_PEERCRED`; macOS falls back to same-user because no peer
+  PID is exposed). Windows is unsupported until a named-pipe bootstrap milestone; the factory throws
   `PlatformNotSupportedException` explicitly instead of degrading silently.
 - An external control endpoint is optional and off by default. When enabled it listens on TCP loopback only, with its
   own authentication.
@@ -83,20 +87,19 @@ The WebSocket endpoint is opened when the comm feature is implemented, not befor
 
 ### Lifecycle
 
-One listener and socket per REPL generation, created with the generation and torn down with it (same owner as the
-generation loop and connection-file cleanup). The socket directory is hardened: mode 0700, owner check, and unlink
-before bind. `DenoReplSessionFactory` creates the socket path, injects it through `kernelSpec.Environment`, starts the
-manager, then starts the control host bound to the spawned child PID. `DenoReplSession` owns the host and rebinds the
-expected PID through `UpdateExpectedProcessId` after a Jupyter restart replaces the child process.
+The socket directory is hardened: mode 0700, owner check, and unlink before bind. `DenoReplSessionFactory` injects the
+single socket path through `kernelSpec.Environment` and starts the manager. `DenoReplSession` registers the spawned
+child PID in `ReplControlSessionRegistry`, unregisters it on close, and replaces the mapping when a Jupyter restart
+spawns a new child process.
 
 `IJupyterKernelManager` exposes the child `ProcessId` as a read-only nullable property so the product IPC host can
 verify peer credentials and detect Jupyter restarts. The reusable Jupyter libraries otherwise remain unchanged.
 
 ## Implementation status
 
-- Landed: ASP.NET Core framework reference, `ReplControlHost` (HTTP `/health`, WebSocket `/ws` echo, peer identity
-  middleware, hardened socket lifecycle), peer-credential interop, factory wiring with `MAIEUTICS_REPL_IPC`, session
-  ownership and PID rebinding, in-process and real-Deno-child tests.
+- Landed: ASP.NET Core framework reference, process-wide `ReplControlHost` (HTTP `/health`, WebSocket `/ws` echo, peer
+  identity middleware, hardened socket lifecycle), `ReplControlSessionRegistry`, peer-credential interop, factory wiring
+  with `MAIEUTICS_REPL_IPC`, session registration and rebinding, in-process and real-Deno-child tests.
 - Pending: message envelope and API surface (not decided), tool and comm routing, WebSocket usage by the comm feature,
   external loopback control endpoint, and the Windows named-pipe bootstrap.
 

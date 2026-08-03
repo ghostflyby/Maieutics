@@ -11,31 +11,28 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Owns the per-generation HTTP and WebSocket control channel for one Deno REPL process.
+/// Owns the process-wide HTTP and WebSocket control channel shared by all Deno REPL children.
+/// One stateless server listens on one unix socket; each request is attributed to a REPL
+/// session through the peer process identity resolved at accept time.
 /// </summary>
-internal sealed class ReplControlHost : IAsyncDisposable
+internal sealed class ReplControlHost : IHostedService, IAsyncDisposable
 {
     private const int WebSocketBufferSize = 16 * 1024;
-    private readonly WebApplication application;
+    private readonly ReplControlSessionRegistry registry;
     private readonly ILogger<ReplControlHost> logger;
-    private readonly string socketPath;
-    private Func<Socket, bool> peerVerifier;
+    private WebApplication? application;
+    private string? socketPath;
     private int stopState;
 
-    private ReplControlHost(
-        WebApplication application,
-        string socketPath,
-        Func<Socket, bool> peerVerifier,
-        ILogger<ReplControlHost> logger)
+    public ReplControlHost(ReplControlSessionRegistry registry, ILogger<ReplControlHost> logger)
     {
-        this.application = application;
-        this.socketPath = socketPath;
-        this.peerVerifier = peerVerifier;
-        this.logger = logger;
+        this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
-    public string SocketPath => socketPath;
+    public string SocketPath => socketPath
+        ?? throw new InvalidOperationException("The REPL control channel is not started.");
 
     /// <summary>Creates a short socket path within the platform unix socket length limit.</summary>
     internal static string CreateSocketPath()
@@ -44,41 +41,10 @@ internal sealed class ReplControlHost : IAsyncDisposable
         return Path.Combine(directory, "sock");
     }
 
-    /// <summary>
-    /// Starts the control channel. The expected process id is the spawned REPL child; connections
-    /// whose peer identity does not match are rejected.
-    /// </summary>
-    public static async Task<ReplControlHost> StartAsync(
-        string socketPath,
-        int expectedProcessId,
-        ILogger<ReplControlHost> logger,
-        CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        return await StartAsync(
-            socketPath,
-            CreateDefaultPeerVerifier(expectedProcessId),
-            logger,
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    internal static async Task<ReplControlHost> StartAsync(
-        string socketPath,
-        Func<Socket, bool> peerVerifier,
-        ILogger<ReplControlHost> logger,
-        CancellationToken cancellationToken)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
-        ArgumentNullException.ThrowIfNull(peerVerifier);
-        ArgumentNullException.ThrowIfNull(logger);
-        var maxSocketPathLength = OperatingSystem.IsMacOS() ? 104 : OperatingSystem.IsLinux() ? 108 : 260;
-        if (socketPath.Length > maxSocketPathLength)
-        {
-            throw new ArgumentException(
-                $"The control channel socket path is longer than the platform limit of {maxSocketPathLength} characters.",
-                nameof(socketPath));
-        }
-
-        EnsureSocketDirectory(socketPath);
+        var path = CreateSocketPath();
+        EnsureSocketDirectory(path);
 
         // The default JSON configuration sources use FSEvents-backed file watching, which can block
         // in constrained sandboxes. Polling is deterministic and matches the executable's config provider.
@@ -92,82 +58,68 @@ internal sealed class ReplControlHost : IAsyncDisposable
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.AddServerHeader = false;
-            options.ListenUnixSocket(socketPath, listenOptions =>
+            options.ListenUnixSocket(path, listenOptions =>
             {
                 listenOptions.Protocols = HttpProtocols.Http1;
             });
         });
 
-        var application = builder.Build();
-        ReplControlHost? owner = null;
-        application.Use(async (context, next) =>
+        var built = builder.Build();
+        built.Use(async (context, next) =>
         {
-            var current = Volatile.Read(ref owner);
-            if (current is null)
+            if (!Authorize(context))
             {
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                return;
-            }
-
-            var peerSocket = GetPeerSocket(context);
-            if (peerSocket is null || !current.Authorize(peerSocket))
-            {
-                logger.LogWarning(
-                    "Rejected control channel connection with an unexpected peer identity.");
+                logger.LogWarning("Rejected control channel connection with an unexpected peer identity.");
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return;
             }
 
             await next(context).ConfigureAwait(false);
         });
-        application.UseWebSockets();
-        application.MapGet("/health", () => Results.Text("ok"));
-        application.Map("/ws", HandleWebSocketAsync);
+        built.UseWebSockets();
+        built.MapGet("/health", () => Results.Text("ok"));
+        built.Map("/ws", HandleWebSocketAsync);
 
-        var host = new ReplControlHost(application, socketPath, peerVerifier, logger);
-        owner = host;
         try
         {
-            await application.StartAsync(cancellationToken).ConfigureAwait(false);
+            await built.StartAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
-            await application.DisposeAsync().ConfigureAwait(false);
-            TryDeleteSocketFile(socketPath);
+            await built.DisposeAsync().ConfigureAwait(false);
+            TryDeleteSocketFile(path);
             throw;
         }
 
-        return host;
+        application = built;
+        socketPath = path;
     }
 
-    /// <summary>Rebinds the expected child process id after the child process is replaced.</summary>
-    internal void UpdateExpectedProcessId(int processId)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
-        Volatile.Write(ref peerVerifier, CreateDefaultPeerVerifier(processId));
-    }
-
-    private bool Authorize(Socket socket)
-    {
-        var verifier = Volatile.Read(ref peerVerifier);
-        return verifier is not null && verifier(socket);
-    }
-
-    public async ValueTask StopAsync(CancellationToken cancellationToken = default)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         if (Interlocked.Exchange(ref stopState, 1) != 0)
         {
             return;
         }
 
-        try
+        var current = application;
+        var path = socketPath;
+        application = null;
+        socketPath = null;
+        if (current is not null)
         {
-            await application.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            await application.DisposeAsync().ConfigureAwait(false);
-            TryDeleteSocketFile(socketPath);
+            try
+            {
+                await current.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await current.DisposeAsync().ConfigureAwait(false);
+                if (path is not null)
+                {
+                    TryDeleteSocketFile(path);
+                }
+            }
         }
     }
 
@@ -176,24 +128,21 @@ internal sealed class ReplControlHost : IAsyncDisposable
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
-    private static Func<Socket, bool> CreateDefaultPeerVerifier(int expectedProcessId)
+    private bool Authorize(HttpContext context)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(expectedProcessId);
-        var currentUserId = PeerProcessCredentials.GetCurrentUserId();
-        return socket =>
+        var peerSocket = GetPeerSocket(context);
+        if (peerSocket is null ||
+            !PeerProcessCredentials.TryGetPeerIdentity(peerSocket, out var peerProcessId, out var peerUserId))
         {
-            if (!PeerProcessCredentials.TryGetPeerIdentity(socket, out var peerProcessId, out var peerUserId))
-            {
-                return false;
-            }
+            return false;
+        }
 
-            if (peerProcessId > 0)
-            {
-                return peerProcessId == expectedProcessId;
-            }
+        if (peerProcessId > 0)
+        {
+            return registry.TryGetSession(peerProcessId, out _);
+        }
 
-            return peerUserId > 0 && peerUserId == currentUserId;
-        };
+        return peerUserId > 0 && peerUserId == PeerProcessCredentials.GetCurrentUserId();
     }
 
     private static Socket? GetPeerSocket(HttpContext context)

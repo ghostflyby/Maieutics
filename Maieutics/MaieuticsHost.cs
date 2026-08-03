@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
@@ -106,6 +107,9 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
             services.GetRequiredService<JupyterDenoReplPresentationRouter>());
+        builder.Services.AddSingleton<ReplControlSessionRegistry>();
+        builder.Services.AddSingleton<ReplControlHost>();
+        builder.Services.AddHostedService(static services => services.GetRequiredService<ReplControlHost>());
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();

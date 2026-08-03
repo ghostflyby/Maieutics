@@ -1,4 +1,5 @@
 using Maieutics.Agent;
+using Maieutics.Control;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Execution;
@@ -13,6 +14,7 @@ internal sealed class DenoReplRegistry : IAsyncDisposable
     private readonly ILogger<DenoReplSession> logger;
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
+    private readonly ReplControlSessionRegistry controlRegistry;
     private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> sessions = [];
     private readonly Workspace workspace;
     private int disposeState;
@@ -22,12 +24,14 @@ internal sealed class DenoReplRegistry : IAsyncDisposable
         DenoReplOptions options,
         IDenoReplSessionFactory factory,
         IDenoReplPresentationRouter presentationRouter,
+        ReplControlSessionRegistry controlRegistry,
         ILogger<DenoReplSession> logger)
     {
         this.workspace = workspace;
         this.options = options;
         this.factory = factory;
         this.presentationRouter = presentationRouter;
+        this.controlRegistry = controlRegistry;
         this.logger = logger;
     }
 
@@ -198,6 +202,7 @@ internal sealed class DenoReplRegistry : IAsyncDisposable
                 options,
                 factory,
                 presentationRouter,
+                controlRegistry,
                 logger);
             owned.Add(sessionId, created);
             return created;

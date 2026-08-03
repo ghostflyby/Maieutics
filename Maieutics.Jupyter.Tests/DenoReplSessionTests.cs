@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Agent;
+using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
@@ -147,16 +148,17 @@ public sealed class DenoReplSessionTests
         options,
         new SingleManagerFactory(manager),
         new ImmediatePresentationRouter(),
+        new ReplControlSessionRegistry(),
         NullLogger<DenoReplSession>.Instance);
 
     private sealed class SingleManagerFactory(ControlledManager manager) : IDenoReplSessionFactory
     {
-        public Task<DenoReplStartResult> StartAsync(
+        public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(new DenoReplStartResult(manager, null));
+            return Task.FromResult<IJupyterKernelManager>(manager);
         }
     }
 

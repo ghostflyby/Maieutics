@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using FluentAssertions;
 using Maieutics.Agent;
+using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
@@ -19,6 +20,7 @@ public sealed class DenoReplRegistryTests
             new DenoReplOptions(),
             new RecordingFactory(),
             new UnusedPresentationRouter(),
+            new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
 
         var functions = new DenoReplFunctions(registry).Functions;
@@ -70,6 +72,7 @@ public sealed class DenoReplRegistryTests
             options,
             factory,
             new UnusedPresentationRouter(),
+            new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
         var owner = AgentSessionId.Create();
 
@@ -125,6 +128,7 @@ public sealed class DenoReplRegistryTests
             new DenoReplOptions(),
             factory,
             new UnusedPresentationRouter(),
+            new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
         var owner = AgentSessionId.Create();
 
@@ -166,6 +170,7 @@ public sealed class DenoReplRegistryTests
             new DenoReplOptions(),
             factory,
             new UnusedPresentationRouter(),
+            new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
         var owner = AgentSessionId.Create();
 
@@ -207,6 +212,7 @@ public sealed class DenoReplRegistryTests
             new DenoReplOptions(),
             factory,
             new UnusedPresentationRouter(),
+            new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
 
         try
@@ -239,14 +245,14 @@ public sealed class DenoReplRegistryTests
     {
         public List<RecordingManager> Managers { get; } = [];
 
-        public Task<DenoReplStartResult> StartAsync(
+        public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var manager = new RecordingManager();
             Managers.Add(manager);
-            return Task.FromResult(new DenoReplStartResult(manager, null));
+            return Task.FromResult<IJupyterKernelManager>(manager);
         }
     }
 
@@ -254,7 +260,7 @@ public sealed class DenoReplRegistryTests
     {
         public int Attempts { get; private set; }
 
-        public Task<DenoReplStartResult> StartAsync(
+        public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
@@ -265,7 +271,7 @@ public sealed class DenoReplRegistryTests
                 throw new FileNotFoundException("deno");
             }
 
-            return Task.FromResult(new DenoReplStartResult(new RecordingManager(), null));
+            return Task.FromResult<IJupyterKernelManager>(new RecordingManager());
         }
     }
 
@@ -273,12 +279,12 @@ public sealed class DenoReplRegistryTests
     {
         public BlockingShutdownManager Manager { get; } = new();
 
-        public Task<DenoReplStartResult> StartAsync(
+        public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(new DenoReplStartResult(Manager, null));
+            return Task.FromResult<IJupyterKernelManager>(Manager);
         }
     }
 

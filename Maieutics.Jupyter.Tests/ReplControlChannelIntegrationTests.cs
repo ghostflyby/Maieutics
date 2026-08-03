@@ -19,22 +19,27 @@ public sealed class ReplControlChannelIntegrationTests
         }
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-        var factory = new LocalDenoReplSessionFactory(
-            new DenoReplOptions(),
-            NullLogger<ReplControlHost>.Instance);
-        var result = await factory.StartAsync(Directory.GetCurrentDirectory(), timeout.Token);
-        await using (result.Manager)
-        await using (result.ControlChannel!)
+        var registry = new ReplControlSessionRegistry();
+        var controlHost = new ReplControlHost(registry, NullLogger<ReplControlHost>.Instance);
+        await controlHost.StartAsync(timeout.Token);
+        await using (controlHost)
         {
-            result.Manager.ProcessId.Should().NotBeNull();
-            var execution = await result.Manager.Client.ExecuteAsync(
-                new JupyterExecuteRequest(ReplChildProbeScript),
-                timeout.Token);
-            var outputs = await ReadOutputsAsync(execution, timeout.Token);
-            (await execution.Completion.WaitAsync(timeout.Token)).Reply.Status.Should().Be("ok");
-            outputs.OfType<JupyterExecuteResultOutput>()
-                .Select(output => output.Data.Data["text/plain"].GetString())
-                .Should().Contain(value => value != null && value.Contains("control-ok"));
+            var factory = new LocalDenoReplSessionFactory(new DenoReplOptions(), controlHost);
+            var manager = await factory.StartAsync(Directory.GetCurrentDirectory(), timeout.Token);
+            await using (manager)
+            {
+                manager.ProcessId.Should().NotBeNull();
+                registry.Register(manager.ProcessId!.Value, "integration-session");
+
+                var execution = await manager.Client.ExecuteAsync(
+                    new JupyterExecuteRequest(ReplChildProbeScript),
+                    timeout.Token);
+                var outputs = await ReadOutputsAsync(execution, timeout.Token);
+                (await execution.Completion.WaitAsync(timeout.Token)).Reply.Status.Should().Be("ok");
+                outputs.OfType<JupyterExecuteResultOutput>()
+                    .Select(output => output.Data.Data["text/plain"].GetString())
+                    .Should().Contain(value => value != null && value.Contains("control-ok"));
+            }
         }
     }
 

@@ -20,11 +20,12 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly ILogger<DenoReplSession> logger;
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
+    private readonly ReplControlSessionRegistry controlRegistry;
     private readonly object stateGate = new();
     private CancellationTokenSource? generationLifetime;
     private Task? generationLoop;
     private IJupyterKernelManager? manager;
-    private ReplControlHost? controlHost;
+    private int? registeredControlPid;
     private DenoReplSessionState state = DenoReplSessionState.Created;
     private int disposeState;
     private int generation = 1;
@@ -39,6 +40,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         DenoReplOptions options,
         IDenoReplSessionFactory factory,
         IDenoReplPresentationRouter presentationRouter,
+        ReplControlSessionRegistry controlRegistry,
         ILogger<DenoReplSession> logger)
     {
         OwnerSessionId = ownerSessionId;
@@ -48,6 +50,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         this.options = options;
         this.factory = factory;
         this.presentationRouter = presentationRouter;
+        this.controlRegistry = controlRegistry;
         this.logger = logger;
         latePresentationEventsRemaining = options.MaxPresentationEventsPerExecution;
         latePresentationTextBytesRemaining = options.MaxPresentationTextBytes;
@@ -94,9 +97,8 @@ internal sealed class DenoReplSession : IAsyncDisposable
             SetState(DenoReplSessionState.Starting);
             try
             {
-                var started = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
-                manager = started.Manager;
-                controlHost = started.ControlChannel;
+                manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                RegisterControlSession();
                 StartGenerationLoop(manager.Client);
                 SetState(DenoReplSessionState.Idle);
             }
@@ -259,17 +261,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 {
                     if (manager is null)
                     {
-                        var started = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
-                        manager = started.Manager;
-                        controlHost = started.ControlChannel;
+                        manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                        RegisterControlSession();
                     }
                     else
                     {
                         await manager.RestartAsync(cancellationToken).ConfigureAwait(false);
-                        if (controlHost is not null && manager.ProcessId is { } processId)
-                        {
-                            controlHost.UpdateExpectedProcessId(processId);
-                        }
+                        RebindControlSession();
                     }
 
                     StartGenerationLoop(manager.Client);
@@ -331,12 +329,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     }
                 }
 
-                var channel = controlHost;
-                controlHost = null;
-                if (channel is not null)
-                {
-                    await channel.StopAsync(cancellationToken).ConfigureAwait(false);
-                }
+                UnregisterControlSession();
 
                 SetState(DenoReplSessionState.Closed);
             }
@@ -439,6 +432,35 @@ internal sealed class DenoReplSession : IAsyncDisposable
     {
         generationLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         generationLoop = WatchGenerationAsync(client, generationLifetime.Token);
+    }
+
+    private void RegisterControlSession()
+    {
+        if (manager?.ProcessId is { } processId)
+        {
+            controlRegistry.Register(processId, SessionId);
+            registeredControlPid = processId;
+        }
+    }
+
+    private void RebindControlSession()
+    {
+        if (registeredControlPid is { } previous)
+        {
+            controlRegistry.Unregister(previous);
+            registeredControlPid = null;
+        }
+
+        RegisterControlSession();
+    }
+
+    private void UnregisterControlSession()
+    {
+        if (registeredControlPid is { } processId)
+        {
+            controlRegistry.Unregister(processId);
+            registeredControlPid = null;
+        }
     }
 
     private async Task StopGenerationLoopAsync()

@@ -20,3 +20,16 @@ maieutics.events.addEventListener("comm.msg", (event) => {
 ```
 
 Validation: `deno task check` and `deno task test`.
+
+## Deno permissions
+
+Inside the `deno jupyter` kernel every permission is granted. When the module is used standalone or
+in tests, it requires:
+
+- `--allow-env` — reads `MAIEUTICS_REPL_IPC`, `MAIEUTICS_REPL_CLIENT`, and `MAIEUTICS_REPL_SESSION`.
+- `--allow-net` — HTTP (`fetch`) and WebSocket connections through the unix socket proxy.
+- `--allow-read` and `--allow-write` — `Deno.createHttpClient` checks both read and write access to
+  the unix socket path (verified empirically; without `--allow-write` the proxy fails at creation).
+
+Any change that alters environment, network, or filesystem behavior must update this list in the
+same change, so the future permission system can derive the required grant set instead of guessing.

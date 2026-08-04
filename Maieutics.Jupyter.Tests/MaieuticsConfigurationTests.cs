@@ -254,7 +254,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
             Directory.Delete(root, recursive: true);
         }
@@ -313,7 +313,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -347,8 +347,8 @@ public sealed class MaieuticsConfigurationTests
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
-            var select = () => runtime.SelectModelProfile("model-alpha");
-            select.Should().Throw<ArgumentException>()
+            runtime.Invoking(r => r.SelectModelProfile("model-alpha"))
+                .Should().Throw<ArgumentException>()
                 .WithMessage("*'@first/model-alpha'*'@second/model-alpha'*");
 
             runtime.SelectModelProfile("@second/model-alpha");
@@ -357,7 +357,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
             Directory.Delete(root, recursive: true);
         }
@@ -416,7 +416,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             factory.ReleaseCreation.TrySetResult();
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -633,7 +633,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -763,7 +763,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
             Directory.Delete(root, recursive: true);
         }
@@ -871,7 +871,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
             Directory.Delete(root, recursive: true);
         }
@@ -975,7 +975,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
             Directory.Delete(root, recursive: true);
         }
@@ -1071,8 +1071,8 @@ public sealed class MaieuticsConfigurationTests
                 .Should().Throw<Exception>().WithMessage("*must not combine*");
 
             File.WriteAllText(mcpFile, "{");
-            var syntaxError = () => MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            syntaxError.Should().Throw<JsonException>();
+            FluentActions.Invoking(() => MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]))
+                .Should().Throw<JsonException>();
 
             // A server disabled with the VS Code convention is skipped before transport validation.
             File.WriteAllText(
@@ -1541,7 +1541,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -1588,7 +1588,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -1625,7 +1625,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -1666,7 +1666,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            await ((IAsyncDisposable)host).DisposeAsync();
+            await host.DisposeAsync();
             Directory.Delete(root, recursive: true);
         }
     }

@@ -33,10 +33,10 @@ public sealed class WorkspaceToolsTests
             TestContext.Current.CancellationToken);
         result.Should().BeOfType<JsonElement>();
 
-        var invalid = () => list.InvokeAsync(
-            Arguments("""{"unexpected":true}"""),
-            TestContext.Current.CancellationToken).AsTask();
-        await invalid.Should().ThrowAsync<Exception>()
+        await list.Awaiting(l => l.InvokeAsync(
+                Arguments("""{"unexpected":true}"""),
+                TestContext.Current.CancellationToken).AsTask())
+            .Should().ThrowAsync<Exception>()
             .Where(static exception =>
                 exception.GetType() == typeof(ArgumentException) ||
                 exception.GetType() == typeof(JsonException));
@@ -100,9 +100,8 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
 
-        var action = () => snapshot.Resolve(uri);
-
-        action.Should().Throw<WorkspaceException>()
+        snapshot.Invoking(s => s.Resolve(uri))
+            .Should().Throw<WorkspaceException>()
             .Which.Code.Should().Be("workspace_invalid_uri");
     }
 
@@ -172,16 +171,15 @@ public sealed class WorkspaceToolsTests
         File.Delete(file);
         File.CreateSymbolicLink(file, outside);
 
-        var finalComponent = () => snapshot.OpenVerifiedRead(resolved.FullPath);
-        finalComponent.Should().Throw<WorkspaceException>()
+        snapshot.Invoking(s => s.OpenVerifiedRead(resolved.FullPath))
+            .Should().Throw<WorkspaceException>()
             .Which.Code.Should().Be("workspace_symbolic_link_not_allowed");
 
         File.Delete(file);
         Directory.Delete(directory);
         Directory.CreateSymbolicLink(directory, workspace.ParentPath);
 
-        var intermediateComponent = () => snapshot.OpenVerifiedRead(resolved.FullPath);
-        intermediateComponent.Should().Throw<IOException>();
+        snapshot.Invoking(s => s.OpenVerifiedRead(resolved.FullPath)).Should().Throw<IOException>();
     }
 
     [Fact]
@@ -191,15 +189,13 @@ public sealed class WorkspaceToolsTests
         var child = Directory.CreateDirectory(Path.Combine(workspace.Path, "child")).FullName;
 
         Workspace.Create("child", workspace.Path).Capture().RootPath.Should().Be(child);
-        var empty = () => Workspace.Create(" ", workspace.Path);
-        empty.Should().Throw<ArgumentException>();
+        workspace.Invoking(w => Workspace.Create(" ", w.Path)).Should().Throw<ArgumentException>();
 
         if (!OperatingSystem.IsWindows())
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            var action = () => Workspace.Create(link, workspace.ParentPath);
-            action.Should().Throw<ArgumentException>();
+            workspace.Invoking(w => Workspace.Create(link, w.ParentPath)).Should().Throw<ArgumentException>();
         }
     }
 
@@ -386,10 +382,10 @@ public sealed class WorkspaceToolsTests
 
         using var canceled = new CancellationTokenSource();
         await canceled.CancelAsync();
-        var action = () => fileLimited.InvokeAsync(
-            Arguments("""{"query":"target"}"""),
-            canceled.Token).AsTask();
-        await action.Should().ThrowAsync<OperationCanceledException>();
+        await fileLimited.Awaiting(f => f.InvokeAsync(
+                Arguments("""{"query":"target"}"""),
+                canceled.Token).AsTask())
+            .Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact(Timeout = 10_000)]
@@ -578,9 +574,9 @@ public sealed class WorkspaceToolsTests
             frozenHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(jsonRoot);
         }
 
-        var invalid = () => MaieuticsHost.CreateApplicationBuilder(
-            ["--config", configurationFile, "--workspace", Path.Combine(workspace.Path, "missing")]);
-        invalid.Should().Throw<DirectoryNotFoundException>();
+        FluentActions.Invoking(() => MaieuticsHost.CreateApplicationBuilder(
+                ["--config", configurationFile, "--workspace", Path.Combine(workspace.Path, "missing")]))
+            .Should().Throw<DirectoryNotFoundException>();
     }
 
     [Fact]
@@ -596,8 +592,7 @@ public sealed class WorkspaceToolsTests
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            var action = () => Workspace.Create(link, workspace.ParentPath);
-            action.Should().Throw<ArgumentException>();
+            workspace.Invoking(w => Workspace.Create(link, w.ParentPath)).Should().Throw<ArgumentException>();
         }
     }
 

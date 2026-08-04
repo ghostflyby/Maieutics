@@ -76,17 +76,15 @@ public sealed class JupyterMessageSerializerTests
             .ToArray();
         frames[^1] = "{\"tampered\":true}"u8.ToArray();
 
-        var act = () => serializer.Deserialize(frames);
-
-        act.Should().Throw<JupyterProtocolException>().WithMessage("*signature*");
+        serializer.Invoking(s => s.Deserialize(frames))
+            .Should().Throw<JupyterProtocolException>().WithMessage("*signature*");
     }
 
     [Fact]
     public void UnsupportedSignatureSchemeFailsFast()
     {
-        var act = () => new JupyterMessageSerializer("secret", "hmac-sha512");
-
-        act.Should().Throw<NotSupportedException>().WithMessage("*hmac-sha512*");
+        FluentActions.Invoking(() => new JupyterMessageSerializer("secret", "hmac-sha512"))
+            .Should().Throw<NotSupportedException>().WithMessage("*hmac-sha512*");
     }
 
     [Fact]

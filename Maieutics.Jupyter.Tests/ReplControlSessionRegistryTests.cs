@@ -34,7 +34,6 @@ public sealed class ReplControlSessionRegistryTests
     public void RejectsInvalidRegistration()
     {
         var registry = new ReplControlSessionRegistry();
-        var act = () => registry.Register(0, "session");
-        act.Should().Throw<ArgumentOutOfRangeException>();
+        registry.Invoking(r => r.Register(0, "session")).Should().Throw<ArgumentOutOfRangeException>();
     }
 }

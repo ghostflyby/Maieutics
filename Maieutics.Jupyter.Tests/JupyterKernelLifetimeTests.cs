@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using FluentAssertions;
-using Maieutics;
 using Maieutics.Jupyter.Kernel;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -55,9 +54,7 @@ public sealed class JupyterKernelLifetimeTests
     {
         var coordinator = new KernelInterruptCoordinator();
 
-        var action = () => coordinator.RequestInterrupt();
-
-        action.Should().NotThrow();
+        coordinator.Invoking(c => c.RequestInterrupt()).Should().NotThrow();
     }
 
     private sealed class FakeApplicationLifetime : IHostApplicationLifetime

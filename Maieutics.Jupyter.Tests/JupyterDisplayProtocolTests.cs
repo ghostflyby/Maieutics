@@ -25,10 +25,8 @@ public sealed class JupyterDisplayProtocolTests
 
         created.Value.Should().NotBeNullOrWhiteSpace();
         created.ToString().Should().Be(created.Value);
-        var empty = () => new JupyterDisplayId(" ");
-        var defaultValue = () => JupyterDisplayTransient.Create(default);
-        empty.Should().Throw<ArgumentException>();
-        defaultValue.Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new JupyterDisplayId(" ")).Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => JupyterDisplayTransient.Create(default)).Should().Throw<ArgumentException>();
     }
 
     [Fact]
@@ -77,8 +75,7 @@ public sealed class JupyterDisplayProtocolTests
             [JupyterDisplayTransient.DisplayIdPropertyName] = document.RootElement.Clone()
         };
 
-        var act = () => JupyterDisplayTransient.GetDisplayId(transient);
-
-        act.Should().Throw<JupyterProtocolException>();
+        FluentActions.Invoking(() => JupyterDisplayTransient.GetDisplayId(transient))
+            .Should().Throw<JupyterProtocolException>();
     }
 }

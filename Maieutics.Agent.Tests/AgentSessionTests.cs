@@ -319,23 +319,23 @@ public sealed class AgentSessionTests
             "echo",
             (_, _, _) => ValueTask.FromResult<JsonElement?>(null));
 
-        var invalidName = () => new AgentSession(
-            client,
-            tools: [new MetadataAIFunction(valid, "invalid name", valid.JsonSchema)]);
-        invalidName.Should().Throw<ArgumentException>().WithMessage("*Tool names*");
+        FluentActions.Invoking(() => new AgentSession(
+                client,
+                tools: [new MetadataAIFunction(valid, "invalid name", valid.JsonSchema)]))
+            .Should().Throw<ArgumentException>().WithMessage("*Tool names*");
 
-        var duplicateName = () => new AgentSession(client, tools: [valid, valid]);
-        duplicateName.Should().Throw<ArgumentException>().WithMessage("*already registered*");
+        FluentActions.Invoking(() => new AgentSession(client, tools: [valid, valid]))
+            .Should().Throw<ArgumentException>().WithMessage("*already registered*");
 
-        var invalidSchema = () => new AgentSession(
-            client,
-            tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("[]"))]);
-        invalidSchema.Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
+        FluentActions.Invoking(() => new AgentSession(
+                client,
+                tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("[]"))]))
+            .Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
 
-        var wrongSchemaType = () => new AgentSession(
-            client,
-            tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("{\"type\":\"string\"}"))]);
-        wrongSchemaType.Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
+        FluentActions.Invoking(() => new AgentSession(
+                client,
+                tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("{\"type\":\"string\"}"))]))
+            .Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
     }
 
     [Fact]
@@ -825,12 +825,11 @@ public sealed class AgentSessionTests
         var messageId = AgentMessageId.Create();
         var message = new ChatMessage(ChatRole.Assistant, "answer");
 
-        var transcript = () => new AgentTranscript(default, 0, []);
-        transcript.Should().Throw<ArgumentException>();
-        var delta = () => new AgentTextDelta(runId, 0, messageId, "answer");
-        delta.Should().Throw<ArgumentOutOfRangeException>();
-        var completed = () => new AgentMessageCompleted(default, 1, messageId, message);
-        completed.Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new AgentTranscript(default, 0, [])).Should().Throw<ArgumentException>();
+        FluentActions.Invoking(() => new AgentTextDelta(runId, 0, messageId, "answer"))
+            .Should().Throw<ArgumentOutOfRangeException>();
+        FluentActions.Invoking(() => new AgentMessageCompleted(default, 1, messageId, message))
+            .Should().Throw<ArgumentException>();
     }
 
     private static async Task CompleteTurnAsync(AgentSession session,

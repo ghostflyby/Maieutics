@@ -19,9 +19,8 @@ public sealed class JupyterCursorPositionTests
     [Fact]
     public void RejectsUtf16IndexInsideSurrogatePair()
     {
-        var act = () => JupyterCursorPosition.FromUtf16Index("a😀b", 2);
-
-        act.Should().Throw<ArgumentException>().WithMessage("*surrogate pair*");
+        FluentActions.Invoking(() => JupyterCursorPosition.FromUtf16Index("a😀b", 2))
+            .Should().Throw<ArgumentException>().WithMessage("*surrogate pair*");
     }
 
     [Fact]
@@ -36,10 +35,9 @@ public sealed class JupyterCursorPositionTests
     [Fact]
     public void RejectsOutOfRangePositions()
     {
-        var utf16 = () => JupyterCursorPosition.ToUtf16Index("abc", 4);
-        var line = () => JupyterCursorPosition.FromLineColumn("abc", new JupyterTextPosition(1, 0));
-
-        utf16.Should().Throw<ArgumentOutOfRangeException>();
-        line.Should().Throw<ArgumentOutOfRangeException>();
+        FluentActions.Invoking(() => JupyterCursorPosition.ToUtf16Index("abc", 4))
+            .Should().Throw<ArgumentOutOfRangeException>();
+        FluentActions.Invoking(() => JupyterCursorPosition.FromLineColumn("abc", new JupyterTextPosition(1, 0)))
+            .Should().Throw<ArgumentOutOfRangeException>();
     }
 }

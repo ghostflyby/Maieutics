@@ -363,7 +363,7 @@ public sealed class DenoReplSessionTests
         public void Exit() => Interlocked.Decrement(ref active);
     }
 
-    private sealed class ImmediatePresentationRouter : IDenoReplPresentationRouter
+    internal sealed class ImmediatePresentationRouter : IDenoReplPresentationRouter
     {
         private static readonly IDenoReplPresentationSink Sink = new NoopPresentationSink();
 

@@ -4,9 +4,10 @@ Deno-side client for the Maieutics REPL control channel. The kernel spawns each 
 with `MAIEUTICS_REPL_IPC` set to the control channel's unix domain socket and serves HTTP
 (`/health`) and WebSocket (`/ws`) endpoints on it.
 
-The module is the single source of truth for the client; the kernel materializes it per REPL
-generation. The planned binding is a bootstrap cell that imports this module and exposes it as the
-`maieutics` namespace. Tool and widget APIs are pending design; today the module exposes connection,
+The module is the single source of truth for the client; the kernel materializes it per process. At
+REPL session start the kernel runs a verified bootstrap cell that binds `globalThis.maieutics`, so
+scripts can call `maieutics.health()` with no import; explicit `import` via `MAIEUTICS_REPL_CLIENT`
+remains available. Tool and widget APIs are pending design; today the module exposes connection,
 health, and the transport primitives.
 
 ```ts

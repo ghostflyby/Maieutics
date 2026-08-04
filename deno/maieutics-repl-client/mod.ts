@@ -338,7 +338,7 @@ export const comm = {
       type: "comm.msg",
       correlationId,
       payload: { commId, data },
-      buffers: buffers?.map(toBase64),
+      buffers: buffers?.map((bytes) => bytes.toBase64()),
     });
     await done;
   },
@@ -355,11 +355,3 @@ export const comm = {
     await done;
   },
 };
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const value of bytes) {
-    binary += String.fromCharCode(value);
-  }
-  return btoa(binary);
-}

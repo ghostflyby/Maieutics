@@ -53,7 +53,7 @@ public sealed class McpServerGenerationTests
 
         var acquired = generation.TryAcquire();
         acquired.Should().NotBeNull();
-        var lease = acquired!;
+        var lease = acquired;
         lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hello\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
@@ -114,7 +114,7 @@ public sealed class McpServerGenerationTests
 
         var acquired = generation.TryAcquire();
         acquired.Should().NotBeNull();
-        acquired!.Tools.Should().BeEmpty();
+        acquired.Tools.Should().BeEmpty();
         generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
             new MaieuticsMcpToolInfo("echo", "echo", false));
         var retirement = generation.Retire();

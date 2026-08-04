@@ -46,8 +46,9 @@ public sealed class WorkspaceToolsTests
     public async Task ListDirectorySortsPagesAndBoundsEntryCount()
     {
         using var workspace = TemporaryWorkspace.Create();
-        File.WriteAllText(Path.Combine(workspace.Path, "c.txt"), "ccc");
-        File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "a");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "c.txt"), "ccc",
+            TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "a", TestContext.Current.CancellationToken);
         Directory.CreateDirectory(Path.Combine(workspace.Path, "b"));
         var functions = CreateFunctions(workspace.Path, maximumDirectoryEntries: 3);
         var tool = Function(functions, "list_directory");
@@ -76,7 +77,7 @@ public sealed class WorkspaceToolsTests
         second.Entries.Select(static entry => entry.Name).Should().Equal("c.txt");
         second.NextCursor.Should().BeNull();
 
-        File.WriteAllText(Path.Combine(workspace.Path, "d.txt"), "d");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "d.txt"), "d", TestContext.Current.CancellationToken);
         var failure = await InvokeAsync(tool, "{}");
         Failure(failure).Code.Should().Be("workspace_directory_too_large");
     }
@@ -109,7 +110,8 @@ public sealed class WorkspaceToolsTests
     public async Task WorkspaceUrisDecodeOnceAndRejectGitAndSymbolicLinkTraversal()
     {
         using var workspace = TemporaryWorkspace.Create();
-        File.WriteAllText(Path.Combine(workspace.Path, "%2e%2e"), "literal percent name");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "%2e%2e"), "literal percent name",
+            TestContext.Current.CancellationToken);
         Directory.CreateDirectory(Path.Combine(workspace.Path, ".git"));
         var functions = CreateFunctions(workspace.Path);
         var read = Function(functions, "read_text");
@@ -126,10 +128,11 @@ public sealed class WorkspaceToolsTests
         if (!OperatingSystem.IsWindows())
         {
             var outside = Path.Combine(workspace.ParentPath, "outside.txt");
-            File.WriteAllText(outside, "outside");
+            await File.WriteAllTextAsync(outside, "outside", TestContext.Current.CancellationToken);
             var outsideDirectory = Path.Combine(workspace.ParentPath, "outside-directory");
             Directory.CreateDirectory(outsideDirectory);
-            File.WriteAllText(Path.Combine(outsideDirectory, "nested.txt"), "outside nested");
+            await File.WriteAllTextAsync(Path.Combine(outsideDirectory, "nested.txt"), "outside nested",
+                TestContext.Current.CancellationToken);
             File.CreateSymbolicLink(Path.Combine(workspace.Path, "final-link"), outside);
             Directory.CreateSymbolicLink(Path.Combine(workspace.Path, "directory-link"), outsideDirectory);
 
@@ -204,7 +207,8 @@ public sealed class WorkspaceToolsTests
     {
         using var workspace = TemporaryWorkspace.Create();
         var tool = Function(CreateFunctions(workspace.Path), "read_text");
-        File.WriteAllText(Path.Combine(workspace.Path, "lines.txt"), "零\none\ntwo\nthree", new UTF8Encoding(false));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "lines.txt"), "零\none\ntwo\nthree",
+            new UTF8Encoding(false), TestContext.Current.CancellationToken);
 
         var page = Result<ReadTextResult>(await InvokeAsync(
                 tool,
@@ -227,10 +231,9 @@ public sealed class WorkspaceToolsTests
         continuation.Text.Should().Be("three");
         continuation.Truncated.Should().BeFalse();
 
-        File.WriteAllText(
-            Path.Combine(workspace.Path, "byte-pages.txt"),
-            $"{new string('a', 40_000)}\n{new string('b', 40_000)}",
-            new UTF8Encoding(false));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "byte-pages.txt"),
+            $"{new string('a', 40_000)}\n{new string('b', 40_000)}", new UTF8Encoding(false),
+            TestContext.Current.CancellationToken);
         var bytePage = Result<ReadTextResult>(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/byte-pages.txt"}"""),
@@ -247,13 +250,15 @@ public sealed class WorkspaceToolsTests
                 """{"uri":"workspace://local/invalid.txt"}"""))
             .Code.Should().Be("workspace_invalid_utf8");
 
-        File.WriteAllText(Path.Combine(workspace.Path, "binary.txt"), "text\0data");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "binary.txt"), "text\0data",
+            TestContext.Current.CancellationToken);
         Failure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/binary.txt"}"""))
             .Code.Should().Be("workspace_binary_file");
 
-        File.WriteAllText(Path.Combine(workspace.Path, "long-line.txt"), new string('x', 64 * 1_024 + 1));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "long-line.txt"), new string('x', 64 * 1_024 + 1),
+            TestContext.Current.CancellationToken);
         Failure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/long-line.txt"}"""))
@@ -288,11 +293,12 @@ public sealed class WorkspaceToolsTests
     {
         using var workspace = TemporaryWorkspace.Create();
         Directory.CreateDirectory(Path.Combine(workspace.Path, "nested"));
-        File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "Needle\nneedle");
-        File.WriteAllText(Path.Combine(workspace.Path, "nested", "b.txt"), "Needle again");
-        File.WriteAllText(
-            Path.Combine(workspace.Path, "preview.txt"),
-            $"{new string('p', 550)}Needle{new string('q', 100)}");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "Needle\nneedle",
+            TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "nested", "b.txt"), "Needle again",
+            TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "preview.txt"),
+            $"{new string('p', 550)}Needle{new string('q', 100)}", TestContext.Current.CancellationToken);
         await File.WriteAllBytesAsync(
             Path.Combine(workspace.Path, "binary.bin"),
             [0, 1, 2],
@@ -337,8 +343,10 @@ public sealed class WorkspaceToolsTests
     public async Task SearchTextEnforcesFileDirectoryAndCancellationLimits()
     {
         using var workspace = TemporaryWorkspace.Create();
-        File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "none");
-        File.WriteAllText(Path.Combine(workspace.Path, "b.txt"), "target");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "none",
+            TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.txt"), "target",
+            TestContext.Current.CancellationToken);
         var fileLimited = Function(
             CreateFunctions(workspace.Path, maximumFiles: 1, maximumDirectoryEntries: 10),
             "search_text");
@@ -364,8 +372,8 @@ public sealed class WorkspaceToolsTests
             }));
         Failure(invalidRegex).Code.Should().Be("workspace_invalid_arguments");
 
-        File.WriteAllText(Path.Combine(workspace.Path, "b.txt"), "x");
-        File.WriteAllText(Path.Combine(workspace.Path, "c.txt"), "x");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.txt"), "x", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "c.txt"), "x", TestContext.Current.CancellationToken);
         var scanLimited = Function(CreateFunctions(
             workspace.Path,
             maximumFiles: 10,
@@ -382,9 +390,10 @@ public sealed class WorkspaceToolsTests
 
         using var canceled = new CancellationTokenSource();
         await canceled.CancelAsync();
+        var token = canceled.Token;
         await fileLimited.Awaiting(f => f.InvokeAsync(
                 Arguments("""{"query":"target"}"""),
-                canceled.Token).AsTask())
+                token).AsTask())
             .Should().ThrowAsync<OperationCanceledException>();
     }
 
@@ -423,7 +432,8 @@ public sealed class WorkspaceToolsTests
     public async Task AgentUsesProductionWorkspaceToolsForDiscoveryAndRead()
     {
         using var workspace = TemporaryWorkspace.Create();
-        File.WriteAllText(Path.Combine(workspace.Path, "note.txt"), "workspace body");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "note.txt"), "workspace body",
+            TestContext.Current.CancellationToken);
         var functions = CreateFunctions(workspace.Path);
         var client = new ScriptedWorkspaceChatClient(
             (_, _) => StreamUpdateAsync(ToolCallUpdate("list-call", "list_directory")),
@@ -470,10 +480,12 @@ public sealed class WorkspaceToolsTests
     public async Task WorkspaceSwitchesFutureFunctionInvocationsAndInvalidatesCursors()
     {
         using var workspace = TemporaryWorkspace.Create();
-        File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "startup a");
-        File.WriteAllText(Path.Combine(workspace.Path, "b.txt"), "startup b");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "startup a",
+            TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.txt"), "startup b",
+            TestContext.Current.CancellationToken);
         var other = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "other workspace")).FullName;
-        File.WriteAllText(Path.Combine(other, "other.txt"), "other");
+        await File.WriteAllTextAsync(Path.Combine(other, "other.txt"), "other", TestContext.Current.CancellationToken);
         var context = Workspace.Create(workspace.Path, workspace.Path);
         var tool = Function(new WorkspaceFunctions(context), "list_directory");
 
@@ -574,8 +586,10 @@ public sealed class WorkspaceToolsTests
             frozenHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(jsonRoot);
         }
 
+        var path = workspace.Path;
+
         FluentActions.Invoking(() => MaieuticsHost.CreateApplicationBuilder(
-                ["--config", configurationFile, "--workspace", Path.Combine(workspace.Path, "missing")]))
+                ["--config", configurationFile, "--workspace", Path.Combine(path, "missing")]))
             .Should().Throw<DirectoryNotFoundException>();
     }
 
@@ -660,7 +674,7 @@ public sealed class WorkspaceToolsTests
     {
         invocation.Failure.Should().BeNull();
         var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
-        return JsonSerializer.Deserialize(result, jsonTypeInfo)
+        return result.Deserialize(jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Shared;
 using NetMQ;
@@ -47,7 +48,7 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
 
     public int PendingIncomingCount => incomingMessages.Reader.Count;
 
-    public bool TryReadIncoming(out JupyterTransportMessage message)
+    public bool TryReadIncoming([NotNullWhen(true)] out JupyterTransportMessage? message)
     {
         if (incomingMessages.Reader.TryRead(out var item))
         {
@@ -55,7 +56,7 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
             return true;
         }
 
-        message = default!;
+        message = null;
         return false;
     }
 

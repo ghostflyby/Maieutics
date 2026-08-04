@@ -8,7 +8,7 @@ namespace Maieutics.Control;
 /// Resolves the peer process identity of a connected unix domain socket. Linux exposes the peer
 /// process id; macOS exposes only the peer user id.
 /// </summary>
-internal static partial class PeerProcessCredentials
+internal static class PeerProcessCredentials
 {
     /// <summary>
     /// Gets the peer process identity when the platform exposes it.

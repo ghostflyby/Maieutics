@@ -43,9 +43,7 @@ internal sealed class WorkspaceFunctions
         : this(
             workspace,
             DefaultMaximumFiles,
-            DefaultMaximumDirectoryEntries,
-            DefaultMaximumFileBytes,
-            DefaultMaximumSearchBytes)
+            DefaultMaximumDirectoryEntries)
     {
     }
 

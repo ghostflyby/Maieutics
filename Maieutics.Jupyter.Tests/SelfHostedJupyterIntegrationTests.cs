@@ -1,6 +1,5 @@
 using System.Text.Json;
 using FluentAssertions;
-using Maieutics;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;

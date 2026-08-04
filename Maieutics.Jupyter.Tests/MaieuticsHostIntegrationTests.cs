@@ -45,11 +45,14 @@ public sealed class MaieuticsHostIntegrationTests
             .Select(static function => function.Name)
             .ToArray();
         functionNames.Should().Contain(
-            "repl_execute",
-            "repl_create",
-            "repl_list",
-            "repl_restart",
-            "repl_close");
+            [
+                "repl_execute",
+                "repl_create",
+                "repl_list",
+                "repl_restart",
+                "repl_close"
+            ]
+        );
         var phase = "host start";
 
         try
@@ -179,12 +182,13 @@ public sealed class MaieuticsHostIntegrationTests
             toolFlow: true,
             toolName: "repl_execute",
             toolArgumentsJson: JsonSerializer.Serialize(new { code }));
+        var endpoint = provider.Endpoint.ToString();
         await using var host = MaieuticsHost.CreateApplication(
             ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"],
             builder =>
             {
                 builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
-                builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
+                builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = endpoint;
             });
 
         try
@@ -233,7 +237,8 @@ public sealed class MaieuticsHostIntegrationTests
                 .Single(item => item.GetProperty("type").GetString() == "function_call_output")
                 .GetProperty("output")
                 .GetString();
-            using var toolResult = JsonDocument.Parse(toolOutput!);
+            toolOutput.Should().NotBeNull();
+            using var toolResult = JsonDocument.Parse(toolOutput);
             var toolValue = toolResult.RootElement.GetProperty("value");
             var modelOutputs = toolValue.GetProperty("outputs");
             modelOutputs.EnumerateArray().Select(item => item.GetProperty("kind").GetString()).Should()
@@ -1273,7 +1278,7 @@ public sealed class MaieuticsHostIntegrationTests
 
         public async ValueTask DisposeAsync()
         {
-            cancellation.Cancel();
+            await cancellation.CancelAsync();
             listener.Stop();
             try
             {
@@ -1580,7 +1585,7 @@ public sealed class MaieuticsHostIntegrationTests
 
         public async ValueTask DisposeAsync()
         {
-            cancellation.Cancel();
+            await cancellation.CancelAsync();
             listener.Stop();
             try
             {
@@ -1682,12 +1687,6 @@ public sealed class MaieuticsHostIntegrationTests
                 Description = "Returns the supplied text.",
                 SerializerOptions = HostIntegrationJsonContext.Default.Options
             });
-
-    private static JsonElement ParseJson(string json)
-    {
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.Clone();
-    }
 
     private static CancellationTokenSource CreateDeadline(TimeSpan timeout)
     {

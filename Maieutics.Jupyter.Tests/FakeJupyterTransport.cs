@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Client.Transport;
 using Maieutics.Jupyter.Shared;
@@ -16,7 +17,7 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
 
     public int PendingIncomingCount => incomingMessages.Reader.Count;
 
-    public bool TryReadIncoming(out JupyterTransportMessage message)
+    public bool TryReadIncoming([NotNullWhen(true)] out JupyterTransportMessage? message)
     {
         if (incomingMessages.Reader.TryRead(out var item))
         {
@@ -24,7 +25,7 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
             return true;
         }
 
-        message = default!;
+        message = null;
         return false;
     }
 

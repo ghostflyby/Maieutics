@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics;
 
@@ -10,27 +9,24 @@ namespace Maieutics;
 /// request instead of shutting the application down, while SIGQUIT and SIGTERM keep the standard
 /// graceful shutdown behavior.
 /// </summary>
-internal sealed class JupyterKernelLifetime : IHostLifetime, IDisposable
+internal sealed class JupyterKernelLifetime(
+    IHostApplicationLifetime applicationLifetime,
+    IKernelInterruptCoordinator coordinator,
+    ILogger<JupyterKernelLifetime> logger)
+    : IHostLifetime, IDisposable
 {
-    private readonly IHostApplicationLifetime applicationLifetime;
-    private readonly IKernelInterruptCoordinator coordinator;
-    private readonly ILogger<JupyterKernelLifetime> logger;
+    private readonly IHostApplicationLifetime applicationLifetime = applicationLifetime
+                                                                    ?? throw new ArgumentNullException(
+                                                                        nameof(applicationLifetime));
+
+    private readonly IKernelInterruptCoordinator coordinator =
+        coordinator ?? throw new ArgumentNullException(nameof(coordinator));
+
     private readonly Lock gate = new();
     private PosixSignalRegistration? sigintRegistration;
     private PosixSignalRegistration? sigquitRegistration;
     private PosixSignalRegistration? sigtermRegistration;
     private int disposed;
-
-    public JupyterKernelLifetime(
-        IHostApplicationLifetime applicationLifetime,
-        IKernelInterruptCoordinator coordinator,
-        ILogger<JupyterKernelLifetime> logger)
-    {
-        this.applicationLifetime = applicationLifetime
-                                   ?? throw new ArgumentNullException(nameof(applicationLifetime));
-        this.coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
-        this.logger = logger ?? NullLogger<JupyterKernelLifetime>.Instance;
-    }
 
     public Task WaitForStartAsync(CancellationToken cancellationToken)
     {

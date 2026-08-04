@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Jupyter.Client.Transport;
@@ -12,7 +13,7 @@ public interface IJupyterTransport : IAsyncDisposable
     /// <summary>
     /// Attempts to read a buffered incoming message without waiting for new traffic.
     /// </summary>
-    bool TryReadIncoming(out JupyterTransportMessage message);
+    bool TryReadIncoming([NotNullWhen(true)] out JupyterTransportMessage? message);
 
     /// <summary>
     /// Waits for an incoming message to become available, for the timeout to elapse, or for the

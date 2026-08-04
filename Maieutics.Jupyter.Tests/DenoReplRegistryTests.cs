@@ -1,10 +1,13 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Shared;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
@@ -32,7 +35,7 @@ public sealed class DenoReplRegistryTests
             "repl_restart",
             "repl_close");
         functions.Should().OnlyContain(static function =>
-            function.JsonSchema.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            function.JsonSchema.ValueKind == JsonValueKind.Object &&
             function.JsonSchema.GetProperty("type").GetString() == "object");
 
         SchemaProperties(functions.Single(static function => function.Name == "repl_execute"))
@@ -182,7 +185,7 @@ public sealed class DenoReplRegistryTests
 
             registry.List(owner).Sessions.Should().ContainSingle().Which.Should().BeEquivalentTo(new
             {
-                SessionId = created.SessionId,
+                created.SessionId,
                 State = "closing"
             });
             var second = registry.CloseAsync(owner, created.SessionId, TestContext.Current.CancellationToken);
@@ -236,7 +239,7 @@ public sealed class DenoReplRegistryTests
         }
     }
 
-    private static string[] SchemaProperties(Microsoft.Extensions.AI.AIFunction function) =>
+    private static string[] SchemaProperties(AIFunction function) =>
         function.JsonSchema.GetProperty("properties").EnumerateObject()
             .Select(static property => property.Name)
             .ToArray();
@@ -394,7 +397,7 @@ public sealed class DenoReplRegistryTests
             AgentToolCallId callId,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public bool TryGetCurrentSink(AgentSessionId sessionId, out IDenoReplPresentationSink? sink)
+        public bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
         {
             sink = null;
             return false;

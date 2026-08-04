@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Jupyter.Shared;
 
@@ -7,19 +9,19 @@ internal interface IDenoReplPresentationSink
 {
     ValueTask DisplayAsync(
         MimeBundle data,
-        IReadOnlyDictionary<string, System.Text.Json.JsonElement> metadata,
+        IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken);
 
     ValueTask<JupyterDisplayId> DisplayTrackedAsync(
         MimeBundle data,
         JupyterDisplayId displayId,
-        IReadOnlyDictionary<string, System.Text.Json.JsonElement> metadata,
+        IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken);
 
     ValueTask UpdateDisplayAsync(
         JupyterDisplayId displayId,
         MimeBundle data,
-        IReadOnlyDictionary<string, System.Text.Json.JsonElement> metadata,
+        IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken);
 
     ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken);
@@ -45,5 +47,5 @@ internal interface IDenoReplPresentationRouter
         AgentToolCallId callId,
         CancellationToken cancellationToken);
 
-    bool TryGetCurrentSink(AgentSessionId sessionId, out IDenoReplPresentationSink? sink);
+    bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink);
 }

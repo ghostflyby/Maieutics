@@ -21,7 +21,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private readonly AsyncEventHub<JupyterClientEvent> events = new(256);
     private readonly CancellationTokenSource disposal = new();
     private readonly Task routerLoop;
-    private readonly object completedGate = new();
+    private readonly Lock completedGate = new();
     private readonly HashSet<JupyterMessageId> completedExecutions = [];
     private readonly Queue<JupyterMessageId> completedOrder = [];
     private int disposeState;
@@ -295,7 +295,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             throw new InvalidOperationException($"Request '{request.Header.MessageId}' was already registered.");
         }
 
-        using var registration = cancellationToken.Register(() =>
+        await using var registration = cancellationToken.Register(() =>
         {
             if (pendingRequests.TryRemove(request.Header.MessageId, out var removed))
             {
@@ -430,8 +430,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     {
         var message = transportMessage.Message;
         if (transportMessage.Channel == JupyterTransportChannel.Iopub &&
-            message.MessageType == "status" &&
-            message.ParentHeader is { } readinessParent &&
+            message is { MessageType: "status", ParentHeader: { } readinessParent } &&
             readinessProbes.TryGetValue(readinessParent.MessageId, out var readiness) &&
             message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState == "idle")
         {
@@ -569,8 +568,6 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
                 {
                     FinalizeDeferredExecution(deferred);
                 }
-
-                continue;
             }
         }
     }

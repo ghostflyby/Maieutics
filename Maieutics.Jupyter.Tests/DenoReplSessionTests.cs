@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -74,7 +75,7 @@ public sealed class DenoReplSessionTests
 
         var execution = session.ExecuteAsync("wait", AgentToolCallId.Create(), cancellation.Token);
         await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
 
         await execution.Invoking(static task => task).Should().ThrowAsync<OperationCanceledException>();
         manager.InterruptCount.Should().Be(1);
@@ -376,7 +377,7 @@ public sealed class DenoReplSessionTests
             return ValueTask.FromResult(Sink);
         }
 
-        public bool TryGetCurrentSink(AgentSessionId sessionId, out IDenoReplPresentationSink? sink)
+        public bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
         {
             sink = null;
             return false;

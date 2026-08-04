@@ -1036,12 +1036,13 @@ public sealed class MaieuticsConfigurationTests
             TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var mcpFile = Path.Combine(root, "mcp.json");
-        File.WriteAllText(configurationFile, CreateMcpHostConfigurationBase(connectionFile));
+        await File.WriteAllTextAsync(configurationFile, CreateMcpHostConfigurationBase(connectionFile),
+            TestContext.Current.CancellationToken);
 
         try
         {
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using (var host = builder.Build())
+            await using (var host = builder.Build())
             {
                 host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
             }
@@ -1057,48 +1058,42 @@ public sealed class MaieuticsConfigurationTests
             invalidStdio["Nope"] = true;
             AssertRejected(new JsonObject { ["stdio"] = invalidStdio }, "*not valid for MCP server*");
 
-            File.WriteAllText(
-                mcpFile,
-                new JsonObject
-                {
-                    ["mcpServers"] = new JsonObject { ["one"] = StdioMcpServer() },
-                    ["servers"] = new JsonObject { ["two"] = StdioMcpServer() }
-                }.ToJsonString());
+            await File.WriteAllTextAsync(mcpFile, new JsonObject
+            {
+                ["mcpServers"] = new JsonObject { ["one"] = StdioMcpServer() },
+                ["servers"] = new JsonObject { ["two"] = StdioMcpServer() }
+            }.ToJsonString(), TestContext.Current.CancellationToken);
             var conflicting = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var conflictingHost = conflicting.Build();
+            await using var conflictingHost = conflicting.Build();
             conflictingHost.Services.Invoking(static services =>
                     services.GetRequiredService<MaieuticsRuntimeConfiguration>())
                 .Should().Throw<Exception>().WithMessage("*must not combine*");
 
-            File.WriteAllText(mcpFile, "{");
+            await File.WriteAllTextAsync(mcpFile, "{", TestContext.Current.CancellationToken);
             FluentActions.Invoking(() => MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]))
                 .Should().Throw<JsonException>();
 
             // A server disabled with the VS Code convention is skipped before transport validation.
-            File.WriteAllText(
-                mcpFile,
-                CreateMcpFile(new JsonObject
+            await File.WriteAllTextAsync(mcpFile, CreateMcpFile(new JsonObject
+            {
+                ["disabled"] = new JsonObject
                 {
-                    ["disabled"] = new JsonObject
-                    {
-                        ["enabled"] = false,
-                        ["type"] = "http",
-                        ["url"] = "not-a-url"
-                    }
-                }));
+                    ["enabled"] = false,
+                    ["type"] = "http",
+                    ["url"] = "not-a-url"
+                }
+            }), TestContext.Current.CancellationToken);
             var disabledBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var disabledHost = disabledBuilder.Build();
+            await using var disabledHost = disabledBuilder.Build();
             disabledHost.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
 
-            File.WriteAllText(
-                mcpFile,
-                CreateMcpFile(new JsonObject
-                {
-                    ["stdio"] = StdioMcpServer(),
-                    ["http"] = HttpMcpServer("http://127.0.0.1:65535/mcp")
-                }));
+            await File.WriteAllTextAsync(mcpFile, CreateMcpFile(new JsonObject
+            {
+                ["stdio"] = StdioMcpServer(),
+                ["http"] = HttpMcpServer("http://127.0.0.1:65535/mcp")
+            }), TestContext.Current.CancellationToken);
             var valid = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            using var validHost = valid.Build();
+            await using var validHost = valid.Build();
             validHost.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
         }
         finally

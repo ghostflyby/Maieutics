@@ -528,21 +528,20 @@ public sealed class AgentSession : IAgentSession
             }
 
             await PublishIterationMessagesAsync(iterations.Count, cancellationToken).ConfigureAwait(false);
-            var messages = new List<ChatMessage>();
-            messages.Add(run.UserMessage);
-            messages.AddRange(intermediateMessages);
-            if (messages[^1].Role != ChatRole.Assistant ||
-                !messages[^1].Contents.OfType<TextContent>().Any(static content => content.Text.Length > 0))
+            List<ChatMessage> messages =
+            [
+                run.UserMessage,
+                .. intermediateMessages
+            ];
+            if (messages[^1].Role == ChatRole.Assistant &&
+                messages[^1].Contents.OfType<TextContent>().Any(static content => content.Text.Length > 0))
+                return messages;
+            if (messages[^1].Contents.OfType<FunctionCallContent>().Any())
             {
-                if (messages[^1].Contents.OfType<FunctionCallContent>().Any())
-                {
-                    throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
-                }
-
-                throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
+                throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
             }
 
-            return messages;
+            throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
         }
 
         private async Task PublishIterationMessagesAsync(int iteration, CancellationToken cancellationToken)

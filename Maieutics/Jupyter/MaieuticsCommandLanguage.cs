@@ -96,8 +96,6 @@ internal static class MaieuticsCommandLanguage
             {
                 return [.. arguments];
             }
-
-            return null;
         }
 
         return null;

@@ -201,14 +201,13 @@ public sealed class JupyterProtocolSessionTests
         var request = transport.SentMessages.Single().Message;
         var outputsTask = ReadOutputsAsync(execution, TestContext.Current.CancellationToken);
         Dictionary<string, JsonElement>? transient = displayIdKind == "null" ? null : [];
-        if (displayIdKind == "empty")
+
+        transient?[JupyterDisplayTransient.DisplayIdPropertyName] = displayIdKind switch
         {
-            transient![JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement("");
-        }
-        else if (displayIdKind == "number")
-        {
-            transient![JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement(42);
-        }
+            "empty" => JsonSerializer.SerializeToElement(""),
+            "number" => JsonSerializer.SerializeToElement(42),
+            _ => transient[JupyterDisplayTransient.DisplayIdPropertyName]
+        };
 
         transport.Receive(
             JupyterTransportChannel.Iopub,

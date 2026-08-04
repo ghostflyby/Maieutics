@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Jupyter.Client;
@@ -11,8 +12,10 @@ namespace Maieutics.Execution;
 internal sealed class DenoReplSession : IAsyncDisposable
 {
     private readonly Dictionary<string, JupyterDisplayId> displayIds = new(StringComparer.Ordinal);
+
     private readonly TaskCompletionSource disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly SemaphoreSlim executionGate = new(1, 1);
     private readonly IDenoReplSessionFactory factory;
     private readonly CancellationTokenSource lifetime = new();
@@ -300,7 +303,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     internal async Task CloseAsync(CancellationToken cancellationToken)
     {
-        lifetime.Cancel();
+        await lifetime.CancelAsync();
         await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -473,7 +476,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
             return;
         }
 
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
         try
         {
             if (loop is not null)
@@ -531,7 +534,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private async ValueTask RouteLateOutputAsync(JupyterOutput output, CancellationToken cancellationToken)
     {
-        if (!presentationRouter.TryGetCurrentSink(OwnerSessionId, out var sink) || sink is null)
+        if (!presentationRouter.TryGetCurrentSink(OwnerSessionId, out var sink))
         {
             logger.LogDebug(
                 "Discarded late Deno output {OutputType} for session {SessionId} because no Agent run sink is active.",
@@ -609,7 +612,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private bool CanPresentLateBundle(
         MimeBundle bundle,
-        IReadOnlyDictionary<string, System.Text.Json.JsonElement> metadata) =>
+        IReadOnlyDictionary<string, JsonElement> metadata) =>
         TryReserveLatePresentationEvent() &&
         DenoReplExecutionCollector.CountJsonBytes(bundle.Data) +
         DenoReplExecutionCollector.CountJsonBytes(metadata) <= options.MaxPresentationBundleBytes;

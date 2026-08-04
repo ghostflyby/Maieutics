@@ -373,7 +373,8 @@ public sealed class AgentSessionTests
             "echo",
             async (context, arguments, cancellationToken) =>
             {
-                var typed = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)!;
+                var typed = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments);
+                typed.Should().NotBe(null);
                 await context.ReportProgressAsync(
                     new TextContent("working"),
                     cancellationToken);
@@ -402,7 +403,7 @@ public sealed class AgentSessionTests
             typeof(AgentMessageCompleted));
         events.OfType<AgentMessageCompleted>().Should().HaveCount(2);
         events.OfType<AgentToolStarted>().Single().Arguments
-            .Deserialize(AgentTestJsonContext.Default.EchoArguments)!.Text.Should().Be("hello");
+            .Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text.Should().Be("hello");
         events.OfType<AgentToolProgress>().Single().Content.Should()
             .BeEquivalentTo(new TextContent("working"));
 
@@ -492,7 +493,8 @@ public sealed class AgentSessionTests
             "record",
             async (_, arguments, _) =>
             {
-                var value = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)!.Text;
+                var value = arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text;
+                value.Should().NotBeNull();
                 order.Add(value);
                 var current = Interlocked.Increment(ref active);
                 maximumActive = Math.Max(maximumActive, current);
@@ -518,7 +520,7 @@ public sealed class AgentSessionTests
         order.Should().Equal("one", "two");
         maximumActive.Should().Be(1);
         events.OfType<AgentToolStarted>().Select(started =>
-                started.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)!.Text)
+                started.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text)
             .Should().Equal("one", "two");
     }
 
@@ -905,6 +907,7 @@ public sealed class AgentSessionTests
         return document.RootElement.Clone();
     }
 
+    // ReSharper disable once InconsistentNaming
     private sealed class MetadataAIFunction(
         AIFunction innerFunction,
         string name,

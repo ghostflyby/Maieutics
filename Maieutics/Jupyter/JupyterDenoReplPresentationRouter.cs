@@ -8,7 +8,7 @@ namespace Maieutics.Jupyter;
 
 internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationRouter
 {
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<AgentSessionId, RunState> runs = [];
 
     internal JupyterDenoReplPresentationScope Attach(
@@ -20,7 +20,8 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
         {
             if (!runs.TryAdd(sessionId, state))
             {
-                throw new InvalidOperationException("A Notebook presentation sink is already attached to this Agent session.");
+                throw new InvalidOperationException(
+                    "A Notebook presentation sink is already attached to this Agent session.");
             }
         }
 
@@ -29,8 +30,8 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
 
     internal void OpenCall(AgentSessionId sessionId, AgentToolCallId callId)
     {
-        TaskCompletionSource<IDenoReplPresentationSink>? waiter = null;
-        IDenoReplPresentationSink? sink = null;
+        TaskCompletionSource<IDenoReplPresentationSink>? waiter;
+        IDenoReplPresentationSink? sink;
         lock (gate)
         {
             if (!runs.TryGetValue(sessionId, out var state))
@@ -43,10 +44,7 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
             sink = state.Sink;
         }
 
-        if (waiter is not null)
-        {
-            waiter.TrySetResult(sink!);
-        }
+        waiter?.TrySetResult(sink);
     }
 
     public async ValueTask<IDenoReplPresentationSink> WaitForCallAsync(

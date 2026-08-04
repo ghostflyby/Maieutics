@@ -100,7 +100,7 @@ public sealed class AnthropicProviderTests
 
         (await updates.MoveNextAsync()).Should().BeTrue();
         updates.Current.Text.Should().Be("partial");
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
 
         await updates.Awaiting(static state => state.MoveNextAsync())
             .Should().ThrowAsync<OperationCanceledException>();
@@ -180,7 +180,7 @@ public sealed class AnthropicProviderTests
 
         public async ValueTask DisposeAsync()
         {
-            cancellation.Cancel();
+            await cancellation.CancelAsync();
             listener.Stop();
             try
             {

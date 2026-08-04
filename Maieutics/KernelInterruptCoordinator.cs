@@ -22,6 +22,7 @@ internal sealed class KernelInterruptCoordinator : IKernelInterruptCoordinator
     private readonly Lock gate = new();
     private JupyterKernelHost? host;
 
+    // ReSharper disable once ParameterHidesMember
     public void SetHost(JupyterKernelHost host)
     {
         ArgumentNullException.ThrowIfNull(host);

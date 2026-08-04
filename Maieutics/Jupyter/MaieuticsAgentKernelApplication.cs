@@ -31,8 +31,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         MaieuticsAgentKernelOptions? options = null,
         ILogger<MaieuticsAgentKernelApplication>? logger = null,
         TimeProvider? timeProvider = null)
-        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider, null, null,
-            null)
+        : this(session, () => options ?? new MaieuticsAgentKernelOptions(), null, logger, timeProvider)
     {
     }
 

@@ -172,25 +172,22 @@ internal sealed class McpServerGeneration
     {
         lock (gate)
         {
-            if (current is { } connection && !connection.Client.Completion.IsCompleted)
-            {
-                var tools = connection.GetToolInfo();
+            if (current is not { Client.Completion.IsCompleted: false } connection)
                 return new MaieuticsMcpServerInfo(
                     definition.Id,
                     definition.Transport.ToString(),
-                    tools.Any(static tool => !tool.Available)
-                        ? MaieuticsMcpServerState.Degraded
-                        : MaieuticsMcpServerState.Connected,
-                    null,
-                    tools);
-            }
-
+                    MaieuticsMcpServerState.Reconnecting,
+                    nextReconnectDelay,
+                    []);
+            var tools = connection.GetToolInfo();
             return new MaieuticsMcpServerInfo(
                 definition.Id,
                 definition.Transport.ToString(),
-                MaieuticsMcpServerState.Reconnecting,
-                nextReconnectDelay,
-                []);
+                tools.Any(static tool => !tool.Available)
+                    ? MaieuticsMcpServerState.Degraded
+                    : MaieuticsMcpServerState.Connected,
+                null,
+                tools);
         }
     }
 
@@ -452,7 +449,7 @@ internal sealed class McpServerGeneration
             {
                 Name = definition.Id,
                 Command = definition.Command!,
-                Arguments = definition.Arguments.ToArray(),
+                Arguments = [.. definition.Arguments],
                 WorkingDirectory = definition.WorkingDirectory,
                 InheritEnvironmentVariables = false,
                 EnvironmentVariables = environment,
@@ -611,6 +608,7 @@ internal sealed class McpServerGeneration
         }
     }
 
+    // ReSharper disable once InconsistentNaming
     private sealed class TimeoutAIFunction(AIFunction innerFunction, TimeSpan timeout)
         : DelegatingAIFunction(innerFunction)
     {

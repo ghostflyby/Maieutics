@@ -263,7 +263,7 @@ internal sealed record WorkspaceSnapshot(
             throw InvalidUri("The value must be a workspace://local URI.");
         }
 
-        var rawSegments = suffix[1..].Split('/', StringSplitOptions.None);
+        var rawSegments = suffix[1..].Split('/');
         var segments = new List<string>(rawSegments.Length);
         for (var index = 0; index < rawSegments.Length; index++)
         {
@@ -458,7 +458,7 @@ internal sealed record WorkspaceSnapshot(
                 new Win32Exception(error));
         }
 
-        return new SafeFileHandle((nint)descriptor, ownsHandle: true);
+        return new SafeFileHandle(descriptor, ownsHandle: true);
     }
 
     private static int GetUnixOpenFlags(UnixOpenFlags flags)

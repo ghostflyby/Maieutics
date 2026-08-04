@@ -315,7 +315,7 @@ export const events = {
   },
 };
 
-/** Opens, sends on, and closes Jupyter-shaped comm channels over the bus. */
+/** Opens, sends on, and closes comm channels over the bus. */
 export const comm = {
   async open(commId: string, targetName?: string, data?: unknown): Promise<void> {
     const socket = await ensureBus();

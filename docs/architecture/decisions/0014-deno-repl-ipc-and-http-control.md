@@ -109,7 +109,8 @@ verify peer credentials and detect Jupyter restarts. The reusable Jupyter librar
   The WebSocket bus is implemented as a versioned envelope (`ReplEnvelope`: type, correlationId, payload, base64
   buffers) multiplexed by namespace (`control.*`, `comm.*`), bound to a session through a `control.hello` handshake
   (`MAIEUTICS_REPL_SESSION`), with `control.ping/pong`, `control.cancel` against a session-scoped operation registry,
-  and a Jupyter-shaped `comm.open/msg/close` skeleton. Tool calls stay on HTTP and support cancellation through
+  and a `comm.open/msg/close` skeleton using the channel's own envelope vocabulary. Jupyter wire mapping is a
+  frontend-bridge concern, not a bus protocol property. Tool calls stay on HTTP and support cancellation through
   correlationId; the Deno client exposes `events.on`, `comm`, and `tools.invoke(..., { signal })`.
 - Pending: frontend comm/widget bridge, tool progress streams, SSE external event endpoint, approval for script tool
   calls, external loopback control endpoint, and the Windows named-pipe bootstrap.

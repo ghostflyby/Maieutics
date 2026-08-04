@@ -1039,7 +1039,7 @@ public sealed class AgentSession : IAgentSession
     }
 }
 
-file static class ToolJson
+internal static class ToolJson
 {
     internal static JsonElement CreateArguments(IDictionary<string, object?> arguments)
     {

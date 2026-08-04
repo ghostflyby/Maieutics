@@ -129,7 +129,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
             services.GetRequiredService<ReplControlSessionRegistry>(),
-            services.GetRequiredService<ILogger<ReplControlHost>>()));
+            services.GetRequiredService<ILogger<ReplControlHost>>(),
+            services.GetRequiredService<WorkspaceFunctions>().Functions));
         builder.Services.AddSingleton<ReplClientModule>();
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();

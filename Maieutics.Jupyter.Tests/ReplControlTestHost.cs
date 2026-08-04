@@ -2,6 +2,7 @@ using Maieutics.Control;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -11,10 +12,15 @@ internal static class ReplControlTestHost
 {
     public static async Task<(WebApplication Application, ReplControlHost Host)> StartAsync(
         ReplControlSessionRegistry registry,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<AIFunction>? scriptTools = null)
     {
         var socketPath = ReplControlHost.CreateSocketPath();
-        var host = new ReplControlHost(socketPath, registry, NullLogger<ReplControlHost>.Instance);
+        var host = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            scriptTools);
         var application = await StartAsync(socketPath, host, cancellationToken);
         return (application, host);
     }

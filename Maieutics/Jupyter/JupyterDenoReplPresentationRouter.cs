@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Execution;
@@ -78,7 +79,9 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
         return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public bool TryGetCurrentSink(AgentSessionId sessionId, out IDenoReplPresentationSink? sink)
+    public bool TryGetCurrentSink(
+        AgentSessionId sessionId,
+        [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
     {
         lock (gate)
         {

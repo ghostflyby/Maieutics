@@ -70,10 +70,14 @@ public sealed class ReplControlChannelIntegrationTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-tools-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspaceRoot);
+        var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
-            NullLogger<ReplControlHost>.Instance);
+            NullLogger<ReplControlHost>.Instance,
+            functions);
         var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
         await using (application)
         {
@@ -98,6 +102,8 @@ public sealed class ReplControlChannelIntegrationTests
                     .Should().Contain(value => value != null && value.Contains("control-ok"));
             }
         }
+
+        Directory.Delete(workspaceRoot, recursive: true);
     }
 
     private const string ReplChildProbeScript = """
@@ -108,6 +114,10 @@ public sealed class ReplControlChannelIntegrationTests
                                                 const maieutics = await import(clientUrl);
                                                 const healthText = await maieutics.health();
                                                 if (healthText !== "ok") throw new Error(`unexpected health: ${healthText}`);
+                                                const listing = await maieutics.tools.invoke("list_directory", {});
+                                                if (listing === null || typeof listing !== "object") {
+                                                  throw new Error("tool result is not a structured object");
+                                                }
                                                 const client = Deno.createHttpClient({ proxy: { transport: "unix", path: ipc } });
                                                 const ws = new WebSocket("ws://localhost/ws", { client });
                                                 await new Promise((resolve, reject) => {

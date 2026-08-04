@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using FluentAssertions;
 using Maieutics.Control;
+using Maieutics.Execution;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -131,6 +132,50 @@ public sealed class ReplControlHostTests
         File.Exists(socketPath).Should().BeFalse();
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ToolInvokeEndpointRunsWorkspaceFunctions()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var root = Path.Combine(Path.GetTempPath(), $"mc-tools-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var functions = new WorkspaceFunctions(Workspace.Create(root, root)).Functions;
+            var registry = new ReplControlSessionRegistry();
+            registry.Register(Environment.ProcessId, "test-session");
+            var (application, host) = await ReplControlTestHost.StartAsync(
+                registry,
+                timeout.Token,
+                functions);
+            await using (application)
+            {
+                var success = await PostToolInvokeAsync(
+                    host.SocketPath,
+                    "list_directory",
+                    "{}",
+                    timeout.Token);
+                success.Should().Contain("\"status\":\"ok\"");
+                success.Should().Contain("\"uri\"");
+
+                var missing = await PostToolInvokeAsync(
+                    host.SocketPath,
+                    "repl_execute",
+                    "{}",
+                    timeout.Token);
+                missing.Should().Contain("tool_not_found");
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact(Timeout = 90_000)]
     public async Task RealDenoClientTalksToControlChannelOverUnixSocket()
     {
@@ -217,6 +262,26 @@ public sealed class ReplControlHostTests
         await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), ct);
         var request = $"{requestLine} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         await socket.SendAsync(Encoding.ASCII.GetBytes(request), SocketFlags.None, ct);
+        return await ReadUntilEndAsync(socket, ct);
+    }
+
+    private static async Task<string> PostToolInvokeAsync(
+        string socketPath,
+        string tool,
+        string argumentsJson,
+        CancellationToken ct)
+    {
+        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), ct);
+        var body = $$"""{"version":1,"tool":"{{tool}}","arguments":{{argumentsJson}}}""";
+        var request =
+            $"POST /v1/tool.invoke HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Content-Type: application/json\r\n" +
+            $"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n" +
+            "Connection: close\r\n\r\n" +
+            body;
+        await socket.SendAsync(Encoding.UTF8.GetBytes(request), SocketFlags.None, ct);
         return await ReadUntilEndAsync(socket, ct);
     }
 

@@ -1,8 +1,11 @@
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Text.Json;
+using Maieutics.Agent;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Control;
@@ -18,16 +21,19 @@ internal sealed class ReplControlHost : IDisposable
     private readonly string socketPath;
     private readonly ReplControlSessionRegistry registry;
     private readonly ILogger<ReplControlHost> logger;
+    private readonly IReadOnlyList<AIFunction> scriptTools;
 
     public ReplControlHost(
         string socketPath,
         ReplControlSessionRegistry registry,
-        ILogger<ReplControlHost> logger)
+        ILogger<ReplControlHost> logger,
+        IReadOnlyList<AIFunction>? scriptTools = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         this.socketPath = socketPath;
         this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.scriptTools = scriptTools ?? [];
     }
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
@@ -57,6 +63,7 @@ internal sealed class ReplControlHost : IDisposable
         application.UseWebSockets();
         application.MapGet("/health", () => Results.Text("ok"));
         application.Map("/ws", HandleWebSocketAsync);
+        application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
     }
 
     public void Dispose()
@@ -122,5 +129,82 @@ internal sealed class ReplControlHost : IDisposable
                     context.RequestAborted)
                 .ConfigureAwait(false);
         }
+    }
+
+    private async Task HandleToolInvokeAsync(HttpContext context)
+    {
+        var cancellationToken = context.RequestAborted;
+        ToolInvokeRequest? request;
+        try
+        {
+            request = await JsonSerializer.DeserializeAsync(
+                context.Request.Body,
+                ReplControlJsonContext.Default.ToolInvokeRequest,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        if (request is null || request.Version != 1 || string.IsNullOrWhiteSpace(request.Tool))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var function = scriptTools.FirstOrDefault(candidate => candidate.Name == request.Tool);
+        if (function is null)
+        {
+            await WriteEnvelopeAsync(
+                context,
+                ToolJson.CreateFailureEnvelope(
+                    "tool_not_found",
+                    $"Tool '{request.Tool}' is not available to scripts."),
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var arguments = new AIFunctionArguments(request.Arguments.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone()));
+        JsonElement envelope;
+        try
+        {
+            var result = await function.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
+            envelope = result switch
+            {
+                null => ToolJson.CreateSuccessEnvelope(null),
+                JsonElement element => ToolJson.CreateSuccessEnvelope(element),
+                _ => ToolJson.CreateFailureEnvelope(
+                    "tool_invalid_result",
+                    "Script tools must return a structured JSON value.")
+            };
+        }
+        catch (AgentToolException exception)
+        {
+            envelope = ToolJson.CreateFailureEnvelope(exception.Code, exception.Message);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Script tool '{Tool}' failed.", request.Tool);
+            envelope = ToolJson.CreateFailureEnvelope("tool_failed", exception.Message);
+        }
+
+        await WriteEnvelopeAsync(context, envelope, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task WriteEnvelopeAsync(
+        HttpContext context,
+        JsonElement envelope,
+        CancellationToken cancellationToken)
+    {
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(envelope.GetRawText(), cancellationToken).ConfigureAwait(false);
     }
 }

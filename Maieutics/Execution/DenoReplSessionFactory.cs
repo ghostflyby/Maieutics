@@ -34,11 +34,16 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
 
     private readonly DenoReplOptions options;
     private readonly ReplControlHost controlHost;
+    private readonly ReplClientModule clientModule;
 
-    public LocalDenoReplSessionFactory(DenoReplOptions options, ReplControlHost controlHost)
+    public LocalDenoReplSessionFactory(
+        DenoReplOptions options,
+        ReplControlHost controlHost,
+        ReplClientModule clientModule)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.controlHost = controlHost ?? throw new ArgumentNullException(nameof(controlHost));
+        this.clientModule = clientModule ?? throw new ArgumentNullException(nameof(clientModule));
     }
 
     public async Task<IJupyterKernelManager> StartAsync(
@@ -59,7 +64,8 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
             "signal",
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [MaieuticsReplIpcEnvironmentVariable] = controlHost.SocketPath
+                [ReplControlEnvironment.IpcAddress] = controlHost.SocketPath,
+                [ReplControlEnvironment.ClientModule] = clientModule.ClientUrl
             });
         return await LocalJupyterKernelManager.StartAsync(
             kernelSpec,
@@ -73,8 +79,6 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
             },
             cancellationToken).ConfigureAwait(false);
     }
-
-    internal const string MaieuticsReplIpcEnvironmentVariable = "MAIEUTICS_REPL_IPC";
 
     private static IReadOnlyDictionary<string, string> CaptureAllowedEnvironment()
     {

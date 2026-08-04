@@ -6,6 +6,14 @@ public interface IJupyterTransport : IAsyncDisposable
 {
     IAsyncEnumerable<JupyterTransportMessage> IncomingMessages { get; }
 
+    /// <summary>Gets the number of incoming messages currently buffered but not yet routed.</summary>
+    int PendingIncomingCount { get; }
+
+    /// <summary>
+    /// Attempts to read a buffered incoming message without waiting for new traffic.
+    /// </summary>
+    bool TryReadIncoming(out JupyterTransportMessage message);
+
     ValueTask SendAsync(
         JupyterTransportChannel channel,
         JupyterMessage message,

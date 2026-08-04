@@ -130,6 +130,7 @@ public static class MaieuticsHost
             controlSocketPath,
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<ReplControlHost>>()));
+        builder.Services.AddSingleton<ReplClientModule>();
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
@@ -152,9 +153,12 @@ public static class MaieuticsHost
         return builder;
     }
 
-    public static WebApplication CreateApplication(string[] args)
+    public static WebApplication CreateApplication(
+        string[] args,
+        Action<WebApplicationBuilder>? configure = null)
     {
         var builder = CreateApplicationBuilder(args);
+        configure?.Invoke(builder);
         var application = builder.Build();
         application.Services.GetRequiredService<ReplControlHost>().MapEndpoints(application);
         return application;

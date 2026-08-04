@@ -178,11 +178,13 @@ public sealed class MaieuticsHostIntegrationTests
             toolFlow: true,
             toolName: "repl_execute",
             toolArgumentsJson: JsonSerializer.Serialize(new { code }));
-        var builder = MaieuticsHost.CreateApplicationBuilder(
-            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
-        builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
-        builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
-        await using var host = builder.Build();
+        await using var host = MaieuticsHost.CreateApplication(
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"],
+            builder =>
+            {
+                builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
+                builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = provider.Endpoint.ToString();
+            });
 
         try
         {

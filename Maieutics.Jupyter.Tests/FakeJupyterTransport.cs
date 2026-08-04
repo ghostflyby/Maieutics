@@ -14,6 +14,20 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
 
     public IAsyncEnumerable<JupyterTransportMessage> IncomingMessages => incomingMessages.Reader.ReadAllAsync();
 
+    public int PendingIncomingCount => incomingMessages.Reader.Count;
+
+    public bool TryReadIncoming(out JupyterTransportMessage message)
+    {
+        if (incomingMessages.Reader.TryRead(out var item))
+        {
+            message = item;
+            return true;
+        }
+
+        message = default!;
+        return false;
+    }
+
     public IReadOnlyList<JupyterTransportMessage> SentMessages
     {
         get

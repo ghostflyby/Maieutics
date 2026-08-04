@@ -28,7 +28,10 @@ public sealed class ReplControlChannelIntegrationTests
         var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
         await using (application)
         {
-            var factory = new LocalDenoReplSessionFactory(new DenoReplOptions(), controlHost);
+            var factory = new LocalDenoReplSessionFactory(
+                new DenoReplOptions(),
+                controlHost,
+                new ReplClientModule());
             var manager = await factory.StartAsync(Directory.GetCurrentDirectory(), timeout.Token);
             await using (manager)
             {
@@ -50,10 +53,12 @@ public sealed class ReplControlChannelIntegrationTests
     private const string ReplChildProbeScript = """
         const ipc = Deno.env.get("MAIEUTICS_REPL_IPC");
         if (!ipc) throw new Error("MAIEUTICS_REPL_IPC is missing");
+        const clientUrl = Deno.env.get("MAIEUTICS_REPL_CLIENT");
+        if (!clientUrl) throw new Error("MAIEUTICS_REPL_CLIENT is missing");
+        const maieutics = await import(clientUrl);
+        const healthText = await maieutics.health();
+        if (healthText !== "ok") throw new Error(`unexpected health: ${healthText}`);
         const client = Deno.createHttpClient({ proxy: { transport: "unix", path: ipc } });
-        const res = await fetch("http://localhost/health", { client });
-        if (!res.ok) throw new Error(`health status ${res.status}`);
-        if ((await res.text()) !== "ok") throw new Error("unexpected health body");
         const ws = new WebSocket("ws://localhost/ws", { client });
         await new Promise((resolve, reject) => {
           ws.onopen = () => resolve(undefined);

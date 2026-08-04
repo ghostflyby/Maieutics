@@ -98,7 +98,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
             try
             {
                 manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
-                RegisterControlSession();
+                await StartControlChannelAsync(cancellationToken).ConfigureAwait(false);
                 StartGenerationLoop(manager.Client);
                 SetState(DenoReplSessionState.Idle);
             }
@@ -262,14 +262,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     if (manager is null)
                     {
                         manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
-                        RegisterControlSession();
                     }
                     else
                     {
                         await manager.RestartAsync(cancellationToken).ConfigureAwait(false);
-                        RebindControlSession();
                     }
 
+                    await StartControlChannelAsync(cancellationToken).ConfigureAwait(false);
                     StartGenerationLoop(manager.Client);
                     SetState(DenoReplSessionState.Idle);
                     return GetSnapshot();
@@ -434,24 +433,24 @@ internal sealed class DenoReplSession : IAsyncDisposable
         generationLoop = WatchGenerationAsync(client, generationLifetime.Token);
     }
 
-    private void RegisterControlSession()
+    private async Task StartControlChannelAsync(CancellationToken cancellationToken)
     {
-        if (manager?.ProcessId is { } processId)
+        if (manager?.ProcessId is not { } processId)
         {
-            controlRegistry.Register(processId, SessionId);
-            registeredControlPid = processId;
+            return;
         }
-    }
 
-    private void RebindControlSession()
-    {
-        if (registeredControlPid is { } previous)
+        if (registeredControlPid is { } previous && previous != processId)
         {
             controlRegistry.Unregister(previous);
-            registeredControlPid = null;
         }
 
-        RegisterControlSession();
+        controlRegistry.Register(processId, SessionId);
+        registeredControlPid = processId;
+        await ReplControlBootstrap.RunAsync(
+            manager.Client,
+            options.StartupTimeout,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private void UnregisterControlSession()

@@ -34,6 +34,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <EmbeddedResource Include="..\deno\maieutics-repl-client\mod.ts"
+                          LogicalName="Maieutics.Deno.ReplClient.ts"/>
+    </ItemGroup>
+
+    <ItemGroup>
         <None Include="kernelspec\kernel.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     </ItemGroup>
 

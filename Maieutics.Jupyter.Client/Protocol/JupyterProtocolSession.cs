@@ -402,6 +402,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
                                .ConfigureAwait(false))
             {
                 RouteMessage(transportMessage);
+                DrainDeferredCompletions();
             }
         }
         catch (OperationCanceledException) when (disposal.IsCancellationRequested)
@@ -502,16 +503,58 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             return;
         }
 
+        if (execution.DeferredCompletion)
+        {
+            return;
+        }
+
+        // The kernel may emit the tail of an execution's IOPub output (for example
+        // the execute_result, or a display that a lagging drain flushed) after the
+        // reply and idle have already been routed. Those messages are already
+        // buffered behind the idle in the FIFO transport queue, so finish the
+        // execution only after that tail has been delivered instead of turning it
+        // into late output.
+        execution.PendingTailMessages = transport.PendingIncomingCount;
+        execution.DeferredCompletion = true;
+    }
+
+    private void FinalizeDeferredExecution(ExecutionState execution)
+    {
         if (!executions.TryRemove(execution.RequestHeader.MessageId, out _))
         {
             return;
         }
 
         execution.Outputs.Writer.TryComplete();
-        execution.Completion.TrySetResult(new JupyterExecutionResult(execution.Reply, execution.ReplyMessage));
+        execution.Completion.TrySetResult(new JupyterExecutionResult(execution.Reply!, execution.ReplyMessage!));
         RememberCompletedExecution(execution.RequestHeader.MessageId);
     }
 
+    private void DrainDeferredCompletions()
+    {
+        while (true)
+        {
+            var deferred = executions.Values.FirstOrDefault(static execution => execution.DeferredCompletion);
+            if (deferred is null)
+            {
+                return;
+            }
+
+            if (deferred.PendingTailMessages is { } remaining && remaining > 0)
+            {
+                if (!transport.TryReadIncoming(out var next))
+                {
+                    return;
+                }
+
+                deferred.PendingTailMessages = remaining - 1;
+                RouteMessage(next);
+                continue;
+            }
+
+            FinalizeDeferredExecution(deferred);
+        }
+    }
 
     private static bool TryCreateOutput(JupyterMessageId requestId, JupyterMessage message,
         [NotNullWhen(true)] out JupyterOutput? output)
@@ -737,5 +780,9 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         public JupyterMessage? ReplyMessage { get; set; }
 
         public bool IdleSeen { get; set; }
+
+        public bool DeferredCompletion { get; set; }
+
+        public int? PendingTailMessages { get; set; }
     }
 }

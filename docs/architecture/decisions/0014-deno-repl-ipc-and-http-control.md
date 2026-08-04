@@ -102,7 +102,8 @@ verify peer credentials and detect Jupyter restarts. The reusable Jupyter librar
 - Landed: ASP.NET Core framework reference, single merged `WebApplication` host with the control channel mapped onto
   it (`ReplControlHost.MapEndpoints`: HTTP `/health`, WebSocket `/ws` echo, peer identity middleware),
   `ReplControlSessionRegistry`, peer-credential interop, factory wiring with `MAIEUTICS_REPL_IPC`, session registration
-  and rebinding, in-process and real-Deno-child tests.
+  and rebinding, in-process and real-Deno-child tests, and the `deno/maieutics-repl-client` module scaffold
+  (transport bootstrap and health; tool and widget APIs pending).
 - Pending: message envelope and API surface (not decided), tool and comm routing, WebSocket usage by the comm feature,
   external loopback control endpoint, and the Windows named-pipe bootstrap.
 

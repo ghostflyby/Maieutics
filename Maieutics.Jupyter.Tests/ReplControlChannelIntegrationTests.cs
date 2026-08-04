@@ -85,7 +85,10 @@ public sealed class ReplControlChannelIntegrationTests
                 new DenoReplOptions(),
                 controlHost,
                 new ReplClientModule());
-            var manager = await factory.StartAsync(Directory.GetCurrentDirectory(), timeout.Token);
+            var manager = await factory.StartAsync(
+                Directory.GetCurrentDirectory(),
+                "integration-session",
+                timeout.Token);
             await using (manager)
             {
                 var processId = manager.ProcessId;
@@ -107,8 +110,9 @@ public sealed class ReplControlChannelIntegrationTests
     }
 
     private const string ReplChildProbeScript = """
-                                                const ipc = Deno.env.get("MAIEUTICS_REPL_IPC");
-                                                if (!ipc) throw new Error("MAIEUTICS_REPL_IPC is missing");
+                                                if (!Deno.env.get("MAIEUTICS_REPL_IPC")) {
+                                                  throw new Error("MAIEUTICS_REPL_IPC is missing");
+                                                }
                                                 const clientUrl = Deno.env.get("MAIEUTICS_REPL_CLIENT");
                                                 if (!clientUrl) throw new Error("MAIEUTICS_REPL_CLIENT is missing");
                                                 const maieutics = await import(clientUrl);
@@ -118,21 +122,9 @@ public sealed class ReplControlChannelIntegrationTests
                                                 if (listing === null || typeof listing !== "object") {
                                                   throw new Error("tool result is not a structured object");
                                                 }
-                                                const client = Deno.createHttpClient({ proxy: { transport: "unix", path: ipc } });
-                                                const ws = new WebSocket("ws://localhost/ws", { client });
-                                                await new Promise((resolve, reject) => {
-                                                  ws.onopen = () => resolve(undefined);
-                                                  ws.onerror = () => reject(new Error("websocket failed to open"));
-                                                });
-                                                const echo = new Promise((resolve, reject) => {
-                                                  ws.onmessage = (event) => resolve(String(event.data));
-                                                  ws.onerror = () => reject(new Error("websocket error"));
-                                                });
-                                                ws.send("ping");
-                                                const received = await echo;
-                                                if (received !== "ping") throw new Error(`unexpected echo: ${received}`);
-                                                ws.close();
-                                                client.close();
+                                                await maieutics.comm.open("probe-comm", "test");
+                                                await maieutics.comm.msg("probe-comm", { value: 42 });
+                                                await maieutics.comm.close("probe-comm");
                                                 "control-ok";
                                                 """;
 

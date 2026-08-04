@@ -250,6 +250,7 @@ public sealed class DenoReplRegistryTests
 
         public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
+            string sessionId,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -265,6 +266,7 @@ public sealed class DenoReplRegistryTests
 
         public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
+            string sessionId,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -284,6 +286,7 @@ public sealed class DenoReplRegistryTests
 
         public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
+            string sessionId,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -4,6 +4,7 @@ using System.Text;
 using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.Execution;
+using Microsoft.Extensions.AI;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -30,7 +31,7 @@ public sealed class ReplControlHostTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task WebSocketEchoesTextAndBinaryOverUnixSocket()
+    public async Task BusHandshakeBindsSessionAndPings()
     {
         if (OperatingSystem.IsWindows())
         {
@@ -43,29 +44,112 @@ public sealed class ReplControlHostTests
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
         await using (application)
         {
-            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await socket.ConnectAsync(new UnixDomainSocketEndPoint(host.SocketPath), timeout.Token);
-            var handshake =
-                "GET /ws HTTP/1.1\r\n" +
-                "Host: localhost\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
-                "Sec-WebSocket-Version: 13\r\n\r\n";
-            await socket.SendAsync(Encoding.ASCII.GetBytes(handshake), SocketFlags.None, timeout.Token);
-            var response = await ReadUntilHeadersAsync(socket, timeout.Token);
-            response.Should().Contain("101");
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
+                timeout.Token);
+            var ready = await ReceiveBusAsync(socket, timeout.Token);
+            ready.Should().Contain("\"type\":\"control.ready\"");
 
-            await socket.SendAsync(BuildClientFrame(Encoding.UTF8.GetBytes("ping"), 0x1), SocketFlags.None, timeout.Token);
-            var (textOpcode, textPayload) = await ReceiveFrameAsync(socket, timeout.Token);
-            textOpcode.Should().Be(0x1);
-            Encoding.UTF8.GetString(textPayload).Should().Be("ping");
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.ping","correlationId":"p1"}""",
+                timeout.Token);
+            var pong = await ReceiveBusAsync(socket, timeout.Token);
+            pong.Should().Contain("\"type\":\"control.pong\"");
+            pong.Should().Contain("\"correlationId\":\"p1\"");
+        }
+    }
 
-            byte[] binary = [0x00, 0x01, 0xFE, 0xFF];
-            await socket.SendAsync(BuildClientFrame(binary, 0x2), SocketFlags.None, timeout.Token);
-            var (binaryOpcode, binaryPayload) = await ReceiveFrameAsync(socket, timeout.Token);
-            binaryOpcode.Should().Be(0x2);
-            binaryPayload.Should().Equal(binary);
+    [Fact(Timeout = 30_000)]
+    public async Task BusValidatesCommOrderingAndRejectsUnknownTypes()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
+                timeout.Token);
+            await ReceiveBusAsync(socket, timeout.Token);
+
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"comm.msg","payload":{"commId":"c1"}}""",
+                timeout.Token);
+            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("comm_not_open");
+
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"comm.open","payload":{"commId":"c1","targetName":"test"}}""",
+                timeout.Token);
+            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("\"type\":\"comm.ack\"");
+
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"comm.msg","payload":{"commId":"c1"}}""",
+                timeout.Token);
+            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("\"type\":\"comm.ack\"");
+
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"nonsense.unknown"}""",
+                timeout.Token);
+            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("unknown_message");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ControlCancelCancelsInFlightToolCall()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(
+            registry,
+            timeout.Token,
+            [CreateBlockingFunction()]);
+        await using (application)
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
+                timeout.Token);
+            await ReceiveBusAsync(socket, timeout.Token);
+
+            var invoke = Task.Run(
+                () => PostToolInvokeAsync(
+                    host.SocketPath,
+                    "blocking_test",
+                    "{}",
+                    "cancel-me",
+                    timeout.Token),
+                timeout.Token);
+            await Task.Delay(200, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.cancel","payload":{"correlationId":"cancel-me"}}""",
+                timeout.Token);
+            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("control.cancelled");
+
+            var response = await invoke;
+            response.Should().Contain("\"status\":\"cancelled\"");
         }
     }
 
@@ -158,6 +242,7 @@ public sealed class ReplControlHostTests
                     host.SocketPath,
                     "list_directory",
                     "{}",
+                    correlationId: null,
                     timeout.Token);
                 success.Should().Contain("\"status\":\"ok\"");
                 success.Should().Contain("\"uri\"");
@@ -166,6 +251,7 @@ public sealed class ReplControlHostTests
                     host.SocketPath,
                     "repl_execute",
                     "{}",
+                    correlationId: null,
                     timeout.Token);
                 missing.Should().Contain("tool_not_found");
             }
@@ -240,17 +326,33 @@ public sealed class ReplControlHostTests
         await waitForHealth();
 
         const ws = new WebSocket("ws://localhost/ws", { client });
+        const waiters = new Map();
+        ws.onmessage = (event) => {
+          const message = JSON.parse(String(event.data));
+          const waiter = waiters.get(message.type);
+          if (waiter !== undefined) {
+            waiters.delete(message.type);
+            waiter(message);
+          }
+        };
+        function waitFor(type) {
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`timed out waiting for ${type}`)), 5000);
+            waiters.set(type, (message) => { clearTimeout(timer); resolve(message); });
+          });
+        }
         await new Promise((resolve, reject) => {
           ws.onopen = () => resolve(undefined);
           ws.onerror = () => reject(new Error("websocket failed to open"));
         });
-        const echo = new Promise((resolve, reject) => {
-          ws.onmessage = (event) => resolve(event.data);
-          ws.onerror = () => reject(new Error("websocket error"));
-        });
-        ws.send("ping");
-        const received = await echo;
-        if (received !== "ping") throw new Error(`unexpected echo: ${received}`);
+        ws.send(JSON.stringify({
+          version: 1,
+          type: "control.hello",
+          payload: { sessionId: "test-session" },
+        }));
+        await waitFor("control.ready");
+        ws.send(JSON.stringify({ version: 1, type: "control.ping", correlationId: "p1" }));
+        await waitFor("control.pong");
         ws.close();
         client.close();
         console.log("deno control channel ok");
@@ -269,11 +371,15 @@ public sealed class ReplControlHostTests
         string socketPath,
         string tool,
         string argumentsJson,
+        string? correlationId,
         CancellationToken ct)
     {
         using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), ct);
-        var body = $$"""{"version":1,"tool":"{{tool}}","arguments":{{argumentsJson}}}""";
+        var correlation = string.IsNullOrWhiteSpace(correlationId)
+            ? string.Empty
+            : ",\"correlationId\":\"" + correlationId + "\"";
+        var body = "{\"version\":1,\"tool\":\"" + tool + "\",\"arguments\":" + argumentsJson + correlation + "}";
         var request =
             $"POST /v1/tool.invoke HTTP/1.1\r\n" +
             "Host: localhost\r\n" +
@@ -283,6 +389,57 @@ public sealed class ReplControlHostTests
             body;
         await socket.SendAsync(Encoding.UTF8.GetBytes(request), SocketFlags.None, ct);
         return await ReadUntilEndAsync(socket, ct);
+    }
+
+    private static async Task<Socket> ConnectWebSocketAsync(string socketPath, CancellationToken ct)
+    {
+        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), ct);
+        var handshake =
+            "GET /ws HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+            "Sec-WebSocket-Version: 13\r\n\r\n";
+        await socket.SendAsync(Encoding.ASCII.GetBytes(handshake), SocketFlags.None, ct);
+        var response = await ReadUntilHeadersAsync(socket, ct);
+        response.Should().Contain("101");
+        return socket;
+    }
+
+    private static async Task SendBusAsync(Socket socket, string json, CancellationToken ct)
+    {
+        await socket.SendAsync(
+            BuildClientFrame(Encoding.UTF8.GetBytes(json), 0x1),
+            SocketFlags.None,
+            ct);
+    }
+
+    private static async Task<string> ReceiveBusAsync(Socket socket, CancellationToken ct)
+    {
+        var (opcode, payload) = await ReceiveFrameAsync(socket, ct);
+        opcode.Should().Be(0x1);
+        return Encoding.UTF8.GetString(payload);
+    }
+
+    private static AIFunction CreateBlockingFunction() =>
+        AIFunctionFactory.Create(
+            (CancellationToken ct) => WaitForCancellationAsync(ct),
+            new AIFunctionFactoryOptions
+            {
+                Name = "blocking_test",
+                Description = "Blocks until cancelled."
+            });
+
+    private static async Task<object?> WaitForCancellationAsync(CancellationToken ct)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var registration = ct.Register(
+            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            completion);
+        await completion.Task.WaitAsync(ct);
+        return System.Text.Json.JsonSerializer.SerializeToElement(new { cancelled = true });
     }
 
     private static async Task<string> ReadUntilEndAsync(Socket socket, CancellationToken ct)

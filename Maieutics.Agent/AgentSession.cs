@@ -1062,6 +1062,11 @@ internal static class ToolJson
             new ToolFailureEnvelope("error", code, message),
             AgentToolJsonSerializerContext.Default.ToolFailureEnvelope);
 
+    internal static JsonElement CreateCancelledEnvelope() =>
+        JsonSerializer.SerializeToElement(
+            new ToolCancelledEnvelope("cancelled"),
+            AgentToolJsonSerializerContext.Default.ToolCancelledEnvelope);
+
     private static JsonElement ParseElement(JsonNode node)
     {
         using var document = JsonDocument.Parse(node.ToJsonString());

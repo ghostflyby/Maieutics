@@ -106,8 +106,13 @@ verify peer credentials and detect Jupyter restarts. The reusable Jupyter librar
   (transport bootstrap and health; tool and widget APIs pending). The module is embedded in the executable,
   materialized per process, injected through `MAIEUTICS_REPL_CLIENT`, and bound as the `maieutics` namespace by a
   verified bootstrap cell (`globalThis.maieutics ??= await import(...)` plus a `typeof` probe with bounded retries).
-- Pending: message envelope and API surface (not decided), tool and comm routing, WebSocket usage by the comm feature,
-  external loopback control endpoint, and the Windows named-pipe bootstrap.
+  The WebSocket bus is implemented as a versioned envelope (`ReplEnvelope`: type, correlationId, payload, base64
+  buffers) multiplexed by namespace (`control.*`, `comm.*`), bound to a session through a `control.hello` handshake
+  (`MAIEUTICS_REPL_SESSION`), with `control.ping/pong`, `control.cancel` against a session-scoped operation registry,
+  and a Jupyter-shaped `comm.open/msg/close` skeleton. Tool calls stay on HTTP and support cancellation through
+  correlationId; the Deno client exposes `events.on`, `comm`, and `tools.invoke(..., { signal })`.
+- Pending: frontend comm/widget bridge, tool progress streams, SSE external event endpoint, approval for script tool
+  calls, external loopback control endpoint, and the Windows named-pipe bootstrap.
 
 ## Consequences
 

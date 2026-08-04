@@ -7,6 +7,7 @@ internal interface IDenoReplSessionFactory
 {
     Task<IJupyterKernelManager> StartAsync(
         string workingDirectory,
+        string sessionId,
         CancellationToken cancellationToken);
 }
 
@@ -48,9 +49,11 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
 
     public async Task<IJupyterKernelManager> StartAsync(
         string workingDirectory,
+        string sessionId,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         if (OperatingSystem.IsWindows())
         {
             throw new PlatformNotSupportedException(
@@ -65,7 +68,8 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [ReplControlEnvironment.IpcAddress] = controlHost.SocketPath,
-                [ReplControlEnvironment.ClientModule] = clientModule.ClientUrl
+                [ReplControlEnvironment.ClientModule] = clientModule.ClientUrl,
+                [ReplControlEnvironment.SessionId] = sessionId
             });
         return await LocalJupyterKernelManager.StartAsync(
             kernelSpec,

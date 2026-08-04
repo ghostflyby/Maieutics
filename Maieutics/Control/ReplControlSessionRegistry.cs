@@ -33,4 +33,15 @@ internal sealed class ReplControlSessionRegistry
         sessionId = string.Empty;
         return false;
     }
+
+    public bool IsOwnedBy(int processId, string sessionId)
+    {
+        return sessions.TryGetValue(processId, out var owned) &&
+               string.Equals(owned, sessionId, StringComparison.Ordinal);
+    }
+
+    public bool ContainsSession(string sessionId)
+    {
+        return sessions.Values.Contains(sessionId, StringComparer.Ordinal);
+    }
 }

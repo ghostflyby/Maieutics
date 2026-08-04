@@ -100,7 +100,10 @@ internal sealed class DenoReplSession : IAsyncDisposable
             SetState(DenoReplSessionState.Starting);
             try
             {
-                manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                manager = await factory.StartAsync(
+                    WorkingDirectory,
+                    SessionId,
+                    cancellationToken).ConfigureAwait(false);
                 await StartControlChannelAsync(cancellationToken).ConfigureAwait(false);
                 StartGenerationLoop(manager.Client);
                 SetState(DenoReplSessionState.Idle);
@@ -264,7 +267,10 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 {
                     if (manager is null)
                     {
-                        manager = await factory.StartAsync(WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                        manager = await factory.StartAsync(
+                            WorkingDirectory,
+                            SessionId,
+                            cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {

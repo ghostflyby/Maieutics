@@ -7,6 +7,7 @@ namespace Maieutics.Agent;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(ToolSuccessEnvelope))]
 [JsonSerializable(typeof(ToolFailureEnvelope))]
+[JsonSerializable(typeof(ToolCancelledEnvelope))]
 internal sealed partial class AgentToolJsonSerializerContext : JsonSerializerContext;
 
 internal sealed record ToolSuccessEnvelope(
@@ -17,3 +18,6 @@ internal sealed record ToolFailureEnvelope(
     string Status,
     string Code,
     string Message);
+
+internal sealed record ToolCancelledEnvelope(
+    string Status);

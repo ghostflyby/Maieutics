@@ -156,6 +156,7 @@ public sealed class DenoReplSessionTests
     {
         public Task<IJupyterKernelManager> StartAsync(
             string workingDirectory,
+            string sessionId,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

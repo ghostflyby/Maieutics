@@ -59,6 +59,24 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
         return false;
     }
 
+    public async ValueTask<bool> WaitToReadAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (incomingMessages.Reader.Count > 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            return await incomingMessages.Reader.WaitToReadAsync(cancellationToken).AsTask()
+                .WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
+
     public static async Task<NetMqJupyterTransport> ConnectAsync(
         JupyterConnectionInfo connectionInfo,
         JupyterTransportOptions? options = null,

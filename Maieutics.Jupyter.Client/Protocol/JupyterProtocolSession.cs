@@ -10,6 +10,7 @@ namespace Maieutics.Jupyter.Client.Protocol;
 
 internal sealed class JupyterProtocolSession : IJupyterProtocolSession
 {
+    private static readonly TimeSpan TailSettleTimeout = TimeSpan.FromMilliseconds(50);
     private const int ExecutionOutputCapacity = 512;
     private const int CompletedExecutionHistory = 256;
     private readonly IJupyterTransport transport;
@@ -398,11 +399,19 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     {
         try
         {
-            await foreach (var transportMessage in transport.IncomingMessages.WithCancellation(disposal.Token)
-                               .ConfigureAwait(false))
+            while (true)
             {
-                RouteMessage(transportMessage);
-                DrainDeferredCompletions();
+                if (!await transport.WaitToReadAsync(Timeout.InfiniteTimeSpan, disposal.Token).ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                while (transport.TryReadIncoming(out var transportMessage))
+                {
+                    RouteMessage(transportMessage);
+                }
+
+                await SettleDeferredCompletionsAsync(disposal.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (disposal.IsCancellationRequested)
@@ -508,13 +517,9 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             return;
         }
 
-        // The kernel may emit the tail of an execution's IOPub output (for example
-        // the execute_result, or a display that a lagging drain flushed) after the
-        // reply and idle have already been routed. Those messages are already
-        // buffered behind the idle in the FIFO transport queue, so finish the
-        // execution only after that tail has been delivered instead of turning it
-        // into late output.
-        execution.PendingTailMessages = transport.PendingIncomingCount;
+        // The kernel's asynchronous output drain can publish the tail of an execution's IOPub
+        // output after idle; keep the execution open until the mailbox is drained and settled so
+        // that tail is counted as part of the execution instead of routed as late output.
         execution.DeferredCompletion = true;
     }
 
@@ -530,7 +535,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         RememberCompletedExecution(execution.RequestHeader.MessageId);
     }
 
-    private void DrainDeferredCompletions()
+    private async Task SettleDeferredCompletionsAsync(CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -540,19 +545,33 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
                 return;
             }
 
-            if (deferred.PendingTailMessages is { } remaining && remaining > 0)
+            while (transport.PendingIncomingCount > 0)
             {
                 if (!transport.TryReadIncoming(out var next))
                 {
-                    return;
+                    break;
                 }
 
-                deferred.PendingTailMessages = remaining - 1;
                 RouteMessage(next);
+            }
+
+            if (!await transport.WaitToReadAsync(TailSettleTimeout, cancellationToken).ConfigureAwait(false))
+            {
+                FinalizeDeferredExecution(deferred);
                 continue;
             }
 
-            FinalizeDeferredExecution(deferred);
+            if (transport.TryReadIncoming(out var arrived))
+            {
+                var belongsToDeferred = arrived.Message.ParentHeader?.MessageId == deferred.RequestHeader.MessageId;
+                RouteMessage(arrived);
+                if (!belongsToDeferred)
+                {
+                    FinalizeDeferredExecution(deferred);
+                }
+
+                continue;
+            }
         }
     }
 
@@ -782,7 +801,5 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         public bool IdleSeen { get; set; }
 
         public bool DeferredCompletion { get; set; }
-
-        public int? PendingTailMessages { get; set; }
     }
 }

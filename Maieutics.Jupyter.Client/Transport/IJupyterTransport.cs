@@ -14,6 +14,12 @@ public interface IJupyterTransport : IAsyncDisposable
     /// </summary>
     bool TryReadIncoming(out JupyterTransportMessage message);
 
+    /// <summary>
+    /// Waits for an incoming message to become available, for the timeout to elapse, or for the
+    /// channel to complete. Returns false when the timeout elapses or the channel completes.
+    /// </summary>
+    ValueTask<bool> WaitToReadAsync(TimeSpan timeout, CancellationToken cancellationToken);
+
     ValueTask SendAsync(
         JupyterTransportChannel channel,
         JupyterMessage message,

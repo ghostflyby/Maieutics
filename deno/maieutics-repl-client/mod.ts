@@ -6,6 +6,10 @@
  * through `MAIEUTICS_REPL_SESSION`. HTTP serves tools and health; a single
  * multiplexed WebSocket bus carries events, comm messages, and control
  * messages under one versioned envelope.
+ *
+ * The module namespace is the default client: `health`, `tools`, `events`,
+ * and `comm` operate on the process's REPL connection. `connect()` creates
+ * an additional independent client with the same shape.
  */
 
 const ADDRESS_ENV = "MAIEUTICS_REPL_IPC";
@@ -30,6 +34,15 @@ export interface ReplTools {
   ): Promise<unknown>;
 }
 
+export interface ReplComm {
+  /** Opens a comm channel. */
+  open(commId: string, targetName?: string, data?: unknown): Promise<void>;
+  /** Sends a message on an open comm channel, optionally with binary buffers. */
+  msg(commId: string, data?: unknown, buffers?: Uint8Array[]): Promise<void>;
+  /** Closes a comm channel. */
+  close(commId: string): Promise<void>;
+}
+
 export interface ReplClient {
   /** Unix domain socket path of the kernel control channel. */
   readonly address: string;
@@ -37,6 +50,10 @@ export interface ReplClient {
   health(): Promise<string>;
   /** Script tool invocation. */
   tools: ReplTools;
+  /** Bus message hub; subscribe with `addEventListener(type, handler)`. */
+  events: EventTarget;
+  /** Comm channel operations. */
+  comm: ReplComm;
 }
 
 interface ReplEnvelope {
@@ -72,149 +89,154 @@ function abortError(): DOMException {
   return new DOMException("The operation was aborted.", "AbortError");
 }
 
-const typedHandlers = new Map<string, Set<(message: ReplEnvelope) => void>>();
-const wildcardHandlers = new Set<(message: ReplEnvelope) => void>();
-let busSocket: WebSocket | undefined;
-let busConnecting: Promise<WebSocket> | undefined;
+class ReplBus {
+  readonly events: EventTarget;
 
-function addHandler(
-  type: string,
-  handler: (message: ReplEnvelope) => void,
-): () => void {
-  let handlers = typedHandlers.get(type);
-  if (handlers === undefined) {
-    handlers = new Set();
-    typedHandlers.set(type, handlers);
-  }
-  handlers.add(handler);
-  return () => handlers!.delete(handler);
-}
+  private readonly http: HttpClient;
+  private readonly sessionId: string;
+  private readonly waiters = new Map<string, (envelope: ReplEnvelope) => void>();
+  private socket: WebSocket | undefined;
+  private connecting: Promise<WebSocket> | undefined;
 
-function dispatch(message: ReplEnvelope): void {
-  for (const handler of [...(typedHandlers.get(message.type) ?? [])]) {
-    handler(message);
-  }
-  for (const handler of [...wildcardHandlers]) {
-    handler(message);
-  }
-}
-
-function sendEnvelope(socket: WebSocket, envelope: ReplEnvelope): void {
-  socket.send(JSON.stringify(envelope));
-}
-
-function waitForCorrelation(
-  correlationId: string,
-  timeoutMs = BUS_TIMEOUT_MS,
-): Promise<ReplEnvelope> {
-  return new Promise((resolve, reject) => {
-    const handler = (message: ReplEnvelope): void => {
-      if (message.correlationId !== correlationId) {
-        return;
-      }
-      cleanup();
-      if (message.type === "error") {
-        const payload = message.payload as { code?: string; message?: string } | undefined;
-        reject(
-          new Error(
-            `${payload?.code ?? "bus_error"}: ${payload?.message ?? "the channel failed"}`,
-          ),
-        );
-        return;
-      }
-      resolve(message);
-    };
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      wildcardHandlers.delete(handler);
-    };
-    wildcardHandlers.add(handler);
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for correlation ${correlationId}.`));
-    }, timeoutMs);
-  });
-}
-
-async function ensureBus(): Promise<WebSocket> {
-  if (busSocket !== undefined && busSocket.readyState === WebSocket.OPEN) {
-    return busSocket;
-  }
-  if (busConnecting !== undefined) {
-    return busConnecting;
+  constructor(http: HttpClient, events: EventTarget) {
+    this.http = http;
+    this.events = events;
+    this.sessionId = Deno.env.get(SESSION_ENV) ?? "";
   }
 
-  const connecting = openBus();
-  busConnecting = connecting;
-  try {
-    return await connecting;
-  } finally {
-    busConnecting = undefined;
-  }
-}
+  async connect(): Promise<WebSocket> {
+    if (this.socket !== undefined && this.socket.readyState === WebSocket.OPEN) {
+      return this.socket;
+    }
+    if (this.connecting !== undefined) {
+      return this.connecting;
+    }
 
-async function openBus(): Promise<WebSocket> {
-  const sessionId = Deno.env.get(SESSION_ENV);
-  if (!sessionId) {
-    throw new Error(
-      `Missing ${SESSION_ENV} environment variable; cannot open the REPL control bus.`,
-    );
-  }
-  const http = ensureDefault();
-  const socket = new WebSocket("ws://localhost/ws", { client: http });
-  busSocket = socket;
-  socket.onmessage = (event) => {
+    const connecting = this.open();
+    this.connecting = connecting;
     try {
-      dispatch(JSON.parse(String(event.data)) as ReplEnvelope);
-    } catch {
-      // Malformed bus messages are dropped; the connection stays alive.
+      return await connecting;
+    } finally {
+      this.connecting = undefined;
     }
-  };
-  socket.onclose = () => {
-    if (busSocket === socket) {
-      busSocket = undefined;
-    }
-  };
-  await new Promise<void>((resolve, reject) => {
-    socket.onopen = () => resolve();
-    socket.onerror = () => reject(new Error("the REPL control bus failed to open"));
-  });
-  sendEnvelope(socket, {
-    version: ENVELOPE_VERSION,
-    type: "control.hello",
-    payload: { sessionId },
-  });
-  try {
-    await waitForType("control.ready");
-  } catch (error) {
-    if (busSocket === socket) {
-      busSocket = undefined;
-    }
-    socket.close();
-    throw error;
   }
-  return socket;
+
+  send(envelope: ReplEnvelope): void {
+    this.socket?.send(JSON.stringify(envelope));
+  }
+
+  waitCorrelation(correlationId: string): Promise<ReplEnvelope> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters.delete(correlationId);
+        reject(new Error(`Timed out waiting for correlation ${correlationId}.`));
+      }, BUS_TIMEOUT_MS);
+      this.waiters.set(correlationId, (envelope) => {
+        clearTimeout(timer);
+        if (envelope.type === "error") {
+          const payload = envelope.payload as { code?: string; message?: string } | undefined;
+          reject(
+            new Error(
+              `${payload?.code ?? "bus_error"}: ${payload?.message ?? "the channel failed"}`,
+            ),
+          );
+          return;
+        }
+        resolve(envelope);
+      });
+    });
+  }
+
+  waitForType(type: string): Promise<ReplEnvelope> {
+    return new Promise((resolve, reject) => {
+      const handler = (event: Event): void => {
+        clearTimeout(timer);
+        this.events.removeEventListener(type, handler);
+        resolve((event as CustomEvent<ReplEnvelope>).detail);
+      };
+      this.events.addEventListener(type, handler);
+      const timer = setTimeout(() => {
+        this.events.removeEventListener(type, handler);
+        reject(new Error(`Timed out waiting for ${type}.`));
+      }, BUS_TIMEOUT_MS);
+    });
+  }
+
+  close(): void {
+    this.socket?.close();
+  }
+
+  private async open(): Promise<WebSocket> {
+    if (!this.sessionId) {
+      throw new Error(
+        `Missing ${SESSION_ENV} environment variable; cannot open the REPL control bus.`,
+      );
+    }
+    const socket = new WebSocket("ws://localhost/ws", { client: this.http });
+    this.socket = socket;
+    socket.onmessage = (event) => {
+      let envelope: ReplEnvelope;
+      try {
+        envelope = JSON.parse(String(event.data)) as ReplEnvelope;
+      } catch {
+        return;
+      }
+      this.route(envelope);
+    };
+    socket.onclose = () => {
+      if (this.socket === socket) {
+        this.socket = undefined;
+      }
+    };
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve();
+      socket.onerror = () => reject(new Error("the REPL control bus failed to open"));
+    });
+    socket.send(
+      JSON.stringify({
+        version: ENVELOPE_VERSION,
+        type: "control.hello",
+        payload: { sessionId: this.sessionId },
+      }),
+    );
+    try {
+      await this.waitForType("control.ready");
+    } catch (error) {
+      if (this.socket === socket) {
+        this.socket = undefined;
+      }
+      socket.close();
+      throw error;
+    }
+    return socket;
+  }
+
+  private route(envelope: ReplEnvelope): void {
+    this.events.dispatchEvent(
+      new CustomEvent<ReplEnvelope>(envelope.type, { detail: envelope }),
+    );
+    if (envelope.correlationId !== undefined) {
+      const waiter = this.waiters.get(envelope.correlationId);
+      if (waiter !== undefined) {
+        this.waiters.delete(envelope.correlationId);
+        waiter(envelope);
+      }
+    }
+  }
 }
 
-function waitForType(type: string, timeoutMs = BUS_TIMEOUT_MS): Promise<ReplEnvelope> {
-  return new Promise((resolve, reject) => {
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      typedHandlers.get(type)?.delete(handler);
-    };
-    const handler = (message: ReplEnvelope): void => {
-      cleanup();
-      resolve(message);
-    };
-    addHandler(type, handler);
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for ${type}.`));
-    }, timeoutMs);
-  });
+async function sendAndWait(
+  bus: ReplBus,
+  envelope: Omit<ReplEnvelope, "version" | "correlationId">,
+): Promise<void> {
+  const correlationId = crypto.randomUUID();
+  const done = bus.waitCorrelation(correlationId);
+  await bus.connect();
+  bus.send({ ...envelope, version: ENVELOPE_VERSION, correlationId });
+  await done;
 }
 
-function createTools(http: HttpClient): ReplTools {
+function createTools(http: HttpClient, bus: ReplBus): ReplTools {
   return {
     async invoke(name, args = {}, options = {}) {
       const { signal } = options;
@@ -223,13 +245,15 @@ function createTools(http: HttpClient): ReplTools {
       }
       const correlationId = crypto.randomUUID();
       const sendCancel = (): void => {
-        ensureBus()
+        bus.connect()
           .then((socket) => {
-            sendEnvelope(socket, {
-              version: ENVELOPE_VERSION,
-              type: "control.cancel",
-              payload: { correlationId },
-            });
+            socket.send(
+              JSON.stringify({
+                version: ENVELOPE_VERSION,
+                type: "control.cancel",
+                payload: { correlationId },
+              }),
+            );
           })
           .catch(() => {
             // The fetch abort already covered client-side cancellation.
@@ -269,24 +293,64 @@ function createTools(http: HttpClient): ReplTools {
   };
 }
 
+function createComm(bus: ReplBus): ReplComm {
+  return {
+    async open(commId, targetName, data) {
+      await sendAndWait(bus, { type: "comm.open", payload: { commId, targetName, data } });
+    },
+    async msg(commId, data, buffers) {
+      await sendAndWait(bus, {
+        type: "comm.msg",
+        payload: { commId, data },
+        buffers: buffers?.map((bytes) => bytes.toBase64()),
+      });
+    },
+    async close(commId) {
+      await sendAndWait(bus, { type: "comm.close", payload: { commId } });
+    },
+  };
+}
+
+function createClient(http: HttpClient, address: string, events: EventTarget): ReplClient {
+  const bus = new ReplBus(http, events);
+  return {
+    address,
+    health: () => healthProbe(http),
+    tools: createTools(http, bus),
+    events,
+    comm: createComm(bus),
+  };
+}
+
 let defaultAddress: string | undefined;
 let defaultHttp: HttpClient | undefined;
+let defaultClient: ReplClient | undefined;
+const defaultEvents = new EventTarget();
 
-function ensureDefault(): HttpClient {
-  if (defaultHttp !== undefined) {
-    return defaultHttp;
-  }
+function resolveAddress(): string {
   const address = defaultAddress ??= Deno.env.get(ADDRESS_ENV);
   if (!address) {
     throw new Error(
       `Missing ${ADDRESS_ENV} environment variable; cannot connect to the REPL control channel.`,
     );
   }
-  defaultHttp = createHttp(address);
+  return address;
+}
+
+function ensureDefault(): HttpClient {
+  if (defaultHttp !== undefined) {
+    return defaultHttp;
+  }
+  defaultHttp = createHttp(resolveAddress());
   return defaultHttp;
 }
 
-/** Creates a control channel client for the given or env-provided socket address. */
+function ensureDefaultClient(): ReplClient {
+  defaultClient ??= createClient(ensureDefault(), resolveAddress(), defaultEvents);
+  return defaultClient;
+}
+
+/** Creates an independent control channel client for the given or env-provided socket address. */
 export function connect(options: ReplClientOptions = {}): ReplClient {
   const address = options.address ?? Deno.env.get(ADDRESS_ENV);
   if (!address) {
@@ -294,64 +358,25 @@ export function connect(options: ReplClientOptions = {}): ReplClient {
       `Missing ${ADDRESS_ENV} environment variable; cannot connect to the REPL control channel.`,
     );
   }
-  const http = createHttp(address);
-  return { address, health: () => healthProbe(http), tools: createTools(http) };
+  return createClient(createHttp(address), address, new EventTarget());
 }
 
 /** Probes the default client. Convenience for scripts that use the module namespace directly. */
-export async function health(): Promise<string> {
-  return healthProbe(ensureDefault());
+export function health(): Promise<string> {
+  return ensureDefaultClient().health();
 }
 
 /** Script tool invocation against the default client. */
 export const tools: ReplTools = {
-  invoke: (name, args, options) => createTools(ensureDefault()).invoke(name, args, options),
+  invoke: (name, args, options) => ensureDefaultClient().tools.invoke(name, args, options),
 };
 
-/** Subscribes to bus messages by type. Returns an unsubscribe function. */
-export const events = {
-  on(type: string, handler: (message: ReplEnvelope) => void): () => void {
-    return addHandler(type, handler);
-  },
-};
+/** Bus message hub for the default client; subscribe with `addEventListener(type, handler)`. */
+export const events: EventTarget = defaultEvents;
 
-/** Opens, sends on, and closes comm channels over the bus. */
-export const comm = {
-  async open(commId: string, targetName?: string, data?: unknown): Promise<void> {
-    const socket = await ensureBus();
-    const correlationId = crypto.randomUUID();
-    const done = waitForCorrelation(correlationId);
-    sendEnvelope(socket, {
-      version: ENVELOPE_VERSION,
-      type: "comm.open",
-      correlationId,
-      payload: { commId, targetName, data },
-    });
-    await done;
-  },
-  async msg(commId: string, data?: unknown, buffers?: Uint8Array[]): Promise<void> {
-    const socket = await ensureBus();
-    const correlationId = crypto.randomUUID();
-    const done = waitForCorrelation(correlationId);
-    sendEnvelope(socket, {
-      version: ENVELOPE_VERSION,
-      type: "comm.msg",
-      correlationId,
-      payload: { commId, data },
-      buffers: buffers?.map((bytes) => bytes.toBase64()),
-    });
-    await done;
-  },
-  async close(commId: string): Promise<void> {
-    const socket = await ensureBus();
-    const correlationId = crypto.randomUUID();
-    const done = waitForCorrelation(correlationId);
-    sendEnvelope(socket, {
-      version: ENVELOPE_VERSION,
-      type: "comm.close",
-      correlationId,
-      payload: { commId },
-    });
-    await done;
-  },
+/** Comm channel operations against the default client. */
+export const comm: ReplComm = {
+  open: (commId, targetName, data) => ensureDefaultClient().comm.open(commId, targetName, data),
+  msg: (commId, data, buffers) => ensureDefaultClient().comm.msg(commId, data, buffers),
+  close: (commId) => ensureDefaultClient().comm.close(commId),
 };

@@ -89,9 +89,11 @@ public sealed class MaieuticsAgentOptions
 
     public int MaxResponseCharacters { get; set; } = 64_000;
 
-    public int MaxModelIterationsPerTurn { get; set; } = 8;
+    public int MaxModelIterationsPerTurn { get; set; } = 24;
 
-    public int MaxToolCallsPerTurn { get; set; } = 16;
+    public TimeSpan MaxTurnDuration { get; set; } = TimeSpan.Zero;
+
+    public int MaxToolCallsPerTurn { get; set; } = 48;
 
     public int MaxToolArgumentsBytes { get; set; } = 65_536;
 
@@ -108,6 +110,7 @@ public sealed class MaieuticsAgentOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxResponseCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelIterationsPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxTurnDuration, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolCallsPerTurn, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolArgumentsBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolResultBytes, 1);

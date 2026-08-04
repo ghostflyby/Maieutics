@@ -105,6 +105,31 @@ public sealed class AgentTranscriptCodecTests
     }
 
     [Fact]
+    public void TruncatedTurnsRoundTripPrivateAndPublicStates()
+    {
+        var runId = AgentRunId.Create();
+        var sessionId = AgentSessionId.Create();
+        ChatMessage[] messages =
+        [
+            new(ChatRole.User, "question"),
+            new(ChatRole.Assistant, "answer")
+        ];
+
+        var truncated = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, truncated: true);
+        truncated.Truncated.Should().BeTrue();
+        var publicTruncated = AgentTranscriptCodec.CreatePublicTranscript(
+            new AgentTranscriptState(sessionId, 1, [truncated]));
+        publicTruncated.Turns.Single().Truncated.Should().BeTrue();
+        publicTruncated.Turns.Single().Messages.Select(static message => message.Text).Should().Equal(
+            "question", "answer");
+
+        var complete = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, truncated: false);
+        complete.Truncated.Should().BeFalse();
+        AgentTranscriptCodec.CreatePublicTranscript(
+            new AgentTranscriptState(sessionId, 2, [complete])).Turns.Single().Truncated.Should().BeFalse();
+    }
+
+    [Fact]
     public void CustomContentProducesTypedCompatibilityFailure()
     {
         var failure = FluentActions.Invoking(() => AgentTranscriptCodec.DetachPrivateTurn(

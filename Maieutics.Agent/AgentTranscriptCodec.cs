@@ -21,7 +21,8 @@ internal static class AgentTranscriptCodec
     internal static AgentTranscriptStateTurn DetachPrivateTurn(
         AgentRunId runId,
         AgentModelIdentity? modelIdentity,
-        IReadOnlyList<ChatMessage> messages)
+        IReadOnlyList<ChatMessage> messages,
+        bool truncated = false)
     {
         ArgumentNullException.ThrowIfNull(messages);
         ValidateMessages(messages);
@@ -30,7 +31,8 @@ internal static class AgentTranscriptCodec
             runId,
             modelIdentity,
             DeserializeMessages(serialized).ToImmutableArray(),
-            serialized.Length);
+            serialized.Length,
+            truncated);
     }
 
     internal static ChatMessage DetachPrivateMessage(ChatMessage message)
@@ -96,7 +98,7 @@ internal static class AgentTranscriptCodec
                 messages[index] = CreatePublicMessage(turn.Messages[index]);
             }
 
-            turns.Add(new AgentTranscriptTurn(turn.RunId, messages, turn.ModelIdentity));
+            turns.Add(new AgentTranscriptTurn(turn.RunId, messages, turn.ModelIdentity, turn.Truncated));
         }
 
         return new AgentTranscript(state.SessionId, state.Version, turns.ToImmutable());
@@ -332,4 +334,5 @@ internal sealed record AgentTranscriptStateTurn(
     AgentRunId RunId,
     AgentModelIdentity? ModelIdentity,
     ImmutableArray<ChatMessage> Messages,
-    int MessageByteCount);
+    int MessageByteCount,
+    bool Truncated);

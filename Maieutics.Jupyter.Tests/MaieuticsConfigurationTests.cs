@@ -675,6 +675,49 @@ public sealed class MaieuticsConfigurationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task AgentTurnDurationBindsToLeaseAndNegativeValuesAreRejected()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-turn-duration-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var connectionFile = Path.Combine(root, "connection.json");
+            await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+            var configurationFile = Path.Combine(root, "maieutics.json");
+            await File.WriteAllTextAsync(
+                configurationFile,
+                CreateConfiguration(connectionFile, "Fake", "one", maxTurnDuration: "00:00:45"),
+                deadline.Token);
+
+            var factory = new TrackingChatClientFactory();
+            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+            builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+            var host = builder.Build();
+            try
+            {
+                var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+                await using var lease = runtime.Acquire();
+                lease.Profile.Options.MaxTurnDuration.Should().Be(TimeSpan.FromSeconds(45));
+            }
+            finally
+            {
+                await host.DisposeAsync();
+            }
+
+            FluentActions.Invoking(() => new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate())
+                .Should().Throw<ArgumentOutOfRangeException>();
+            FluentActions.Invoking(() => new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.Zero }.Validate())
+                .Should().NotThrow();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task HistoryLimitCompatibilityParticipatesInHotReloadValidation()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
@@ -1202,12 +1245,18 @@ public sealed class MaieuticsConfigurationTests
         int maxInputCharacters = 32_000,
         int flushCharacters = 1024,
         int? maxHistoryBytes = null,
-        int? maxHistoryCharacters = null)
+        int? maxHistoryCharacters = null,
+        string? maxTurnDuration = null)
     {
         var agent = new JsonObject
         {
             ["MaxInputCharacters"] = maxInputCharacters
         };
+        if (maxTurnDuration is not null)
+        {
+            agent["MaxTurnDuration"] = maxTurnDuration;
+        }
+
         if (maxHistoryBytes.HasValue)
         {
             agent["MaxHistoryBytes"] = maxHistoryBytes.Value;

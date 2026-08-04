@@ -737,10 +737,12 @@ public sealed class AgentSessionTests
         invoked.Should().Be(0);
         callLimited.GetTranscriptSnapshot().Turns.Should().BeEmpty();
 
+        var iterationClient = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("one", "again")),
+            (_, _) => StreamAsync(ToolCallUpdate("two", "again")),
+            (_, _) => StreamAsync("continued"));
         var iterationLimited = new AgentSession(
-            new ScriptedChatClient(
-                (_, _) => StreamAsync(ToolCallUpdate("one", "again")),
-                (_, _) => StreamAsync(ToolCallUpdate("two", "again"))),
+            iterationClient,
             new AgentSessionOptions { MaxModelIterationsPerTurn = 2 },
             [
                 CreateTool(
@@ -749,14 +751,89 @@ public sealed class AgentSessionTests
             ]);
         await using (var run = await iterationLimited.StartTurnAsync(AgentTurn.FromText("Again"), deadline.Token))
         {
-            await ReadEventsAsync(run, deadline.Token);
-            var failure = (await run.Completion.WaitAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<AgentModelIterationLimitExceededException>()).Which;
-            failure.MaximumIterations.Should().Be(2);
+            var events = await ReadEventsAsync(run, deadline.Token);
+            var result = await run.Completion.WaitAsync(deadline.Token);
+
+            result.Truncated.Should().BeTrue();
+            events.OfType<AgentTurnTruncated>().Should().ContainSingle();
+            var turn = result.Transcript.Turns.Should().ContainSingle().Subject;
+            turn.Truncated.Should().BeTrue();
+            turn.Messages.Select(static message => message.Role).Should().Equal(
+                ChatRole.User,
+                ChatRole.Assistant,
+                ChatRole.Tool,
+                ChatRole.Assistant);
+            turn.Messages[^1].Contents.OfType<FunctionCallContent>().Should().ContainSingle();
         }
 
-        iterationLimited.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        // The next turn replays the committed partial history without the unanswered tool call.
+        await using (var continued = await iterationLimited.StartTurnAsync(AgentTurn.FromText("Continue"), deadline.Token))
+        {
+            await ReadEventsAsync(continued, deadline.Token);
+            (await continued.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("continued");
+        }
+
+        iterationClient.Requests[2].Select(static message => message.Role).Should().Equal(
+            ChatRole.User,
+            ChatRole.Assistant,
+            ChatRole.Tool,
+            ChatRole.User);
+        iterationClient.Requests[2][^1].Text.Should().Be("Continue");
+    }
+
+    [Fact]
+    public async Task ToolUseWithinBudgetCommitsCompleteUntruncatedTurn()
+    {
+        using var deadline = CreateDeadline();
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("one", "echo")),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(
+            client,
+            new AgentSessionOptions { MaxModelIterationsPerTurn = 2 },
+            [
+                CreateTool(
+                    "echo",
+                    (_, _, _) => ValueTask.FromResult<JsonElement?>(null))
+            ]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Go"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        var result = await run.Completion.WaitAsync(deadline.Token);
+
+        result.Truncated.Should().BeFalse();
+        result.AssistantMessage.Text.Should().Be("done");
+        session.GetTranscriptSnapshot().Turns.Single().Truncated.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TurnDurationExpiryFailsTurnRollsBackAndReleasesSession()
+    {
+        using var deadline = CreateDeadline();
+        var client = new ScriptedChatClient(
+            (_, token) => WaitUntilCanceledAsync(token),
+            (_, _) => StreamAsync("next"));
+        var session = new AgentSession(
+            client,
+            new AgentSessionOptions { MaxTurnDuration = TimeSpan.FromMilliseconds(100) });
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("slow"), deadline.Token);
+        var failure = (await run.Completion.WaitAsync(deadline.Token)
+            .Invoking(static task => task)
+            .Should().ThrowAsync<AgentTurnDurationExceededException>()).Which;
+        failure.MaximumDuration.Should().Be(TimeSpan.FromMilliseconds(100));
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+        await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
+        await ReadEventsAsync(next, deadline.Token);
+        (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("next");
+    }
+
+    [Fact]
+    public void OptionsRejectNegativeTurnDuration()
+    {
+        FluentActions.Invoking(() => new AgentSessionOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate())
+            .Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
@@ -1004,6 +1081,13 @@ public sealed class AgentSessionTests
             await Task.Yield();
         }
         // ReSharper disable once IteratorNeverReturns
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> WaitUntilCanceledAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        yield break;
     }
 
     private static CancellationTokenSource CreateDeadline()

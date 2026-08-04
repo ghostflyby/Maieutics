@@ -42,13 +42,13 @@ For example, `Maieutics__DefaultProfile` overrides `MAIEUTICS_PROFILE`, while `-
 The executable registers three read-only tools: `list_directory`, `read_text`, and `search_text`. They operate on one
 process-local workspace context whose startup root is selected when the process begins:
 
-| Setting | Environment alias | Command line | Default |
-|---|---|---|---|
+| Setting                    | Environment alias     | Command line  | Default                   |
+|----------------------------|-----------------------|---------------|---------------------------|
 | `Maieutics:Workspace:Root` | `MAIEUTICS_WORKSPACE` | `--workspace` | Startup working directory |
 
 The startup root must be an existing directory and cannot itself be a symbolic link. Relative startup values are
-resolved against the startup working directory. Configuration is not hot reloaded; changing the JSON setting requires
-a process restart or an explicit session command.
+resolved against the startup working directory. Configuration is not hot reloaded; changing the JSON setting requires a
+process restart or an explicit session command.
 
 Tools accept canonical `workspace://local/...` URIs rather than operating-system absolute paths. They reject path
 traversal, `.git` metadata access, and symbolic-link traversal. Text reads and searches require regular UTF-8 files and
@@ -58,24 +58,24 @@ remain deferred to the artifact boundary.
 ## Deno REPL tools
 
 The executable also registers `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close`. The default
-REPL starts lazily; each explicitly created REPL starts one independent local `deno jupyter` process. A REPL captures the
-currently selected workspace root as its working directory when the session is created. Later workspace commands do not
-move an existing process.
+REPL starts lazily; each explicitly created REPL starts one independent local `deno jupyter` process. A REPL captures
+the currently selected workspace root as its working directory when the session is created. Later workspace commands do
+not move an existing process.
 
 The configuration is captured once when the Maieutics host builder is created:
 
-| Setting | Default |
-|---|---:|
-| `Maieutics:DenoRepl:Executable` | `deno` |
-| `Maieutics:DenoRepl:MaxSessionsPerAgent` | `4` |
-| `Maieutics:DenoRepl:StartupTimeout` | `00:00:30` |
-| `Maieutics:DenoRepl:ExecutionTimeout` | `00:02:00` |
-| `Maieutics:DenoRepl:InterruptGracePeriod` | `00:00:05` |
-| `Maieutics:DenoRepl:ShutdownTimeout` | `00:00:10` |
-| `Maieutics:DenoRepl:MaxModelOutputBytes` | `131072` |
-| `Maieutics:DenoRepl:MaxPresentationTextBytes` | `1048576` |
-| `Maieutics:DenoRepl:MaxPresentationEventsPerExecution` | `256` |
-| `Maieutics:DenoRepl:MaxPresentationBundleBytes` | `16777216` |
+| Setting                                                |    Default |
+|--------------------------------------------------------|-----------:|
+| `Maieutics:DenoRepl:Executable`                        |     `deno` |
+| `Maieutics:DenoRepl:MaxSessionsPerAgent`               |        `4` |
+| `Maieutics:DenoRepl:StartupTimeout`                    | `00:00:30` |
+| `Maieutics:DenoRepl:ExecutionTimeout`                  | `00:02:00` |
+| `Maieutics:DenoRepl:InterruptGracePeriod`              | `00:00:05` |
+| `Maieutics:DenoRepl:ShutdownTimeout`                   | `00:00:10` |
+| `Maieutics:DenoRepl:MaxModelOutputBytes`               |   `131072` |
+| `Maieutics:DenoRepl:MaxPresentationTextBytes`          |  `1048576` |
+| `Maieutics:DenoRepl:MaxPresentationEventsPerExecution` |      `256` |
+| `Maieutics:DenoRepl:MaxPresentationBundleBytes`        | `16777216` |
 
 `deno jupyter` is privileged local code execution, not an untrusted-code sandbox. The child receives an allowlisted
 operational environment rather than the complete Maieutics environment; provider credentials such as
@@ -83,8 +83,8 @@ operational environment rather than the complete Maieutics environment; provider
 pooling, retry, or automatic code-replay setting.
 
 Jupyter output types define their audience. stdout and the final expression return only to the Agent; display/update/
-clear output goes only to the notebook; stderr and execution errors go to both. Deno input requests are forwarded to
-the notebook user. The model can intentionally publish user-visible output with the standard `Deno.jupyter.display`
+clear output goes only to the notebook; stderr and execution errors go to both. Deno input requests are forwarded to the
+notebook user. The model can intentionally publish user-visible output with the standard `Deno.jupyter.display`
 API; Maieutics does not inject a proprietary Deno API.
 
 Raw MIME bundles must use `{ raw: true }` and should include a `text/plain` fallback. Tracked updates use the same
@@ -93,17 +93,17 @@ snake-case `display_id` for the initial display and every replacement:
 ```ts
 const displayId = crypto.randomUUID();
 await Deno.jupyter.display(
-  { "text/html": "<b>initial</b>", "text/plain": "initial" },
-  { raw: true, display_id: displayId },
+    {"text/html": "<b>initial</b>", "text/plain": "initial"},
+    {raw: true, display_id: displayId},
 );
 await Deno.jupyter.display(
-  { "text/html": "<b>updated</b>", "text/plain": "updated" },
-  { raw: true, display_id: displayId, update: true },
+    {"text/html": "<b>updated</b>", "text/plain": "updated"},
+    {raw: true, display_id: displayId, update: true},
 );
 ```
 
-An `update_display_data` message without a usable `transient.display_id` is a non-critical malformed presentation
-event. Maieutics preserves its execution order as a skipped output, continues draining the execution, and keeps the REPL
+An `update_display_data` message without a usable `transient.display_id` is a non-critical malformed presentation event.
+Maieutics preserves its execution order as a skipped output, continues draining the execution, and keeps the REPL
 usable. Malformed completion, status, and input messages remain terminal protocol failures because execution cannot be
 completed or interacted with safely without them.
 
@@ -143,14 +143,14 @@ completed or interacted with safely without them.
 }
 ```
 
-| Setting | Environment alias | Command line | Default |
-|---|---|---|---|
-| `Maieutics:DefaultProfile` | `MAIEUTICS_PROFILE` | `--profile` | Required |
-| `Maieutics:Sources:openai:ApiKey` | `OPENAI_API_KEY` | - | Required for OpenAI |
-| `Maieutics:Sources:openai:Endpoint` | `OPENAI_BASE_URL` | - | OpenAI service endpoint |
-| `Maieutics:Sources:openai:ApiFlavor` | `MAIEUTICS_OPENAI_API` | `--openai-api` | `Responses` |
-| `Maieutics:Sources:anthropic:ApiKey` | `ANTHROPIC_API_KEY` | - | Required for Anthropic |
-| `Maieutics:Sources:anthropic:Endpoint` | `ANTHROPIC_BASE_URL` | - | Anthropic service endpoint |
+| Setting                                | Environment alias      | Command line   | Default                    |
+|----------------------------------------|------------------------|----------------|----------------------------|
+| `Maieutics:DefaultProfile`             | `MAIEUTICS_PROFILE`    | `--profile`    | Required                   |
+| `Maieutics:Sources:openai:ApiKey`      | `OPENAI_API_KEY`       | -              | Required for OpenAI        |
+| `Maieutics:Sources:openai:Endpoint`    | `OPENAI_BASE_URL`      | -              | OpenAI service endpoint    |
+| `Maieutics:Sources:openai:ApiFlavor`   | `MAIEUTICS_OPENAI_API` | `--openai-api` | `Responses`                |
+| `Maieutics:Sources:anthropic:ApiKey`   | `ANTHROPIC_API_KEY`    | -              | Required for Anthropic     |
+| `Maieutics:Sources:anthropic:Endpoint` | `ANTHROPIC_BASE_URL`   | -              | Anthropic service endpoint |
 
 Source and profile identifiers are case-insensitive and must match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. A source owns
 credentials, endpoint, API flavor, and connection resources. A profile selects one source and one provider model ID.
@@ -172,8 +172,8 @@ immutable runtime configuration version. Invalid JSON, invalid limits, unsupport
 construction failures are logged and rejected; the last valid version remains active. Repairing the file triggers a
 normal later update.
 
-Each Agent run captures one profile generation and options lease. Therefore these settings apply to the next turn and never
-change during an active model/tool loop:
+Each Agent run captures one profile generation and options lease. Therefore these settings apply to the next turn and
+never change during an active model/tool loop:
 
 - provider, model, API flavor, endpoint, and API key;
 - system prompt;
@@ -230,25 +230,34 @@ not enumerated for completion. The legacy `%maieutics workspace ...` form remain
 
 ## Agent limits
 
-| Setting | Default |
-|---|---:|
-| `Maieutics:Agent:MaxRetainedTurns` | `50` |
-| `Maieutics:Agent:MaxHistoryBytes` | `400000` |
-| `Maieutics:Agent:MaxInputCharacters` | `32000` |
-| `Maieutics:Agent:MaxResponseCharacters` | `64000` |
-| `Maieutics:Agent:MaxModelIterationsPerTurn` | `8` |
-| `Maieutics:Agent:MaxToolCallsPerTurn` | `16` |
-| `Maieutics:Agent:MaxToolArgumentsBytes` | `65536` |
-| `Maieutics:Agent:MaxToolResultBytes` | `262144` |
-| `Maieutics:Agent:MaxToolProgressEventsPerCall` | `256` |
-| `Maieutics:Agent:EventBufferCapacity` | `128` |
+| Setting                                        |    Default |
+|------------------------------------------------|-----------:|
+| `Maieutics:Agent:MaxRetainedTurns`             |       `50` |
+| `Maieutics:Agent:MaxHistoryBytes`              |   `400000` |
+| `Maieutics:Agent:MaxInputCharacters`           |    `32000` |
+| `Maieutics:Agent:MaxResponseCharacters`        |    `64000` |
+| `Maieutics:Agent:MaxModelIterationsPerTurn`    |       `24` |
+| `Maieutics:Agent:MaxTurnDuration`              | `00:00:00` |
+| `Maieutics:Agent:MaxToolCallsPerTurn`          |       `48` |
+| `Maieutics:Agent:MaxToolArgumentsBytes`        |    `65536` |
+| `Maieutics:Agent:MaxToolResultBytes`           |   `262144` |
+| `Maieutics:Agent:MaxToolProgressEventsPerCall` |      `256` |
+| `Maieutics:Agent:EventBufferCapacity`          |      `128` |
 
 History limits are applied when the next successful turn commits. `MaxHistoryBytes` measures the compact canonical
 message JSON as UTF-8 and evicts complete turns. Tool argument and result sizes are also measured as UTF-8 JSON bytes.
 
+`MaxModelIterationsPerTurn` bounds the model/tool round trips inside one turn. When a turn exhausts this budget while
+the model still requests tools, the kernel commits the completed partial progress as a truncated turn instead of
+discarding it: streamed output stays visible, the transcript records the partial exchange, and replay trims the
+unanswered trailing tool call so the next cell continues from clean history. `MaxTurnDuration` optionally bounds the
+wall-clock duration of one turn; `00:00:00` disables it. A duration expiry cancels the turn cooperatively and surfaces a
+typed error with the already-streamed output preserved; it does not commit a partial turn because the boundary may fall
+mid-tool. A recommended starting value for agent-style workloads is 15-30 minutes.
+
 During the configuration compatibility window, `Maieutics:Agent:MaxHistoryCharacters` is still accepted when
-`MaxHistoryBytes` is absent and is converted to bytes as `value * 2`. Configuring both fields is invalid. Invalid reloads
-retain the last-known-good runtime snapshot.
+`MaxHistoryBytes` is absent and is converted to bytes as `value * 2`. Configuring both fields is invalid. Invalid
+reloads retain the last-known-good runtime snapshot.
 
 Example:
 

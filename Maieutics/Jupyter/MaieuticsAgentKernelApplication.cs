@@ -643,7 +643,36 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             }
 
             // Once the event writer closes normally, the run has crossed its commit boundary.
-            await run.Completion.ConfigureAwait(false);
+            var result = await run.Completion.ConfigureAwait(false);
+            if (result.Truncated)
+            {
+                response.AppendLine();
+                response.Append(
+                    "> ⚠️ The agent turn was truncated after exhausting its model iteration budget. " +
+                    "Partial progress is preserved; run a new cell to continue.");
+                if (displayId is null)
+                {
+                    displayId = JupyterDisplayId.Create();
+                    if (presentationSink is null)
+                    {
+                        await context.DisplayTrackedAsync(
+                            MimeBundle.FromMarkdown(response.ToString()),
+                            displayId,
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await presentationSink.DisplayTrackedAsync(
+                            MimeBundle.FromMarkdown(response.ToString()),
+                            displayId.Value,
+                            EmptyMetadata,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    flushedLength = response.Length;
+                    flushTimestamp = timeProvider.GetTimestamp();
+                }
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -733,6 +762,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         AgentToolInvocationException => Create(
             "AgentToolError",
             "An Agent tool failed while processing the request."),
+        AgentTurnDurationExceededException => Create("AgentTurnDurationExceeded", exception.Message),
         AgentModelIterationLimitExceededException => Create("AgentModelIterationLimit", exception.Message),
         AgentModelCapabilityException => Create("AgentModelCapabilityError", exception.Message),
         AgentContentCompatibilityException => Create(

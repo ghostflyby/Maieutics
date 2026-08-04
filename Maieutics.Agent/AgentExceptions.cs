@@ -97,3 +97,11 @@ public sealed class AgentModelIterationLimitExceededException(int maximumIterati
     /// <summary>Gets the configured maximum provider iteration count.</summary>
     public int MaximumIterations { get; } = maximumIterations;
 }
+
+/// <summary>Indicates that a turn exhausted its wall-clock budget before a final answer.</summary>
+public sealed class AgentTurnDurationExceededException(TimeSpan maximumDuration)
+    : AgentException($"The Agent turn exceeded the configured duration limit of {maximumDuration}.")
+{
+    /// <summary>Gets the configured maximum turn duration.</summary>
+    public TimeSpan MaximumDuration { get; } = maximumDuration;
+}

@@ -127,6 +127,15 @@ public sealed class AgentSession : IAgentSession
             TerminateOnUnknownCalls = true,
             FunctionInvoker = toolState.InvokeAsync
         };
+        using var budget = options.MaxTurnDuration > TimeSpan.Zero
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        if (budget is not null)
+        {
+            budget.CancelAfter(options.MaxTurnDuration);
+        }
+
+        var loopToken = budget?.Token ?? cancellationToken;
         var requestMessages = GetCommittedChatMessages().ToList();
         requestMessages.Add(run.UserMessage);
         var chatOptions = new ChatOptions
@@ -138,10 +147,21 @@ public sealed class AgentSession : IAgentSession
         try
         {
             await foreach (var _ in functionClient
-                               .GetStreamingResponseAsync(requestMessages, chatOptions, cancellationToken)
+                               .GetStreamingResponseAsync(requestMessages, chatOptions, loopToken)
                                .ConfigureAwait(false))
             {
             }
+        }
+        catch (AgentModelIterationLimitExceededException)
+        {
+            // The model exhausted its per-turn iteration budget while requesting tools. The loop
+            // stopped at a clean boundary (all completed tool rounds are recorded), so the run
+            // commits partial progress below instead of failing the whole turn.
+        }
+        catch (OperationCanceledException) when (
+            budget?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+        {
+            throw new AgentTurnDurationExceededException(options.MaxTurnDuration);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -156,17 +176,26 @@ public sealed class AgentSession : IAgentSession
             throw new AgentProviderException(exception);
         }
 
-        var turnMessages = await toolState.BuildCompletedMessagesAsync(cancellationToken).ConfigureAwait(false);
-        return new PreparedRunResult(turnMessages, turnMessages[^1]);
+        var (turnMessages, truncated) = await toolState.BuildCompletedMessagesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (truncated)
+        {
+            await run.WriteEventAsync(
+                new AgentTurnTruncated(run.Id, run.NextSequence()),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return new PreparedRunResult(turnMessages, turnMessages[^1], truncated);
     }
 
     private AgentTranscript CommitTurn(
         AgentRunId runId,
         IReadOnlyList<ChatMessage> turnMessages,
         AgentSessionOptions options,
-        AgentModelIdentity? modelIdentity)
+        AgentModelIdentity? modelIdentity,
+        bool truncated)
     {
-        var detachedTurn = AgentTranscriptCodec.DetachPrivateTurn(runId, modelIdentity, turnMessages);
+        var detachedTurn = AgentTranscriptCodec.DetachPrivateTurn(runId, modelIdentity, turnMessages, truncated);
         AgentTranscriptState committed;
         lock (transcriptGate)
         {
@@ -194,13 +223,19 @@ public sealed class AgentSession : IAgentSession
         var modelIdentity = run.Profile.ModelIdentity;
         var userMessage = AgentTranscriptCodec.CreatePublicMessage(run.UserMessage);
         var assistantMessage = AgentTranscriptCodec.CreatePublicMessage(prepared.AssistantMessage);
-        var transcript = CommitTurn(run.Id, prepared.TurnMessages, run.Profile.Options, modelIdentity);
+        var transcript = CommitTurn(
+            run.Id,
+            prepared.TurnMessages,
+            run.Profile.Options,
+            modelIdentity,
+            prepared.Truncated);
         return new AgentRunResult(
             run.Id,
             userMessage,
             assistantMessage,
             transcript,
-            modelIdentity);
+            modelIdentity,
+            prepared.Truncated);
     }
 
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
@@ -211,8 +246,45 @@ public sealed class AgentSession : IAgentSession
             snapshot = canonicalState;
         }
 
+        var messages = new List<ChatMessage>();
+        foreach (var turn in snapshot.Turns)
+        {
+            messages.AddRange(turn.Truncated ? TrimTruncatedTurn(turn.Messages) : turn.Messages);
+        }
+
         return AgentTranscriptCodec.DetachPrivateMessages(
-            snapshot.Turns.SelectMany(static turn => turn.Messages).ToArray());
+            messages);
+    }
+
+    // A truncated turn ends with assistant tool calls that were never answered. Replaying them
+    // would push stale requests into the next provider turn, so replay trims the unanswered tail.
+    private static IReadOnlyList<ChatMessage> TrimTruncatedTurn(IReadOnlyList<ChatMessage> messages)
+    {
+        var trimmed = messages.ToList();
+        while (trimmed.Count > 0 &&
+               trimmed[^1].Role == ChatRole.Assistant &&
+               trimmed[^1].Contents.Count > 0 &&
+               trimmed[^1].Contents.All(static content => content is FunctionCallContent))
+        {
+            trimmed.RemoveAt(trimmed.Count - 1);
+        }
+
+        if (trimmed.Count > 0 &&
+            trimmed[^1].Role == ChatRole.Assistant &&
+            trimmed[^1].Contents.OfType<FunctionCallContent>().Any())
+        {
+            var last = trimmed[^1];
+            trimmed[^1] = new ChatMessage(
+                last.Role,
+                last.Contents.Where(static content => content is not FunctionCallContent).ToArray())
+            {
+                AuthorName = last.AuthorName,
+                CreatedAt = last.CreatedAt,
+                MessageId = last.MessageId
+            };
+        }
+
+        return trimmed;
     }
 
     private static void ValidateInput(AgentTurn turn, AgentSessionOptions options)
@@ -504,22 +576,13 @@ public sealed class AgentSession : IAgentSession
                 cancellationToken).ConfigureAwait(false);
         }
 
-        internal async Task<IReadOnlyList<ChatMessage>> BuildCompletedMessagesAsync(
+        internal async Task<(IReadOnlyList<ChatMessage> Messages, bool Truncated)> BuildCompletedMessagesAsync(
             CancellationToken cancellationToken)
         {
             var iterations = recordingClient.GetIterations();
             if (iterations.Count == 0)
             {
                 throw new AgentUnsupportedResponseException("The model provider returned no response.");
-            }
-
-            if (iterations.Count >= options.MaxModelIterationsPerTurn &&
-                iterations[^1].ResponseMessages
-                    .SelectMany(static message => message.Contents)
-                    .OfType<FunctionCallContent>()
-                    .Any())
-            {
-                throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
             }
 
             for (var index = 1; index < iterations.Count; index++)
@@ -533,10 +596,24 @@ public sealed class AgentSession : IAgentSession
                 run.UserMessage,
                 .. intermediateMessages
             ];
-            if (messages[^1].Role == ChatRole.Assistant &&
-                messages[^1].Contents.OfType<TextContent>().Any(static content => content.Text.Length > 0))
-                return messages;
-            if (messages[^1].Contents.OfType<FunctionCallContent>().Any())
+            if (messages[^1].Role != ChatRole.Assistant)
+            {
+                throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
+            }
+
+            var atIterationLimit = iterations.Count >= options.MaxModelIterationsPerTurn;
+            var lastRequestsTools = messages[^1].Contents.OfType<FunctionCallContent>().Any();
+            if (atIterationLimit && lastRequestsTools)
+            {
+                return (messages, true);
+            }
+
+            if (messages[^1].Contents.OfType<TextContent>().Any(static content => content.Text.Length > 0))
+            {
+                return (messages, false);
+            }
+
+            if (lastRequestsTools)
             {
                 throw new AgentModelIterationLimitExceededException(options.MaxModelIterationsPerTurn);
             }
@@ -793,7 +870,8 @@ public sealed class AgentSession : IAgentSession
 
     private sealed record PreparedRunResult(
         IReadOnlyList<ChatMessage> TurnMessages,
-        ChatMessage AssistantMessage);
+        ChatMessage AssistantMessage,
+        bool Truncated);
 
     private sealed class AgentRun(
         AgentSession owner,

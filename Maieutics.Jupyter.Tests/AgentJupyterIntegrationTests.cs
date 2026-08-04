@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
@@ -139,6 +140,70 @@ public sealed class AgentJupyterIntegrationTests
             .Should().Contain("visible");
         outputs.OfType<JupyterExecutionError>().Single().Name.Should().Be("AgentUnsupportedResponse");
         session.GetTranscriptSnapshot().Version.Should().Be(0);
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IterationBudgetTruncationCommitsPartialTurnAndRendersStatus()
+    {
+        using var deadline = CreateDeadline();
+        var chatClient = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("one", "again")),
+            (_, _) => StreamAsync(ToolCallUpdate("two", "again")));
+        var session = new AgentSession(
+            chatClient,
+            new AgentSessionOptions { MaxModelIterationsPerTurn = 2 },
+            [CreateTool("again")]);
+        var application = new MaieuticsAgentKernelApplication(session);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var execution = await client.ExecuteAsync(new JupyterExecuteRequest("work"), deadline.Token);
+        var outputs = await ReadOutputsAsync(execution, deadline.Token);
+        var completion = await execution.Completion.WaitAsync(deadline.Token);
+
+        completion.Reply.Status.Should().Be("ok");
+        outputs.Where(output => output is JupyterDisplayOutput or JupyterDisplayUpdateOutput)
+            .Select(ReadMarkdown)
+            .Should().Contain(markdown => markdown != null && markdown.Contains("truncated"));
+        outputs.OfType<JupyterExecutionError>().Should().BeEmpty();
+        session.GetTranscriptSnapshot().Turns.Should().ContainSingle();
+        session.GetTranscriptSnapshot().Turns[0].Truncated.Should().BeTrue();
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task TurnDurationExpiryRendersTypedError()
+    {
+        using var deadline = CreateDeadline();
+        var chatClient = new ScriptedChatClient((_, token) => WaitOnTokenAsync(token));
+        var session = new AgentSession(
+            chatClient,
+            new AgentSessionOptions { MaxTurnDuration = TimeSpan.FromMilliseconds(200) });
+        var application = new MaieuticsAgentKernelApplication(session);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var execution = await client.ExecuteAsync(new JupyterExecuteRequest("slow"), deadline.Token);
+        var outputs = await ReadOutputsAsync(execution, deadline.Token);
+        var completion = await execution.Completion.WaitAsync(deadline.Token);
+
+        completion.Reply.Status.Should().Be("error");
+        completion.Reply.ErrorName.Should().Be("AgentTurnDurationExceeded");
+        outputs.OfType<JupyterExecutionError>().Single().Name.Should().Be("AgentTurnDurationExceeded");
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
 
         await client.ShutdownAsync(false, deadline.Token);
@@ -606,6 +671,43 @@ public sealed class AgentJupyterIntegrationTests
             await Task.Yield();
             yield return new ChatResponseUpdate(ChatRole.Assistant, value);
         }
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(ChatResponseUpdate update)
+    {
+        await Task.Yield();
+        yield return update;
+    }
+
+    private static ChatResponseUpdate ToolCallUpdate(string callId, string name) =>
+        new(ChatRole.Assistant, [new FunctionCallContent(callId, name, new Dictionary<string, object?>())]);
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> WaitOnTokenAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        yield break;
+    }
+
+    private static AIFunction CreateTool(string name)
+    {
+        static async ValueTask<JsonElement?> InvokeAsync(
+            AIFunctionArguments arguments,
+            CancellationToken cancellationToken)
+        {
+            _ = arguments;
+            _ = cancellationToken;
+            return null;
+        }
+
+        return AIFunctionFactory.Create(
+            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement?>>)InvokeAsync,
+            new AIFunctionFactoryOptions
+            {
+                Name = name,
+                Description = $"Test tool {name}.",
+                ExcludeResultSchema = true
+            });
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> FailAfterTextAsync(

@@ -19,10 +19,13 @@ public sealed record AgentSessionOptions
     public int MaxResponseCharacters { get; init; } = 64_000;
 
     /// <summary>Gets the maximum number of model round trips in one turn.</summary>
-    public int MaxModelIterationsPerTurn { get; init; } = 8;
+    public int MaxModelIterationsPerTurn { get; init; } = 24;
+
+    /// <summary>Gets the maximum wall-clock duration of one turn, or zero when unlimited.</summary>
+    public TimeSpan MaxTurnDuration { get; init; } = TimeSpan.Zero;
 
     /// <summary>Gets the maximum number of tool calls in one turn.</summary>
-    public int MaxToolCallsPerTurn { get; init; } = 16;
+    public int MaxToolCallsPerTurn { get; init; } = 48;
 
     /// <summary>Gets the maximum UTF-8 encoded argument size for one tool call.</summary>
     public int MaxToolArgumentsBytes { get; init; } = 65_536;
@@ -43,6 +46,7 @@ public sealed record AgentSessionOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxResponseCharacters, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelIterationsPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxTurnDuration, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolCallsPerTurn, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolArgumentsBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolResultBytes, 1);

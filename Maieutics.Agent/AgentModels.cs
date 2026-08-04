@@ -207,7 +207,7 @@ public sealed record AgentTranscriptTurn
 {
     /// <summary>Initializes a complete transcript turn.</summary>
     public AgentTranscriptTurn(AgentRunId runId, IReadOnlyList<ChatMessage> messages)
-        : this(runId, messages, null)
+        : this(runId, messages, null, false)
     {
     }
 
@@ -215,7 +215,8 @@ public sealed record AgentTranscriptTurn
     public AgentTranscriptTurn(
         AgentRunId runId,
         IReadOnlyList<ChatMessage> messages,
-        AgentModelIdentity? modelIdentity)
+        AgentModelIdentity? modelIdentity,
+        bool truncated = false)
     {
         if (runId.Value == Guid.Empty)
         {
@@ -239,6 +240,7 @@ public sealed record AgentTranscriptTurn
         RunId = runId;
         Messages = messages;
         ModelIdentity = modelIdentity;
+        Truncated = truncated;
     }
 
     /// <summary>Gets the run that produced this turn.</summary>
@@ -249,6 +251,9 @@ public sealed record AgentTranscriptTurn
 
     /// <summary>Gets the configured model identity that produced the turn, when known.</summary>
     public AgentModelIdentity? ModelIdentity { get; }
+
+    /// <summary>Gets whether the turn exhausted its budget before a validated final answer.</summary>
+    public bool Truncated { get; }
 }
 
 /// <summary>Represents the successful terminal result of one Agent run.</summary>
@@ -260,7 +265,7 @@ public sealed record AgentRunResult
         ChatMessage userMessage,
         ChatMessage assistantMessage,
         AgentTranscript transcript)
-        : this(runId, userMessage, assistantMessage, transcript, null)
+        : this(runId, userMessage, assistantMessage, transcript, null, false)
     {
     }
 
@@ -270,7 +275,8 @@ public sealed record AgentRunResult
         ChatMessage userMessage,
         ChatMessage assistantMessage,
         AgentTranscript transcript,
-        AgentModelIdentity? modelIdentity)
+        AgentModelIdentity? modelIdentity,
+        bool truncated = false)
     {
         if (runId.Value == Guid.Empty)
         {
@@ -282,6 +288,7 @@ public sealed record AgentRunResult
         AssistantMessage = assistantMessage ?? throw new ArgumentNullException(nameof(assistantMessage));
         Transcript = transcript ?? throw new ArgumentNullException(nameof(transcript));
         ModelIdentity = modelIdentity;
+        Truncated = truncated;
     }
 
     /// <summary>Gets the run identifier.</summary>
@@ -298,6 +305,9 @@ public sealed record AgentRunResult
 
     /// <summary>Gets the configured model identity used throughout the run, when known.</summary>
     public AgentModelIdentity? ModelIdentity { get; }
+
+    /// <summary>Gets whether the turn exhausted its budget and committed partial progress.</summary>
+    public bool Truncated { get; }
 }
 
 /// <summary>Represents one normalized event emitted by an Agent run.</summary>
@@ -373,6 +383,15 @@ public sealed record AgentMessageCompleted : AgentEvent
 
     /// <summary>Gets the assembled assistant message.</summary>
     public ChatMessage Message { get; }
+}
+
+/// <summary>Indicates that a turn ended because it exhausted its configured budget.</summary>
+public sealed record AgentTurnTruncated : AgentEvent
+{
+    /// <summary>Initializes a truncation event.</summary>
+    public AgentTurnTruncated(AgentRunId runId, long sequence) : base(runId, sequence)
+    {
+    }
 }
 
 /// <summary>Describes one model discovered from a provider API endpoint.</summary>

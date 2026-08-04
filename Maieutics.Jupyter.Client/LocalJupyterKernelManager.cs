@@ -41,7 +41,7 @@ public sealed record LocalJupyterKernelManagerOptions
     public string? RuntimeDirectory { get; init; }
 }
 
-public sealed class LocalJupyterKernelManager : IJupyterKernelManager
+public sealed partial class LocalJupyterKernelManager : IJupyterKernelManager
 {
     private const int SigInt = 2;
     private readonly JupyterKernelSpec kernelSpec;
@@ -312,7 +312,7 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
                 "Signal-based Jupyter kernel interrupt is not supported on Windows.");
         }
 
-        if (kill(process.Id, SigInt) != 0)
+        if (Kill(process.Id, SigInt) != 0)
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
@@ -338,6 +338,6 @@ public sealed class LocalJupyterKernelManager : IJupyterKernelManager
     private void ThrowIfDisposed() =>
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int kill(int pid, int signal);
+    [LibraryImport("libc", SetLastError = true)]
+    private static partial int Kill(int pid, int signal);
 }

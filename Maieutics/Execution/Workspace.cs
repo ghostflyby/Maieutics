@@ -99,7 +99,7 @@ internal sealed class Workspace
     }
 }
 
-internal sealed record WorkspaceSnapshot(
+internal sealed partial record WorkspaceSnapshot(
     string RootPath,
     long Version,
     bool HasSessionOverride)
@@ -482,11 +482,11 @@ internal sealed record WorkspaceSnapshot(
         return value;
     }
 
-    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
-    private static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+    [LibraryImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static partial int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
 
-    [DllImport("libc", EntryPoint = "openat", SetLastError = true)]
-    private static extern int OpenAt(
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true)]
+    private static partial int OpenAt(
         int directoryDescriptor,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
         int flags);

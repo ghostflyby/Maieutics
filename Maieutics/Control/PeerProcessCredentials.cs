@@ -8,7 +8,7 @@ namespace Maieutics.Control;
 /// Resolves the peer process identity of a connected unix domain socket. Linux exposes the peer
 /// process id; macOS exposes only the peer user id.
 /// </summary>
-internal static class PeerProcessCredentials
+internal static partial class PeerProcessCredentials
 {
     /// <summary>
     /// Gets the peer process identity when the platform exposes it.
@@ -31,12 +31,7 @@ internal static class PeerProcessCredentials
             return TryGetLinuxPeerIdentity(handle, out processId, out userId);
         }
 
-        if (OperatingSystem.IsMacOS())
-        {
-            return TryGetMacOsPeerIdentity(handle, out userId);
-        }
-
-        return false;
+        return OperatingSystem.IsMacOS() && TryGetMacOsPeerIdentity(handle, out userId);
     }
 
     /// <summary>Gets the effective user id of the current process.</summary>
@@ -47,14 +42,14 @@ internal static class PeerProcessCredentials
             return 0;
         }
 
-        return Geteuid();
+        return GetEuid();
     }
 
     private static bool TryGetLinuxPeerIdentity(IntPtr socketHandle, out int processId, out uint userId)
     {
         var credential = new UCred();
         var size = Unsafe.SizeOf<UCred>();
-        if (Getsockopt(socketHandle, SolSocket, SoPeerCred, ref credential, ref size) != 0 ||
+        if (GetSockOpt(socketHandle, SolSocket, SoPeerCred, ref credential, ref size) != 0 ||
             size != Unsafe.SizeOf<UCred>())
         {
             processId = 0;
@@ -69,7 +64,7 @@ internal static class PeerProcessCredentials
 
     private static bool TryGetMacOsPeerIdentity(IntPtr socketHandle, out uint userId)
     {
-        if (Getpeereid(socketHandle, out var uid, out _) != 0)
+        if (GetPeerEid(socketHandle, out var uid, out _) != 0)
         {
             userId = 0;
             return false;
@@ -90,17 +85,17 @@ internal static class PeerProcessCredentials
     private const int SolSocket = 1;
     private const int SoPeerCred = 17;
 
-    [DllImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
-    private static extern int Getsockopt(
+    [LibraryImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
+    private static partial int GetSockOpt(
         IntPtr socket,
         int level,
         int optionName,
         ref UCred optionValue,
         ref int optionLength);
 
-    [DllImport("libc", EntryPoint = "getpeereid", SetLastError = true)]
-    private static extern int Getpeereid(IntPtr socket, out uint euid, out uint egid);
+    [LibraryImport("libc", EntryPoint = "getpeereid", SetLastError = true)]
+    private static partial int GetPeerEid(IntPtr socket, out uint euid, out uint egid);
 
-    [DllImport("libc", EntryPoint = "geteuid")]
-    private static extern uint Geteuid();
+    [LibraryImport("libc", EntryPoint = "geteuid")]
+    private static partial uint GetEuid();
 }

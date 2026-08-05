@@ -341,8 +341,8 @@ internal sealed class PluginHostManager : IAsyncDisposable
 
     private static JsonElement ToGrant(PluginPermissionGrant grant) =>
         grant.AllowAll
-            ? JsonSerializer.SerializeToElement(true)
-            : JsonSerializer.SerializeToElement(grant.Values.ToArray());
+            ? JsonSerializer.SerializeToElement(true, PluginHostJsonContext.Default.Boolean)
+            : JsonSerializer.SerializeToElement(grant.Values.ToArray(), PluginHostJsonContext.Default.StringArray);
 
     private PluginHostProcessGrants BuildProcessGrants(string configPath)
     {

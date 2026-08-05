@@ -65,6 +65,8 @@ internal sealed class PluginHostModule
 [JsonSerializable(typeof(PluginHostConfigPlugin))]
 [JsonSerializable(typeof(PluginHostConfigWorker))]
 [JsonSerializable(typeof(PluginHostConfigPermissions))]
+[JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(string[]))]
 internal sealed partial class PluginHostJsonContext : JsonSerializerContext;
 
 internal sealed record PluginHostConfigFile(IReadOnlyList<PluginHostConfigPlugin> Plugins);

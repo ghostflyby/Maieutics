@@ -624,12 +624,18 @@ internal sealed class ReplControlHost : IDisposable
         string? correlationId,
         CancellationToken cancellationToken)
     {
-        var registrations = pluginHosts?.GetRegistrations(ReplExtensionPointName.ToolPreInvoke) ?? [];
+        var hosts = pluginHosts;
+        if (hosts is null)
+        {
+            return arguments;
+        }
+
+        var registrations = hosts.GetRegistrations(ReplExtensionPointName.ToolPreInvoke);
         var current = arguments;
         foreach (var registration in registrations)
         {
             var context = new ToolHookContextPayload(tool, SerializeArguments(current), correlationId ?? string.Empty);
-            var outcome = await pluginHosts
+            var outcome = await hosts
                 .InvokeExtensionPointAsync(
                     registration.PluginId,
                     registration.ExportName,
@@ -674,7 +680,13 @@ internal sealed class ReplControlHost : IDisposable
         JsonElement envelope,
         CancellationToken cancellationToken)
     {
-        var registrations = pluginHosts?.GetRegistrations(ReplExtensionPointName.ToolPostInvoke) ?? [];
+        var hosts = pluginHosts;
+        if (hosts is null)
+        {
+            return;
+        }
+
+        var registrations = hosts.GetRegistrations(ReplExtensionPointName.ToolPostInvoke);
         if (registrations.Count == 0)
         {
             return;
@@ -692,7 +704,7 @@ internal sealed class ReplControlHost : IDisposable
                     correlationId ?? string.Empty,
                     status,
                     result);
-                _ = await pluginHosts
+                _ = await hosts
                     .InvokeExtensionPointAsync(
                         registration.PluginId,
                         registration.ExportName,

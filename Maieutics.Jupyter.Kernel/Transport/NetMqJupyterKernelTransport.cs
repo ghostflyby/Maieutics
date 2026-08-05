@@ -49,6 +49,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         JupyterKernelTransportOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         connectionInfo.ValidateSupported();
         var transport = new NetMqJupyterKernelTransport(connectionInfo, options ?? new JupyterKernelTransportOptions());
         transport.ioThread.Start();

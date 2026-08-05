@@ -83,6 +83,7 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
         JupyterTransportOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         connectionInfo.ValidateSupported();
         var transport = new NetMqJupyterTransport(connectionInfo, options ?? new JupyterTransportOptions());
         transport.ioThread.Start();

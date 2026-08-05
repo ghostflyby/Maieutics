@@ -15,10 +15,10 @@
 const ADDRESS_ENV = "MAIEUTICS_REPL_IPC";
 const SESSION_ENV = "MAIEUTICS_REPL_SESSION";
 const SERVER_URL = "http://localhost";
-const ENVELOPE_VERSION = 1;
 const BUS_TIMEOUT_MS = 5_000;
 
-type HttpClient = ReturnType<typeof Deno.createHttpClient>;
+import { type BusConnection, connectBus } from "../shared/bus.ts";
+import { ENVELOPE_VERSION, type HttpClient, type ReplEnvelope } from "../shared/protocol.ts";
 
 export interface ReplClientOptions {
   /** Unix domain socket path of the kernel control channel. */
@@ -60,14 +60,6 @@ export interface ReplClient {
   events: EventTarget;
   /** Comm channel operations. */
   comm: ReplComm;
-}
-
-interface ReplEnvelope {
-  version: number;
-  type: string;
-  correlationId?: string;
-  payload?: unknown;
-  buffers?: string[];
 }
 
 interface ToolEnvelope {
@@ -196,8 +188,8 @@ class ReplBus {
   private readonly http: HttpClient;
   private readonly sessionId: string;
   private readonly waiters = new Map<string, (envelope: ReplEnvelope) => void>();
-  private socket: WebSocket | undefined;
-  private connecting: Promise<WebSocket> | undefined;
+  private bus: BusConnection | undefined;
+  private connecting: Promise<void> | undefined;
 
   constructor(http: HttpClient, events: EventTarget) {
     this.http = http;
@@ -205,9 +197,9 @@ class ReplBus {
     this.sessionId = Deno.env.get(SESSION_ENV) ?? "";
   }
 
-  async connect(): Promise<WebSocket> {
-    if (this.socket !== undefined && this.socket.readyState === WebSocket.OPEN) {
-      return this.socket;
+  async connect(): Promise<void> {
+    if (this.bus !== undefined) {
+      return;
     }
     if (this.connecting !== undefined) {
       return this.connecting;
@@ -222,8 +214,8 @@ class ReplBus {
     }
   }
 
-  send(envelope: ReplEnvelope): void {
-    this.socket?.send(JSON.stringify(envelope));
+  send(envelope: Omit<ReplEnvelope, "version">): void {
+    this.bus?.send(envelope);
   }
 
   waitCorrelation(correlationId: string): Promise<ReplEnvelope> {
@@ -264,52 +256,33 @@ class ReplBus {
   }
 
   close(): void {
-    this.socket?.close();
+    this.bus?.close();
   }
 
-  private async open(): Promise<WebSocket> {
+  private async open(): Promise<void> {
     if (!this.sessionId) {
       throw new Error(
         `Missing ${SESSION_ENV} environment variable; cannot open the REPL control bus.`,
       );
     }
-    const socket = new WebSocket("ws://localhost/ws", { client: this.http });
-    this.socket = socket;
-    socket.onmessage = (event) => {
-      let envelope: ReplEnvelope;
-      try {
-        envelope = JSON.parse(String(event.data)) as ReplEnvelope;
-      } catch {
-        return;
-      }
-      this.route(envelope);
-    };
-    socket.onclose = () => {
-      if (this.socket === socket) {
-        this.socket = undefined;
-      }
-    };
-    await new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
-      socket.onerror = () => reject(new Error("the REPL control bus failed to open"));
-    });
-    socket.send(
-      JSON.stringify({
-        version: ENVELOPE_VERSION,
+    this.bus = await connectBus(
+      this.http,
+      {
         type: "control.hello",
         payload: { sessionId: this.sessionId },
-      }),
+      },
+      (envelope) => this.route(envelope),
+      () => {
+        this.bus = undefined;
+      },
     );
     try {
       await this.waitForType("control.ready");
     } catch (error) {
-      if (this.socket === socket) {
-        this.socket = undefined;
-      }
-      socket.close();
+      this.bus?.close();
+      this.bus = undefined;
       throw error;
     }
-    return socket;
   }
 
   private route(envelope: ReplEnvelope): void {
@@ -333,7 +306,7 @@ async function sendAndWait(
   const correlationId = crypto.randomUUID();
   const done = bus.waitCorrelation(correlationId);
   await bus.connect();
-  bus.send({ ...envelope, version: ENVELOPE_VERSION, correlationId });
+  bus.send({ ...envelope, correlationId });
   await done;
 }
 
@@ -369,14 +342,11 @@ function startTool(
   const task = new ToolTask(correlationId, abort, async (current) => {
     const sendCancel = (): void => {
       bus.connect()
-        .then((socket) => {
-          socket.send(
-            JSON.stringify({
-              version: ENVELOPE_VERSION,
-              type: "control.cancel",
-              payload: { correlationId },
-            }),
-          );
+        .then(() => {
+          bus.send({
+            type: "control.cancel",
+            payload: { correlationId },
+          });
         })
         .catch(() => {
           // The fetch abort already covered client-side cancellation.

@@ -31,6 +31,8 @@ internal sealed class Workspace
         }
     }
 
+    internal string RootPath => current.RootPath;
+
     internal WorkspaceSnapshot Use(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);

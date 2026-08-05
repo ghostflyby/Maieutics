@@ -10,4 +10,16 @@ internal static class ReplControlEnvironment
 
     /// <summary>Session id the REPL child belongs to, used by the transport hello handshake.</summary>
     public const string SessionId = "MAIEUTICS_REPL_SESSION";
+
+    /// <summary>Plugin host process identity, used by the plugin host hello handshake.</summary>
+    public const string PluginHostId = "MAIEUTICS_PLUGIN_HOST_ID";
+
+    /// <summary>Path of the kernel-written plugin configuration file.</summary>
+    public const string PluginConfig = "MAIEUTICS_PLUGIN_CONFIG";
+
+    /// <summary>File URL of the materialized plugin SDK module.</summary>
+    public const string PluginSdk = "MAIEUTICS_PLUGIN_SDK";
+
+    /// <summary>File URL of the materialized plugin worker entry module.</summary>
+    public const string PluginWorkerEntry = "MAIEUTICS_PLUGIN_WORKER_ENTRY";
 }

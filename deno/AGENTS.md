@@ -7,6 +7,20 @@
   as the `maieutics` namespace. Domains: unix socket HTTP/WS transport, the versioned message
   bus (`control.*` / `comm.*` / `event.*` / `tool.*`), script tool invocation, comm channels,
   and AbortSignal-based cancellation.
+- `maieutics-plugin-sdk/` — SDK for writing Maieutics script plugins. A plugin is a standard Deno
+  package whose deno.json carries a `maieutics` marker; extension points are identified by
+  versioned `Symbol.for` markers (`maieutics/extensionPoint/v1/...`), and implementations are
+  objects with a `handler` method or callable functions. Domains: extension point markers,
+  per-extension-point context and result types, `defineExtensionPoint`, discovery descriptors.
+- `maieutics-plugin-host/` — Out-of-process plugin host. The kernel spawns this process with a
+  plugin configuration file and control channel address; it creates one permission-scoped worker
+  per plugin export subpath, scans workers for extension points, and bridges `extension.*` bus
+  messages between the kernel and the workers. Domains: worker lifecycle, permission grant
+  mapping (positive grants only), postMessage invoke protocol, crash/restart policy.
+- `shared/` — Control channel wire contract used by `maieutics-repl-client` and
+  `maieutics-plugin-host` only. `protocol.ts` carries the versioned envelope and version
+  constant; `bus.ts` opens the `/ws` connection, sends the hello handshake, and dispatches
+  envelopes. The plugin SDK must stay self-contained and must not import `shared/`.
 - Future Deno modules (for example out-of-process extensions and hooks from ADR 0004) live here
   as separate submodules with their own `deno.json`.
 

@@ -37,6 +37,20 @@
     <ItemGroup>
         <EmbeddedResource Include="..\deno\maieutics-repl-client\mod.ts"
                           LogicalName="Maieutics.Deno.ReplClient.ts"/>
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts"
+                          LogicalName="Maieutics.Deno.PluginSdk.ts"/>
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\mod.ts"
+                          LogicalName="Maieutics.Deno.PluginHost.ts"/>
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\host.ts"
+                          LogicalName="Maieutics.Deno.PluginHostImpl.ts"/>
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\worker_entry.ts"
+                          LogicalName="Maieutics.Deno.PluginHostWorker.ts"/>
+        <EmbeddedResource Include="..\deno\shared\protocol.ts"
+                          LogicalName="Maieutics.Deno.Shared.Protocol.ts"/>
+        <EmbeddedResource Include="..\deno\shared\bus.ts"
+                          LogicalName="Maieutics.Deno.Shared.Bus.ts"/>
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json"
+                          LogicalName="Maieutics.Deno.PluginSdkConfig.json"/>
     </ItemGroup>
 
     <ItemGroup>

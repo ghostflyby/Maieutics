@@ -11,6 +11,15 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(BusErrorPayload))]
 [JsonSerializable(typeof(BusAckPayload))]
 [JsonSerializable(typeof(ToolProgressPayload))]
+[JsonSerializable(typeof(PluginHelloPayload))]
+[JsonSerializable(typeof(ExtensionInvokePayload))]
+[JsonSerializable(typeof(ExtensionResultPayload))]
+[JsonSerializable(typeof(ExtensionErrorPayload))]
+[JsonSerializable(typeof(ExtensionRegistryPayload))]
+[JsonSerializable(typeof(ToolHookContextPayload))]
+[JsonSerializable(typeof(ToolPostHookContextPayload))]
+[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
+[JsonSerializable(typeof(DiscoverContextPayload))]
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 /// <summary>Versioned script tool invocation request carried by the control channel.</summary>
@@ -45,10 +54,24 @@ internal static class ReplMessageType
     public const string CommClose = "comm.close";
     public const string CommAck = "comm.ack";
     public const string ToolProgress = "tool.progress";
+    public const string ExtensionInvoke = "extension.invoke";
+    public const string ExtensionResult = "extension.result";
+    public const string ExtensionError = "extension.error";
+    public const string ExtensionRegistry = "extension.registry";
     public const string Error = "error";
 }
 
+internal static class ReplExtensionPointName
+{
+    public const string McpDiscover = "McpDiscover";
+    public const string ToolPreInvoke = "ToolPreInvoke";
+    public const string ToolPostInvoke = "ToolPostInvoke";
+}
+
 internal sealed record BusCancelPayload(string CorrelationId);
+
+/// <summary>Plugin host hello handshake payload, used in place of a session id.</summary>
+internal sealed record PluginHelloPayload(string HostId);
 
 internal sealed record BusCommPayload(
     string CommId,
@@ -77,3 +100,41 @@ internal sealed class ReplToolProgress(Func<ToolProgressPayload, CancellationTok
     public ValueTask ReportAsync(ToolProgressPayload progress, CancellationToken cancellationToken) =>
         report(progress, cancellationToken);
 }
+
+/// <summary>Kernel-to-host request to invoke one extension point on one plugin worker.</summary>
+internal sealed record ExtensionInvokePayload(
+    string PluginId,
+    string ExportName,
+    string ExtensionPoint,
+    JsonElement? Request = null);
+
+/// <summary>Host-to-kernel response carrying the extension point result.</summary>
+internal sealed record ExtensionResultPayload(JsonElement? Value = null);
+
+/// <summary>Host-to-kernel typed failure for an extension point call.</summary>
+internal sealed record ExtensionErrorPayload(string Code, string Message);
+
+/// <summary>Host-to-kernel registry snapshot of scanned extension points per worker.</summary>
+internal sealed record ExtensionRegistryPayload(IReadOnlyList<ExtensionRegistryPlugin> Plugins);
+
+internal sealed record ExtensionRegistryPlugin(
+    string PluginId,
+    string ExportName,
+    IReadOnlyList<string> ExtensionPoints);
+
+/// <summary>Context passed to a plugin's pre-invoke hook.</summary>
+internal sealed record ToolHookContextPayload(
+    string Tool,
+    JsonElement Arguments,
+    string CallId);
+
+/// <summary>Context passed to a plugin's post-invoke hook; observation only.</summary>
+internal sealed record ToolPostHookContextPayload(
+    string Tool,
+    JsonElement Arguments,
+    string CallId,
+    string Status,
+    JsonElement? Result = null);
+
+/// <summary>Context passed to a plugin's MCP discovery extension point.</summary>
+internal sealed record DiscoverContextPayload(string Reason);

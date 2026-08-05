@@ -3,12 +3,14 @@ using System.Collections.Concurrent;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Maps live Deno REPL child process ids to the owning REPL session id so the process-wide
-/// control channel can attribute requests to a session.
+/// Maps live Deno child process ids to their identity: the owning REPL session id for REPL
+/// children, or the plugin host id for out-of-process plugin hosts. The process-wide control
+/// channel attributes requests to either kind through peer process identity.
 /// </summary>
 internal sealed class ReplControlSessionRegistry
 {
     private readonly ConcurrentDictionary<int, string> sessions = new();
+    private readonly ConcurrentDictionary<int, string> pluginHosts = new();
 
     public void Register(int processId, string sessionId)
     {
@@ -43,5 +45,35 @@ internal sealed class ReplControlSessionRegistry
     public bool ContainsSession(string sessionId)
     {
         return sessions.Values.Contains(sessionId, StringComparer.Ordinal);
+    }
+
+    public void RegisterPluginHost(int processId, string hostId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
+        pluginHosts[processId] = hostId;
+    }
+
+    public void UnregisterPluginHost(int processId)
+    {
+        pluginHosts.TryRemove(processId, out _);
+    }
+
+    public bool TryGetPluginHost(int processId, out string hostId)
+    {
+        if (pluginHosts.TryGetValue(processId, out var value))
+        {
+            hostId = value;
+            return true;
+        }
+
+        hostId = string.Empty;
+        return false;
+    }
+
+    public bool IsPluginHostOwnedBy(int processId, string hostId)
+    {
+        return pluginHosts.TryGetValue(processId, out var owned) &&
+               string.Equals(owned, hostId, StringComparison.Ordinal);
     }
 }

@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using System.Buffers;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Maieutics.Agent;
+using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
@@ -26,6 +28,7 @@ internal sealed class ReplControlHost : IDisposable
     private readonly ReplControlSessionRegistry registry;
     private readonly ILogger<ReplControlHost> logger;
     private readonly IReadOnlyList<AIFunction> scriptTools;
+    private readonly PluginHostManager? pluginHosts;
     private readonly ConcurrentDictionary<string, WebSocket> connections = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> comms =
@@ -37,13 +40,15 @@ internal sealed class ReplControlHost : IDisposable
         string socketPath,
         ReplControlSessionRegistry registry,
         ILogger<ReplControlHost> logger,
-        IReadOnlyList<AIFunction>? scriptTools = null)
+        IReadOnlyList<AIFunction>? scriptTools = null,
+        PluginHostManager? pluginHosts = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
         this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.scriptTools = scriptTools ?? [];
+        this.pluginHosts = pluginHosts;
     }
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
@@ -99,7 +104,8 @@ internal sealed class ReplControlHost : IDisposable
 
         if (peerProcessId > 0)
         {
-            return registry.TryGetSession(peerProcessId, out _);
+            return registry.TryGetSession(peerProcessId, out _) ||
+                   registry.TryGetPluginHost(peerProcessId, out _);
         }
 
         return peerUserId > 0 && peerUserId == PeerProcessCredentials.GetCurrentUserId();
@@ -120,18 +126,38 @@ internal sealed class ReplControlHost : IDisposable
 
         var peerProcessId = ResolvePeerProcessId(context);
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-        var sessionId = await ReceiveHelloAsync(socket, peerProcessId, context.RequestAborted).ConfigureAwait(false);
-        if (sessionId is null)
+        var identity = await ReceiveHelloAsync(socket, peerProcessId, context.RequestAborted).ConfigureAwait(false);
+        if (identity is null)
         {
             await socket
                 .CloseAsync(
                     WebSocketCloseStatus.PolicyViolation,
-                    "session not established",
+                    "identity not established",
                     context.RequestAborted)
                 .ConfigureAwait(false);
             return;
         }
 
+        if (identity.Kind == "host")
+        {
+            if (pluginHosts is not null)
+            {
+                await pluginHosts.AttachHostAsync(socket, context.RequestAborted).ConfigureAwait(false);
+            }
+            else
+            {
+                await socket
+                    .CloseAsync(
+                        WebSocketCloseStatus.PolicyViolation,
+                        "plugin host support is not enabled",
+                        context.RequestAborted)
+                    .ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        var sessionId = identity.Id;
         if (connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
         {
             await previous
@@ -196,7 +222,9 @@ internal sealed class ReplControlHost : IDisposable
         return registry.ContainsSession(sessionId) ? sessionId : null;
     }
 
-    private async Task<string?> ReceiveHelloAsync(WebSocket socket, int peerProcessId, CancellationToken ct)
+    private sealed record HelloIdentity(string Kind, string Id);
+
+    private async Task<HelloIdentity?> ReceiveHelloAsync(WebSocket socket, int peerProcessId, CancellationToken ct)
     {
         var text = await ReadTextMessageAsync(socket, ct).ConfigureAwait(false);
         if (text is null)
@@ -216,8 +244,24 @@ internal sealed class ReplControlHost : IDisposable
 
         if (envelope.Version != EnvelopeVersion ||
             envelope.Type != ReplMessageType.ControlHello ||
-            envelope.Payload is not { } payload ||
-            !payload.TryGetProperty("sessionId", out var session) ||
+            envelope.Payload is not { } payload)
+        {
+            return null;
+        }
+
+        if (payload.TryGetProperty("hostId", out var host) &&
+            !string.IsNullOrWhiteSpace(host.GetString()))
+        {
+            var hostId = host.GetString()!;
+            if (peerProcessId > 0 && registry.IsPluginHostOwnedBy(peerProcessId, hostId))
+            {
+                return new HelloIdentity("host", hostId);
+            }
+
+            return null;
+        }
+
+        if (!payload.TryGetProperty("sessionId", out var session) ||
             string.IsNullOrWhiteSpace(session.GetString()))
         {
             return null;
@@ -226,10 +270,10 @@ internal sealed class ReplControlHost : IDisposable
         var sessionId = session.GetString()!;
         if (peerProcessId > 0)
         {
-            return registry.IsOwnedBy(peerProcessId, sessionId) ? sessionId : null;
+            return registry.IsOwnedBy(peerProcessId, sessionId) ? new HelloIdentity("session", sessionId) : null;
         }
 
-        return registry.ContainsSession(sessionId) ? sessionId : null;
+        return registry.ContainsSession(sessionId) ? new HelloIdentity("session", sessionId) : null;
     }
 
     private async Task HandleBusMessageAsync(string sessionId, string text, CancellationToken ct)
@@ -425,7 +469,8 @@ internal sealed class ReplControlHost : IDisposable
 
     private static async Task<string?> ReadTextMessageAsync(WebSocket socket, CancellationToken ct)
     {
-        var buffer = new byte[WebSocketBufferSize];
+        using var rented = MemoryPool<byte>.Shared.Rent(WebSocketBufferSize);
+        var buffer = rented.Memory;
         using var stream = new MemoryStream();
         while (true)
         {
@@ -438,12 +483,7 @@ internal sealed class ReplControlHost : IDisposable
                 return null;
             }
 
-            if (result.MessageType == WebSocketMessageType.Binary)
-            {
-                continue;
-            }
-
-            stream.Write(buffer, 0, result.Count);
+            stream.Write(buffer.Span[..result.Count]);
             if (result.EndOfMessage)
             {
                 break;
@@ -490,22 +530,9 @@ internal sealed class ReplControlHost : IDisposable
 
         var correlationId = request.CorrelationId;
         var sessionId = ResolveRequestSessionId(context, request.SessionId);
-        var arguments = new AIFunctionArguments(request.Arguments.EnumerateObject().ToDictionary(
+        var argumentValues = request.Arguments.EnumerateObject().ToDictionary(
             static property => property.Name,
-            static property => (object?)property.Value.Clone()));
-        if (sessionId is not null && !string.IsNullOrWhiteSpace(correlationId))
-        {
-            arguments.Context ??= new Dictionary<object, object?>();
-            arguments.Context[typeof(ReplToolProgress)] = new ReplToolProgress((progress, ct) => new ValueTask(
-                PushAsync(
-                    sessionId,
-                    new ReplEnvelope(
-                        EnvelopeVersion,
-                        ReplMessageType.ToolProgress,
-                        correlationId,
-                        Payload(progress)),
-                    ct)));
-        }
+            static property => (object?)property.Value.Clone());
 
         using var operation = new CancellationTokenSource();
         var invokeToken = cancellationToken;
@@ -529,6 +556,23 @@ internal sealed class ReplControlHost : IDisposable
         JsonElement envelope;
         try
         {
+            argumentValues = await RunPreHooksAsync(request.Tool, argumentValues, correlationId, invokeToken)
+                .ConfigureAwait(false);
+            var arguments = new AIFunctionArguments(argumentValues);
+            if (sessionId is not null && !string.IsNullOrWhiteSpace(correlationId))
+            {
+                arguments.Context ??= new Dictionary<object, object?>();
+                arguments.Context[typeof(ReplToolProgress)] = new ReplToolProgress((progress, ct) => new ValueTask(
+                    PushAsync(
+                        sessionId,
+                        new ReplEnvelope(
+                            EnvelopeVersion,
+                            ReplMessageType.ToolProgress,
+                            correlationId,
+                            Payload(progress)),
+                        ct)));
+            }
+
             var result = await function.InvokeAsync(arguments, invokeToken).ConfigureAwait(false);
             envelope = result switch
             {
@@ -565,7 +609,191 @@ internal sealed class ReplControlHost : IDisposable
             }
         }
 
+        await RunPostHooksAsync(request.Tool, argumentValues, correlationId, envelope, cancellationToken)
+            .ConfigureAwait(false);
         await WriteEnvelopeAsync(context, envelope, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the pre-invoke hook chain. Hooks may reject the call or replace the arguments;
+    /// failures fail the call rather than silently changing behavior.
+    /// </summary>
+    private async Task<Dictionary<string, object?>> RunPreHooksAsync(
+        string tool,
+        Dictionary<string, object?> arguments,
+        string? correlationId,
+        CancellationToken cancellationToken)
+    {
+        var registrations = pluginHosts?.GetRegistrations(ReplExtensionPointName.ToolPreInvoke) ?? [];
+        var current = arguments;
+        foreach (var registration in registrations)
+        {
+            var context = new ToolHookContextPayload(tool, SerializeArguments(current), correlationId ?? string.Empty);
+            var outcome = await pluginHosts
+                .InvokeExtensionPointAsync(
+                    registration.PluginId,
+                    registration.ExportName,
+                    ReplExtensionPointName.ToolPreInvoke,
+                    JsonSerializer.SerializeToElement(context, ReplControlJsonContext.Default.ToolHookContextPayload),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (outcome.IsError)
+            {
+                throw new AgentToolException(
+                    "tool_hook_failed",
+                    $"A pre-invoke hook failed: {outcome.Message}");
+            }
+
+            var (action, replaced, code, message) = ParseHookDecision(outcome.Value);
+            switch (action)
+            {
+                case "reject":
+                    throw new AgentToolException(code, message);
+                case "replace":
+                    if (replaced is { } replacement)
+                    {
+                        current = DeserializeArguments(replacement);
+                    }
+                    break;
+                case "continue":
+                    break;
+                default:
+                    throw new AgentToolException(
+                        "tool_hook_invalid",
+                        $"A pre-invoke hook returned an unknown decision '{action}'.");
+            }
+        }
+
+        return current;
+    }
+
+    private async Task RunPostHooksAsync(
+        string tool,
+        Dictionary<string, object?> arguments,
+        string? correlationId,
+        JsonElement envelope,
+        CancellationToken cancellationToken)
+    {
+        var registrations = pluginHosts?.GetRegistrations(ReplExtensionPointName.ToolPostInvoke) ?? [];
+        if (registrations.Count == 0)
+        {
+            return;
+        }
+
+        var status = ResolvePostStatus(envelope);
+        var result = ResolvePostResult(envelope);
+        foreach (var registration in registrations)
+        {
+            try
+            {
+                var context = new ToolPostHookContextPayload(
+                    tool,
+                    SerializeArguments(arguments),
+                    correlationId ?? string.Empty,
+                    status,
+                    result);
+                _ = await pluginHosts
+                    .InvokeExtensionPointAsync(
+                        registration.PluginId,
+                        registration.ExportName,
+                        ReplExtensionPointName.ToolPostInvoke,
+                        JsonSerializer.SerializeToElement(
+                            context,
+                            ReplControlJsonContext.Default.ToolPostHookContextPayload),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "A post-invoke hook failed for tool '{Tool}'.", tool);
+            }
+        }
+    }
+
+    private static (string Action, JsonElement? Arguments, string Code, string Message) ParseHookDecision(
+        JsonElement? value)
+    {
+        if (value is not { ValueKind: JsonValueKind.Object } decision ||
+            !decision.TryGetProperty("action", out var action) ||
+            action.ValueKind != JsonValueKind.String)
+        {
+            return ("invalid", null, "tool_hook_invalid", "A hook returned a non-object decision.");
+        }
+
+        var actionValue = action.GetString()!;
+        JsonElement? arguments = null;
+        if (decision.TryGetProperty("arguments", out var replaced) && replaced.ValueKind == JsonValueKind.Object)
+        {
+            arguments = replaced;
+        }
+
+        var code = "tool_hook_rejected";
+        var message = "A hook rejected the tool call.";
+        if (decision.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+        {
+            if (error.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String)
+            {
+                code = codeValue.GetString()!;
+            }
+
+            if (error.TryGetProperty("message", out var messageValue) && messageValue.ValueKind == JsonValueKind.String)
+            {
+                message = messageValue.GetString()!;
+            }
+        }
+
+        return (actionValue, arguments, code, message);
+    }
+
+    private static JsonElement SerializeArguments(IReadOnlyDictionary<string, object?> arguments)
+    {
+        var copy = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var pair in arguments)
+        {
+            if (pair.Value is JsonElement element)
+            {
+                copy[pair.Key] = element.Clone();
+            }
+        }
+
+        return JsonSerializer.SerializeToElement(copy, ReplControlJsonContext.Default.DictionaryStringJsonElement);
+    }
+
+    private static Dictionary<string, object?> DeserializeArguments(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object)
+        {
+            return new Dictionary<string, object?>(StringComparer.Ordinal);
+        }
+
+        return arguments.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone());
+    }
+
+    private static string ResolvePostStatus(JsonElement envelope)
+    {
+        if (!envelope.TryGetProperty("status", out var status) || status.ValueKind != JsonValueKind.String)
+        {
+            return "error";
+        }
+
+        return status.GetString() switch
+        {
+            "ok" => "ok",
+            "cancelled" => "cancelled",
+            _ => "error"
+        };
+    }
+
+    private static JsonElement? ResolvePostResult(JsonElement envelope)
+    {
+        if (!envelope.TryGetProperty("value", out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return value.Clone();
     }
 
     private static async Task WriteEnvelopeAsync(

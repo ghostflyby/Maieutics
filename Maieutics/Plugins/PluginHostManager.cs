@@ -1,0 +1,794 @@
+using System.Collections.Concurrent;
+using System.Buffers;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using Maieutics.Control;
+using Maieutics.Execution;
+using Maieutics.Mcp;
+using Microsoft.Extensions.Logging;
+
+namespace Maieutics.Plugins;
+
+internal sealed record PluginRegistration(string PluginId, string ExportName, string ExtensionPoint);
+
+internal readonly record struct ExtensionCallOutcome(
+    bool IsError,
+    JsonElement? Value,
+    string Code,
+    string Message)
+{
+    public static ExtensionCallOutcome Result(JsonElement? value) => new(false, value, string.Empty, string.Empty);
+
+    public static ExtensionCallOutcome Error(string code, string message) => new(true, null, code, message);
+}
+
+/// <summary>
+/// Owns plugin discovery, the plugin host process, its control-channel WebSocket connection, and
+/// extension point invocation routing. REPL connections stay in <see cref="ReplControlHost"/>;
+/// host connections are attached here so the kernel can call into plugin workers without a
+/// reverse dependency.
+/// </summary>
+internal sealed class PluginHostManager : IAsyncDisposable
+{
+    private const int EnvelopeVersion = 1;
+    private const int WebSocketBufferSize = 256 * 1024;
+    private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
+
+    private readonly string pluginsRoot;
+    private readonly DenoReplOptions denoOptions;
+    private readonly PluginHostModule modules;
+    private readonly ReplControlSessionRegistry sessionRegistry;
+    private readonly ILogger<PluginHostManager> logger;
+    private readonly string socketPath;
+    private readonly string hostId;
+    private readonly ILoggerFactory loggerFactory;
+    private readonly TimeProvider timeProvider;
+    private readonly Lock gate = new();
+    private readonly List<PluginDescriptor> descriptors = [];
+    private readonly List<PluginRegistration> registrations = [];
+    private readonly List<McpServerDefinition> dynamicDefinitions = [];
+    private readonly ConcurrentDictionary<string, McpServerGeneration> dynamicMcp = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pending =
+        new(StringComparer.Ordinal);
+
+    private PluginHostProcess? process;
+    private WebSocket? socket;
+    private string? configPath;
+    private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
+
+    public PluginHostManager(
+        string pluginsRoot,
+        string socketPath,
+        DenoReplOptions denoOptions,
+        PluginHostModule modules,
+        ReplControlSessionRegistry sessionRegistry,
+        ILogger<PluginHostManager> logger,
+        ILoggerFactory loggerFactory,
+        TimeProvider timeProvider)
+    {
+        this.pluginsRoot = pluginsRoot;
+        this.socketPath = socketPath;
+        this.denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
+        this.modules = modules ?? throw new ArgumentNullException(nameof(modules));
+        this.sessionRegistry = sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        hostId = $"host-{Guid.NewGuid():N}"[..12];
+    }
+
+    public string HostId => hostId;
+
+    public void SetReservedToolNames(IReadOnlySet<string> names)
+    {
+        ArgumentNullException.ThrowIfNull(names);
+        reservedToolNames = names;
+    }
+
+    public IReadOnlyList<PluginRegistration> GetRegistrations(string extensionPoint)
+    {
+        lock (gate)
+        {
+            return registrations
+                .Where(registration => registration.ExtensionPoint == extensionPoint)
+                .ToArray();
+        }
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        lock (gate)
+        {
+            descriptors.Clear();
+            descriptors.AddRange(ScanPlugins());
+        }
+
+        if (descriptors.Count == 0)
+        {
+            logger.LogInformation("No Maieutics plugins found under '{PluginsRoot}'.", pluginsRoot);
+            return;
+        }
+
+        configPath = WriteConfigFile(descriptors);
+        process = PluginHostProcess.Start(
+            new PluginHostProcessOptions(
+                denoOptions.Executable,
+                modules.HostUrl,
+                socketPath,
+                configPath,
+                hostId,
+                modules.SdkUrl,
+                modules.WorkerEntryUrl,
+                modules.ConfigFile,
+                BuildProcessGrants(configPath)),
+            logger);
+        sessionRegistry.RegisterPluginHost(process.ProcessId, hostId);
+        _ = ObserveExitAsync(process, configPath);
+    }
+
+    public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
+        string pluginId,
+        string exportName,
+        string extensionPoint,
+        JsonElement? request,
+        CancellationToken cancellationToken)
+    {
+        var socket = GetSocket();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pending[correlationId] = tcs;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(InvokeTimeout);
+        try
+        {
+            using var registration = timeout.Token.Register(
+                static (state) => ((TaskCompletionSource<ExtensionCallOutcome>)state!).TrySetCanceled(),
+                tcs);
+            var payload = new ExtensionInvokePayload(pluginId, exportName, extensionPoint, request);
+            await PushAsync(
+                socket,
+                new ReplEnvelope(
+                    EnvelopeVersion,
+                    ReplMessageType.ExtensionInvoke,
+                    correlationId,
+                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.ExtensionInvokePayload)),
+                timeout.Token).ConfigureAwait(false);
+            return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            pending.TryRemove(correlationId, out _);
+        }
+    }
+
+    /// <summary>Acquires leases for plugin-discovered MCP servers that are ready.</summary>
+    public IReadOnlyList<McpServerGeneration.McpServerLease> AcquireDynamicMcpLeases()
+    {
+        var leases = new List<McpServerGeneration.McpServerLease>();
+        foreach (var generation in dynamicMcp.Values)
+        {
+            if (generation.TryAcquire() is { } lease)
+            {
+                leases.Add(lease);
+            }
+        }
+
+        return leases;
+    }
+
+    /// <summary>Runs the receive loop for a plugin host WebSocket attached by the control host.</summary>
+    public async Task AttachHostAsync(WebSocket socket, CancellationToken cancellationToken)
+    {
+        lock (gate)
+        {
+            this.socket = socket;
+        }
+
+        try
+        {
+            while (socket.State == WebSocketState.Open)
+            {
+                var text = await ReadTextMessageAsync(socket, cancellationToken).ConfigureAwait(false);
+                if (text is null)
+                {
+                    break;
+                }
+
+                HandleHostMessage(text);
+            }
+        }
+        finally
+        {
+            lock (gate)
+            {
+                if (ReferenceEquals(socket, this.socket))
+                {
+                    this.socket = null;
+                }
+            }
+
+            FailPending("The plugin host connection closed.");
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return new ValueTask(StopAsync());
+    }
+
+    private async Task StopAsync()
+    {
+        if (process is not null)
+        {
+            sessionRegistry.UnregisterPluginHost(process.ProcessId);
+            await process.StopAsync().ConfigureAwait(false);
+        }
+
+        if (configPath is not null)
+        {
+            try
+            {
+                File.Delete(configPath);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup must not mask shutdown.
+            }
+        }
+    }
+
+    private async Task ObserveExitAsync(PluginHostProcess pluginProcess, string path)
+    {
+        try
+        {
+            await pluginProcess.Completion.ConfigureAwait(false);
+            logger.LogWarning(
+                "Plugin host exited with code {ExitCode} (pid {ProcessId}).",
+                pluginProcess.ExitCode ?? -1,
+                pluginProcess.ProcessId);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Plugin host exit observation failed for pid {ProcessId}.", pluginProcess.ProcessId);
+        }
+        finally
+        {
+            sessionRegistry.UnregisterPluginHost(pluginProcess.ProcessId);
+            try
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup.
+            }
+        }
+    }
+
+    private IReadOnlyList<PluginDescriptor> ScanPlugins()
+    {
+        if (!Directory.Exists(pluginsRoot))
+        {
+            return [];
+        }
+
+        var result = new List<PluginDescriptor>();
+        foreach (var directory in Directory.EnumerateDirectories(pluginsRoot))
+        {
+            if (PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            {
+                if (!RequiresProcessIsolation(descriptor))
+                {
+                    result.Add(descriptor);
+                    logger.LogInformation(
+                        "Discovered Maieutics plugin '{PluginName}' with {WorkerCount} extension carrier(s).",
+                        descriptor.Name,
+                        descriptor.Workers.Count);
+                    continue;
+                }
+
+                logger.LogWarning(
+                    "Plugin '{Directory}' requires process isolation (run/ffi or isolation=process), " +
+                    "which is not implemented yet; it is disabled.",
+                    Path.GetFileName(directory));
+            }
+            else if (error.Contains("is not a Maieutics plugin", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            else
+            {
+                logger.LogWarning("Skipping plugin directory '{Directory}': {Error}", directory, error);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool RequiresProcessIsolation(PluginDescriptor descriptor) =>
+        string.Equals(descriptor.Isolation, "process", StringComparison.OrdinalIgnoreCase) ||
+        descriptor.Permissions.Run.AllowAll || descriptor.Permissions.Run.Values.Count > 0 ||
+        descriptor.Permissions.Ffi.AllowAll || descriptor.Permissions.Ffi.Values.Count > 0;
+
+    private static string WriteConfigFile(IReadOnlyList<PluginDescriptor> plugins)
+    {
+        var config = new PluginHostConfigFile(
+            plugins.Select(descriptor => new PluginHostConfigPlugin(
+                descriptor.Id,
+                descriptor.RootDirectory,
+                descriptor.Workers
+                    .Select(worker => new PluginHostConfigWorker(worker.ExportName, worker.EntryUrl))
+                    .ToArray(),
+                ToConfigPermissions(descriptor.Permissions))).ToArray());
+        var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
+        var path = Path.Combine(Path.GetTempPath(), $"mc-plugins-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, json);
+        return path;
+    }
+
+    private static PluginHostConfigPermissions ToConfigPermissions(PluginPermissionGrants permissions) => new(
+        ToGrant(permissions.Env),
+        ToGrant(permissions.Net),
+        ToGrant(permissions.Read),
+        ToGrant(permissions.Write),
+        ToGrant(permissions.Run),
+        ToGrant(permissions.Ffi),
+        ToGrant(permissions.Sys),
+        ToGrant(permissions.Import));
+
+    private static JsonElement ToGrant(PluginPermissionGrant grant) =>
+        grant.AllowAll
+            ? JsonSerializer.SerializeToElement(true)
+            : JsonSerializer.SerializeToElement(grant.Values.ToArray());
+
+    private PluginHostProcessGrants BuildProcessGrants(string configPath)
+    {
+        PluginDescriptor[] plugins;
+        lock (gate)
+        {
+            plugins = descriptors.ToArray();
+        }
+
+        var read = new List<string> { configPath, modules.ModuleDirectory, socketPath };
+        var write = new List<string> { socketPath };
+        var net = new List<string> { "localhost", $"unix:{socketPath}" };
+        var env = new List<string>();
+        var imports = new List<string>();
+        var readAll = false;
+        var writeAll = false;
+        var netAll = false;
+        var envAll = false;
+        var importAll = false;
+        foreach (var plugin in plugins)
+        {
+            read.Add(plugin.RootDirectory);
+            Merge(plugin.Permissions.Read, read, ref readAll);
+            Merge(plugin.Permissions.Write, write, ref writeAll);
+            Merge(plugin.Permissions.Net, net, ref netAll);
+            Merge(plugin.Permissions.Env, env, ref envAll);
+            Merge(plugin.Permissions.Import, imports, ref importAll);
+        }
+
+        env.AddRange(ReplControlEnvironmentNames());
+        return new PluginHostProcessGrants(
+            readAll,
+            read,
+            writeAll,
+            write,
+            netAll,
+            net,
+            envAll,
+            env,
+            importAll,
+            imports);
+    }
+
+    private static void Merge(
+        PluginPermissionGrant grant,
+        ICollection<string> target,
+        ref bool allowAll)
+    {
+        if (grant.AllowAll)
+        {
+            allowAll = true;
+            return;
+        }
+
+        foreach (var value in grant.Values)
+        {
+            target.Add(value);
+        }
+    }
+
+    private static IEnumerable<string> ReplControlEnvironmentNames()
+    {
+        yield return ReplControlEnvironment.IpcAddress;
+        yield return ReplControlEnvironment.PluginHostId;
+        yield return ReplControlEnvironment.PluginConfig;
+        yield return ReplControlEnvironment.PluginSdk;
+        yield return ReplControlEnvironment.PluginWorkerEntry;
+    }
+
+    private void HandleHostMessage(string text)
+    {
+        ReplEnvelope envelope;
+        try
+        {
+            envelope = JsonSerializer.Deserialize(text, ReplControlJsonContext.Default.ReplEnvelope)
+                ?? throw new JsonException("The envelope is null.");
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+
+        switch (envelope.Type)
+        {
+            case ReplMessageType.ExtensionResult:
+            case ReplMessageType.ExtensionError:
+                CompletePending(envelope);
+                break;
+            case ReplMessageType.ExtensionRegistry:
+                UpdateRegistry(ParsePayload<ExtensionRegistryPayload>(envelope));
+                break;
+        }
+    }
+
+    private void CompletePending(ReplEnvelope envelope)
+    {
+        if (envelope.CorrelationId is not { } correlationId ||
+            !pending.TryRemove(correlationId, out var completion))
+        {
+            return;
+        }
+
+        if (envelope.Type == ReplMessageType.ExtensionResult)
+        {
+            var payload = ParsePayload<ExtensionResultPayload>(envelope);
+            completion.TrySetResult(ExtensionCallOutcome.Result(payload?.Value));
+            return;
+        }
+
+        var error = ParsePayload<ExtensionErrorPayload>(envelope);
+        completion.TrySetResult(
+            ExtensionCallOutcome.Error(error?.Code ?? "extension_failed", error?.Message ?? "the extension failed"));
+    }
+
+    private void UpdateRegistry(ExtensionRegistryPayload? payload)
+    {
+        if (payload is null)
+        {
+            return;
+        }
+
+        lock (gate)
+        {
+            registrations.Clear();
+            foreach (var plugin in payload.Plugins)
+            {
+                foreach (var extensionPoint in plugin.ExtensionPoints)
+                {
+                    registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+                }
+            }
+
+            logger.LogInformation(
+                "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
+                registrations.Count,
+                payload.Plugins.Count);
+        }
+
+        _ = RefreshDynamicMcpAsync();
+    }
+
+    private async Task RefreshDynamicMcpAsync()
+    {
+        var discoveries = GetRegistrations(ReplExtensionPointName.McpDiscover);
+        if (discoveries.Count == 0)
+        {
+            return;
+        }
+
+        var definitions = new List<McpServerDefinition>();
+        foreach (var registration in discoveries)
+        {
+            try
+            {
+                var request = JsonSerializer.SerializeToElement(
+                    new DiscoverContextPayload("startup"),
+                    ReplControlJsonContext.Default.DiscoverContextPayload);
+                var outcome = await InvokeExtensionPointAsync(
+                    registration.PluginId,
+                    registration.ExportName,
+                    ReplExtensionPointName.McpDiscover,
+                    request,
+                    CancellationToken.None).ConfigureAwait(false);
+                if (outcome.IsError)
+                {
+                    logger.LogWarning(
+                        "Plugin '{PluginId}' MCP discovery failed: {Message}",
+                        registration.PluginId,
+                        outcome.Message);
+                    continue;
+                }
+
+                if (outcome.Value is not { ValueKind: JsonValueKind.Array } array)
+                {
+                    continue;
+                }
+
+                foreach (var item in array.EnumerateArray())
+                {
+                    if (TryToMcpDefinition(registration.PluginId, item, out var definition))
+                    {
+                        definitions.Add(definition);
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Plugin '{PluginId}' MCP discovery raised an unexpected failure.",
+                    registration.PluginId);
+            }
+        }
+
+        lock (gate)
+        {
+            dynamicDefinitions.Clear();
+            dynamicDefinitions.AddRange(definitions.DistinctBy(static definition => definition.Id));
+        }
+
+        await RefreshDynamicGenerationsAsync().ConfigureAwait(false);
+    }
+
+    private async Task RefreshDynamicGenerationsAsync()
+    {
+        McpServerDefinition[] definitions;
+        lock (gate)
+        {
+            definitions = dynamicDefinitions.ToArray();
+        }
+
+        foreach (var definition in definitions)
+        {
+            if (dynamicMcp.ContainsKey(definition.Id))
+            {
+                continue;
+            }
+
+            try
+            {
+                var generation = await McpServerGeneration.CreateAsync(
+                    definition,
+                    loggerFactory,
+                    timeProvider,
+                    CancellationToken.None,
+                    transportFactory: null,
+                    reservedToolNames).ConfigureAwait(false);
+                if (!dynamicMcp.TryAdd(definition.Id, generation))
+                {
+                    await generation.Retire().ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Plugin-discovered MCP server '{ServerId}' could not be started.",
+                    definition.Id);
+            }
+        }
+    }
+
+    private static bool TryToMcpDefinition(
+        string pluginId,
+        JsonElement discovery,
+        out McpServerDefinition definition)
+    {
+        definition = null!;
+        if (discovery.ValueKind != JsonValueKind.Object ||
+            !discovery.TryGetProperty("module", out var module) ||
+            module.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(module.GetString()) ||
+            !discovery.TryGetProperty("transport", out var transport) ||
+            transport.ValueKind != JsonValueKind.Object ||
+            !transport.TryGetProperty("type", out var type) ||
+            type.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var id = $"plugin:{pluginId}::{module.GetString()}";
+        var transportKind = type.GetString();
+        if (string.Equals(transportKind, "stdio", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!transport.TryGetProperty("command", out var command) ||
+                command.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(command.GetString()))
+            {
+                return false;
+            }
+
+            var args = ReadStringArray(transport, "args");
+            var env = ReadStringMap(transport, "env");
+            definition = new McpServerDefinition(
+                id,
+                McpServerTransportKind.Stdio,
+                command.GetString(),
+                args,
+                WorkingDirectory: null,
+                env,
+                Endpoint: null,
+                new Dictionary<string, string>(),
+                InitializationTimeout: TimeSpan.FromSeconds(30),
+                RequestTimeout: TimeSpan.FromMinutes(2),
+                ShutdownTimeout: TimeSpan.FromSeconds(5),
+                ConnectionTimeout: TimeSpan.FromSeconds(30),
+                McpServerDefinition.CreateGenerationKey(
+                    McpServerTransportKind.Stdio,
+                    command.GetString(),
+                    args,
+                    null,
+                    env,
+                    null,
+                    [],
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromMinutes(2),
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromSeconds(30)));
+            return true;
+        }
+
+        if (string.Equals(transportKind, "http", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!transport.TryGetProperty("url", out var url) ||
+                url.ValueKind != JsonValueKind.String ||
+                !Uri.TryCreate(url.GetString(), UriKind.Absolute, out var endpoint))
+            {
+                return false;
+            }
+
+            var headers = ReadStringMap(transport, "headers")
+                .ToDictionary(static pair => pair.Key, static pair => pair.Value ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+            definition = new McpServerDefinition(
+                id,
+                McpServerTransportKind.Http,
+                Command: null,
+                [],
+                WorkingDirectory: null,
+                new Dictionary<string, string?>(StringComparer.Ordinal),
+                endpoint,
+                headers,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromMinutes(2),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(30),
+                McpServerDefinition.CreateGenerationKey(
+                    McpServerTransportKind.Http,
+                    null,
+                    [],
+                    null,
+                    new Dictionary<string, string?>(StringComparer.Ordinal),
+                    endpoint,
+                    headers,
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromMinutes(2),
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromSeconds(30)));
+            return true;
+        }
+
+        return false;
+    }
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString()!)
+            .ToArray();
+    }
+
+    private static IReadOnlyDictionary<string, string?> ReadStringMap(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+        {
+            return new Dictionary<string, string?>(StringComparer.Ordinal);
+        }
+
+        return value.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString() : null,
+            StringComparer.Ordinal);
+    }
+
+    private void FailPending(string message)
+    {
+        foreach (var completion in pending.Values)
+        {
+            completion.TrySetResult(ExtensionCallOutcome.Error("host_disconnected", message));
+        }
+
+        pending.Clear();
+    }
+
+    private WebSocket GetSocket()
+    {
+        lock (gate)
+        {
+            return socket ?? throw new InvalidOperationException("The plugin host is not connected.");
+        }
+    }
+
+    private static T? ParsePayload<T>(ReplEnvelope envelope)
+        where T : class
+    {
+        if (envelope.Payload is not { } payload)
+        {
+            return null;
+        }
+
+        return (T?)JsonSerializer.Deserialize(payload.GetRawText(), JsonTypeInfoFor<T>());
+    }
+
+    private static JsonTypeInfo JsonTypeInfoFor<T>() => typeof(T) switch
+    {
+        _ when typeof(T) == typeof(ExtensionResultPayload) =>
+            ReplControlJsonContext.Default.ExtensionResultPayload,
+        _ when typeof(T) == typeof(ExtensionErrorPayload) =>
+            ReplControlJsonContext.Default.ExtensionErrorPayload,
+        _ when typeof(T) == typeof(ExtensionRegistryPayload) =>
+            ReplControlJsonContext.Default.ExtensionRegistryPayload,
+        _ => throw new InvalidOperationException($"Unsupported extension payload type '{typeof(T).Name}'.")
+    };
+
+    private async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
+        await socket
+            .SendAsync(
+                Encoding.UTF8.GetBytes(json),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<string?> ReadTextMessageAsync(WebSocket socket, CancellationToken cancellationToken)
+    {
+        using var rented = MemoryPool<byte>.Shared.Rent(WebSocketBufferSize);
+        var buffer = rented.Memory;
+        using var stream = new MemoryStream();
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                return null;
+            }
+
+            if (result.MessageType == WebSocketMessageType.Binary)
+            {
+                continue;
+            }
+
+            stream.Write(buffer.Span[..result.Count]);
+            if (result.EndOfMessage)
+            {
+                break;
+            }
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+}

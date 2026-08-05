@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Jupyter;
 using Maieutics.Mcp;
+using Maieutics.Plugins;
 using Maieutics.Providers;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -29,6 +30,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly McpStartupDirectory startupDirectory;
     private readonly TimeProvider timeProvider;
     private readonly McpClientTransportFactory? mcpTransportFactory;
+    private readonly Func<PluginHostManager>? pluginHostsFactory;
     private readonly Lock gate = new();
     private readonly Lock initializationGate = new();
 
@@ -65,7 +67,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
-        McpClientTransportFactory? mcpTransportFactory = null)
+        McpClientTransportFactory? mcpTransportFactory = null,
+        Func<PluginHostManager>? pluginHostsFactory = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -75,6 +78,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.startupDirectory = startupDirectory ?? throw new ArgumentNullException(nameof(startupDirectory));
         this.mcpTransportFactory = mcpTransportFactory;
+        this.pluginHostsFactory = pluginHostsFactory;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
 
@@ -143,6 +147,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     internal Task InitializeAsync(CancellationToken cancellationToken)
     {
+        pluginHostsFactory?.Invoke().SetReservedToolNames(
+            builtInTools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal));
         lock (initializationGate)
         {
             if (current is not null)
@@ -1450,6 +1456,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
                 mcpLeases.Add(mcpLease);
                 tools.AddRange(mcpLease.Tools);
+            }
+
+            if (pluginHostsFactory?.Invoke() is { } pluginHosts)
+            {
+                var dynamicLeases = pluginHosts.AcquireDynamicMcpLeases();
+                foreach (var lease in dynamicLeases)
+                {
+                    mcpLeases.Add(lease);
+                    tools.AddRange(lease.Tools);
+                }
             }
 
             return new RuntimeProfileLease(

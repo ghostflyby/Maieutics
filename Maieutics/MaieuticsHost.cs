@@ -6,6 +6,7 @@ using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Mcp;
+using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
@@ -126,11 +127,25 @@ public static class MaieuticsHost
                 listenOptions.Protocols = HttpProtocols.Http1;
             });
         });
+        builder.Services.AddSingleton<PluginHostModule>();
+        builder.Services.AddSingleton(services => new PluginHostManager(
+            Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".maieutics", "plugins"),
+            controlSocketPath,
+            services.GetRequiredService<DenoReplOptions>(),
+            services.GetRequiredService<PluginHostModule>(),
+            services.GetRequiredService<ReplControlSessionRegistry>(),
+            services.GetRequiredService<ILogger<PluginHostManager>>(),
+            services.GetRequiredService<ILoggerFactory>(),
+            services.GetRequiredService<TimeProvider>()));
+        builder.Services.AddSingleton<Func<PluginHostManager>>(static services =>
+            services.GetRequiredService<PluginHostManager>);
+        builder.Services.AddHostedService<PluginHostStartupHostedService>();
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<ReplControlHost>>(),
-            services.GetRequiredService<WorkspaceFunctions>().Functions));
+            services.GetRequiredService<WorkspaceFunctions>().Functions,
+            services.GetRequiredService<PluginHostManager>()));
         builder.Services.AddSingleton<ReplClientModule>();
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();
@@ -138,9 +153,10 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(static services =>
             new WorkspaceFunctions(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
-            services.GetRequiredService<WorkspaceFunctions>().Functions
-                .Concat(services.GetRequiredService<DenoReplFunctions>().Functions)
-                .ToArray());
+        [
+            .. services.GetRequiredService<WorkspaceFunctions>().Functions,
+            .. services.GetRequiredService<DenoReplFunctions>().Functions
+        ]);
         builder.Services.AddSingleton(CreateAgentSession);
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();

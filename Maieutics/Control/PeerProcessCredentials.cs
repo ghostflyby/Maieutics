@@ -1,6 +1,6 @@
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace Maieutics.Control;
 
@@ -45,12 +45,12 @@ internal static partial class PeerProcessCredentials
         return GetEuid();
     }
 
-    private static bool TryGetLinuxPeerIdentity(IntPtr socketHandle, out int processId, out uint userId)
+    [SupportedOSPlatform("Linux")]
+    private static unsafe bool TryGetLinuxPeerIdentity(IntPtr socketHandle, out int processId, out uint userId)
     {
         var credential = new UCred();
-        var size = Unsafe.SizeOf<UCred>();
-        if (GetSockOpt(socketHandle, SolSocket, SoPeerCred, ref credential, ref size) != 0 ||
-            size != Unsafe.SizeOf<UCred>())
+        uint size = (uint)sizeof(UCred);
+        if (GetSockOpt(socketHandle, SolSocket, SoPeerCred, ref credential, in size) != 0)
         {
             processId = 0;
             userId = 0;
@@ -62,22 +62,23 @@ internal static partial class PeerProcessCredentials
         return true;
     }
 
+    [SupportedOSPlatform("macOS")]
     private static bool TryGetMacOsPeerIdentity(
         IntPtr socketHandle,
         out int processId,
         out uint userId)
     {
-        // macOS exposes the peer pid through SOL_LOCAL/LOCAL_PEERPID (baseline 10.14).
-        var size = Unsafe.SizeOf<uint>();
-        if (GetSockOptPid(socketHandle, SolLocal, LocalPeerPid, out var peerPid, ref size) != 0 ||
-            size != Unsafe.SizeOf<uint>())
+        // macOS exposes the peer pid through SOL_LOCAL/LOCAL_PEERPID (baseline 10.14);
+        // pid_t is a signed 32-bit type and socklen_t is unsigned.
+        uint size = sizeof(uint);
+        if (GetSockOptPid(socketHandle, SolLocal, LocalPeerPid, out var peerPid, in size) != 0)
         {
             processId = 0;
             userId = 0;
             return false;
         }
 
-        processId = unchecked((int)peerPid);
+        processId = peerPid;
         userId = 0;
         return true;
     }
@@ -95,22 +96,26 @@ internal static partial class PeerProcessCredentials
     private const int SolLocal = 0;
     private const int LocalPeerPid = 0x002;
 
+
+    [SupportedOSPlatform("Linux")]
     [LibraryImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
     private static partial int GetSockOpt(
         IntPtr socket,
         int level,
         int optionName,
         ref UCred optionValue,
-        ref int optionLength);
+        in uint optionLength);
 
+    [SupportedOSPlatform("macOS")]
     [LibraryImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
     private static partial int GetSockOptPid(
         IntPtr socket,
         int level,
         int optionName,
-        out uint pid,
-        ref int optionLength);
+        out int pid,
+        in uint optionLength);
 
+    [UnsupportedOSPlatform("Windows")]
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEuid();
 }

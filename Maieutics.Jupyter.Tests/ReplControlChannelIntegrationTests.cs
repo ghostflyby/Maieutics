@@ -118,7 +118,8 @@ public sealed class ReplControlChannelIntegrationTests
                                                 const maieutics = await import(clientUrl);
                                                 const healthText = await maieutics.health();
                                                 if (healthText !== "ok") throw new Error(`unexpected health: ${healthText}`);
-                                                const listing = await maieutics.tools.invoke("list_directory", {});
+                                                const task = maieutics.tools.start("list_directory", {});
+                                                const listing = await task;
                                                 if (listing === null || typeof listing !== "object") {
                                                   throw new Error("tool result is not a structured object");
                                                 }

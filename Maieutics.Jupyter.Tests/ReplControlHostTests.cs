@@ -154,6 +154,48 @@ public sealed class ReplControlHostTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task ToolProgressIsPushedOverTheBus()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(
+            registry,
+            timeout.Token,
+            [CreateProgressFunction()]);
+        await using (application)
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
+                timeout.Token);
+            await ReceiveBusAsync(socket, timeout.Token);
+
+            var invoke = Task.Run(
+                () => PostToolInvokeAsync(
+                    host.SocketPath,
+                    "progress_test",
+                    "{}",
+                    "progress-1",
+                    timeout.Token),
+                timeout.Token);
+            var progress = await ReceiveBusAsync(socket, timeout.Token);
+            progress.Should().Contain("\"type\":\"tool.progress\"");
+            progress.Should().Contain("\"correlationId\":\"progress-1\"");
+            progress.Should().Contain("\"stage\":\"building\"");
+
+            var response = await invoke;
+            response.Should().Contain("\"status\":\"ok\"");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task LinuxRejectsPeerNotInRegistry()
     {
         if (!OperatingSystem.IsLinux())
@@ -379,7 +421,9 @@ public sealed class ReplControlHostTests
         var correlation = string.IsNullOrWhiteSpace(correlationId)
             ? string.Empty
             : ",\"correlationId\":\"" + correlationId + "\"";
-        var body = "{\"version\":1,\"tool\":\"" + tool + "\",\"arguments\":" + argumentsJson + correlation + "}";
+        var body =
+            "{\"version\":1,\"tool\":\"" + tool + "\",\"arguments\":" + argumentsJson +
+            correlation + ",\"sessionId\":\"test-session\"}";
         var request =
             $"POST /v1/tool.invoke HTTP/1.1\r\n" +
             "Host: localhost\r\n" +
@@ -431,6 +475,32 @@ public sealed class ReplControlHostTests
                 Name = "blocking_test",
                 Description = "Blocks until cancelled."
             });
+
+    private static AIFunction CreateProgressFunction() =>
+        AIFunctionFactory.Create(
+            (AIFunctionArguments arguments, CancellationToken ct) =>
+                ReportProgressAsync(arguments, ct),
+            new AIFunctionFactoryOptions
+            {
+                Name = "progress_test",
+                Description = "Reports progress then returns."
+            });
+
+    private static async Task<object?> ReportProgressAsync(
+        AIFunctionArguments arguments,
+        CancellationToken ct)
+    {
+        if (arguments.Context is { } map &&
+            map.TryGetValue(typeof(ReplToolProgress), out var raw) &&
+            raw is ReplToolProgress progress)
+        {
+            await progress.ReportAsync(
+                new ToolProgressPayload(Progress: 50, Total: 100, Stage: "building"),
+                ct);
+        }
+
+        return System.Text.Json.JsonSerializer.SerializeToElement(new { done = true });
+    }
 
     private static async Task<object?> WaitForCancellationAsync(CancellationToken ct)
     {

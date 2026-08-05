@@ -179,6 +179,33 @@ internal sealed class ReplControlHost : IDisposable
         return 0;
     }
 
+    private string? ResolveSessionId(HttpContext context)
+    {
+        var processId = ResolvePeerProcessId(context);
+        if (processId > 0 && registry.TryGetSession(processId, out var sessionId))
+        {
+            return sessionId;
+        }
+
+        return null;
+    }
+
+    private string? ResolveRequestSessionId(HttpContext context, string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return null;
+        }
+
+        var processId = ResolvePeerProcessId(context);
+        if (processId > 0)
+        {
+            return registry.IsOwnedBy(processId, sessionId) ? sessionId : null;
+        }
+
+        return registry.ContainsSession(sessionId) ? sessionId : null;
+    }
+
     private async Task<string?> ReceiveHelloAsync(WebSocket socket, int peerProcessId, CancellationToken ct)
     {
         var text = await ReadTextMessageAsync(socket, ct).ConfigureAwait(false);
@@ -395,6 +422,7 @@ internal sealed class ReplControlHost : IDisposable
         _ when typeof(T) == typeof(BusCommPayload) => ReplControlJsonContext.Default.BusCommPayload,
         _ when typeof(T) == typeof(BusErrorPayload) => ReplControlJsonContext.Default.BusErrorPayload,
         _ when typeof(T) == typeof(BusAckPayload) => ReplControlJsonContext.Default.BusAckPayload,
+        _ when typeof(T) == typeof(ToolProgressPayload) => ReplControlJsonContext.Default.ToolProgressPayload,
         _ => throw new InvalidOperationException($"Unsupported bus payload type '{typeof(T).Name}'.")
     };
 
@@ -466,10 +494,26 @@ internal sealed class ReplControlHost : IDisposable
             return;
         }
 
+        var correlationId = request.CorrelationId;
+        var sessionId = ResolveRequestSessionId(context, request.SessionId);
         var arguments = new AIFunctionArguments(request.Arguments.EnumerateObject().ToDictionary(
             static property => property.Name,
             static property => (object?)property.Value.Clone()));
-        var correlationId = request.CorrelationId;
+        if (sessionId is not null && !string.IsNullOrWhiteSpace(correlationId))
+        {
+            arguments.Context ??= new Dictionary<object, object?>();
+            arguments.Context[typeof(ReplToolProgress)] = new ReplToolProgress(
+                (progress, ct) => new ValueTask(
+                    PushAsync(
+                        sessionId,
+                        new ReplEnvelope(
+                            EnvelopeVersion,
+                            ReplMessageType.ToolProgress,
+                            correlationId,
+                            Payload(progress)),
+                        ct)));
+        }
+
         using var operation = new CancellationTokenSource();
         var invokeToken = cancellationToken;
         if (!string.IsNullOrWhiteSpace(correlationId))

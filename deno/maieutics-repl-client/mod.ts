@@ -26,6 +26,12 @@ export interface ReplClientOptions {
 }
 
 export interface ReplTools {
+  /** Starts a tool call; progress arrives as "progress" events on the returned task. */
+  start(
+    name: string,
+    args?: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
+  ): ToolTask;
   /** Invokes a script-callable workspace tool and returns its structured result. */
   invoke(
     name: string,
@@ -69,6 +75,101 @@ interface ToolEnvelope {
   code?: string;
   message?: string;
   value?: unknown;
+}
+
+/** Lifecycle vocabulary compatible with MCP task statuses. */
+export type TaskStatus =
+  | "pending"
+  | "working"
+  | "awaiting_input"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** Tool progress pushed over the bus, keyed by the originating tool call. */
+export interface ToolProgress {
+  readonly correlationId: string;
+  /** Current progress unit; with `total` it is a fraction, otherwise treated as 0-100. */
+  readonly progress?: number;
+  readonly total?: number;
+  readonly stage?: string;
+  readonly message?: string;
+  readonly status?: TaskStatus;
+  readonly data?: unknown;
+}
+
+/**
+ * A started tool call. Awaitable (`await task`), an `EventTarget` for
+ * standard "progress" `ProgressEvent`s, and always carries its own
+ * `AbortController` (an external signal, if given, is linked into it).
+ */
+export class ToolTask<T = unknown> extends EventTarget implements PromiseLike<T> {
+  /** Correlation id shared by the HTTP call, bus progress, and cancel. */
+  readonly id: string;
+  /** Always present; `abort.abort()` cancels the call. */
+  readonly abort: AbortController;
+  status: TaskStatus = "pending";
+  stage?: string;
+  percent?: number;
+  total?: number;
+  message?: string;
+  data?: unknown;
+
+  #result: Promise<T>;
+
+  constructor(
+    id: string,
+    abort: AbortController,
+    run: (task: ToolTask<T>) => Promise<T>,
+  ) {
+    super();
+    this.id = id;
+    this.abort = abort;
+    this.#result = run(this);
+  }
+
+  /** @internal Applies a progress update and emits a standard progress event. */
+  applyProgress(progress: ToolProgress): void {
+    this.stage = progress.stage ?? this.stage;
+    this.message = progress.message ?? this.message;
+    this.data = progress.data ?? this.data;
+    if (progress.total !== undefined) {
+      this.total = progress.total;
+      if (progress.progress !== undefined) {
+        this.percent = Math.round((progress.progress / progress.total) * 100);
+      }
+    } else if (progress.progress !== undefined) {
+      this.percent = progress.progress;
+    }
+    if (progress.status !== undefined) {
+      this.status = progress.status;
+    }
+    this.dispatchEvent(
+      new ProgressEvent("progress", {
+        lengthComputable: this.total !== undefined,
+        loaded: this.percent ?? 0,
+        total: this.total ?? 0,
+      }),
+    );
+  }
+
+  then<TResult1 = T, TResult2 = never>(
+    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    return this.#result.then(onfulfilled, onrejected);
+  }
+
+  catch<TResult = never>(
+    onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+  ): Promise<T | TResult> {
+    return this.#result.catch(onrejected);
+  }
+
+  finally(onfinally?: (() => void) | null): Promise<T> {
+    return this.#result.finally(onfinally);
+  }
 }
 
 function createHttp(address: string): HttpClient {
@@ -236,59 +337,98 @@ async function sendAndWait(
   await done;
 }
 
-function createTools(http: HttpClient, bus: ReplBus): ReplTools {
-  return {
-    async invoke(name, args = {}, options = {}) {
-      const { signal } = options;
-      if (signal?.aborted) {
+function startTool(
+  http: HttpClient,
+  bus: ReplBus,
+  name: string,
+  args: Record<string, unknown> = {},
+  options: { signal?: AbortSignal } = {},
+): ToolTask {
+  const { signal } = options;
+  const abort = new AbortController();
+  if (signal?.aborted) {
+    abort.abort();
+  } else {
+    signal?.addEventListener("abort", () => abort.abort(), { once: true });
+  }
+  const correlationId = crypto.randomUUID();
+
+  const onProgress = (event: Event): void => {
+    const envelope = (event as CustomEvent<ReplEnvelope>).detail;
+    if (envelope.correlationId !== correlationId) {
+      return;
+    }
+    const progress: ToolProgress = {
+      correlationId: envelope.correlationId ?? correlationId,
+      ...(envelope.payload ?? {}) as Partial<ToolProgress>,
+    };
+    task.applyProgress(progress);
+  };
+  bus.events.addEventListener("tool.progress", onProgress);
+
+  const task = new ToolTask(correlationId, abort, async (current) => {
+    const sendCancel = (): void => {
+      bus.connect()
+        .then((socket) => {
+          socket.send(
+            JSON.stringify({
+              version: ENVELOPE_VERSION,
+              type: "control.cancel",
+              payload: { correlationId },
+            }),
+          );
+        })
+        .catch(() => {
+          // The fetch abort already covered client-side cancellation.
+        });
+    };
+    abort.signal.addEventListener("abort", sendCancel, { once: true });
+    try {
+      current.status = "working";
+      const response = await fetch(`${SERVER_URL}/v1/tool.invoke`, {
+        client: http,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: ENVELOPE_VERSION,
+          tool: name,
+          arguments: args,
+          correlationId,
+          sessionId: Deno.env.get(SESSION_ENV),
+        }),
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Tool invocation failed with status ${response.status}.`);
+      }
+      const envelope = await response.json() as ToolEnvelope;
+      if (envelope.status === "cancelled") {
         throw abortError();
       }
-      const correlationId = crypto.randomUUID();
-      const sendCancel = (): void => {
-        bus.connect()
-          .then((socket) => {
-            socket.send(
-              JSON.stringify({
-                version: ENVELOPE_VERSION,
-                type: "control.cancel",
-                payload: { correlationId },
-              }),
-            );
-          })
-          .catch(() => {
-            // The fetch abort already covered client-side cancellation.
-          });
-      };
-      signal?.addEventListener("abort", sendCancel, { once: true });
-      try {
-        const response = await fetch(`${SERVER_URL}/v1/tool.invoke`, {
-          client: http,
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            version: ENVELOPE_VERSION,
-            tool: name,
-            arguments: args,
-            correlationId,
-          }),
-          signal,
-        });
-        if (!response.ok) {
-          throw new Error(`Tool invocation failed with status ${response.status}.`);
-        }
-        const envelope = await response.json() as ToolEnvelope;
-        if (envelope.status === "cancelled") {
-          throw abortError();
-        }
-        if (envelope.status !== "ok") {
-          throw new Error(
-            `${envelope.code ?? "tool_failed"}: ${envelope.message ?? "the tool failed"}`,
-          );
-        }
-        return envelope.value;
-      } finally {
-        signal?.removeEventListener("abort", sendCancel);
+      if (envelope.status !== "ok") {
+        throw new Error(
+          `${envelope.code ?? "tool_failed"}: ${envelope.message ?? "the tool failed"}`,
+        );
       }
+      current.status = "completed";
+      return envelope.value;
+    } catch (error) {
+      current.status = abort.signal.aborted ? "cancelled" : "failed";
+      throw error;
+    } finally {
+      bus.events.removeEventListener("tool.progress", onProgress);
+      abort.signal.removeEventListener("abort", sendCancel);
+    }
+  });
+
+  return task;
+}
+
+function createTools(http: HttpClient, bus: ReplBus): ReplTools {
+  return {
+    start: (name, args, options) => startTool(http, bus, name, args, options),
+    async invoke(name, args, options) {
+      return await startTool(http, bus, name, args, options);
     },
   };
 }
@@ -368,6 +508,7 @@ export function health(): Promise<string> {
 
 /** Script tool invocation against the default client. */
 export const tools: ReplTools = {
+  start: (name, args, options) => ensureDefaultClient().tools.start(name, args, options),
   invoke: (name, args, options) => ensureDefaultClient().tools.invoke(name, args, options),
 };
 

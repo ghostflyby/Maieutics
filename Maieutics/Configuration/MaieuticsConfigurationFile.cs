@@ -210,6 +210,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
     {
         private readonly CancellationTokenSource changed = new();
         private readonly Action onChanged;
+        private readonly TimeSpan interval;
         private readonly FileStamp initialStamp;
         private readonly Timer timer;
         private int disposed;
@@ -217,6 +218,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
         internal PollingChangeToken(string path, TimeSpan interval, Action onChanged)
         {
             this.onChanged = onChanged;
+            this.interval = interval;
             initialStamp = FileStamp.Read(path);
             timer = new Timer(Poll, path, interval, interval);
         }
@@ -225,8 +227,21 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
         public bool ActiveChangeCallbacks => true;
 
-        public IDisposable RegisterChangeCallback(Action<object?> callback, object? state) =>
-            changed.Token.Register(callback, state);
+        public IDisposable RegisterChangeCallback(Action<object?> callback, object? state)
+        {
+            try
+            {
+                return changed.Token.Register(callback, state);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The token fired and its cancellation source was released while a configuration
+                // consumer re-registered. The change already happened, so report it immediately
+                // instead of breaking the reload chain.
+                callback(state);
+                return NullDisposable.Instance;
+            }
+        }
 
         public void Dispose()
         {
@@ -251,18 +266,43 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
                 return;
             }
 
+            timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            Exception? consumerFailure = null;
             try
             {
-                timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
                 changed.Cancel();
-                onChanged();
             }
-            catch (ObjectDisposedException)
+            catch (Exception exception)
             {
+                consumerFailure = exception;
             }
-            finally
+
+            if (consumerFailure is not null)
             {
-                Dispose();
+                // A configuration consumer can fail transiently while the watched file is being
+                // replaced. Resume polling so the change is retried instead of silently lost.
+                try
+                {
+                    timer.Change(interval, interval);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The provider was disposed while the change was being delivered.
+                }
+
+                return;
+            }
+
+            onChanged();
+            Dispose();
+        }
+
+        private sealed class NullDisposable : IDisposable
+        {
+            internal static readonly NullDisposable Instance = new();
+
+            public void Dispose()
+            {
             }
         }
 

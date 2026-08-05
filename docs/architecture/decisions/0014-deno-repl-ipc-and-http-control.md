@@ -35,8 +35,8 @@ envelope, process-bound identity, and per-generation lifecycle.
   server instance.
 - The REPL child channel is a single unix domain socket endpoint (`ListenUnixSocket`), pinned to HTTP/1.1 so WebSocket
   upgrades are deterministic. All REPL children share one socket; requests are attributed to a session through the
-  peer process identity resolved at accept time (Linux `SO_PEERCRED`; macOS falls back to same-user because no peer
-  PID is exposed). Windows is unsupported until a named-pipe bootstrap milestone; the factory throws
+  peer process identity resolved at accept time (Linux `SO_PEERCRED`; macOS `LOCAL_PEERPID` via `SOL_LOCAL`).
+  Windows is unsupported until a named-pipe bootstrap milestone; the factory throws
   `PlatformNotSupportedException` explicitly instead of degrading silently.
 - An external control endpoint is optional and off by default. When enabled it listens on TCP loopback only, with its
   own authentication.
@@ -58,7 +58,7 @@ Connection identity is process-bound. The kernel verifies peer credentials at ac
 PID. No secret handshake exists on Unix:
 
 - Linux: `SO_PEERCRED` (pid/uid), optionally `/proc/<pid>/exe`.
-- macOS: `getpeereid` (uid/gid) only; same-user acceptance is the accepted strength because macOS exposes no peer PID.
+- macOS: `LOCAL_PEERPID` via `SOL_LOCAL` (macOS 10.14+ baseline).
 - Windows: `WSAIoctl` with `SIO_AF_UNIX_GETPEERPID`; the output byte count is known to be 0 while the PID value is
   reliable. The named-pipe alternative is `GetNamedPipeClientProcessId` and is the planned bootstrap that issues a
   credential for the loopback control channel.

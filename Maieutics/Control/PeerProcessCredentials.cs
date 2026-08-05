@@ -31,7 +31,7 @@ internal static partial class PeerProcessCredentials
             return TryGetLinuxPeerIdentity(handle, out processId, out userId);
         }
 
-        return OperatingSystem.IsMacOS() && TryGetMacOsPeerIdentity(handle, out userId);
+        return OperatingSystem.IsMacOS() && TryGetMacOsPeerIdentity(handle, out processId, out userId);
     }
 
     /// <summary>Gets the effective user id of the current process.</summary>
@@ -62,15 +62,23 @@ internal static partial class PeerProcessCredentials
         return true;
     }
 
-    private static bool TryGetMacOsPeerIdentity(IntPtr socketHandle, out uint userId)
+    private static bool TryGetMacOsPeerIdentity(
+        IntPtr socketHandle,
+        out int processId,
+        out uint userId)
     {
-        if (GetPeerEid(socketHandle, out var uid, out _) != 0)
+        // macOS exposes the peer pid through SOL_LOCAL/LOCAL_PEERPID (baseline 10.14).
+        var size = Unsafe.SizeOf<uint>();
+        if (GetSockOptPid(socketHandle, SolLocal, LocalPeerPid, out var peerPid, ref size) != 0 ||
+            size != Unsafe.SizeOf<uint>())
         {
+            processId = 0;
             userId = 0;
             return false;
         }
 
-        userId = uid;
+        processId = unchecked((int)peerPid);
+        userId = 0;
         return true;
     }
 
@@ -84,6 +92,8 @@ internal static partial class PeerProcessCredentials
 
     private const int SolSocket = 1;
     private const int SoPeerCred = 17;
+    private const int SolLocal = 0;
+    private const int LocalPeerPid = 0x002;
 
     [LibraryImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
     private static partial int GetSockOpt(
@@ -93,8 +103,13 @@ internal static partial class PeerProcessCredentials
         ref UCred optionValue,
         ref int optionLength);
 
-    [LibraryImport("libc", EntryPoint = "getpeereid", SetLastError = true)]
-    private static partial int GetPeerEid(IntPtr socket, out uint euid, out uint egid);
+    [LibraryImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
+    private static partial int GetSockOptPid(
+        IntPtr socket,
+        int level,
+        int optionName,
+        out uint pid,
+        ref int optionLength);
 
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEuid();

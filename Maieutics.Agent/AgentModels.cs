@@ -205,17 +205,11 @@ public sealed record AgentTranscript
 /// <summary>Represents one complete committed Agent turn.</summary>
 public sealed record AgentTranscriptTurn
 {
-    /// <summary>Initializes a complete transcript turn.</summary>
-    public AgentTranscriptTurn(AgentRunId runId, IReadOnlyList<ChatMessage> messages)
-        : this(runId, messages, null, false)
-    {
-    }
-
     /// <summary>Initializes a complete transcript turn with its model identity.</summary>
     public AgentTranscriptTurn(
         AgentRunId runId,
         IReadOnlyList<ChatMessage> messages,
-        AgentModelIdentity? modelIdentity,
+        AgentModelIdentity? modelIdentity = null,
         bool truncated = false)
     {
         if (runId.Value == Guid.Empty)
@@ -259,23 +253,13 @@ public sealed record AgentTranscriptTurn
 /// <summary>Represents the successful terminal result of one Agent run.</summary>
 public sealed record AgentRunResult
 {
-    /// <summary>Initializes a successful run result.</summary>
-    public AgentRunResult(
-        AgentRunId runId,
-        ChatMessage userMessage,
-        ChatMessage assistantMessage,
-        AgentTranscript transcript)
-        : this(runId, userMessage, assistantMessage, transcript, null, false)
-    {
-    }
-
     /// <summary>Initializes a successful run result with its model identity.</summary>
     public AgentRunResult(
         AgentRunId runId,
         ChatMessage userMessage,
         ChatMessage assistantMessage,
         AgentTranscript transcript,
-        AgentModelIdentity? modelIdentity,
+        AgentModelIdentity? modelIdentity = null,
         bool truncated = false)
     {
         if (runId.Value == Guid.Empty)

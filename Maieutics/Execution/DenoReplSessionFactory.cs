@@ -1,5 +1,5 @@
-using Maieutics.Jupyter.Client;
 using Maieutics.Control;
+using Maieutics.Jupyter.Client;
 
 namespace Maieutics.Execution;
 
@@ -11,7 +11,11 @@ internal interface IDenoReplSessionFactory
         CancellationToken cancellationToken);
 }
 
-internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
+internal sealed class LocalDenoReplSessionFactory(
+    DenoReplOptions options,
+    ReplControlHost controlHost,
+    ReplClientModule clientModule)
+    : IDenoReplSessionFactory
 {
     private static readonly string[] AllowedEnvironmentNames =
     [
@@ -33,19 +37,11 @@ internal sealed class LocalDenoReplSessionFactory : IDenoReplSessionFactory
         "PATHEXT"
     ];
 
-    private readonly DenoReplOptions options;
-    private readonly ReplControlHost controlHost;
-    private readonly ReplClientModule clientModule;
+    private readonly DenoReplOptions options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly ReplControlHost controlHost = controlHost ?? throw new ArgumentNullException(nameof(controlHost));
 
-    public LocalDenoReplSessionFactory(
-        DenoReplOptions options,
-        ReplControlHost controlHost,
-        ReplClientModule clientModule)
-    {
-        this.options = options ?? throw new ArgumentNullException(nameof(options));
-        this.controlHost = controlHost ?? throw new ArgumentNullException(nameof(controlHost));
-        this.clientModule = clientModule ?? throw new ArgumentNullException(nameof(clientModule));
-    }
+    private readonly ReplClientModule clientModule =
+        clientModule ?? throw new ArgumentNullException(nameof(clientModule));
 
     public async Task<IJupyterKernelManager> StartAsync(
         string workingDirectory,

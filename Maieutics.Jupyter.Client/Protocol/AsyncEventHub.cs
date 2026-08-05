@@ -6,7 +6,7 @@ namespace Maieutics.Jupyter.Client.Protocol;
 
 internal sealed class AsyncEventHub<T>(int capacity)
 {
-    private readonly object gate = new();
+    private readonly Lock gate = new();
     private readonly Dictionary<long, Channel<T>> subscribers = [];
     private long nextSubscriberId;
     private bool completed;

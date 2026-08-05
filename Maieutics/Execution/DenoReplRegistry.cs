@@ -4,36 +4,23 @@ using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Execution;
 
-internal sealed class DenoReplRegistry : IAsyncDisposable
+internal sealed class DenoReplRegistry(
+    Workspace workspace,
+    DenoReplOptions options,
+    IDenoReplSessionFactory factory,
+    IDenoReplPresentationRouter presentationRouter,
+    ReplControlSessionRegistry controlRegistry,
+    ILogger<DenoReplSession> logger)
+    : IAsyncDisposable
 {
-    internal const string DefaultSessionId = "default";
+    private const string DefaultSessionId = "default";
+
     private readonly TaskCompletionSource disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly IDenoReplSessionFactory factory;
-    private readonly Lock gate = new();
-    private readonly ILogger<DenoReplSession> logger;
-    private readonly DenoReplOptions options;
-    private readonly IDenoReplPresentationRouter presentationRouter;
-    private readonly ReplControlSessionRegistry controlRegistry;
-    private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> sessions = [];
-    private readonly Workspace workspace;
-    private int disposeState;
 
-    public DenoReplRegistry(
-        Workspace workspace,
-        DenoReplOptions options,
-        IDenoReplSessionFactory factory,
-        IDenoReplPresentationRouter presentationRouter,
-        ReplControlSessionRegistry controlRegistry,
-        ILogger<DenoReplSession> logger)
-    {
-        this.workspace = workspace;
-        this.options = options;
-        this.factory = factory;
-        this.presentationRouter = presentationRouter;
-        this.controlRegistry = controlRegistry;
-        this.logger = logger;
-    }
+    private readonly Lock gate = new();
+    private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> sessions = [];
+    private int disposeState;
 
     internal async Task<DenoReplSessionResult> CreateAsync(
         AgentSessionId ownerSessionId,

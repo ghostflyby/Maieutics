@@ -39,18 +39,10 @@ internal sealed class WorkspaceFunctions
     private readonly long maximumSearchBytes;
     private readonly Workspace workspace;
 
-    internal WorkspaceFunctions(Workspace workspace)
-        : this(
-            workspace,
-            DefaultMaximumFiles,
-            DefaultMaximumDirectoryEntries)
-    {
-    }
-
     internal WorkspaceFunctions(
         Workspace workspace,
-        int maximumFiles,
-        int maximumDirectoryEntries,
+        int maximumFiles = DefaultMaximumFiles,
+        int maximumDirectoryEntries = DefaultMaximumDirectoryEntries,
         int maximumFileBytes = DefaultMaximumFileBytes,
         long maximumSearchBytes = DefaultMaximumSearchBytes)
     {

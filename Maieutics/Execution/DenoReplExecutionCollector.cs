@@ -46,7 +46,7 @@ internal sealed class DenoReplExecutionCollector
         IJupyterExecution execution,
         CancellationToken inputCancellationToken)
     {
-        await foreach (var output in execution.Outputs.ConfigureAwait(false))
+        await foreach (var output in execution.Outputs.ConfigureAwait(false).WithCancellation(inputCancellationToken))
         {
             await ObserveAsync(execution, output, inputCancellationToken).ConfigureAwait(false);
         }
@@ -332,7 +332,9 @@ internal sealed class DenoReplExecutionCollector
 
         if (bundle.Data.TryGetValue("text/plain", out var text))
         {
-            AddTextResult(text.ValueKind == JsonValueKind.String ? text.GetString() ?? string.Empty : text.GetRawText());
+            AddTextResult(text.ValueKind == JsonValueKind.String
+                ? text.GetString() ?? string.Empty
+                : text.GetRawText());
             return;
         }
 
@@ -420,7 +422,8 @@ internal sealed class DenoReplExecutionCollector
         var result = 0;
         foreach (var (name, value) in values)
         {
-            result = checked(result + Encoding.UTF8.GetByteCount(name) + Encoding.UTF8.GetByteCount(value.GetRawText()));
+            result = checked(result + Encoding.UTF8.GetByteCount(name) +
+                             Encoding.UTF8.GetByteCount(value.GetRawText()));
         }
 
         return result;

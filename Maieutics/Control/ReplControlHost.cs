@@ -3,7 +3,6 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Maieutics.Agent;
 using Microsoft.AspNetCore.Builder;
@@ -24,12 +23,14 @@ internal sealed class ReplControlHost : IDisposable
 {
     private const int WebSocketBufferSize = 256 * 1024;
     private const int EnvelopeVersion = 1;
-    private readonly string socketPath;
     private readonly ReplControlSessionRegistry registry;
     private readonly ILogger<ReplControlHost> logger;
     private readonly IReadOnlyList<AIFunction> scriptTools;
     private readonly ConcurrentDictionary<string, WebSocket> connections = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> comms = new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> comms =
+        new(StringComparer.Ordinal);
+
     private readonly ReplOperationRegistry operations = new();
 
     public ReplControlHost(
@@ -39,14 +40,14 @@ internal sealed class ReplControlHost : IDisposable
         IReadOnlyList<AIFunction>? scriptTools = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
-        this.socketPath = socketPath;
+        SocketPath = socketPath;
         this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.scriptTools = scriptTools ?? [];
     }
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
-    public string SocketPath => socketPath;
+    public string SocketPath { get; }
 
     /// <summary>Creates a short socket path within the platform unix socket length limit.</summary>
     internal static string CreateSocketPath()
@@ -79,7 +80,7 @@ internal sealed class ReplControlHost : IDisposable
     {
         try
         {
-            File.Delete(socketPath);
+            File.Delete(SocketPath);
         }
         catch
         {
@@ -177,17 +178,6 @@ internal sealed class ReplControlHost : IDisposable
         }
 
         return 0;
-    }
-
-    private string? ResolveSessionId(HttpContext context)
-    {
-        var processId = ResolvePeerProcessId(context);
-        if (processId > 0 && registry.TryGetSession(processId, out var sessionId))
-        {
-            return sessionId;
-        }
-
-        return null;
     }
 
     private string? ResolveRequestSessionId(HttpContext context, string? sessionId)
@@ -288,7 +278,10 @@ internal sealed class ReplControlHost : IDisposable
                         EnvelopeVersion,
                         cancelled ? ReplMessageType.ControlCancelled : ReplMessageType.Error,
                         cancel.CorrelationId,
-                        cancelled ? null : Payload(new BusErrorPayload("operation_not_found", "No in-flight operation has this correlationId."))),
+                        cancelled
+                            ? null
+                            : Payload(new BusErrorPayload("operation_not_found",
+                                "No in-flight operation has this correlationId."))),
                     ct).ConfigureAwait(false);
                 break;
             case ReplMessageType.CommOpen:
@@ -320,7 +313,8 @@ internal sealed class ReplControlHost : IDisposable
                     break;
                 }
 
-                await PushAckAsync(sessionId, message.CommId, ok: true, envelope.CorrelationId, ct).ConfigureAwait(false);
+                await PushAckAsync(sessionId, message.CommId, ok: true, envelope.CorrelationId, ct)
+                    .ConfigureAwait(false);
                 break;
             case ReplMessageType.CommClose:
                 var close = ParsePayload<BusCommPayload>(envelope);
@@ -502,16 +496,15 @@ internal sealed class ReplControlHost : IDisposable
         if (sessionId is not null && !string.IsNullOrWhiteSpace(correlationId))
         {
             arguments.Context ??= new Dictionary<object, object?>();
-            arguments.Context[typeof(ReplToolProgress)] = new ReplToolProgress(
-                (progress, ct) => new ValueTask(
-                    PushAsync(
-                        sessionId,
-                        new ReplEnvelope(
-                            EnvelopeVersion,
-                            ReplMessageType.ToolProgress,
-                            correlationId,
-                            Payload(progress)),
-                        ct)));
+            arguments.Context[typeof(ReplToolProgress)] = new ReplToolProgress((progress, ct) => new ValueTask(
+                PushAsync(
+                    sessionId,
+                    new ReplEnvelope(
+                        EnvelopeVersion,
+                        ReplMessageType.ToolProgress,
+                        correlationId,
+                        Payload(progress)),
+                    ct)));
         }
 
         using var operation = new CancellationTokenSource();
@@ -546,7 +539,8 @@ internal sealed class ReplControlHost : IDisposable
                     "Script tools must return a structured JSON value.")
             };
         }
-        catch (OperationCanceledException) when (!string.IsNullOrWhiteSpace(correlationId) && operation.IsCancellationRequested)
+        catch (OperationCanceledException) when (!string.IsNullOrWhiteSpace(correlationId) &&
+                                                 operation.IsCancellationRequested)
         {
             envelope = ToolJson.CreateCancelledEnvelope();
         }

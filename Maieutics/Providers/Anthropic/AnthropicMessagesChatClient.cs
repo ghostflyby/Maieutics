@@ -401,7 +401,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     private static Uri NormalizeEndpoint(Uri endpoint)
     {
         var value = endpoint.AbsoluteUri;
-        return value.EndsWith("/", StringComparison.Ordinal) ? endpoint : new Uri(value + '/');
+        return value.EndsWith('/') ? endpoint : new Uri(value + '/');
     }
 
     private sealed class StreamingToolCall(string callId, string name)

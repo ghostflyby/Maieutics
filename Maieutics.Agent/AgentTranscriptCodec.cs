@@ -131,7 +131,7 @@ internal static class AgentTranscriptCodec
                 try
                 {
                     _ = JsonSerializer.SerializeToUtf8Bytes(
-                        new[] { new ChatMessage(message.Role, [content]) },
+                        [new ChatMessage(message.Role, [content])],
                         ChatMessageArrayTypeInfo);
                 }
                 catch (Exception exception) when (exception is JsonException or NotSupportedException)

@@ -7,10 +7,10 @@ namespace Maieutics.Jupyter;
 internal static class MaieuticsCommandLanguage
 {
     internal const string LegacyRoot = "%maieutics";
-    internal const string CanonicalMcpCommand = "%mcp";
-    internal const string CanonicalModelCommand = "%model";
-    internal const string CanonicalWorkspaceCommand = "%workspace";
-    internal const string SlashLeader = "/";
+    private const string CanonicalMcpCommand = "%mcp";
+    private const string CanonicalModelCommand = "%model";
+    private const string CanonicalWorkspaceCommand = "%workspace";
+    private const string SlashLeader = "/";
     internal const string Mcp = "mcp";
     internal const string Model = "model";
     internal const string Workspace = "workspace";

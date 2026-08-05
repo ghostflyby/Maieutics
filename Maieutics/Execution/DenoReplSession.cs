@@ -24,7 +24,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
     private readonly ReplControlSessionRegistry controlRegistry;
-    private readonly object stateGate = new();
+    private readonly Lock stateGate = new();
     private CancellationTokenSource? generationLifetime;
     private Task? generationLoop;
     private IJupyterKernelManager? manager;
@@ -307,7 +307,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         }
     }
 
-    internal async Task CloseAsync(CancellationToken cancellationToken)
+    private async Task CloseAsync(CancellationToken cancellationToken)
     {
         await lifetime.CancelAsync();
         await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);

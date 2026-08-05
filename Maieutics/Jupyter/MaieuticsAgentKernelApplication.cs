@@ -363,8 +363,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 .Append("`, state `")
                 .Append(server.State)
                 .Append('`');
-            if (server.State == MaieuticsMcpServerState.Reconnecting &&
-                server.NextReconnectDelay is { } reconnectDelay)
+            if (server is { State: MaieuticsMcpServerState.Reconnecting, NextReconnectDelay: { } reconnectDelay })
             {
                 output.Append(", next reconnect in `")
                     .Append(reconnectDelay)
@@ -670,7 +669,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                     }
 
                     flushedLength = response.Length;
-                    flushTimestamp = timeProvider.GetTimestamp();
+                    timeProvider.GetTimestamp();
                 }
             }
         }
@@ -739,16 +738,14 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         IDenoReplPresentationSink? presentationSink,
         JupyterDisplayId displayId,
         StringBuilder response,
-        CancellationToken cancellationToken) => presentationSink is null
-        ? context.UpdateDisplayAsync(
-            displayId,
-            MimeBundle.FromMarkdown(response.ToString()),
-            cancellationToken: cancellationToken)
-        : presentationSink.UpdateDisplayAsync(
-            displayId,
-            MimeBundle.FromMarkdown(response.ToString()),
-            EmptyMetadata,
-            cancellationToken);
+        CancellationToken cancellationToken) => presentationSink?.UpdateDisplayAsync(
+        displayId,
+        MimeBundle.FromMarkdown(response.ToString()),
+        EmptyMetadata,
+        cancellationToken) ?? context.UpdateDisplayAsync(
+        displayId,
+        MimeBundle.FromMarkdown(response.ToString()),
+        cancellationToken: cancellationToken);
 
     private static JupyterKernelExecutionException ToKernelException(AgentException exception) => exception switch
     {

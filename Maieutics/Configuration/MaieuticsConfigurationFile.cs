@@ -105,18 +105,17 @@ internal sealed record MaieuticsConfigurationFile(string? Path, bool Required, s
 
 internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 {
-    private readonly IFileProvider provider;
     private readonly IDisposable? owner;
     private int disposed;
 
     private MaieuticsConfigurationFileProvider(IFileProvider provider, string relativePath, IDisposable? owner)
     {
-        this.provider = provider;
+        Provider = provider;
         this.owner = owner;
         RelativePath = relativePath;
     }
 
-    internal IFileProvider Provider => provider;
+    internal IFileProvider Provider { get; }
 
     internal string RelativePath { get; }
 

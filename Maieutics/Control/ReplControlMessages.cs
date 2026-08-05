@@ -69,14 +69,10 @@ internal sealed record ToolProgressPayload(
     JsonElement? Data = null);
 
 /// <summary>Progress reporter a tool can pull from its invocation context.</summary>
-internal sealed class ReplToolProgress
+internal sealed class ReplToolProgress(Func<ToolProgressPayload, CancellationToken, ValueTask> report)
 {
-    private readonly Func<ToolProgressPayload, CancellationToken, ValueTask> report;
-
-    public ReplToolProgress(Func<ToolProgressPayload, CancellationToken, ValueTask> report)
-    {
-        this.report = report ?? throw new ArgumentNullException(nameof(report));
-    }
+    private readonly Func<ToolProgressPayload, CancellationToken, ValueTask> report =
+        report ?? throw new ArgumentNullException(nameof(report));
 
     public ValueTask ReportAsync(ToolProgressPayload progress, CancellationToken cancellationToken) =>
         report(progress, cancellationToken);

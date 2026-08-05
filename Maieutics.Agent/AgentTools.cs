@@ -175,28 +175,28 @@ file static class AgentToolContent
 {
     internal static void Validate(AIContent content)
     {
-        if (content is TextContent)
+        switch (content)
         {
-            return;
-        }
-
-        if (content is DataContent data &&
-            string.Equals(data.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                using var _ = JsonDocument.Parse(data.Data);
+            case TextContent:
                 return;
-            }
-            catch (JsonException exception)
-            {
-                throw new ArgumentException("JSON tool content must contain valid UTF-8 JSON data.", nameof(content),
-                    exception);
-            }
-        }
+            case DataContent data when
+                string.Equals(data.MediaType, "application/json", StringComparison.OrdinalIgnoreCase):
+                try
+                {
+                    using var _ = JsonDocument.Parse(data.Data);
+                }
+                catch (JsonException exception)
+                {
+                    throw new ArgumentException("JSON tool content must contain valid UTF-8 JSON data.",
+                        nameof(content),
+                        exception);
+                }
 
-        throw new ArgumentException(
-            "Tool content must be TextContent or application/json DataContent.",
-            nameof(content));
+                break;
+            default:
+                throw new ArgumentException(
+                    "Tool content must be TextContent or application/json DataContent.",
+                    nameof(content));
+        }
     }
 }

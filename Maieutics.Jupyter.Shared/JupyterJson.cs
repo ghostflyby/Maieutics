@@ -6,7 +6,7 @@ public static class JupyterJson
 {
     public static JsonElement EmptyObject { get; } = ParseObject("{}");
 
-    internal static byte[] EmptyObjectUtf8 { get; } = "{}"u8.ToArray();
+    internal static byte[] EmptyObjectUtf8 { get; } = [.. "{}"u8];
 
     private static JsonElement ParseObject(string json)
     {

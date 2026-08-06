@@ -1110,14 +1110,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             ValidatePositiveTimeout(serverOptions.InitializationTimeout, serverId, "InitializationTimeout");
             ValidatePositiveTimeout(serverOptions.RequestTimeout, serverId, "RequestTimeout");
 
-            string? command = null;
-            IReadOnlyList<string> arguments = [];
-            string? workingDirectory = null;
-            IReadOnlyDictionary<string, string?> environmentVariables =
-                new Dictionary<string, string?>(StringComparer.Ordinal);
-            Uri? endpoint = null;
-            IReadOnlyDictionary<string, string> headers =
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            McpTransportDefinition transportDefinition;
             var shutdownTimeout = TimeSpan.Zero;
             var connectionTimeout = TimeSpan.Zero;
 
@@ -1126,9 +1119,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 ArgumentException.ThrowIfNullOrWhiteSpace(serverOptions.Command);
                 ArgumentNullException.ThrowIfNull(serverOptions.Arguments);
                 ArgumentNullException.ThrowIfNull(serverOptions.EnvironmentVariables);
-                command = serverOptions.Command;
-                arguments = serverOptions.Arguments.ToArray();
-                environmentVariables = new Dictionary<string, string?>(
+                var command = serverOptions.Command;
+                var arguments = serverOptions.Arguments.ToArray();
+                var environmentVariables = new Dictionary<string, string?>(
                     serverOptions.EnvironmentVariables,
                     StringComparer.Ordinal);
                 if (serverSection.GetSection("WorkingDirectory").Value is not null &&
@@ -1138,6 +1131,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                         $"MCP server '{serverId}' WorkingDirectory cannot be empty when configured.");
                 }
 
+                string? workingDirectory = null;
                 if (!string.IsNullOrWhiteSpace(serverOptions.WorkingDirectory))
                 {
                     workingDirectory = Path.GetFullPath(serverOptions.WorkingDirectory, startupDirectory.Path);
@@ -1145,10 +1139,15 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
                 ValidatePositiveTimeout(serverOptions.ShutdownTimeout, serverId, "ShutdownTimeout");
                 shutdownTimeout = serverOptions.ShutdownTimeout;
+                transportDefinition = new StdioMcpTransportDefinition(
+                    command,
+                    arguments,
+                    workingDirectory,
+                    environmentVariables);
             }
             else
             {
-                if (!Uri.TryCreate(serverOptions.Url, UriKind.Absolute, out endpoint) ||
+                if (!Uri.TryCreate(serverOptions.Url, UriKind.Absolute, out var endpoint) ||
                     !string.Equals(endpoint.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
                 {
@@ -1173,32 +1172,21 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     }
                 }
 
-                headers = new Dictionary<string, string>(serverOptions.Headers, StringComparer.OrdinalIgnoreCase);
+                var headers = new Dictionary<string, string>(serverOptions.Headers, StringComparer.OrdinalIgnoreCase);
                 ValidatePositiveTimeout(serverOptions.ConnectionTimeout, serverId, "ConnectionTimeout");
                 connectionTimeout = serverOptions.ConnectionTimeout;
+                transportDefinition = new HttpMcpTransportDefinition(endpoint, headers);
             }
 
             var generationKey = McpServerDefinition.CreateGenerationKey(
-                transport,
-                command,
-                arguments,
-                workingDirectory,
-                environmentVariables,
-                endpoint,
-                headers,
+                transportDefinition,
                 serverOptions.InitializationTimeout,
                 serverOptions.RequestTimeout,
                 shutdownTimeout,
                 connectionTimeout);
             result.Add(new McpServerDefinition(
                 serverId,
-                transport,
-                command,
-                arguments,
-                workingDirectory,
-                environmentVariables,
-                endpoint,
-                headers,
+                transportDefinition,
                 serverOptions.InitializationTimeout,
                 serverOptions.RequestTimeout,
                 shutdownTimeout,

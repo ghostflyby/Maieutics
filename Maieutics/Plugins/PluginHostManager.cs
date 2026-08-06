@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -144,8 +145,8 @@ internal sealed class PluginHostManager : IAsyncDisposable
         timeout.CancelAfter(InvokeTimeout);
         try
         {
-            using var registration = timeout.Token.Register(
-                static (state) => ((TaskCompletionSource<ExtensionCallOutcome>)state!).TrySetCanceled(),
+            await using var registration = timeout.Token.Register(
+                static state => ((TaskCompletionSource<ExtensionCallOutcome>)state!).TrySetCanceled(),
                 tcs);
             var payload = new ExtensionInvokePayload(pluginId, exportName, extensionPoint, request);
             await PushAsync(
@@ -297,7 +298,6 @@ internal sealed class PluginHostManager : IAsyncDisposable
             }
             else if (error.Contains("is not a Maieutics plugin", StringComparison.Ordinal))
             {
-                continue;
             }
             else
             {
@@ -342,7 +342,7 @@ internal sealed class PluginHostManager : IAsyncDisposable
     private static JsonElement ToGrant(PluginPermissionGrant grant) =>
         grant.AllowAll
             ? JsonSerializer.SerializeToElement(true, PluginHostJsonContext.Default.Boolean)
-            : JsonSerializer.SerializeToElement(grant.Values.ToArray(), PluginHostJsonContext.Default.StringArray);
+            : JsonSerializer.SerializeToElement([.. grant.Values], PluginHostJsonContext.Default.StringArray);
 
     private PluginHostProcessGrants BuildProcessGrants(string configPath)
     {
@@ -588,128 +588,68 @@ internal sealed class PluginHostManager : IAsyncDisposable
     private static bool TryToMcpDefinition(
         string pluginId,
         JsonElement discovery,
-        out McpServerDefinition definition)
+        [NotNullWhen(true)] out McpServerDefinition? definition)
     {
-        definition = null!;
+        definition = null;
         if (discovery.ValueKind != JsonValueKind.Object ||
             !discovery.TryGetProperty("module", out var module) ||
             module.ValueKind != JsonValueKind.String ||
             string.IsNullOrWhiteSpace(module.GetString()) ||
             !discovery.TryGetProperty("transport", out var transport) ||
-            transport.ValueKind != JsonValueKind.Object ||
-            !transport.TryGetProperty("type", out var type) ||
-            type.ValueKind != JsonValueKind.String)
+            transport.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        McpTransportDefinition payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize(transport, McpJsonContext.Default.McpTransportDefinition)
+                ?? throw new JsonException("The transport payload is null.");
+        }
+        catch (JsonException)
         {
             return false;
         }
 
         var id = $"plugin:{pluginId}::{module.GetString()}";
-        var transportKind = type.GetString();
-        if (string.Equals(transportKind, "stdio", StringComparison.OrdinalIgnoreCase))
+        switch (payload)
         {
-            if (!transport.TryGetProperty("command", out var command) ||
-                command.ValueKind != JsonValueKind.String ||
-                string.IsNullOrWhiteSpace(command.GetString()))
-            {
+            case StdioMcpTransportDefinition stdio when !string.IsNullOrWhiteSpace(stdio.Command):
+                definition = new McpServerDefinition(
+                    id,
+                    stdio,
+                    InitializationTimeout: TimeSpan.FromSeconds(30),
+                    RequestTimeout: TimeSpan.FromMinutes(2),
+                    ShutdownTimeout: TimeSpan.FromSeconds(5),
+                    ConnectionTimeout: TimeSpan.FromSeconds(30),
+                    McpServerDefinition.CreateGenerationKey(
+                        stdio,
+                        TimeSpan.FromSeconds(30),
+                        TimeSpan.FromMinutes(2),
+                        TimeSpan.FromSeconds(5),
+                        TimeSpan.FromSeconds(30)));
+                return true;
+
+            case HttpMcpTransportDefinition http when http.Endpoint.IsAbsoluteUri:
+                definition = new McpServerDefinition(
+                    id,
+                    http,
+                    InitializationTimeout: TimeSpan.FromSeconds(30),
+                    RequestTimeout: TimeSpan.FromMinutes(2),
+                    ShutdownTimeout: TimeSpan.FromSeconds(5),
+                    ConnectionTimeout: TimeSpan.FromSeconds(30),
+                    McpServerDefinition.CreateGenerationKey(
+                        http,
+                        TimeSpan.FromSeconds(30),
+                        TimeSpan.FromMinutes(2),
+                        TimeSpan.FromSeconds(5),
+                        TimeSpan.FromSeconds(30)));
+                return true;
+
+            default:
                 return false;
-            }
-
-            var args = ReadStringArray(transport, "args");
-            var env = ReadStringMap(transport, "env");
-            definition = new McpServerDefinition(
-                id,
-                McpServerTransportKind.Stdio,
-                command.GetString(),
-                args,
-                WorkingDirectory: null,
-                env,
-                Endpoint: null,
-                new Dictionary<string, string>(),
-                InitializationTimeout: TimeSpan.FromSeconds(30),
-                RequestTimeout: TimeSpan.FromMinutes(2),
-                ShutdownTimeout: TimeSpan.FromSeconds(5),
-                ConnectionTimeout: TimeSpan.FromSeconds(30),
-                McpServerDefinition.CreateGenerationKey(
-                    McpServerTransportKind.Stdio,
-                    command.GetString(),
-                    args,
-                    null,
-                    env,
-                    null,
-                    [],
-                    TimeSpan.FromSeconds(30),
-                    TimeSpan.FromMinutes(2),
-                    TimeSpan.FromSeconds(5),
-                    TimeSpan.FromSeconds(30)));
-            return true;
         }
-
-        if (string.Equals(transportKind, "http", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!transport.TryGetProperty("url", out var url) ||
-                url.ValueKind != JsonValueKind.String ||
-                !Uri.TryCreate(url.GetString(), UriKind.Absolute, out var endpoint))
-            {
-                return false;
-            }
-
-            var headers = ReadStringMap(transport, "headers")
-                .ToDictionary(static pair => pair.Key, static pair => pair.Value ?? string.Empty, StringComparer.OrdinalIgnoreCase);
-            definition = new McpServerDefinition(
-                id,
-                McpServerTransportKind.Http,
-                Command: null,
-                [],
-                WorkingDirectory: null,
-                new Dictionary<string, string?>(StringComparer.Ordinal),
-                endpoint,
-                headers,
-                TimeSpan.FromSeconds(30),
-                TimeSpan.FromMinutes(2),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.FromSeconds(30),
-                McpServerDefinition.CreateGenerationKey(
-                    McpServerTransportKind.Http,
-                    null,
-                    [],
-                    null,
-                    new Dictionary<string, string?>(StringComparer.Ordinal),
-                    endpoint,
-                    headers,
-                    TimeSpan.FromSeconds(30),
-                    TimeSpan.FromMinutes(2),
-                    TimeSpan.FromSeconds(5),
-                    TimeSpan.FromSeconds(30)));
-            return true;
-        }
-
-        return false;
-    }
-
-    private static IReadOnlyList<string> ReadStringArray(JsonElement parent, string name)
-    {
-        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
-
-        return value.EnumerateArray()
-            .Where(item => item.ValueKind == JsonValueKind.String)
-            .Select(item => item.GetString()!)
-            .ToArray();
-    }
-
-    private static IReadOnlyDictionary<string, string?> ReadStringMap(JsonElement parent, string name)
-    {
-        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
-        {
-            return new Dictionary<string, string?>(StringComparer.Ordinal);
-        }
-
-        return value.EnumerateObject().ToDictionary(
-            static property => property.Name,
-            static property => property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString() : null,
-            StringComparer.Ordinal);
     }
 
     private void FailPending(string message)
@@ -752,7 +692,7 @@ internal sealed class PluginHostManager : IAsyncDisposable
         _ => throw new InvalidOperationException($"Unsupported extension payload type '{typeof(T).Name}'.")
     };
 
-    private async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
+    private static async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
         await socket
@@ -772,14 +712,12 @@ internal sealed class PluginHostManager : IAsyncDisposable
         while (true)
         {
             var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close)
+            switch (result.MessageType)
             {
-                return null;
-            }
-
-            if (result.MessageType == WebSocketMessageType.Binary)
-            {
-                continue;
+                case WebSocketMessageType.Close:
+                    return null;
+                case WebSocketMessageType.Binary:
+                    continue;
             }
 
             stream.Write(buffer.Span[..result.Count]);

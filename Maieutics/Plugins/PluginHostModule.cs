@@ -22,10 +22,6 @@ internal sealed class PluginHostModule
     ];
 
     private readonly string moduleDirectory;
-    private readonly string sdkUrl;
-    private readonly string hostUrl;
-    private readonly string hostImplUrl;
-    private readonly string workerEntryUrl;
     private readonly string configFile;
 
     public PluginHostModule()
@@ -37,21 +33,20 @@ internal sealed class PluginHostModule
             ReplClientModule.WriteEmbedded(resource, Path.Combine(moduleDirectory, relativePath));
         }
 
-        sdkUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-sdk/mod.ts")).AbsoluteUri;
-        hostUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-host/mod.ts")).AbsoluteUri;
-        hostImplUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-host/host.ts")).AbsoluteUri;
-        workerEntryUrl = new Uri(
+        SdkUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-sdk/mod.ts")).AbsoluteUri;
+        HostUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-host/mod.ts")).AbsoluteUri;
+        WorkerEntryUrl = new Uri(
             Path.Combine(moduleDirectory, "maieutics-plugin-host/worker_entry.ts")).AbsoluteUri;
         var sdkDirectory = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-sdk")).AbsoluteUri;
         configFile = Path.Combine(moduleDirectory, "deno.json");
         File.WriteAllText(configFile, $"{{\"links\": [\"{sdkDirectory}\"]}}");
     }
 
-    public string SdkUrl => sdkUrl;
+    public string SdkUrl { get; }
 
-    public string HostUrl => hostUrl;
+    public string HostUrl { get; }
 
-    public string WorkerEntryUrl => workerEntryUrl;
+    public string WorkerEntryUrl { get; }
 
     /// <summary>Directory containing all materialized modules, for precise process read grants.</summary>
     public string ModuleDirectory => moduleDirectory;

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -23,18 +24,65 @@ internal sealed record PluginPermissionGrants(
     PluginPermissionGrant Sys,
     PluginPermissionGrant Import);
 
+[JsonConverter(typeof(PluginPermissionGrantJsonConverter))]
 internal sealed record PluginPermissionGrant(bool AllowAll, IReadOnlyList<string> Values)
 {
     public static readonly PluginPermissionGrant None = new(false, []);
     public static readonly PluginPermissionGrant All = new(true, []);
 }
 
+internal sealed class PluginPermissionGrantJsonConverter : JsonConverter<PluginPermissionGrant>
+{
+    public override PluginPermissionGrant Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        return reader.TokenType switch
+        {
+            JsonTokenType.True => PluginPermissionGrant.All,
+            JsonTokenType.False => PluginPermissionGrant.None,
+            JsonTokenType.Null => PluginPermissionGrant.None,
+            JsonTokenType.StartArray => ReadValues(ref reader),
+            _ => PluginPermissionGrant.None
+        };
+    }
+
+    public override void Write(Utf8JsonWriter writer, PluginPermissionGrant value, JsonSerializerOptions options)
+    {
+        if (value.AllowAll)
+        {
+            writer.WriteBooleanValue(true);
+            return;
+        }
+
+        writer.WriteStartArray();
+        foreach (var item in value.Values)
+        {
+            writer.WriteStringValue(item);
+        }
+
+        writer.WriteEndArray();
+    }
+
+    private static PluginPermissionGrant ReadValues(ref Utf8JsonReader reader)
+    {
+        var array = JsonElement.ParseValue(ref reader);
+        var values = array.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString()!)
+            .Where(value => !string.IsNullOrEmpty(value))
+            .ToArray();
+        return new PluginPermissionGrant(false, values);
+    }
+}
+
 /// <summary>Reads a plugin's deno.json into a runtime descriptor without executing plugin code.</summary>
 internal static class PluginManifest
 {
-    public static bool TryLoad(string directory, out PluginDescriptor descriptor, out string error)
+    public static bool TryLoad(string directory,[NotNullWhen(true)] out PluginDescriptor? descriptor, out string error)
     {
-        descriptor = null!;
+        descriptor = null;
         var configPath = FindConfig(directory);
         if (configPath is null)
         {
@@ -117,40 +165,25 @@ internal static class PluginManifest
     }
 
     private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
-    {
-        static PluginPermissionGrant Read(JsonElement? value) => value switch
-        {
-            null => PluginPermissionGrant.None,
-            { ValueKind: JsonValueKind.True } => PluginPermissionGrant.All,
-            { ValueKind: JsonValueKind.False } => PluginPermissionGrant.None,
-            { ValueKind: JsonValueKind.Array } array => new PluginPermissionGrant(
-                false,
-                array.EnumerateArray()
-                    .Where(item => item.ValueKind == JsonValueKind.String)
-                    .Select(item => item.GetString()!)
-                    .Where(value => !string.IsNullOrEmpty(value))
-                    .ToArray()),
-            _ => PluginPermissionGrant.None
-        };
-
-        return new PluginPermissionGrants(
-            Read(set?.Env),
-            Read(set?.Net),
-            Read(set?.Read),
-            Read(set?.Write),
-            Read(set?.Run),
-            Read(set?.Ffi),
-            Read(set?.Sys),
-            Read(set?.Import));
-    }
+        => new(
+            set?.Env ?? PluginPermissionGrant.None,
+            set?.Net ?? PluginPermissionGrant.None,
+            set?.Read ?? PluginPermissionGrant.None,
+            set?.Write ?? PluginPermissionGrant.None,
+            set?.Run ?? PluginPermissionGrant.None,
+            set?.Ffi ?? PluginPermissionGrant.None,
+            set?.Sys ?? PluginPermissionGrant.None,
+            set?.Import ?? PluginPermissionGrant.None);
 }
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
-    AllowOutOfOrderMetadataProperties = true)]
+    AllowOutOfOrderMetadataProperties = true,
+    UnmappedMemberHandling = JsonUnmappedMemberHandling.Skip)]
 [JsonSerializable(typeof(PluginManifestFile))]
 [JsonSerializable(typeof(PluginManifestPermissions))]
 [JsonSerializable(typeof(PluginManifestPermissionSet))]
+[JsonSerializable(typeof(PluginPermissionGrant))]
 [JsonSerializable(typeof(PluginManifestMaieutics))]
 internal sealed partial class PluginManifestJsonContext : JsonSerializerContext;
 
@@ -163,13 +196,13 @@ internal sealed record PluginManifestFile(
 internal sealed record PluginManifestPermissions(PluginManifestPermissionSet? Default = null);
 
 internal sealed record PluginManifestPermissionSet(
-    JsonElement? Env = null,
-    JsonElement? Net = null,
-    JsonElement? Read = null,
-    JsonElement? Write = null,
-    JsonElement? Run = null,
-    JsonElement? Ffi = null,
-    JsonElement? Sys = null,
-    JsonElement? Import = null);
+    PluginPermissionGrant? Env = null,
+    PluginPermissionGrant? Net = null,
+    PluginPermissionGrant? Read = null,
+    PluginPermissionGrant? Write = null,
+    PluginPermissionGrant? Run = null,
+    PluginPermissionGrant? Ffi = null,
+    PluginPermissionGrant? Sys = null,
+    PluginPermissionGrant? Import = null);
 
 internal sealed record PluginManifestMaieutics(string? Isolation = null);

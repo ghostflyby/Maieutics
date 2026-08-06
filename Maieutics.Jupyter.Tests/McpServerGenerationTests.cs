@@ -19,31 +19,7 @@ public sealed class McpServerGenerationTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var serverFactory = new StreamServerFactory();
-        var definition = new McpServerDefinition(
-            "test",
-            McpServerTransportKind.Stdio,
-            "unused",
-            [],
-            null,
-            new Dictionary<string, string?>(),
-            null,
-            new Dictionary<string, string>(),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.Zero,
-            McpServerDefinition.CreateGenerationKey(
-                McpServerTransportKind.Stdio,
-                "unused",
-                [],
-                null,
-                [],
-                null,
-                [],
-                TimeSpan.FromSeconds(5),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.Zero));
+        var definition = CreateStdioDefinition();
         var generation = await McpServerGeneration.CreateAsync(
             definition,
             NullLoggerFactory.Instance,
@@ -79,31 +55,7 @@ public sealed class McpServerGenerationTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var serverFactory = new StreamServerFactory();
-        var definition = new McpServerDefinition(
-            "test",
-            McpServerTransportKind.Stdio,
-            "unused",
-            [],
-            null,
-            new Dictionary<string, string?>(),
-            null,
-            new Dictionary<string, string>(),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.Zero,
-            McpServerDefinition.CreateGenerationKey(
-                McpServerTransportKind.Stdio,
-                "unused",
-                [],
-                null,
-                [],
-                null,
-                [],
-                TimeSpan.FromSeconds(5),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.FromSeconds(5),
-                TimeSpan.Zero));
+        var definition = CreateStdioDefinition();
         var generation = await McpServerGeneration.CreateAsync(
             definition,
             NullLoggerFactory.Instance,
@@ -120,6 +72,72 @@ public sealed class McpServerGenerationTests
         var retirement = generation.Retire();
         await acquired.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact]
+    public void DeserializesDiscoveryTransportByTypeDiscriminator()
+    {
+        using var stdio = JsonDocument.Parse("""
+            {
+              "type": "stdio",
+              "command": "deno",
+              "args": ["run", "server.ts"],
+              "env": { "PORT": "8080" },
+              "futureField": 42
+            }
+            """);
+        var stdioDefinition = JsonSerializer
+            .Deserialize(stdio.RootElement, McpJsonContext.Default.McpTransportDefinition)
+            .Should()
+            .BeOfType<StdioMcpTransportDefinition>()
+            .Subject;
+        stdioDefinition.Command.Should().Be("deno");
+        stdioDefinition.Arguments.Should().Equal("run", "server.ts");
+        stdioDefinition.EnvironmentVariables.Should().ContainKey("PORT").WhoseValue.Should().Be("8080");
+        stdioDefinition.Kind.Should().Be(McpServerTransportKind.Stdio);
+
+        using var http = JsonDocument.Parse("""
+            {
+              "type": "http",
+              "url": "https://example.com/mcp",
+              "headers": { "Authorization": "Bearer token" }
+            }
+            """);
+        var httpDefinition = JsonSerializer
+            .Deserialize(http.RootElement, McpJsonContext.Default.McpTransportDefinition)
+            .Should()
+            .BeOfType<HttpMcpTransportDefinition>()
+            .Subject;
+        httpDefinition.Endpoint.Should().Be(new Uri("https://example.com/mcp"));
+        httpDefinition.Headers.Should().ContainKey("Authorization");
+        httpDefinition.Kind.Should().Be(McpServerTransportKind.Http);
+
+        using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
+        var deserialize = () =>
+            JsonSerializer.Deserialize(unknown.RootElement, McpJsonContext.Default.McpTransportDefinition);
+        deserialize.Should().Throw<JsonException>();
+    }
+
+    private static McpServerDefinition CreateStdioDefinition()
+    {
+        var transport = new StdioMcpTransportDefinition(
+            "unused",
+            [],
+            null,
+            new Dictionary<string, string?>());
+        return new McpServerDefinition(
+            "test",
+            transport,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.Zero,
+            McpServerDefinition.CreateGenerationKey(
+                transport,
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.Zero));
     }
 
     private sealed class StreamServerFactory : IAsyncDisposable

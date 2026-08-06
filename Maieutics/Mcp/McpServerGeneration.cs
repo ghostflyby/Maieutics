@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -21,15 +22,35 @@ internal enum McpServerTransportKind
     Http
 }
 
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(StdioMcpTransportDefinition), "stdio")]
+[JsonDerivedType(typeof(HttpMcpTransportDefinition), "http")]
+internal abstract record McpTransportDefinition
+{
+    internal abstract McpServerTransportKind Kind { get; }
+}
+
+internal sealed record StdioMcpTransportDefinition(
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("args")] IReadOnlyList<string>? Arguments = null,
+    [property: JsonPropertyName("workingDirectory")] string? WorkingDirectory = null,
+    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string?>? EnvironmentVariables = null)
+    : McpTransportDefinition
+{
+    internal override McpServerTransportKind Kind => McpServerTransportKind.Stdio;
+}
+
+internal sealed record HttpMcpTransportDefinition(
+    [property: JsonPropertyName("url")] Uri Endpoint,
+    [property: JsonPropertyName("headers")] IReadOnlyDictionary<string, string>? Headers = null)
+    : McpTransportDefinition
+{
+    internal override McpServerTransportKind Kind => McpServerTransportKind.Http;
+}
+
 internal sealed record McpServerDefinition(
     string Id,
-    McpServerTransportKind Transport,
-    string? Command,
-    IReadOnlyList<string> Arguments,
-    string? WorkingDirectory,
-    IReadOnlyDictionary<string, string?> EnvironmentVariables,
-    Uri? Endpoint,
-    IReadOnlyDictionary<string, string> Headers,
+    McpTransportDefinition Transport,
     TimeSpan InitializationTimeout,
     TimeSpan RequestTimeout,
     TimeSpan ShutdownTimeout,
@@ -37,13 +58,7 @@ internal sealed record McpServerDefinition(
     string GenerationKey)
 {
     internal static string CreateGenerationKey(
-        McpServerTransportKind transport,
-        string? command,
-        IEnumerable<string> arguments,
-        string? workingDirectory,
-        IEnumerable<KeyValuePair<string, string?>> environmentVariables,
-        Uri? endpoint,
-        IEnumerable<KeyValuePair<string, string>> headers,
+        McpTransportDefinition transport,
         TimeSpan initializationTimeout,
         TimeSpan requestTimeout,
         TimeSpan shutdownTimeout,
@@ -60,25 +75,42 @@ internal sealed record McpServerDefinition(
             hash.AppendData(bytes);
         }
 
-        Add(transport.ToString());
-        Add(command);
-        foreach (var argument in arguments)
+        Add(transport.Kind.ToString());
+        switch (transport)
         {
-            Add(argument);
-        }
+            case StdioMcpTransportDefinition stdio:
+                Add(stdio.Command);
+                foreach (var argument in stdio.Arguments ?? [])
+                {
+                    Add(argument);
+                }
 
-        Add(workingDirectory);
-        foreach (var pair in environmentVariables.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
-        {
-            Add(pair.Key);
-            Add(pair.Value);
-        }
+                Add(stdio.WorkingDirectory);
+                foreach (var pair in (stdio.EnvironmentVariables ?? new Dictionary<string, string?>())
+                             .OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+                {
+                    Add(pair.Key);
+                    Add(pair.Value);
+                }
 
-        Add(endpoint?.AbsoluteUri);
-        foreach (var pair in headers.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
-        {
-            Add(pair.Key);
-            Add(pair.Value);
+                break;
+
+            case HttpMcpTransportDefinition http:
+                Add(http.Endpoint.AbsoluteUri);
+                foreach (var pair in (http.Headers ?? new Dictionary<string, string>())
+                             .OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    Add(pair.Key);
+                    Add(pair.Value);
+                }
+
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(transport),
+                    transport,
+                    "Unknown transport definition.");
         }
 
         Add(initializationTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
@@ -175,14 +207,14 @@ internal sealed class McpServerGeneration
             if (current is not { Client.Completion.IsCompleted: false } connection)
                 return new MaieuticsMcpServerInfo(
                     definition.Id,
-                    definition.Transport.ToString(),
+                    definition.Transport.Kind.ToString(),
                     MaieuticsMcpServerState.Reconnecting,
                     nextReconnectDelay,
                     []);
             var tools = connection.GetToolInfo();
             return new MaieuticsMcpServerInfo(
                 definition.Id,
-                definition.Transport.ToString(),
+                definition.Transport.Kind.ToString(),
                 tools.Any(static tool => !tool.Available)
                     ? MaieuticsMcpServerState.Degraded
                     : MaieuticsMcpServerState.Connected,
@@ -427,19 +459,32 @@ internal sealed class McpServerGeneration
         cancellationToken.ThrowIfCancellationRequested();
         IClientTransport transport = definition.Transport switch
         {
-            McpServerTransportKind.Stdio => CreateStdioTransport(definition, loggerFactory),
-            McpServerTransportKind.Http => CreateHttpTransport(definition, loggerFactory),
-            _ => throw new ArgumentOutOfRangeException(nameof(definition), definition.Transport, null)
+            StdioMcpTransportDefinition stdio => CreateStdioTransport(
+                definition.Id,
+                stdio,
+                definition.ShutdownTimeout,
+                loggerFactory),
+            HttpMcpTransportDefinition http => CreateHttpTransport(
+                definition.Id,
+                http,
+                definition.ConnectionTimeout,
+                loggerFactory),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(definition),
+                definition.Transport,
+                "Unknown transport definition.")
         };
         return ValueTask.FromResult(transport);
     }
 
     private static StdioClientTransport CreateStdioTransport(
-        McpServerDefinition definition,
+        string id,
+        StdioMcpTransportDefinition transport,
+        TimeSpan shutdownTimeout,
         ILoggerFactory loggerFactory)
     {
         var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
-        foreach (var pair in definition.EnvironmentVariables)
+        foreach (var pair in transport.EnvironmentVariables ?? new Dictionary<string, string?>(StringComparer.Ordinal))
         {
             environment[pair.Key] = pair.Value;
         }
@@ -447,30 +492,32 @@ internal sealed class McpServerGeneration
         return new StdioClientTransport(
             new StdioClientTransportOptions
             {
-                Name = definition.Id,
-                Command = definition.Command!,
-                Arguments = [.. definition.Arguments],
-                WorkingDirectory = definition.WorkingDirectory,
+                Name = id,
+                Command = transport.Command,
+                Arguments = [.. transport.Arguments ?? []],
+                WorkingDirectory = transport.WorkingDirectory,
                 InheritEnvironmentVariables = false,
                 EnvironmentVariables = environment,
-                ShutdownTimeout = definition.ShutdownTimeout
+                ShutdownTimeout = shutdownTimeout
             },
             loggerFactory);
     }
 
     private static HttpClientTransport CreateHttpTransport(
-        McpServerDefinition definition,
+        string id,
+        HttpMcpTransportDefinition transport,
+        TimeSpan connectionTimeout,
         ILoggerFactory loggerFactory) =>
         new(
             new HttpClientTransportOptions
             {
-                Name = definition.Id,
-                Endpoint = definition.Endpoint!,
+                Name = id,
+                Endpoint = transport.Endpoint,
                 TransportMode = HttpTransportMode.AutoDetect,
-                ConnectionTimeout = definition.ConnectionTimeout,
-                AdditionalHeaders = new Dictionary<string, string>(
-                    definition.Headers,
-                    StringComparer.OrdinalIgnoreCase)
+                ConnectionTimeout = connectionTimeout,
+                AdditionalHeaders = transport.Headers is { } headers
+                    ? new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             },
             loggerFactory);
 

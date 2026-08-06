@@ -81,6 +81,35 @@ public sealed class PluginManifestTests
         error.Should().Contain("deno.json");
     }
 
+    [Fact]
+    public void IgnoresUnknownPermissionElementsAndShapes()
+    {
+        var directory = CreatePluginDirectory("""
+            {
+              "name": "@maieutics/unknown",
+              "tasks": { "start": "deno run mod.ts" },
+              "permissions": {
+                "default": {
+                  "read": ["./", 42, null, { "path": "/tmp" }, ""],
+                  "net": "https://example.com",
+                  "notify": true,
+                  "allow-all": true
+                },
+                "dev": { "read": true }
+              },
+              "maieutics": {}
+            }
+            """);
+
+        PluginManifest.TryLoad(directory, out var descriptor, out var error).Should().BeTrue(error);
+        descriptor!.Permissions.Read.AllowAll.Should().BeFalse();
+        descriptor.Permissions.Read.Values.Should().Equal("./");
+        descriptor.Permissions.Net.AllowAll.Should().BeFalse();
+        descriptor.Permissions.Net.Values.Should().BeEmpty();
+        descriptor.Permissions.Env.AllowAll.Should().BeFalse();
+        descriptor.Permissions.Env.Values.Should().BeEmpty();
+    }
+
     private static string CreatePluginDirectory(string denoJson)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"mc-plugin-manifest-{Guid.NewGuid():N}");

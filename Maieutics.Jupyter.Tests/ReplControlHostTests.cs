@@ -133,13 +133,15 @@ public sealed class ReplControlHostTests
                 timeout.Token);
             await ReceiveBusAsync(socket, timeout.Token);
 
+            var token = timeout.Token;
+
             var invoke = Task.Run(
                 () => PostToolInvokeAsync(
                     host.SocketPath,
                     "blocking_test",
                     "{}",
                     "cancel-me",
-                    timeout.Token),
+                    token),
                 timeout.Token);
             await Task.Delay(200, timeout.Token);
             await SendBusAsync(
@@ -177,13 +179,15 @@ public sealed class ReplControlHostTests
                 timeout.Token);
             await ReceiveBusAsync(socket, timeout.Token);
 
+            var token = timeout.Token;
+
             var invoke = Task.Run(
                 () => PostToolInvokeAsync(
                     host.SocketPath,
                     "progress_test",
                     "{}",
                     "progress-1",
-                    timeout.Token),
+                    token),
                 timeout.Token);
             var progress = await ReceiveBusAsync(socket, timeout.Token);
             progress.Should().Contain("\"type\":\"tool.progress\"");
@@ -506,8 +510,7 @@ public sealed class ReplControlHostTests
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var registration = ct.Register(
-            static state => ((TaskCompletionSource)state!).TrySetResult(),
-            completion);
+            () => completion.TrySetResult());
         await completion.Task.WaitAsync(ct);
         return System.Text.Json.JsonSerializer.SerializeToElement(new { cancelled = true });
     }

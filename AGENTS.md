@@ -147,6 +147,9 @@ forms. Version persisted runtime and IPC formats, tolerate unknown fields, and d
 - Prefer `Task` for request/reply and `IAsyncEnumerable<T>` for streams; use `ValueTask` only when justified.
 - Accept `CancellationToken` on potentially blocking asynchronous operations.
 - Keep constructors side-effect free; use asynchronous factories for asynchronous startup.
+- Use `System.Threading.Lock` for gate/lock fields instead of `object`.
+- Do not use the null-forgiving operator (`!`). Bind checked values with `is { } local` or restructure
+  state so nullability is compiler-provable; document any unavoidable exception.
 - Avoid global mutable state and service locators.
 - Keep dependency injection in the executable composition root.
 - Use explicit registries for dynamic providers and tools instead of mutating DI registrations at runtime.

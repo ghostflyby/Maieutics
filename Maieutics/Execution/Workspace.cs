@@ -31,7 +31,7 @@ internal sealed class Workspace
         }
     }
 
-    internal string RootPath => current.RootPath;
+    internal string RootPath => Capture().RootPath;
 
     internal WorkspaceSnapshot Use(string path)
     {
@@ -496,7 +496,6 @@ internal sealed partial record WorkspaceSnapshot(
     [Flags]
     private enum UnixOpenFlags
     {
-        None = 0,
         NonBlocking = 1,
         NoFollow = 2,
         Directory = 4

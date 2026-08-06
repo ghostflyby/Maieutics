@@ -6,7 +6,6 @@ namespace Maieutics.Control;
 /// </summary>
 internal sealed class ReplClientModule
 {
-    private const string ResourceName = "Maieutics.Deno.ReplClient.ts";
     private static readonly (string Resource, string RelativePath)[] Entries =
     [
         ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),
@@ -40,7 +39,8 @@ internal sealed class ReplClientModule
                 $"Missing embedded Deno module '{resourceName}'.");
         using var reader = new StreamReader(stream);
         var source = reader.ReadToEnd();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(path) ?? throw new InvalidOperationException($"Cannot resolve the directory for '{path}'."));
         File.WriteAllText(path, source);
     }
 }

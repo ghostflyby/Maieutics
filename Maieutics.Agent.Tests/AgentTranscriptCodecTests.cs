@@ -229,10 +229,11 @@ public sealed class AgentTranscriptCodecTests
 
     private static object CreateBinaryDataLikeValue()
     {
-        var assemblyName = new AssemblyName($"BinaryDataStub-{Guid.NewGuid():N}");
+        var name = $"BinaryDataStub-{Guid.NewGuid():N}";
+        var assemblyName = new AssemblyName(name);
         var assembly = AssemblyBuilder.DefineDynamicAssembly(assemblyName, AssemblyBuilderAccess.Run);
-        var type = assembly.DefineDynamicModule(assemblyName.Name!).DefineType("System.BinaryData").CreateType();
-        return Activator.CreateInstance(type)!;
+        var type = assembly.DefineDynamicModule(name).DefineType("System.BinaryData").CreateType();
+        return Activator.CreateInstance(type) ?? throw new NullReferenceException("Cannot create object from");
     }
 
     private static JsonElement ParseJson(string json)

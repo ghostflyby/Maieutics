@@ -55,7 +55,9 @@ public sealed class DenoReplExecutionCollectorTests
         result.Outputs.Select(static output => output.Kind).Should()
             .Equal("stdout", "stderr", "result", "error");
         result.Outputs.Single(output => output.Kind == "stdout").Text.Should().Be("private stdout");
-        result.Outputs.Single(output => output.Kind == "result").Value!.Value.GetInt32().Should().Be(42);
+        var resultValue = result.Outputs.Single(output => output.Kind == "result").Value
+            ?? throw new InvalidOperationException("The result execution has no value.");
+        resultValue.GetInt32().Should().Be(42);
         JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
             .Should().NotContain("visible display").And.NotContain("visible update");
         result.Presentation.Should().Be(new DenoReplPresentationResult(1, 1, 1, 1));
@@ -229,7 +231,7 @@ public sealed class DenoReplExecutionCollectorTests
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
-            Displays.Add(data.Data["text/plain"].GetString()!);
+            Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
             return ValueTask.CompletedTask;
         }
 
@@ -239,7 +241,7 @@ public sealed class DenoReplExecutionCollectorTests
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
-            Displays.Add(data.Data["text/plain"].GetString()!);
+            Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
             return ValueTask.FromResult(displayId);
         }
 
@@ -249,7 +251,7 @@ public sealed class DenoReplExecutionCollectorTests
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
-            Updates.Add((displayId, data.Data["text/plain"].GetString()!));
+            Updates.Add((displayId, data.Data["text/plain"].GetString() ?? string.Empty));
             return ValueTask.CompletedTask;
         }
 

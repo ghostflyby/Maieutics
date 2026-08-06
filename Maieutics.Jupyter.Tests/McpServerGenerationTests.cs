@@ -78,16 +78,16 @@ public sealed class McpServerGenerationTests
     public void DeserializesDiscoveryTransportByTypeDiscriminator()
     {
         using var stdio = JsonDocument.Parse("""
-            {
-              "type": "stdio",
-              "command": "deno",
-              "args": ["run", "server.ts"],
-              "env": { "PORT": "8080" },
-              "futureField": 42
-            }
-            """);
-        var stdioDefinition = JsonSerializer
-            .Deserialize(stdio.RootElement, McpJsonContext.Default.McpTransportDefinition)
+                                             {
+                                               "type": "stdio",
+                                               "command": "deno",
+                                               "args": ["run", "server.ts"],
+                                               "env": { "PORT": "8080" },
+                                               "futureField": 42
+                                             }
+                                             """);
+        var stdioDefinition = stdio.RootElement
+            .Deserialize(McpJsonContext.Default.McpTransportDefinition)
             .Should()
             .BeOfType<StdioMcpTransportDefinition>()
             .Subject;
@@ -97,14 +97,14 @@ public sealed class McpServerGenerationTests
         stdioDefinition.Kind.Should().Be(McpServerTransportKind.Stdio);
 
         using var http = JsonDocument.Parse("""
-            {
-              "type": "http",
-              "url": "https://example.com/mcp",
-              "headers": { "Authorization": "Bearer token" }
-            }
-            """);
-        var httpDefinition = JsonSerializer
-            .Deserialize(http.RootElement, McpJsonContext.Default.McpTransportDefinition)
+                                            {
+                                              "type": "http",
+                                              "url": "https://example.com/mcp",
+                                              "headers": { "Authorization": "Bearer token" }
+                                            }
+                                            """);
+        var httpDefinition = http.RootElement
+            .Deserialize(McpJsonContext.Default.McpTransportDefinition)
             .Should()
             .BeOfType<HttpMcpTransportDefinition>()
             .Subject;
@@ -112,10 +112,13 @@ public sealed class McpServerGenerationTests
         httpDefinition.Headers.Should().ContainKey("Authorization");
         httpDefinition.Kind.Should().Be(McpServerTransportKind.Http);
 
-        using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
-        var deserialize = () =>
-            JsonSerializer.Deserialize(unknown.RootElement, McpJsonContext.Default.McpTransportDefinition);
-        deserialize.Should().Throw<JsonException>();
+        FluentActions.Invoking(() =>
+            {
+                using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
+                return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
+            })
+            .Should()
+            .Throw<JsonException>();
     }
 
     private static McpServerDefinition CreateStdioDefinition()

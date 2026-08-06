@@ -8,7 +8,7 @@ public sealed class PluginManifestTests
     [Fact]
     public void LoadsSubpathExportsAndPositivePermissions()
     {
-        var directory = CreatePluginDirectory("""
+        var descriptor = LoadPlugin("""
             {
               "name": "@maieutics/example",
               "version": "0.1.0",
@@ -29,8 +29,7 @@ public sealed class PluginManifestTests
             }
             """);
 
-        PluginManifest.TryLoad(directory, out var descriptor, out var error).Should().BeTrue(error);
-        descriptor!.Name.Should().Be("@maieutics/example");
+        descriptor.Name.Should().Be("@maieutics/example");
         descriptor.Workers.Should().HaveCount(1);
         descriptor.Workers[0].ExportName.Should().Be("./mcp");
         descriptor.Workers[0].EntryUrl.Should().StartWith("file://");
@@ -59,7 +58,7 @@ public sealed class PluginManifestTests
     [Fact]
     public void TreatsStringExportsAsHavingNoCarrierWorkers()
     {
-        var directory = CreatePluginDirectory("""
+        var descriptor = LoadPlugin("""
             {
               "name": "@maieutics/single",
               "version": "0.1.0",
@@ -68,8 +67,7 @@ public sealed class PluginManifestTests
             }
             """);
 
-        PluginManifest.TryLoad(directory, out var descriptor, out var error).Should().BeTrue(error);
-        descriptor!.Workers.Should().BeEmpty();
+        descriptor.Workers.Should().BeEmpty();
     }
 
     [Fact]
@@ -84,7 +82,7 @@ public sealed class PluginManifestTests
     [Fact]
     public void IgnoresUnknownPermissionElementsAndShapes()
     {
-        var directory = CreatePluginDirectory("""
+        var descriptor = LoadPlugin("""
             {
               "name": "@maieutics/unknown",
               "tasks": { "start": "deno run mod.ts" },
@@ -101,13 +99,22 @@ public sealed class PluginManifestTests
             }
             """);
 
-        PluginManifest.TryLoad(directory, out var descriptor, out var error).Should().BeTrue(error);
-        descriptor!.Permissions.Read.AllowAll.Should().BeFalse();
+        descriptor.Permissions.Read.AllowAll.Should().BeFalse();
         descriptor.Permissions.Read.Values.Should().Equal("./");
         descriptor.Permissions.Net.AllowAll.Should().BeFalse();
         descriptor.Permissions.Net.Values.Should().BeEmpty();
         descriptor.Permissions.Env.AllowAll.Should().BeFalse();
         descriptor.Permissions.Env.Values.Should().BeEmpty();
+    }
+
+    private static PluginDescriptor LoadPlugin(string denoJson)
+    {
+        if (PluginManifest.TryLoad(CreatePluginDirectory(denoJson), out var descriptor, out var error))
+        {
+            return descriptor;
+        }
+
+        throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
     }
 
     private static string CreatePluginDirectory(string denoJson)

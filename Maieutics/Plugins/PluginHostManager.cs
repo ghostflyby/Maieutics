@@ -29,37 +29,52 @@ internal readonly record struct ExtensionCallOutcome(
 /// Owns plugin discovery, the plugin host process, its control-channel WebSocket connection, and
 /// extension point invocation routing. REPL connections stay in <see cref="ReplControlHost"/>;
 /// host connections are attached here so the kernel can call into plugin workers without a
-/// reverse dependency.
+/// reverse dependency. Instances are created already started through <see cref="CreateAsync"/>.
 /// </summary>
-internal sealed class PluginHostManager : IAsyncDisposable
+internal sealed class PluginHostManager(
+    string pluginsRoot,
+    string socketPath,
+    DenoReplOptions denoOptions,
+    PluginHostModule modules,
+    ReplControlSessionRegistry sessionRegistry,
+    ILogger<PluginHostManager> logger,
+    ILoggerFactory loggerFactory,
+    TimeProvider timeProvider)
+    : IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
     private const int WebSocketBufferSize = 256 * 1024;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
 
-    private readonly string pluginsRoot;
-    private readonly DenoReplOptions denoOptions;
-    private readonly PluginHostModule modules;
-    private readonly ReplControlSessionRegistry sessionRegistry;
-    private readonly ILogger<PluginHostManager> logger;
-    private readonly string socketPath;
-    private readonly string hostId;
-    private readonly ILoggerFactory loggerFactory;
-    private readonly TimeProvider timeProvider;
+    private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
+    private readonly PluginHostModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
+
+    private readonly ReplControlSessionRegistry sessionRegistry =
+        sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+
+    private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+    private readonly ILoggerFactory loggerFactory =
+        loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+
+    private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     private readonly Lock gate = new();
     private readonly List<PluginDescriptor> descriptors = [];
     private readonly List<PluginRegistration> registrations = [];
     private readonly List<McpServerDefinition> dynamicDefinitions = [];
     private readonly ConcurrentDictionary<string, McpServerGeneration> dynamicMcp = new(StringComparer.Ordinal);
+
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pending =
         new(StringComparer.Ordinal);
 
     private PluginHostProcess? process;
-    private WebSocket? socket;
+    private WebSocket? Socket { get; set; }
     private string? configPath;
     private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
 
-    public PluginHostManager(
+    private string HostId { get; } = $"host-{Guid.NewGuid():N}"[..12];
+
+    internal static Task<PluginHostManager> CreateAsync(
         string pluginsRoot,
         string socketPath,
         DenoReplOptions denoOptions,
@@ -69,18 +84,18 @@ internal sealed class PluginHostManager : IAsyncDisposable
         ILoggerFactory loggerFactory,
         TimeProvider timeProvider)
     {
-        this.pluginsRoot = pluginsRoot;
-        this.socketPath = socketPath;
-        this.denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
-        this.modules = modules ?? throw new ArgumentNullException(nameof(modules));
-        this.sessionRegistry = sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
-        this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-        hostId = $"host-{Guid.NewGuid():N}"[..12];
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            socketPath,
+            denoOptions,
+            modules,
+            sessionRegistry,
+            logger,
+            loggerFactory,
+            timeProvider);
+        manager.Start();
+        return Task.FromResult(manager);
     }
-
-    public string HostId => hostId;
 
     public void SetReservedToolNames(IReadOnlySet<string> names)
     {
@@ -98,7 +113,7 @@ internal sealed class PluginHostManager : IAsyncDisposable
         }
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    private void Start()
     {
         lock (gate)
         {
@@ -119,13 +134,13 @@ internal sealed class PluginHostManager : IAsyncDisposable
                 modules.HostUrl,
                 socketPath,
                 configPath,
-                hostId,
+                HostId,
                 modules.SdkUrl,
                 modules.WorkerEntryUrl,
                 modules.ConfigFile,
                 BuildProcessGrants(configPath)),
             logger);
-        sessionRegistry.RegisterPluginHost(process.ProcessId, hostId);
+        sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         _ = ObserveExitAsync(process, configPath);
     }
 
@@ -136,7 +151,6 @@ internal sealed class PluginHostManager : IAsyncDisposable
         JsonElement? request,
         CancellationToken cancellationToken)
     {
-        var socket = GetSocket();
         var correlationId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -146,11 +160,11 @@ internal sealed class PluginHostManager : IAsyncDisposable
         try
         {
             await using var registration = timeout.Token.Register(
-                static state => ((TaskCompletionSource<ExtensionCallOutcome>)state!).TrySetCanceled(),
+                static state => (state as TaskCompletionSource<ExtensionCallOutcome>)?.TrySetCanceled(),
                 tcs);
             var payload = new ExtensionInvokePayload(pluginId, exportName, extensionPoint, request);
             await PushAsync(
-                socket,
+                Socket ?? throw new InvalidOperationException("The plugin host is not connected."),
                 new ReplEnvelope(
                     EnvelopeVersion,
                     ReplMessageType.ExtensionInvoke,
@@ -180,12 +194,12 @@ internal sealed class PluginHostManager : IAsyncDisposable
         return leases;
     }
 
-    /// <summary>Runs the receive loop for a plugin host WebSocket attached by the control host.</summary>
+    /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.</summary>
     public async Task AttachHostAsync(WebSocket socket, CancellationToken cancellationToken)
     {
         lock (gate)
         {
-            this.socket = socket;
+            Socket = socket;
         }
 
         try
@@ -205,9 +219,9 @@ internal sealed class PluginHostManager : IAsyncDisposable
         {
             lock (gate)
             {
-                if (ReferenceEquals(socket, this.socket))
+                if (ReferenceEquals(socket, Socket))
                 {
-                    this.socket = null;
+                    Socket = null;
                 }
             }
 
@@ -253,7 +267,8 @@ internal sealed class PluginHostManager : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Plugin host exit observation failed for pid {ProcessId}.", pluginProcess.ProcessId);
+            logger.LogError(exception, "Plugin host exit observation failed for pid {ProcessId}.",
+                pluginProcess.ProcessId);
         }
         finally
         {
@@ -269,7 +284,7 @@ internal sealed class PluginHostManager : IAsyncDisposable
         }
     }
 
-    private IReadOnlyList<PluginDescriptor> ScanPlugins()
+    private List<PluginDescriptor> ScanPlugins()
     {
         if (!Directory.Exists(pluginsRoot))
         {
@@ -319,9 +334,10 @@ internal sealed class PluginHostManager : IAsyncDisposable
             plugins.Select(descriptor => new PluginHostConfigPlugin(
                 descriptor.Id,
                 descriptor.RootDirectory,
-                descriptor.Workers
-                    .Select(worker => new PluginHostConfigWorker(worker.ExportName, worker.EntryUrl))
-                    .ToArray(),
+                [
+                    .. descriptor.Workers
+                        .Select(worker => new PluginHostConfigWorker(worker.ExportName, worker.EntryUrl))
+                ],
                 ToConfigPermissions(descriptor.Permissions))).ToArray());
         var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
         var path = Path.Combine(Path.GetTempPath(), $"mc-plugins-{Guid.NewGuid():N}.json");
@@ -344,15 +360,15 @@ internal sealed class PluginHostManager : IAsyncDisposable
             ? JsonSerializer.SerializeToElement(true, PluginHostJsonContext.Default.Boolean)
             : JsonSerializer.SerializeToElement([.. grant.Values], PluginHostJsonContext.Default.StringArray);
 
-    private PluginHostProcessGrants BuildProcessGrants(string configPath)
+    private PluginHostProcessGrants BuildProcessGrants(string config)
     {
         PluginDescriptor[] plugins;
         lock (gate)
         {
-            plugins = descriptors.ToArray();
+            plugins = [.. descriptors];
         }
 
-        var read = new List<string> { configPath, modules.ModuleDirectory, socketPath };
+        var read = new List<string> { config, modules.ModuleDirectory, socketPath };
         var write = new List<string> { socketPath };
         var net = new List<string> { "localhost", $"unix:{socketPath}" };
         var env = new List<string>();
@@ -418,7 +434,7 @@ internal sealed class PluginHostManager : IAsyncDisposable
         try
         {
             envelope = JsonSerializer.Deserialize(text, ReplControlJsonContext.Default.ReplEnvelope)
-                ?? throw new JsonException("The envelope is null.");
+                       ?? throw new JsonException("The envelope is null.");
         }
         catch (JsonException)
         {
@@ -604,8 +620,8 @@ internal sealed class PluginHostManager : IAsyncDisposable
         McpTransportDefinition payload;
         try
         {
-            payload = JsonSerializer.Deserialize(transport, McpJsonContext.Default.McpTransportDefinition)
-                ?? throw new JsonException("The transport payload is null.");
+            payload = transport.Deserialize(McpJsonContext.Default.McpTransportDefinition)
+                      ?? throw new JsonException("The transport payload is null.");
         }
         catch (JsonException)
         {
@@ -631,7 +647,7 @@ internal sealed class PluginHostManager : IAsyncDisposable
                         TimeSpan.FromSeconds(30)));
                 return true;
 
-            case HttpMcpTransportDefinition http when http.Endpoint.IsAbsoluteUri:
+            case HttpMcpTransportDefinition { Endpoint.IsAbsoluteUri: true } http:
                 definition = new McpServerDefinition(
                     id,
                     http,
@@ -660,14 +676,6 @@ internal sealed class PluginHostManager : IAsyncDisposable
         }
 
         pending.Clear();
-    }
-
-    private WebSocket GetSocket()
-    {
-        lock (gate)
-        {
-            return socket ?? throw new InvalidOperationException("The plugin host is not connected.");
-        }
     }
 
     private static T? ParsePayload<T>(ReplEnvelope envelope)

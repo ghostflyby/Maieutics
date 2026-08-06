@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
@@ -127,28 +128,24 @@ public static class MaieuticsHost
             options.AddServerHeader = false;
             if (OperatingSystem.IsWindows())
             {
-                options.ListenLocalhost(0, listenOptions =>
-                {
-                    listenOptions.Protocols = HttpProtocols.Http1;
-                });
+                options.ListenLocalhost(0, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
             }
             else
             {
-                options.ListenUnixSocket(controlSocketPath, listenOptions =>
-                {
-                    listenOptions.Protocols = HttpProtocols.Http1;
-                });
+                options.ListenUnixSocket(controlSocketPath,
+                    listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
             }
         });
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
         if (OperatingSystem.IsWindows())
         {
-            builder.Services.AddSingleton<IWindowsPipeBootstrap>(
-                static services => CreateWindowsBootstrap(services));
+            builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
+                OperatingSystem.IsWindows() ? CreateWindowsBootstrap(services) : throw new UnreachableException()
+            );
         }
 
         builder.Services.AddSingleton<PluginHostModule>();
-        builder.Services.AddSingleton(services => new PluginHostManager(
+        builder.Services.AddSingleton<Task<PluginHostManager>>(services => PluginHostManager.CreateAsync(
             Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".maieutics", "plugins"),
             controlSocketPath,
             services.GetRequiredService<DenoReplOptions>(),
@@ -157,15 +154,15 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
             services.GetRequiredService<TimeProvider>()));
-        builder.Services.AddSingleton<Func<PluginHostManager>>(static services =>
-            services.GetRequiredService<PluginHostManager>);
+        builder.Services.AddSingleton<Func<PluginHostManager>>(services =>
+            () => services.GetRequiredService<Task<PluginHostManager>>().GetAwaiter().GetResult());
         builder.Services.AddHostedService<PluginHostStartupHostedService>();
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<ReplControlHost>>(),
             services.GetRequiredService<WorkspaceFunctions>().Functions,
-            services.GetRequiredService<PluginHostManager>(),
+            services.GetRequiredService<Task<PluginHostManager>>(),
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
@@ -270,7 +267,11 @@ public static class MaieuticsHost
     private static string? GetMcpConfigurationPath(MaieuticsConfigurationFile configurationFile) =>
         configurationFile.Path is null
             ? null
-            : Path.Combine(Path.GetDirectoryName(configurationFile.Path)!, "mcp.json");
+            : Path.Combine(
+                Path.GetDirectoryName(configurationFile.Path)
+                    ?? throw new InvalidOperationException(
+                        $"Cannot resolve the directory for '{configurationFile.Path}'."),
+                "mcp.json");
 
     private static void ValidateInitialConfigurationFile(
         MaieuticsConfigurationFile configurationFile,
@@ -293,7 +294,7 @@ public static class MaieuticsHost
             }
         }
 
-        if (mcpConfigurationPath is not null && File.Exists(mcpConfigurationPath))
+        if (mcpConfigurationPath is null || !File.Exists(mcpConfigurationPath)) return;
         {
             using var stream = File.OpenRead(mcpConfigurationPath);
             using var _ = JsonDocument.Parse(stream);

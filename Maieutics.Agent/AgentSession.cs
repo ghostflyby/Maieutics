@@ -674,14 +674,12 @@ public sealed class AgentSession : IAgentSession
         private void EnsureIterationCalls(int iteration)
         {
             var recorded = recordingClient.GetIteration(iteration);
-            var index = 0;
             foreach (var call in recorded.ResponseMessages
                          .SelectMany(static message => message.Contents)
                          .OfType<FunctionCallContent>())
             {
                 if (calls.ContainsKey(call.CallId))
                 {
-                    index++;
                     continue;
                 }
 
@@ -717,12 +715,7 @@ public sealed class AgentSession : IAgentSession
                     AgentToolCallId.Create(),
                     call.CallId,
                     function,
-                    arguments)
-                {
-                    Iteration = iteration,
-                    Index = index
-                });
-                index++;
+                    arguments));
             }
         }
 
@@ -739,10 +732,6 @@ public sealed class AgentSession : IAgentSession
             internal AIFunction Function { get; } = function;
 
             internal JsonElement Arguments { get; } = arguments;
-
-            internal int Iteration { get; set; }
-
-            internal int Index { get; set; }
         }
     }
 

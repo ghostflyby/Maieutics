@@ -496,22 +496,18 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             return;
         }
 
-        if (message.MessageType == "status" &&
-            message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState == "idle")
-        {
-            execution.IdleSeen = true;
-            CompleteExecutionIfReady(execution);
-        }
+        if (message.MessageType != "status" ||
+            message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState != "idle") return;
+        execution.IdleSeen = true;
+        CompleteExecutionIfReady(execution);
     }
 
-    private void CompleteExecutionIfReady(ExecutionState execution)
+    private static void CompleteExecutionIfReady(ExecutionState execution)
     {
-        if (!execution.IdleSeen || execution.Reply is null || execution.ReplyMessage is null)
-        {
-            return;
-        }
-
-        if (execution.DeferredCompletion)
+        if (!execution.IdleSeen ||
+            execution.Reply is not { } reply ||
+            execution.ReplyMessage is not { } replyMessage ||
+            execution.DeferredReply is not null)
         {
             return;
         }
@@ -519,18 +515,19 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         // The kernel's asynchronous output drain can publish the tail of an execution's IOPub
         // output after idle; keep the execution open until the mailbox is drained and settled so
         // that tail is counted as part of the execution instead of routed as late output.
-        execution.DeferredCompletion = true;
+        execution.DeferredReply = (reply, replyMessage);
     }
 
     private void FinalizeDeferredExecution(ExecutionState execution)
     {
-        if (!executions.TryRemove(execution.RequestHeader.MessageId, out _))
+        if (!executions.TryRemove(execution.RequestHeader.MessageId, out _) ||
+            execution.DeferredReply is not { } deferred)
         {
             return;
         }
 
         execution.Outputs.Writer.TryComplete();
-        execution.Completion.TrySetResult(new JupyterExecutionResult(execution.Reply!, execution.ReplyMessage!));
+        execution.Completion.TrySetResult(new JupyterExecutionResult(deferred.Reply, deferred.ReplyMessage));
         RememberCompletedExecution(execution.RequestHeader.MessageId);
     }
 
@@ -538,7 +535,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     {
         while (true)
         {
-            var deferred = executions.Values.FirstOrDefault(static execution => execution.DeferredCompletion);
+            var deferred = executions.Values.FirstOrDefault(static execution => execution.DeferredReply is not null);
             if (deferred is null)
             {
                 return;
@@ -654,32 +651,32 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             displayId.Value);
     }
 
-    private static JupyterOutput CreateClearOutput(JupyterMessageId requestId, JupyterMessage message)
+    private static JupyterClearOutput CreateClearOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var clear = message.GetContent(JupyterJsonContext.Default.JupyterClearOutputContent);
         return new JupyterClearOutput(requestId, clear.Wait);
     }
 
-    private static JupyterOutput CreateExecuteInputOutput(JupyterMessageId requestId, JupyterMessage message)
+    private static JupyterExecuteInputOutput CreateExecuteInputOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var input = message.GetContent(JupyterJsonContext.Default.JupyterExecuteInput);
         return new JupyterExecuteInputOutput(requestId, input.Code, input.ExecutionCount);
     }
 
-    private static JupyterOutput CreateExecuteResultOutput(JupyterMessageId requestId, JupyterMessage message)
+    private static JupyterExecuteResultOutput CreateExecuteResultOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var result = message.GetContent(JupyterJsonContext.Default.JupyterExecuteResultData);
         return new JupyterExecuteResultOutput(requestId, new MimeBundle(result.Data), result.Metadata,
             result.ExecutionCount);
     }
 
-    private static JupyterOutput CreateErrorOutput(JupyterMessageId requestId, JupyterMessage message)
+    private static JupyterExecutionError CreateErrorOutput(JupyterMessageId requestId, JupyterMessage message)
     {
         var error = message.GetContent(JupyterJsonContext.Default.JupyterError);
         return new JupyterExecutionError(requestId, error.Name, error.Value, error.Traceback);
     }
 
-    private static JupyterOutput CreateInputRequest(JupyterMessageId requestId, JupyterMessage message)
+    private static JupyterInputRequest CreateInputRequest(JupyterMessageId requestId, JupyterMessage message)
     {
         var input = message.GetContent(JupyterJsonContext.Default.JupyterInputRequestContent);
         return new JupyterInputRequest(requestId, message.Header.MessageId, input.Prompt, input.Password)
@@ -691,19 +688,20 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private void RouteGlobalMessage(JupyterTransportMessage transportMessage)
     {
         var message = transportMessage.Message;
-        if (message.MessageType == "status")
+        switch (message.MessageType)
         {
-            var status = message.GetContent(JupyterJsonContext.Default.JupyterStatus);
-            events.Publish(new JupyterKernelStatusChanged(ParseKernelState(status.ExecutionState)));
-            return;
+            case "status":
+            {
+                var status = message.GetContent(JupyterJsonContext.Default.JupyterStatus);
+                events.Publish(new JupyterKernelStatusChanged(ParseKernelState(status.ExecutionState)));
+                return;
+            }
+            case "iopub_welcome":
+                return;
+            default:
+                events.Publish(new JupyterUnhandledMessage(transportMessage.Channel, message));
+                break;
         }
-
-        if (message.MessageType == "iopub_welcome")
-        {
-            return;
-        }
-
-        events.Publish(new JupyterUnhandledMessage(transportMessage.Channel, message));
     }
 
     private static JupyterKernelState ParseKernelState(string value) => value switch
@@ -797,6 +795,6 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
 
         public bool IdleSeen { get; set; }
 
-        public bool DeferredCompletion { get; set; }
+        public (JupyterExecuteReply Reply, JupyterMessage ReplyMessage)? DeferredReply { get; set; }
     }
 }

@@ -69,8 +69,8 @@ internal sealed class PluginPermissionGrantJsonConverter : JsonConverter<PluginP
     {
         var array = JsonElement.ParseValue(ref reader);
         var values = array.EnumerateArray()
-            .Where(item => item.ValueKind == JsonValueKind.String)
-            .Select(item => item.GetString()!)
+            .Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() : null)
+            .OfType<string>()
             .Where(value => !string.IsNullOrEmpty(value))
             .ToArray();
         return new PluginPermissionGrant(false, values);

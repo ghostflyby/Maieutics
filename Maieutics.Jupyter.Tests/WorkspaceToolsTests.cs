@@ -79,7 +79,7 @@ public sealed class WorkspaceToolsTests
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "d.txt"), "d", TestContext.Current.CancellationToken);
         var failure = await InvokeAsync(tool, "{}");
-        Failure(failure).Code.Should().Be("workspace_directory_too_large");
+        ShouldFailure(failure).Code.Should().Be("workspace_directory_too_large");
     }
 
     [Theory]
@@ -123,7 +123,7 @@ public sealed class WorkspaceToolsTests
         literal.Text.Should().Be("literal percent name");
 
         var git = await InvokeAsync(read, """{"uri":"workspace://local/.git/config"}""");
-        Failure(git).Code.Should().Be("workspace_path_denied");
+        ShouldFailure(git).Code.Should().Be("workspace_path_denied");
 
         if (!OperatingSystem.IsWindows())
         {
@@ -143,11 +143,11 @@ public sealed class WorkspaceToolsTests
             listed.Entries.Where(static entry => entry.Name.EndsWith("-link", StringComparison.Ordinal))
                 .Should().OnlyContain(static entry => entry.Kind == "symbolic_link");
 
-            Failure(await InvokeAsync(
+            ShouldFailure(await InvokeAsync(
                     read,
                     """{"uri":"workspace://local/final-link"}"""))
                 .Code.Should().Be("workspace_symbolic_link_not_allowed");
-            Failure(await InvokeAsync(
+            ShouldFailure(await InvokeAsync(
                     read,
                     """{"uri":"workspace://local/directory-link/nested.txt"}"""))
                 .Code.Should().Be("workspace_symbolic_link_not_allowed");
@@ -245,21 +245,21 @@ public sealed class WorkspaceToolsTests
             Path.Combine(workspace.Path, "invalid.txt"),
             [0xc3, 0x28],
             TestContext.Current.CancellationToken);
-        Failure(await InvokeAsync(
+        ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/invalid.txt"}"""))
             .Code.Should().Be("workspace_invalid_utf8");
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "binary.txt"), "text\0data",
             TestContext.Current.CancellationToken);
-        Failure(await InvokeAsync(
+        ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/binary.txt"}"""))
             .Code.Should().Be("workspace_binary_file");
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "long-line.txt"), new string('x', 64 * 1_024 + 1),
             TestContext.Current.CancellationToken);
-        Failure(await InvokeAsync(
+        ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/long-line.txt"}"""))
             .Code.Should().Be("workspace_line_too_long");
@@ -282,7 +282,7 @@ public sealed class WorkspaceToolsTests
             }
         }
 
-        Failure(await InvokeAsync(
+        ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/oversized.txt","startLine":5000000}"""))
             .Code.Should().Be("workspace_file_too_large");
@@ -360,7 +360,7 @@ public sealed class WorkspaceToolsTests
         var directoryLimited = Function(
             CreateFunctions(workspace.Path, maximumFiles: 10, maximumDirectoryEntries: 1),
             "search_text");
-        Failure(await InvokeAsync(directoryLimited, """{"query":"target"}"""))
+        ShouldFailure(await InvokeAsync(directoryLimited, """{"query":"target"}"""))
             .Code.Should().Be("workspace_directory_too_large");
 
         var invalidRegex = await InvokeAsync(
@@ -370,7 +370,7 @@ public sealed class WorkspaceToolsTests
                 query = new string('x', 513),
                 regex = true
             }));
-        Failure(invalidRegex).Code.Should().Be("workspace_invalid_arguments");
+        ShouldFailure(invalidRegex).Code.Should().Be("workspace_invalid_arguments");
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.txt"), "x", TestContext.Current.CancellationToken);
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "c.txt"), "x", TestContext.Current.CancellationToken);
@@ -418,11 +418,11 @@ public sealed class WorkspaceToolsTests
         }
 
         var functions = CreateFunctions(workspace.Path);
-        Failure(await InvokeAsync(
+        ShouldFailure(await InvokeAsync(
                 Function(functions, "read_text"),
                 """{"uri":"workspace://local/input.fifo"}"""))
             .Code.Should().Be("workspace_not_regular_file");
-        Failure(await InvokeAsync(
+        ShouldFailure(await InvokeAsync(
                 Function(functions, "search_text"),
                 """{"query":"value","uri":"workspace://local/input.fifo"}"""))
             .Code.Should().Be("workspace_not_regular_file");
@@ -508,7 +508,7 @@ public sealed class WorkspaceToolsTests
         var staleCursor = await InvokeAsync(
             tool,
             $$"""{"cursor":{{JsonSerializer.Serialize(startup.NextCursor)}}}""");
-        Failure(staleCursor).Code.Should().Be("workspace_invalid_cursor");
+        ShouldFailure(staleCursor).Code.Should().Be("workspace_invalid_cursor");
 
         var reset = context.Reset();
         reset.RootPath.Should().Be(workspace.Path);
@@ -667,7 +667,7 @@ public sealed class WorkspaceToolsTests
         yield return update;
     }
 
-    private static AgentToolException Failure(ToolInvocation invocation) =>
+    private static AgentToolException ShouldFailure(ToolInvocation invocation) =>
         invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
 
     private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)

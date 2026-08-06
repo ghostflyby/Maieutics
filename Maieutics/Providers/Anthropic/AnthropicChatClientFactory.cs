@@ -16,10 +16,10 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         var options = new AnthropicSourceOptions();
         configuration.Bind(options, static binder => binder.ErrorOnUnknownConfiguration = true);
         options.Validate();
-        return new AnthropicSource(this, options);
+        return new AnthropicSource(options);
     }
 
-    public IChatClient Create(string model, AnthropicSourceOptions source)
+    public static IChatClient Create(string model, AnthropicSourceOptions source)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
         ArgumentNullException.ThrowIfNull(source);
@@ -27,9 +27,7 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         return new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint);
     }
 
-    private sealed class AnthropicSource(
-        AnthropicChatClientFactory factory,
-        AnthropicSourceOptions options) : IConfiguredChatClientSource, IModelDiscoverySource
+    private sealed class AnthropicSource(AnthropicSourceOptions options) : IConfiguredChatClientSource, IModelDiscoverySource
     {
         private static readonly HttpClient DiscoveryHttpClient = new();
 
@@ -41,7 +39,7 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         public AgentModelCapabilities Capabilities =>
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
-        public IChatClient Create(string model) => factory.Create(model, options);
+        public IChatClient Create(string model) => AnthropicChatClientFactory.Create(model, options);
 
         public async ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(
             CancellationToken cancellationToken = default)

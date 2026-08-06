@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
@@ -9,6 +10,8 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class PluginHostIntegrationTests
 {
+    private static readonly JsonSerializerOptions JsonSerializerOptionsCaseInsensitive = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
     [Fact(Timeout = 120_000)]
     public async Task DiscoversAndInvokesExtensionPointsInARealDenoHost()
     {
@@ -22,7 +25,15 @@ public sealed class PluginHostIntegrationTests
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
         var pluginsRoot = CreatePluginsRoot("integration");
-        var manager = new PluginHostManager(
+        var managerTcs = new TaskCompletionSource<PluginHostManager>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: managerTcs.Task);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        var manager = await PluginHostManager.CreateAsync(
             pluginsRoot,
             socketPath,
             new DenoReplOptions { Executable = "deno" },
@@ -31,16 +42,10 @@ public sealed class PluginHostIntegrationTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System);
-        var controlHost = new ReplControlHost(
-            socketPath,
-            registry,
-            NullLogger<ReplControlHost>.Instance,
-            pluginHosts: manager);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        managerTcs.TrySetResult(manager);
         await using (application)
         await using (manager)
         {
-            await manager.StartAsync(timeout.Token);
             var registrations = await WaitForRegistrationsAsync(
                 manager,
                 ReplExtensionPointName.McpDiscover,
@@ -56,11 +61,13 @@ public sealed class PluginHostIntegrationTests
             outcome.IsError.Should().BeFalse(outcome.Message);
             outcome.Value.Should().NotBeNull();
 
-            var discovery = System.Text.Json.JsonSerializer.Deserialize<McpDiscoveryTestShape[]>(
-                outcome.Value!.Value.GetRawText(),
-                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            discovery.Should().NotBeNull().And.HaveCount(1);
-            discovery![0].Module.Should().Be("npm:@maieutics/probe-server");
+            var discovery = JsonSerializer.Deserialize<McpDiscoveryTestShape[]>(
+                outcome.Value is { } discoveryValue
+                    ? discoveryValue.GetRawText()
+                    : throw new InvalidOperationException("Expected a discovery result."),
+                JsonSerializerOptionsCaseInsensitive);
+            discovery.Should().HaveCount(1);
+            discovery[0].Module.Should().Be("npm:@maieutics/probe-server");
         }
     }
 
@@ -77,7 +84,19 @@ public sealed class PluginHostIntegrationTests
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
         var pluginsRoot = CreatePluginsRoot("rejecting");
-        var manager = new PluginHostManager(
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-hook-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspaceRoot);
+        var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
+        var managerTcs = new TaskCompletionSource<PluginHostManager>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            functions,
+            managerTcs.Task);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        var manager = await PluginHostManager.CreateAsync(
             pluginsRoot,
             socketPath,
             new DenoReplOptions { Executable = "deno" },
@@ -86,20 +105,10 @@ public sealed class PluginHostIntegrationTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System);
-        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-hook-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(workspaceRoot);
-        var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
-        var controlHost = new ReplControlHost(
-            socketPath,
-            registry,
-            NullLogger<ReplControlHost>.Instance,
-            functions,
-            manager);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        managerTcs.TrySetResult(manager);
         await using (application)
         await using (manager)
         {
-            await manager.StartAsync(timeout.Token);
             var registrations = await WaitForRegistrationsAsync(
                 manager,
                 ReplExtensionPointName.ToolPreInvoke,
@@ -129,7 +138,7 @@ public sealed class PluginHostIntegrationTests
                     timeout.Token);
                 result.ExecutionStatus.Should().Be("ok");
                 result.Outputs
-                    .Where(item => item.Kind == "result" && item.Text is not null)
+                    .Where(item => item is { Kind: "result", Text: not null })
                     .Select(item => item.Text)
                     .Should().Contain(value => value != null && value.Contains("denied_by_hook"));
             }

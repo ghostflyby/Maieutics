@@ -1757,6 +1757,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             {
                 switch (Client)
                 {
+                    // ReSharper disable once SuspiciousTypeConversion.Global
                     case IAsyncDisposable asyncDisposable:
                         await asyncDisposable.DisposeAsync().ConfigureAwait(false);
                         break;

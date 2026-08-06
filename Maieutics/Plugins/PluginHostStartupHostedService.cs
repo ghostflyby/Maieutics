@@ -2,11 +2,21 @@ using Microsoft.Extensions.Hosting;
 
 namespace Maieutics.Plugins;
 
-/// <summary>Starts plugin discovery and the out-of-process plugin host with the application.</summary>
-internal sealed class PluginHostStartupHostedService(PluginHostManager pluginHostManager) : IHostedService
+/// <summary>Creates the out-of-process plugin host with the application and disposes it on shutdown.</summary>
+internal sealed class PluginHostStartupHostedService(Task<PluginHostManager> managerTask) : IHostedService
 {
-    public Task StartAsync(CancellationToken cancellationToken) =>
-        pluginHostManager.StartAsync(cancellationToken);
+    private PluginHostManager? manager;
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        manager = await managerTask.ConfigureAwait(false);
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (manager is { } started)
+        {
+            await started.DisposeAsync().ConfigureAwait(false);
+        }
+    }
 }

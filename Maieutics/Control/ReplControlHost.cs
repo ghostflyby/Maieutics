@@ -30,7 +30,7 @@ internal sealed class ReplControlHost : IDisposable
     private readonly ReplControlCredentialRegistry? credentials;
     private readonly ILogger<ReplControlHost> logger;
     private readonly IReadOnlyList<AIFunction> scriptTools;
-    private readonly PluginHostManager? pluginHosts;
+    private readonly Task<PluginHostManager>? pluginHosts;
     private readonly IWindowsPipeBootstrap? windowsBootstrap;
     private readonly ConcurrentDictionary<string, WebSocket> connections = new(StringComparer.Ordinal);
 
@@ -44,7 +44,7 @@ internal sealed class ReplControlHost : IDisposable
         ReplControlSessionRegistry registry,
         ILogger<ReplControlHost> logger,
         IReadOnlyList<AIFunction>? scriptTools = null,
-        PluginHostManager? pluginHosts = null,
+        Task<PluginHostManager>? pluginHosts = null,
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsBootstrap = null)
     {
@@ -166,7 +166,8 @@ internal sealed class ReplControlHost : IDisposable
         {
             if (pluginHosts is not null)
             {
-                await pluginHosts.AttachHostAsync(socket, context.RequestAborted).ConfigureAwait(false);
+                var manager = await pluginHosts.ConfigureAwait(false);
+                await manager.AttachHostAsync(socket, context.RequestAborted).ConfigureAwait(false);
             }
             else
             {
@@ -218,7 +219,7 @@ internal sealed class ReplControlHost : IDisposable
         }
     }
 
-    private int ResolvePeerProcessId(HttpContext context)
+    private static int ResolvePeerProcessId(HttpContext context)
     {
         var peerSocket = GetPeerSocket(context);
         if (peerSocket is not null &&
@@ -697,12 +698,12 @@ internal sealed class ReplControlHost : IDisposable
         string? correlationId,
         CancellationToken cancellationToken)
     {
-        var hosts = pluginHosts;
-        if (hosts is null)
+        if (pluginHosts is not { } pluginHostsTask)
         {
             return arguments;
         }
 
+        var hosts = await pluginHostsTask.ConfigureAwait(false);
         var registrations = hosts.GetRegistrations(ReplExtensionPointName.ToolPreInvoke);
         var current = arguments;
         foreach (var registration in registrations)
@@ -754,12 +755,12 @@ internal sealed class ReplControlHost : IDisposable
         JsonElement envelope,
         CancellationToken cancellationToken)
     {
-        var hosts = pluginHosts;
-        if (hosts is null)
+        if (pluginHosts is not { } pluginHostsTask)
         {
             return;
         }
 
+        var hosts = await pluginHostsTask.ConfigureAwait(false);
         var registrations = hosts.GetRegistrations(ReplExtensionPointName.ToolPostInvoke);
         if (registrations.Count == 0)
         {

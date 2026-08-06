@@ -14,7 +14,7 @@ public sealed class AnthropicProviderTests
     public async Task StreamsTextUsingConfiguredEndpointApiKeyAndModel()
     {
         await using var server = new FakeAnthropicServer(CreateTextStream("Hello from Claude"));
-        using var client = new AnthropicChatClientFactory().Create(
+        using var client = AnthropicChatClientFactory.Create(
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));
 
@@ -42,7 +42,7 @@ public sealed class AnthropicProviderTests
     public async Task MapsStreamingToolUseToFunctionCallContent()
     {
         await using var server = new FakeAnthropicServer(CreateToolStream());
-        using var client = new AnthropicChatClientFactory().Create(
+        using var client = AnthropicChatClientFactory.Create(
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));
 
@@ -70,7 +70,7 @@ public sealed class AnthropicProviderTests
                                                          event: error
                                                          data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
                                                          """);
-        using var client = new AnthropicChatClientFactory().Create(
+        using var client = AnthropicChatClientFactory.Create(
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));
 

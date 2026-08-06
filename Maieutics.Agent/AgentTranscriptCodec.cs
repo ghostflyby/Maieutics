@@ -143,8 +143,9 @@ internal static class AgentTranscriptCodec
             }
         }
 
-        // ReSharper disable once NullableWarningSuppressionIsUsed
-        return new AgentContentCompatibilityException(typeof(ChatMessage).FullName!, innerException);
+        return new AgentContentCompatibilityException(
+            typeof(ChatMessage).FullName ?? typeof(ChatMessage).Name,
+            innerException);
     }
 
     private static void ValidateMessages(IEnumerable<ChatMessage> messages)

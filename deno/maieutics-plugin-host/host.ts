@@ -71,15 +71,13 @@ function buildWorkerPermissions(
   options: HostOptions,
 ): Deno.PermissionOptionsObject {
   const declaredRead = normalize(plugin.permissions.read);
-  const read: boolean | string[] = typeof declaredRead === "boolean"
-      ? declaredRead
-      : (() => {
-        const entries = new Set<string>(declaredRead);
-        entries.add(plugin.rootDir);
-        entries.add(filePathOf(options.sdkUrl));
-        entries.add(filePathOf(options.workerEntryUrl));
-        return [...entries];
-      })();
+  const read: boolean | string[] = typeof declaredRead === "boolean" ? declaredRead : (() => {
+    const entries = new Set<string>(declaredRead);
+    entries.add(plugin.rootDir);
+    entries.add(filePathOf(options.sdkUrl));
+    entries.add(filePathOf(options.workerEntryUrl));
+    return [...entries];
+  })();
   return {
     env: normalize(plugin.permissions.env),
     net: normalize(plugin.permissions.net),
@@ -114,9 +112,9 @@ class PluginWorker {
   #plugin: PluginConfig;
 
   constructor(
-      plugin: PluginConfig,
-      exportName: string,
-      options: HostOptions,
+    plugin: PluginConfig,
+    exportName: string,
+    options: HostOptions,
   ) {
     this.pluginId = plugin.id;
     this.exportName = exportName;
@@ -144,18 +142,18 @@ class PluginWorker {
     await this.start();
     if (this.#disabled) {
       throw new Error(
-          `Plugin worker '${this.pluginId}/${this.exportName}' is disabled after repeated crashes.`,
+        `Plugin worker '${this.pluginId}/${this.exportName}' is disabled after repeated crashes.`,
       );
     }
     if (!this.extensionPoints.has(extensionPoint)) {
       throw new Error(
-          `Extension point '${extensionPoint}' is not registered by '${this.pluginId}/${this.exportName}'.`,
+        `Extension point '${extensionPoint}' is not registered by '${this.pluginId}/${this.exportName}'.`,
       );
     }
     const worker = this.#worker;
     if (worker === undefined) {
       throw new Error(
-          `Plugin worker '${this.pluginId}/${this.exportName}' is not running.`,
+        `Plugin worker '${this.pluginId}/${this.exportName}' is not running.`,
       );
     }
     const id = crypto.randomUUID();
@@ -163,12 +161,12 @@ class PluginWorker {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
         reject(
-            new Error(`Extension point '${extensionPoint}' timed out.`),
+          new Error(`Extension point '${extensionPoint}' timed out.`),
         );
       }, this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS);
-      this.#pending.set(id, {resolve, reject, timer});
+      this.#pending.set(id, { resolve, reject, timer });
     });
-    worker.postMessage({type: "invoke", id, extensionPoint, request});
+    worker.postMessage({ type: "invoke", id, extensionPoint, request });
     return await done;
   }
 
@@ -183,21 +181,19 @@ class PluginWorker {
   }
 
   async #startWorker(): Promise<void> {
-    const entryUrl = this.#plugin.workers.find((worker) =>
-        worker.exportName === this.exportName
-    )
+    const entryUrl = this.#plugin.workers.find((worker) => worker.exportName === this.exportName)
       ?.entryUrl;
     if (entryUrl === undefined) {
       throw new Error(
-          `Worker '${this.exportName}' of plugin '${this.pluginId}' has no entry URL.`,
+        `Worker '${this.exportName}' of plugin '${this.pluginId}' has no entry URL.`,
       );
     }
     const worker = new Worker(this.#options.workerEntryUrl, {
       type: "module",
       deno: {
         permissions: buildWorkerPermissions(
-            this.#plugin,
-            this.#options,
+          this.#plugin,
+          this.#options,
         ),
       },
     });
@@ -206,9 +202,9 @@ class PluginWorker {
       const timeout = setTimeout(() => {
         worker.terminate();
         reject(
-            new Error(
-                `Plugin worker '${this.pluginId}/${this.exportName}' did not become ready.`,
-            ),
+          new Error(
+            `Plugin worker '${this.pluginId}/${this.exportName}' did not become ready.`,
+          ),
         );
       }, this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS);
       worker.onmessage = (event: MessageEvent): void => {
@@ -224,14 +220,14 @@ class PluginWorker {
           clearTimeout(timeout);
           resolve();
         } else if (
-            frame.type === "error" &&
-            (frame.id === null || frame.id === undefined)
+          frame.type === "error" &&
+          (frame.id === null || frame.id === undefined)
         ) {
           clearTimeout(timeout);
           reject(
-              new Error(
-                  `Plugin worker failed to initialize: ${JSON.stringify(frame)}`,
-              ),
+            new Error(
+              `Plugin worker failed to initialize: ${JSON.stringify(frame)}`,
+            ),
           );
         }
       };
@@ -246,8 +242,7 @@ class PluginWorker {
       });
     });
     await ready;
-    worker.onmessage = (event: MessageEvent): void =>
-        this.#handleMessage(event);
+    worker.onmessage = (event: MessageEvent): void => this.#handleMessage(event);
     worker.onerror = (event: ErrorEvent): void => this.#handleCrash(event);
   }
 
@@ -273,9 +268,7 @@ class PluginWorker {
     } else if (frame.type === "error") {
       pending.reject(
         new Error(
-            `${frame.code ?? "extension_failed"}: ${
-                frame.message ?? "the extension failed"
-            }`,
+          `${frame.code ?? "extension_failed"}: ${frame.message ?? "the extension failed"}`,
         ),
       );
     }
@@ -285,7 +278,7 @@ class PluginWorker {
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(
-          new Error(`Plugin worker crashed: ${event.message}`),
+        new Error(`Plugin worker crashed: ${event.message}`),
       );
     }
     this.#pending.clear();
@@ -293,7 +286,7 @@ class PluginWorker {
     this.#started = undefined;
     this.#restarts += 1;
     if (
-        this.#restarts > (this.#options.maxRestarts ?? DEFAULT_MAX_RESTARTS)
+      this.#restarts > (this.#options.maxRestarts ?? DEFAULT_MAX_RESTARTS)
     ) {
       this.#disabled = true;
     }
@@ -311,13 +304,13 @@ export class PluginHost {
     for (const plugin of options.plugins) {
       for (const workerConfig of plugin.workers) {
         const worker = new PluginWorker(
-            plugin,
-            workerConfig.exportName,
-            options,
+          plugin,
+          workerConfig.exportName,
+          options,
         );
         this.#workers.set(
-            workerKey(plugin.id, workerConfig.exportName),
-            worker,
+          workerKey(plugin.id, workerConfig.exportName),
+          worker,
         );
       }
     }
@@ -351,7 +344,7 @@ export class PluginHost {
     const worker = this.#workers.get(workerKey(pluginId, exportName));
     if (worker === undefined) {
       throw new Error(
-          `No worker for plugin '${pluginId}' export '${exportName}'.`,
+        `No worker for plugin '${pluginId}' export '${exportName}'.`,
       );
     }
     return await worker.invoke(extensionPoint, request);

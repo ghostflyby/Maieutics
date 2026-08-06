@@ -16,11 +16,11 @@ const OPEN_EXISTING = 3;
 const MAX_PAYLOAD_BYTES = 4096;
 
 export function bootstrapWindowsCredential(
-    pipeName: string,
+  pipeName: string,
 ): BootstrapCredential {
   if (Deno.build.os !== "windows") {
     throw new Error(
-        "The named-pipe bootstrap is only available on Windows.",
+      "The named-pipe bootstrap is only available on Windows.",
     );
   }
 
@@ -90,11 +90,11 @@ export function bootstrapWindowsCredential(
     const text = new TextDecoder().decode(buffer.subarray(0, count));
     const credential = JSON.parse(text) as BootstrapCredential;
     if (
-        typeof credential.credential !== "string" ||
-        typeof credential.sessionId !== "string"
+      typeof credential.credential !== "string" ||
+      typeof credential.sessionId !== "string"
     ) {
       throw new Error(
-          "The bootstrap payload is not a credential envelope.",
+        "The bootstrap payload is not a credential envelope.",
       );
     }
     return credential;

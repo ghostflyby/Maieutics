@@ -5,7 +5,7 @@
  * extension point marker symbols through the SDK, and serves `invoke` frames.
  */
 
-import {ExtensionPoint} from "../maieutics-plugin-sdk/mod.ts";
+import { ExtensionPoint } from "../maieutics-plugin-sdk/mod.ts";
 
 interface InitFrame {
   type: "init";
@@ -34,7 +34,7 @@ function fail(id: string | null, code: string, message: string): void {
 async function initialize(frame: InitFrame): Promise<void> {
   const namespace = await import(frame.entryUrl);
   const extensionPoints = Object.entries(
-      ExtensionPoint as Record<string, symbol>,
+    ExtensionPoint as Record<string, symbol>,
   );
   const found = new Map<string, unknown>();
   for (const key of Object.keys(namespace)) {
@@ -70,9 +70,9 @@ async function invoke(frame: InvokeFrame): Promise<void> {
     }
     const value = typeof impl === "function"
       ? await (impl as (context: unknown) => unknown)(request)
-        : await (impl as { handler(context: unknown): unknown }).handler(
-            request,
-        );
+      : await (impl as { handler(context: unknown): unknown }).handler(
+        request,
+      );
     scope.postMessage({ type: "result", id, value });
   } catch (error) {
     fail(

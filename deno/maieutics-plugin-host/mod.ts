@@ -5,9 +5,9 @@
  * messages between the kernel and the workers.
  */
 
-import {type PluginConfig, PluginHost} from "./host.ts";
-import {connectBus} from "../shared/bus.ts";
-import {type ReplEnvelope} from "../shared/protocol.ts";
+import { type PluginConfig, PluginHost } from "./host.ts";
+import { connectBus } from "../shared/bus.ts";
+import { type ReplEnvelope } from "../shared/protocol.ts";
 
 const IPC_ENV = "MAIEUTICS_REPL_IPC";
 const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";
@@ -19,7 +19,7 @@ function requireEnv(name: string): string {
   const value = Deno.env.get(name);
   if (!value) {
     throw new Error(
-        `Missing ${name} environment variable for the plugin host.`,
+      `Missing ${name} environment variable for the plugin host.`,
     );
   }
   return value;
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   );
 
   const http = Deno.createHttpClient({
-    proxy: {transport: "unix", path: ipcAddress},
+    proxy: { transport: "unix", path: ipcAddress },
   });
   const bus = await connectBus({
     http,
@@ -101,10 +101,10 @@ async function main(): Promise<void> {
       return;
     }
     void host.invoke(
-        payload.pluginId,
-        payload.exportName,
-        payload.extensionPoint,
-        payload.request,
+      payload.pluginId,
+      payload.exportName,
+      payload.extensionPoint,
+      payload.request,
     )
       .then((value) => {
         bus.send({
@@ -134,7 +134,7 @@ function registryPayload(
   }>,
 ): {
   plugins: Array<
-      { pluginId: string; exportName: string; extensionPoints: string[] }
+    { pluginId: string; exportName: string; extensionPoints: string[] }
   >;
 } {
   const byWorker = new Map<string, Map<string, string[]>>();

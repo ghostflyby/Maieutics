@@ -1,0 +1,18 @@
+{
+  "workspace": [
+    "./maieutics-repl-client",
+    "./maieutics-plugin-sdk",
+    "./maieutics-plugin-host"
+  ],
+  "fmt": {
+    "lineWidth": 100,
+    "indentWidth": 2
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.19"
+  },
+  "tasks": {
+    "check": "deno check maieutics-repl-client/mod.ts maieutics-repl-client/mod_test.ts maieutics-repl-client/windows_bootstrap.ts maieutics-plugin-sdk/mod.ts maieutics-plugin-sdk/mod_test.ts maieutics-plugin-host/mod.ts maieutics-plugin-host/host.ts maieutics-plugin-host/worker_entry.ts maieutics-plugin-host/host_test.ts shared/bus.ts shared/protocol.ts",
+    "test": "deno test --allow-env --allow-read --allow-write --allow-net --unstable-worker-options maieutics-repl-client maieutics-plugin-sdk maieutics-plugin-host"
+  }
+}

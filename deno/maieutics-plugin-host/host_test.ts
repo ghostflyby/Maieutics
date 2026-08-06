@@ -1,5 +1,5 @@
-import {assert, assertEquals, assertRejects} from "jsr:@std/assert";
-import {type PluginConfig, PluginHost} from "./host.ts";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import { type PluginConfig, PluginHost } from "./host.ts";
 
 const SDK_URL = new URL("../maieutics-plugin-sdk/mod.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
@@ -20,9 +20,7 @@ function createPlugin(dir: string, source: string): PluginConfig {
 }
 
 function pluginSource(body: string): string {
-    return `import { defineExtensionPoint } from ${
-        JSON.stringify(SDK_URL)
-    };\n${body}\n`;
+  return `import { defineExtensionPoint } from ${JSON.stringify(SDK_URL)};\n${body}\n`;
 }
 
 function makeHost(plugin: PluginConfig): PluginHost {
@@ -34,15 +32,13 @@ function makeHost(plugin: PluginConfig): PluginHost {
 }
 
 Deno.test("worker entry imports only the plugin sdk", async () => {
-    const source = await Deno.readTextFile(
-        new URL("./worker_entry.ts", import.meta.url),
-    );
-    const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) =>
-        match[1]
-    );
+  const source = await Deno.readTextFile(
+    new URL("./worker_entry.ts", import.meta.url),
+  );
+  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
   for (const specifier of imports) {
     assert(
-        specifier.startsWith("../maieutics-plugin-sdk/") ||
+      specifier.startsWith("../maieutics-plugin-sdk/") ||
         specifier.startsWith("./"),
       `unexpected import '${specifier}' in the worker entry`,
     );
@@ -51,9 +47,7 @@ Deno.test("worker entry imports only the plugin sdk", async () => {
 
 Deno.test("host entry imports only the host implementation and shared control module", async () => {
   const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
-    const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) =>
-        match[1]
-    );
+  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
   for (const specifier of imports) {
     assert(
       specifier === "./host.ts" || specifier.startsWith("../shared/"),
@@ -64,8 +58,7 @@ Deno.test("host entry imports only the host implementation and shared control mo
 
 Deno.test("a plugin worker cannot import the repl client module", async () => {
   const dir = Deno.makeTempDirSync();
-    const replClientUrl =
-        new URL("../maieutics-repl-client/mod.ts", import.meta.url).href;
+  const replClientUrl = new URL("../maieutics-repl-client/mod.ts", import.meta.url).href;
   const plugin = createPlugin(
     dir,
     pluginSource(`
@@ -171,9 +164,9 @@ Deno.test("invokes an object handler", async () => {
   const host = makeHost(plugin);
   try {
     await host.startAll();
-      const value = await host.invoke("test", "./main", "McpDiscover", {
-          reason: "startup",
-      });
+    const value = await host.invoke("test", "./main", "McpDiscover", {
+      reason: "startup",
+    });
     assertEquals(Array.isArray(value), true);
   } finally {
     host.dispose();

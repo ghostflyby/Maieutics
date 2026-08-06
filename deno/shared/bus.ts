@@ -5,7 +5,7 @@
  * peer claims.
  */
 
-import {ENVELOPE_VERSION, type HttpClient, type ReplEnvelope,} from "./protocol.ts";
+import { ENVELOPE_VERSION, type HttpClient, type ReplEnvelope } from "./protocol.ts";
 
 export interface BusConnection {
   /** Sends an envelope; the current version is stamped automatically. */
@@ -29,11 +29,8 @@ export interface ConnectBusOptions {
  * resolves; no server readiness handshake is assumed.
  */
 export function connectBus(options: ConnectBusOptions): Promise<BusConnection> {
-  const {http, url = "ws://localhost/ws", hello, onMessage, onClose} =
-      options;
-  const socket = http === undefined
-      ? new WebSocket(url)
-      : new WebSocket(url, {client: http});
+  const { http, url = "ws://localhost/ws", hello, onMessage, onClose } = options;
+  const socket = http === undefined ? new WebSocket(url) : new WebSocket(url, { client: http });
   socket.onclose = () => onClose?.();
   socket.onmessage = (event) => {
     let envelope: ReplEnvelope;
@@ -46,15 +43,15 @@ export function connectBus(options: ConnectBusOptions): Promise<BusConnection> {
   };
   const connection: BusConnection = {
     send: (envelope) =>
-        socket.send(
-            JSON.stringify({version: ENVELOPE_VERSION, ...envelope}),
-        ),
+      socket.send(
+        JSON.stringify({ version: ENVELOPE_VERSION, ...envelope }),
+      ),
     close: () => socket.close(),
   };
   return new Promise<BusConnection>((resolve, reject) => {
     socket.onopen = () => {
       socket.send(
-          JSON.stringify({version: ENVELOPE_VERSION, ...hello}),
+        JSON.stringify({ version: ENVELOPE_VERSION, ...hello }),
       );
       resolve(connection);
     };

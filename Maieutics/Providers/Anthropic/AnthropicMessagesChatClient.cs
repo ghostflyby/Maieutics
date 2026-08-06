@@ -11,8 +11,8 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 {
     private const string AnthropicVersion = "2023-06-01";
     private const int DefaultMaxOutputTokens = 4096;
-    private readonly string model;
     private readonly HttpClient httpClient;
+    private readonly string model;
 
     internal AnthropicMessagesChatClient(
         string model,
@@ -23,7 +23,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
         this.model = model;
-        httpClient = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
+        httpClient = handler is null ? new HttpClient() : new HttpClient(handler, true);
         httpClient.BaseAddress = NormalizeEndpoint(endpoint ?? new Uri("https://api.anthropic.com/"));
         httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
         httpClient.DefaultRequestHeaders.Add("anthropic-version", AnthropicVersion);
@@ -37,9 +37,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         var updates = new List<ChatResponseUpdate>();
         await foreach (var update in GetStreamingResponseAsync(messages, options, cancellationToken)
                            .ConfigureAwait(false))
-        {
             updates.Add(update);
-        }
 
         return updates.ToChatResponse();
     }
@@ -60,7 +58,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+        using var reader = new StreamReader(stream, Encoding.UTF8, false);
 
         var eventData = new StringBuilder();
         var toolCalls = new Dictionary<int, StreamingToolCall>();
@@ -70,10 +68,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             {
                 if (line.StartsWith("data:", StringComparison.Ordinal))
                 {
-                    if (eventData.Length > 0)
-                    {
-                        eventData.Append('\n');
-                    }
+                    if (eventData.Length > 0) eventData.Append('\n');
 
                     eventData.Append(line.AsSpan("data:".Length).TrimStart());
                 }
@@ -81,38 +76,32 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                 continue;
             }
 
-            if (eventData.Length == 0)
-            {
-                continue;
-            }
+            if (eventData.Length == 0) continue;
 
             var update = ProcessEvent(eventData.ToString(), toolCalls);
             eventData.Clear();
-            if (update is not null)
-            {
-                yield return update;
-            }
+            if (update is not null) yield return update;
         }
 
         if (eventData.Length > 0)
         {
             var update = ProcessEvent(eventData.ToString(), toolCalls);
-            if (update is not null)
-            {
-                yield return update;
-            }
+            if (update is not null) yield return update;
         }
 
         if (toolCalls.Count > 0)
-        {
             throw new InvalidDataException("Anthropic ended the response before a tool call was complete.");
-        }
     }
 
-    public object? GetService(Type serviceType, object? serviceKey = null) =>
-        serviceKey is null && serviceType.IsInstanceOfType(this) ? this : null;
+    public object? GetService(Type serviceType, object? serviceKey = null)
+    {
+        return serviceKey is null && serviceType.IsInstanceOfType(this) ? this : null;
+    }
 
-    public void Dispose() => httpClient.Dispose();
+    public void Dispose()
+    {
+        httpClient.Dispose();
+    }
 
     private static ChatResponseUpdate? ProcessEvent(
         string eventData,
@@ -152,10 +141,8 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                     {
                         var index = root.GetProperty("index").GetInt32();
                         if (!toolCalls.TryGetValue(index, out var call))
-                        {
                             throw new InvalidDataException(
                                 $"Anthropic streamed tool arguments for unknown content block {index}.");
-                        }
 
                         call.Arguments.Append(delta.GetProperty("partial_json").GetString());
                         return null;
@@ -167,10 +154,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             case "content_block_stop":
             {
                 var index = root.GetProperty("index").GetInt32();
-                if (!toolCalls.Remove(index, out var call))
-                {
-                    return null;
-                }
+                if (!toolCalls.Remove(index, out var call)) return null;
 
                 return new ChatResponseUpdate(
                     ChatRole.Assistant,
@@ -195,17 +179,12 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             .Where(static message => message.Role == ChatRole.System)
             .SelectMany(static message => message.Contents.OfType<TextContent>())
             .Select(static content => content.Text));
-        if (systemText.Length > 0)
-        {
-            writer.WriteString("system", systemText);
-        }
+        if (systemText.Length > 0) writer.WriteString("system", systemText);
 
         writer.WritePropertyName("messages");
         writer.WriteStartArray();
         foreach (var message in materialized.Where(static message => message.Role != ChatRole.System))
-        {
             WriteMessage(writer, message);
-        }
 
         writer.WriteEndArray();
         WriteTools(writer, options?.Tools);
@@ -221,7 +200,6 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         writer.WritePropertyName("content");
         writer.WriteStartArray();
         foreach (var content in message.Contents)
-        {
             switch (content)
             {
                 case TextContent text:
@@ -252,7 +230,6 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                     throw new NotSupportedException(
                         $"Anthropic Messages does not support content type '{content.GetType().Name}'.");
             }
-        }
 
         writer.WriteEndArray();
         writer.WriteEndObject();
@@ -260,27 +237,20 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
     private static void WriteTools(Utf8JsonWriter writer, IList<AITool>? tools)
     {
-        if (tools is not { Count: > 0 })
-        {
-            return;
-        }
+        if (tools is not { Count: > 0 }) return;
 
         writer.WritePropertyName("tools");
         writer.WriteStartArray();
         foreach (var tool in tools)
         {
             if (tool is not AIFunctionDeclaration function)
-            {
                 throw new NotSupportedException(
                     $"Anthropic Messages does not support tool type '{tool.GetType().Name}'.");
-            }
 
             writer.WriteStartObject();
             writer.WriteString("name", function.Name);
             if (!string.IsNullOrWhiteSpace(function.Description))
-            {
                 writer.WriteString("description", function.Description);
-            }
 
             writer.WritePropertyName("input_schema");
             function.JsonSchema.WriteTo(writer);
@@ -294,13 +264,11 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     {
         writer.WriteStartObject();
         if (arguments is not null)
-        {
             foreach (var (name, value) in arguments)
             {
                 writer.WritePropertyName(name);
                 WriteValue(writer, value);
             }
-        }
 
         writer.WriteEndObject();
     }
@@ -342,23 +310,23 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         }
     }
 
-    private static string FormatResult(object? result) => result switch
+    private static string FormatResult(object? result)
     {
-        null => "null",
-        string text => text,
-        JsonElement element => element.GetRawText(),
-        _ => result.ToString() ?? string.Empty
-    };
+        return result switch
+        {
+            null => "null",
+            string text => text,
+            JsonElement element => element.GetRawText(),
+            _ => result.ToString() ?? string.Empty
+        };
+    }
 
     private static void StartContentBlock(
         JsonElement root,
         IDictionary<int, StreamingToolCall> toolCalls)
     {
         var block = root.GetProperty("content_block");
-        if (!string.Equals(block.GetProperty("type").GetString(), "tool_use", StringComparison.Ordinal))
-        {
-            return;
-        }
+        if (!string.Equals(block.GetProperty("type").GetString(), "tool_use", StringComparison.Ordinal)) return;
 
         var index = root.GetProperty("index").GetInt32();
         var call = new StreamingToolCall(
@@ -368,28 +336,19 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             ?? throw new InvalidDataException("Anthropic tool_use omitted its name."));
         if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object &&
             input.EnumerateObject().Any())
-        {
             call.Arguments.Append(input.GetRawText());
-        }
 
         if (!toolCalls.TryAdd(index, call))
-        {
             throw new InvalidDataException($"Anthropic repeated content block index {index}.");
-        }
     }
 
     private static Dictionary<string, object?> ParseArguments(string json)
     {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return [];
-        }
+        if (string.IsNullOrWhiteSpace(json)) return [];
 
         using var document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
-        {
             throw new InvalidDataException("Anthropic tool arguments must be a JSON object.");
-        }
 
         return document.RootElement.EnumerateObject()
             .ToDictionary(

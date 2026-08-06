@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.WebSockets;
 using System.Text;
@@ -20,16 +20,22 @@ internal readonly record struct ExtensionCallOutcome(
     string Code,
     string Message)
 {
-    public static ExtensionCallOutcome Result(JsonElement? value) => new(false, value, string.Empty, string.Empty);
+    public static ExtensionCallOutcome Result(JsonElement? value)
+    {
+        return new ExtensionCallOutcome(false, value, string.Empty, string.Empty);
+    }
 
-    public static ExtensionCallOutcome Error(string code, string message) => new(true, null, code, message);
+    public static ExtensionCallOutcome Error(string code, string message)
+    {
+        return new ExtensionCallOutcome(true, null, code, message);
+    }
 }
 
 /// <summary>
-/// Owns plugin discovery, the plugin host process, its control-channel WebSocket connection, and
-/// extension point invocation routing. REPL connections stay in <see cref="ReplControlHost"/>;
-/// host connections are attached here so the kernel can call into plugin workers without a
-/// reverse dependency. Instances are created already started through <see cref="CreateAsync"/>.
+///     Owns plugin discovery, the plugin host process, its control-channel WebSocket connection, and
+///     extension point invocation routing. REPL connections stay in <see cref="ReplControlHost" />;
+///     host connections are attached here so the kernel can call into plugin workers without a
+///     reverse dependency. Instances are created already started through <see cref="CreateAsync" />.
 /// </summary>
 internal sealed class PluginHostManager(
     string pluginsRoot,
@@ -47,32 +53,39 @@ internal sealed class PluginHostManager(
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
-    private readonly PluginHostModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
-
-    private readonly ReplControlSessionRegistry sessionRegistry =
-        sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+    private readonly List<PluginDescriptor> descriptors = [];
+    private readonly List<McpServerDefinition> dynamicDefinitions = [];
+    private readonly ConcurrentDictionary<string, McpServerGeneration> dynamicMcp = new(StringComparer.Ordinal);
+    private readonly Lock gate = new();
 
     private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     private readonly ILoggerFactory loggerFactory =
         loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
 
-    private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-    private readonly Lock gate = new();
-    private readonly List<PluginDescriptor> descriptors = [];
-    private readonly List<PluginRegistration> registrations = [];
-    private readonly List<McpServerDefinition> dynamicDefinitions = [];
-    private readonly ConcurrentDictionary<string, McpServerGeneration> dynamicMcp = new(StringComparer.Ordinal);
+    private readonly PluginHostModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pending =
         new(StringComparer.Ordinal);
 
-    private PluginHostProcess? process;
-    private WebSocket? Socket { get; set; }
+    private readonly List<PluginRegistration> registrations = [];
+
+    private readonly ReplControlSessionRegistry sessionRegistry =
+        sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+
+    private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     private string? configPath;
+
+    private PluginHostProcess? process;
     private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
+    private WebSocket? Socket { get; set; }
 
     private string HostId { get; } = $"host-{Guid.NewGuid():N}"[..12];
+
+    public ValueTask DisposeAsync()
+    {
+        return new ValueTask(StopAsync());
+    }
 
     internal static Task<PluginHostManager> CreateAsync(
         string pluginsRoot,
@@ -184,12 +197,8 @@ internal sealed class PluginHostManager(
     {
         var leases = new List<McpServerGeneration.McpServerLease>();
         foreach (var generation in dynamicMcp.Values)
-        {
             if (generation.TryAcquire() is { } lease)
-            {
                 leases.Add(lease);
-            }
-        }
 
         return leases;
     }
@@ -207,10 +216,7 @@ internal sealed class PluginHostManager(
             while (socket.State == WebSocketState.Open)
             {
                 var text = await ReadTextMessageAsync(socket, cancellationToken).ConfigureAwait(false);
-                if (text is null)
-                {
-                    break;
-                }
+                if (text is null) break;
 
                 HandleHostMessage(text);
             }
@@ -219,19 +225,11 @@ internal sealed class PluginHostManager(
         {
             lock (gate)
             {
-                if (ReferenceEquals(socket, Socket))
-                {
-                    Socket = null;
-                }
+                if (ReferenceEquals(socket, Socket)) Socket = null;
             }
 
             FailPending("The plugin host connection closed.");
         }
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        return new ValueTask(StopAsync());
     }
 
     private async Task StopAsync()
@@ -243,7 +241,6 @@ internal sealed class PluginHostManager(
         }
 
         if (configPath is not null)
-        {
             try
             {
                 File.Delete(configPath);
@@ -252,7 +249,6 @@ internal sealed class PluginHostManager(
             {
                 // Best-effort temp cleanup must not mask shutdown.
             }
-        }
     }
 
     private async Task ObserveExitAsync(PluginHostProcess pluginProcess, string path)
@@ -286,14 +282,10 @@ internal sealed class PluginHostManager(
 
     private List<PluginDescriptor> ScanPlugins()
     {
-        if (!Directory.Exists(pluginsRoot))
-        {
-            return [];
-        }
+        if (!Directory.Exists(pluginsRoot)) return [];
 
         var result = new List<PluginDescriptor>();
         foreach (var directory in Directory.EnumerateDirectories(pluginsRoot))
-        {
             if (PluginManifest.TryLoad(directory, out var descriptor, out var error))
             {
                 if (!RequiresProcessIsolation(descriptor))
@@ -318,15 +310,16 @@ internal sealed class PluginHostManager(
             {
                 logger.LogWarning("Skipping plugin directory '{Directory}': {Error}", directory, error);
             }
-        }
 
         return result;
     }
 
-    private static bool RequiresProcessIsolation(PluginDescriptor descriptor) =>
-        string.Equals(descriptor.Isolation, "process", StringComparison.OrdinalIgnoreCase) ||
-        descriptor.Permissions.Run.AllowAll || descriptor.Permissions.Run.Values.Count > 0 ||
-        descriptor.Permissions.Ffi.AllowAll || descriptor.Permissions.Ffi.Values.Count > 0;
+    private static bool RequiresProcessIsolation(PluginDescriptor descriptor)
+    {
+        return string.Equals(descriptor.Isolation, "process", StringComparison.OrdinalIgnoreCase) ||
+               descriptor.Permissions.Run.AllowAll || descriptor.Permissions.Run.Values.Count > 0 ||
+               descriptor.Permissions.Ffi.AllowAll || descriptor.Permissions.Ffi.Values.Count > 0;
+    }
 
     private static string WriteConfigFile(IReadOnlyList<PluginDescriptor> plugins)
     {
@@ -345,20 +338,25 @@ internal sealed class PluginHostManager(
         return path;
     }
 
-    private static PluginHostConfigPermissions ToConfigPermissions(PluginPermissionGrants permissions) => new(
-        ToGrant(permissions.Env),
-        ToGrant(permissions.Net),
-        ToGrant(permissions.Read),
-        ToGrant(permissions.Write),
-        ToGrant(permissions.Run),
-        ToGrant(permissions.Ffi),
-        ToGrant(permissions.Sys),
-        ToGrant(permissions.Import));
+    private static PluginHostConfigPermissions ToConfigPermissions(PluginPermissionGrants permissions)
+    {
+        return new PluginHostConfigPermissions(
+            ToGrant(permissions.Env),
+            ToGrant(permissions.Net),
+            ToGrant(permissions.Read),
+            ToGrant(permissions.Write),
+            ToGrant(permissions.Run),
+            ToGrant(permissions.Ffi),
+            ToGrant(permissions.Sys),
+            ToGrant(permissions.Import));
+    }
 
-    private static JsonElement ToGrant(PluginPermissionGrant grant) =>
-        grant.AllowAll
+    private static JsonElement ToGrant(PluginPermissionGrant grant)
+    {
+        return grant.AllowAll
             ? JsonSerializer.SerializeToElement(true, PluginHostJsonContext.Default.Boolean)
             : JsonSerializer.SerializeToElement([.. grant.Values], PluginHostJsonContext.Default.StringArray);
+    }
 
     private PluginHostProcessGrants BuildProcessGrants(string config)
     {
@@ -413,10 +411,7 @@ internal sealed class PluginHostManager(
             return;
         }
 
-        foreach (var value in grant.Values)
-        {
-            target.Add(value);
-        }
+        foreach (var value in grant.Values) target.Add(value);
     }
 
     private static IEnumerable<string> ReplControlEnvironmentNames()
@@ -457,9 +452,7 @@ internal sealed class PluginHostManager(
     {
         if (envelope.CorrelationId is not { } correlationId ||
             !pending.TryRemove(correlationId, out var completion))
-        {
             return;
-        }
 
         if (envelope.Type == ReplMessageType.ExtensionResult)
         {
@@ -475,21 +468,14 @@ internal sealed class PluginHostManager(
 
     private void UpdateRegistry(ExtensionRegistryPayload? payload)
     {
-        if (payload is null)
-        {
-            return;
-        }
+        if (payload is null) return;
 
         lock (gate)
         {
             registrations.Clear();
             foreach (var plugin in payload.Plugins)
-            {
-                foreach (var extensionPoint in plugin.ExtensionPoints)
-                {
-                    registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
-                }
-            }
+            foreach (var extensionPoint in plugin.ExtensionPoints)
+                registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
 
             logger.LogInformation(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
@@ -503,14 +489,10 @@ internal sealed class PluginHostManager(
     private async Task RefreshDynamicMcpAsync()
     {
         var discoveries = GetRegistrations(ReplExtensionPointName.McpDiscover);
-        if (discoveries.Count == 0)
-        {
-            return;
-        }
+        if (discoveries.Count == 0) return;
 
         var definitions = new List<McpServerDefinition>();
         foreach (var registration in discoveries)
-        {
             try
             {
                 var request = JsonSerializer.SerializeToElement(
@@ -531,18 +513,11 @@ internal sealed class PluginHostManager(
                     continue;
                 }
 
-                if (outcome.Value is not { ValueKind: JsonValueKind.Array } array)
-                {
-                    continue;
-                }
+                if (outcome.Value is not { ValueKind: JsonValueKind.Array } array) continue;
 
                 foreach (var item in array.EnumerateArray())
-                {
                     if (TryToMcpDefinition(registration.PluginId, item, out var definition))
-                    {
                         definitions.Add(definition);
-                    }
-                }
             }
             catch (Exception exception)
             {
@@ -551,7 +526,6 @@ internal sealed class PluginHostManager(
                     "Plugin '{PluginId}' MCP discovery raised an unexpected failure.",
                     registration.PluginId);
             }
-        }
 
         lock (gate)
         {
@@ -572,10 +546,7 @@ internal sealed class PluginHostManager(
 
         foreach (var definition in definitions)
         {
-            if (dynamicMcp.ContainsKey(definition.Id))
-            {
-                continue;
-            }
+            if (dynamicMcp.ContainsKey(definition.Id)) continue;
 
             try
             {
@@ -584,12 +555,9 @@ internal sealed class PluginHostManager(
                     loggerFactory,
                     timeProvider,
                     CancellationToken.None,
-                    transportFactory: null,
+                    null,
                     reservedToolNames).ConfigureAwait(false);
-                if (!dynamicMcp.TryAdd(definition.Id, generation))
-                {
-                    await generation.Retire().ConfigureAwait(false);
-                }
+                if (!dynamicMcp.TryAdd(definition.Id, generation)) await generation.Retire().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -613,9 +581,7 @@ internal sealed class PluginHostManager(
             string.IsNullOrWhiteSpace(module.GetString()) ||
             !discovery.TryGetProperty("transport", out var transport) ||
             transport.ValueKind != JsonValueKind.Object)
-        {
             return false;
-        }
 
         McpTransportDefinition payload;
         try
@@ -635,10 +601,10 @@ internal sealed class PluginHostManager(
                 definition = new McpServerDefinition(
                     id,
                     stdio,
-                    InitializationTimeout: TimeSpan.FromSeconds(30),
-                    RequestTimeout: TimeSpan.FromMinutes(2),
-                    ShutdownTimeout: TimeSpan.FromSeconds(5),
-                    ConnectionTimeout: TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromMinutes(2),
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromSeconds(30),
                     McpServerDefinition.CreateGenerationKey(
                         stdio,
                         TimeSpan.FromSeconds(30),
@@ -651,10 +617,10 @@ internal sealed class PluginHostManager(
                 definition = new McpServerDefinition(
                     id,
                     http,
-                    InitializationTimeout: TimeSpan.FromSeconds(30),
-                    RequestTimeout: TimeSpan.FromMinutes(2),
-                    ShutdownTimeout: TimeSpan.FromSeconds(5),
-                    ConnectionTimeout: TimeSpan.FromSeconds(30),
+                    TimeSpan.FromSeconds(30),
+                    TimeSpan.FromMinutes(2),
+                    TimeSpan.FromSeconds(5),
+                    TimeSpan.FromSeconds(30),
                     McpServerDefinition.CreateGenerationKey(
                         http,
                         TimeSpan.FromSeconds(30),
@@ -671,9 +637,7 @@ internal sealed class PluginHostManager(
     private void FailPending(string message)
     {
         foreach (var completion in pending.Values)
-        {
             completion.TrySetResult(ExtensionCallOutcome.Error("host_disconnected", message));
-        }
 
         pending.Clear();
     }
@@ -681,24 +645,24 @@ internal sealed class PluginHostManager(
     private static T? ParsePayload<T>(ReplEnvelope envelope)
         where T : class
     {
-        if (envelope.Payload is not { } payload)
-        {
-            return null;
-        }
+        if (envelope.Payload is not { } payload) return null;
 
         return (T?)JsonSerializer.Deserialize(payload.GetRawText(), JsonTypeInfoFor<T>());
     }
 
-    private static JsonTypeInfo JsonTypeInfoFor<T>() => typeof(T) switch
+    private static JsonTypeInfo JsonTypeInfoFor<T>()
     {
-        _ when typeof(T) == typeof(ExtensionResultPayload) =>
-            ReplControlJsonContext.Default.ExtensionResultPayload,
-        _ when typeof(T) == typeof(ExtensionErrorPayload) =>
-            ReplControlJsonContext.Default.ExtensionErrorPayload,
-        _ when typeof(T) == typeof(ExtensionRegistryPayload) =>
-            ReplControlJsonContext.Default.ExtensionRegistryPayload,
-        _ => throw new InvalidOperationException($"Unsupported extension payload type '{typeof(T).Name}'.")
-    };
+        return typeof(T) switch
+        {
+            _ when typeof(T) == typeof(ExtensionResultPayload) =>
+                ReplControlJsonContext.Default.ExtensionResultPayload,
+            _ when typeof(T) == typeof(ExtensionErrorPayload) =>
+                ReplControlJsonContext.Default.ExtensionErrorPayload,
+            _ when typeof(T) == typeof(ExtensionRegistryPayload) =>
+                ReplControlJsonContext.Default.ExtensionRegistryPayload,
+            _ => throw new InvalidOperationException($"Unsupported extension payload type '{typeof(T).Name}'.")
+        };
+    }
 
     private static async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
     {
@@ -707,7 +671,7 @@ internal sealed class PluginHostManager(
             .SendAsync(
                 Encoding.UTF8.GetBytes(json),
                 WebSocketMessageType.Text,
-                endOfMessage: true,
+                true,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -729,10 +693,7 @@ internal sealed class PluginHostManager(
             }
 
             stream.Write(buffer.Span[..result.Count]);
-            if (result.EndOfMessage)
-            {
-                break;
-            }
+            if (result.EndOfMessage) break;
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());

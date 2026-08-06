@@ -3,8 +3,8 @@ using Maieutics.Agent;
 namespace Maieutics.Providers;
 
 /// <summary>
-/// Optional interface that an <see cref="IConfiguredChatClientSource"/> may implement
-/// to provide a list of models available from the provider API endpoint.
+///     Optional interface that an <see cref="IConfiguredChatClientSource" /> may implement
+///     to provide a list of models available from the provider API endpoint.
 /// </summary>
 internal interface IModelDiscoverySource
 {

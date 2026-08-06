@@ -11,13 +11,13 @@ public interface IJupyterTransport : IAsyncDisposable
     int PendingIncomingCount { get; }
 
     /// <summary>
-    /// Attempts to read a buffered incoming message without waiting for new traffic.
+    ///     Attempts to read a buffered incoming message without waiting for new traffic.
     /// </summary>
     bool TryReadIncoming([NotNullWhen(true)] out JupyterTransportMessage? message);
 
     /// <summary>
-    /// Waits for an incoming message to become available, for the timeout to elapse, or for the
-    /// channel to complete. Returns false when the timeout elapses or the channel completes.
+    ///     Waits for an incoming message to become available, for the timeout to elapse, or for the
+    ///     channel to complete. Returns false when the timeout elapses or the channel completes.
     /// </summary>
     ValueTask<bool> WaitToReadAsync(TimeSpan timeout, CancellationToken cancellationToken);
 

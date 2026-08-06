@@ -23,9 +23,7 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
     public JupyterMessageSerializer(string key, string signatureScheme = SupportedSignatureScheme)
     {
         if (!string.Equals(signatureScheme, SupportedSignatureScheme, StringComparison.OrdinalIgnoreCase))
-        {
             throw new NotSupportedException($"Jupyter signature scheme '{signatureScheme}' is not supported.");
-        }
 
         this.key = Encoding.UTF8.GetBytes(key);
     }
@@ -61,14 +59,10 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
     {
         var delimiterIndex = FindDelimiter(frames);
         if (delimiterIndex < 0)
-        {
             throw new JupyterProtocolException("Jupyter wire message did not contain the <IDS|MSG> delimiter.");
-        }
 
         if (frames.Count < delimiterIndex + 6)
-        {
             throw new JupyterProtocolException("Jupyter wire message did not contain all required frames.");
-        }
 
         var signatureFrame = frames[delimiterIndex + 1];
         var headerFrame = frames[delimiterIndex + 2];
@@ -78,9 +72,7 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
         var expected = Encoding.ASCII.GetBytes(Sign(headerFrame, parentHeaderFrame, metadataFrame, contentFrame));
 
         if (!CryptographicOperations.FixedTimeEquals(signatureFrame, expected))
-        {
             throw new JupyterProtocolException("Jupyter wire message signature verification failed.");
-        }
 
         var header = JsonSerializer.Deserialize(headerFrame, JupyterJsonContext.Default.JupyterMessageHeader)
                      ?? throw new JupyterProtocolException("Jupyter message header was empty.");
@@ -96,16 +88,10 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
 
     private string Sign(params byte[][] frames)
     {
-        if (key.Length == 0)
-        {
-            return string.Empty;
-        }
+        if (key.Length == 0) return string.Empty;
 
         using var hmac = new HMACSHA256(key);
-        foreach (var frame in frames)
-        {
-            hmac.TransformBlock(frame, 0, frame.Length, null, 0);
-        }
+        foreach (var frame in frames) hmac.TransformBlock(frame, 0, frame.Length, null, 0);
 
         hmac.TransformFinalBlock([], 0, 0);
         return Convert.ToHexString(hmac.Hash ?? []).ToLowerInvariant();
@@ -114,12 +100,8 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
     private static int FindDelimiter(IReadOnlyList<byte[]> frames)
     {
         for (var index = 0; index < frames.Count; index++)
-        {
             if (frames[index].AsSpan().SequenceEqual(DelimiterBytes))
-            {
                 return index;
-            }
-        }
 
         return -1;
     }
@@ -128,14 +110,9 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
     {
         using var document = JsonDocument.Parse(bytes);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
-        {
             throw new JupyterProtocolException("Jupyter parent header must be a JSON object.");
-        }
 
-        if (!document.RootElement.EnumerateObject().Any())
-        {
-            return null;
-        }
+        if (!document.RootElement.EnumerateObject().Any()) return null;
 
         return document.RootElement.Deserialize(JupyterJsonContext.Default.JupyterMessageHeader);
     }
@@ -144,14 +121,15 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
     {
         using var document = JsonDocument.Parse(bytes);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
-        {
             throw new JupyterProtocolException($"Jupyter {frameName} frame must be a JSON object.");
-        }
 
         return document.RootElement.Clone();
     }
 
-    private static byte[] Clone(byte[] value) => value.ToArray();
+    private static byte[] Clone(byte[] value)
+    {
+        return value.ToArray();
+    }
 }
 
 public sealed class JupyterProtocolException : Exception

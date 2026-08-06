@@ -14,9 +14,6 @@ internal sealed class PluginHostStartupHostedService(Task<PluginHostManager> man
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (manager is { } started)
-        {
-            await started.DisposeAsync().ConfigureAwait(false);
-        }
+        if (manager is { } started) await started.DisposeAsync().ConfigureAwait(false);
     }
 }

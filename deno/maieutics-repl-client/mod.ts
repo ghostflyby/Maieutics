@@ -19,9 +19,9 @@ const CREDENTIAL_HEADER = "X-Maieutics-Credential";
 const SERVER_URL = "http://localhost";
 const BUS_TIMEOUT_MS = 5_000;
 
-import { type BusConnection, connectBus } from "../shared/bus.ts";
-import { ENVELOPE_VERSION, type HttpClient, type ReplEnvelope } from "../shared/protocol.ts";
-import { type BootstrapCredential, bootstrapWindowsCredential } from "./windows_bootstrap.ts";
+import {type BusConnection, connectBus} from "../shared/bus.ts";
+import {ENVELOPE_VERSION, type HttpClient, type ReplEnvelope,} from "../shared/protocol.ts";
+import {type BootstrapCredential, bootstrapWindowsCredential,} from "./windows_bootstrap.ts";
 
 const IS_WINDOWS = Deno.build.os === "windows";
 let windowsCredential: BootstrapCredential | undefined;
@@ -33,7 +33,9 @@ function ensureCredential(): BootstrapCredential | undefined {
   if (windowsCredential === undefined) {
     const pipeName = Deno.env.get(PIPE_ENV);
     if (!pipeName) {
-      throw new Error(`Missing ${PIPE_ENV} environment variable on Windows.`);
+      throw new Error(
+          `Missing ${PIPE_ENV} environment variable on Windows.`,
+      );
     }
     windowsCredential = bootstrapWindowsCredential(pipeName);
   }
@@ -42,7 +44,9 @@ function ensureCredential(): BootstrapCredential | undefined {
 
 function credentialHeaders(): Record<string, string> | undefined {
   const credential = ensureCredential()?.credential;
-  return credential === undefined ? undefined : { [CREDENTIAL_HEADER]: credential };
+  return credential === undefined
+      ? undefined
+      : {[CREDENTIAL_HEADER]: credential};
 }
 
 function serverBase(address: string): string {
@@ -81,14 +85,15 @@ export interface ReplComm {
 export interface ReplClient {
   /** Unix domain socket path of the kernel control channel. */
   readonly address: string;
-  /** Probes the kernel control channel health endpoint. */
-  health(): Promise<string>;
   /** Script tool invocation. */
   tools: ReplTools;
   /** Bus message hub; subscribe with `addEventListener(type, handler)`. */
   events: EventTarget;
   /** Comm channel operations. */
   comm: ReplComm;
+
+  /** Probes the kernel control channel health endpoint. */
+  health(): Promise<string>;
 }
 
 interface ToolEnvelope {
@@ -125,7 +130,8 @@ export interface ToolProgress {
  * standard "progress" `ProgressEvent`s, and always carries its own
  * `AbortController` (an external signal, if given, is linked into it).
  */
-export class ToolTask<T = unknown> extends EventTarget implements PromiseLike<T> {
+export class ToolTask<T = unknown> extends EventTarget
+    implements PromiseLike<T> {
   /** Correlation id shared by the HTTP call, bus progress, and cancel. */
   readonly id: string;
   /** Always present; `abort.abort()` cancels the call. */
@@ -158,7 +164,9 @@ export class ToolTask<T = unknown> extends EventTarget implements PromiseLike<T>
     if (progress.total !== undefined) {
       this.total = progress.total;
       if (progress.progress !== undefined) {
-        this.percent = Math.round((progress.progress / progress.total) * 100);
+        this.percent = Math.round(
+            (progress.progress / progress.total) * 100,
+        );
       }
     } else if (progress.progress !== undefined) {
       this.percent = progress.progress;
@@ -177,13 +185,17 @@ export class ToolTask<T = unknown> extends EventTarget implements PromiseLike<T>
 
   then<TResult1 = T, TResult2 = never>(
     onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    onrejected?:
+        | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+        | null,
   ): Promise<TResult1 | TResult2> {
     return this.#result.then(onfulfilled, onrejected);
   }
 
   catch<TResult = never>(
-    onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+      onrejected?:
+          | ((reason: unknown) => TResult | PromiseLike<TResult>)
+          | null,
   ): Promise<T | TResult> {
     return this.#result.catch(onrejected);
   }
@@ -197,7 +209,9 @@ function createHttp(address: string): HttpClient {
   if (IS_WINDOWS) {
     return Deno.createHttpClient({});
   }
-  return Deno.createHttpClient({ proxy: { transport: "unix", path: address } });
+  return Deno.createHttpClient({
+    proxy: {transport: "unix", path: address},
+  });
 }
 
 async function healthProbe(http: HttpClient): Promise<string> {
@@ -223,7 +237,10 @@ class ReplBus {
   private readonly http: HttpClient;
   private readonly address: string;
   private readonly sessionId: string;
-  private readonly waiters = new Map<string, (envelope: ReplEnvelope) => void>();
+  private readonly waiters = new Map<
+      string,
+      (envelope: ReplEnvelope) => void
+  >();
   private bus: BusConnection | undefined;
   private connecting: Promise<void> | undefined;
 
@@ -259,15 +276,24 @@ class ReplBus {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(correlationId);
-        reject(new Error(`Timed out waiting for correlation ${correlationId}.`));
+        reject(
+            new Error(
+                `Timed out waiting for correlation ${correlationId}.`,
+            ),
+        );
       }, BUS_TIMEOUT_MS);
       this.waiters.set(correlationId, (envelope) => {
         clearTimeout(timer);
         if (envelope.type === "error") {
-          const payload = envelope.payload as { code?: string; message?: string } | undefined;
+          const payload = envelope.payload as {
+            code?: string;
+            message?: string;
+          } | undefined;
           reject(
             new Error(
-              `${payload?.code ?? "bus_error"}: ${payload?.message ?? "the channel failed"}`,
+                `${payload?.code ?? "bus_error"}: ${
+                    payload?.message ?? "the channel failed"
+                }`,
             ),
           );
           return;
@@ -307,7 +333,10 @@ class ReplBus {
       url: IS_WINDOWS ? `ws://${this.address}/ws` : "ws://localhost/ws",
       hello: {
         type: "control.hello",
-        payload: { sessionId: this.sessionId, credential: ensureCredential()?.credential },
+        payload: {
+          sessionId: this.sessionId,
+          credential: ensureCredential()?.credential,
+        },
       },
       onMessage: (envelope) => this.route(envelope),
       onClose: () => {
@@ -393,21 +422,29 @@ function startTool(
     abort.signal.addEventListener("abort", sendCancel, { once: true });
     try {
       current.status = "working";
-      const response = await fetch(`${serverBase(resolveAddress())}/v1/tool.invoke`, {
-        client: http,
-        method: "POST",
-        headers: { "content-type": "application/json", ...credentialHeaders() },
-        body: JSON.stringify({
-          version: ENVELOPE_VERSION,
-          tool: name,
-          arguments: args,
-          correlationId,
-          sessionId: Deno.env.get(SESSION_ENV),
-        }),
-        signal: abort.signal,
-      });
+      const response = await fetch(
+          `${serverBase(resolveAddress())}/v1/tool.invoke`,
+          {
+            client: http,
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...credentialHeaders(),
+            },
+            body: JSON.stringify({
+              version: ENVELOPE_VERSION,
+              tool: name,
+              arguments: args,
+              correlationId,
+              sessionId: Deno.env.get(SESSION_ENV),
+            }),
+            signal: abort.signal,
+          },
+      );
       if (!response.ok) {
-        throw new Error(`Tool invocation failed with status ${response.status}.`);
+        throw new Error(
+            `Tool invocation failed with status ${response.status}.`,
+        );
       }
       const envelope = await response.json() as ToolEnvelope;
       if (envelope.status === "cancelled") {
@@ -415,7 +452,9 @@ function startTool(
       }
       if (envelope.status !== "ok") {
         throw new Error(
-          `${envelope.code ?? "tool_failed"}: ${envelope.message ?? "the tool failed"}`,
+            `${envelope.code ?? "tool_failed"}: ${
+                envelope.message ?? "the tool failed"
+            }`,
         );
       }
       current.status = "completed";
@@ -444,7 +483,10 @@ function createTools(http: HttpClient, bus: ReplBus): ReplTools {
 function createComm(bus: ReplBus): ReplComm {
   return {
     async open(commId, targetName, data) {
-      await sendAndWait(bus, { type: "comm.open", payload: { commId, targetName, data } });
+      await sendAndWait(bus, {
+        type: "comm.open",
+        payload: {commId, targetName, data},
+      });
     },
     async msg(commId, data, buffers) {
       await sendAndWait(bus, {
@@ -459,7 +501,11 @@ function createComm(bus: ReplBus): ReplComm {
   };
 }
 
-function createClient(http: HttpClient, address: string, events: EventTarget): ReplClient {
+function createClient(
+    http: HttpClient,
+    address: string,
+    events: EventTarget,
+): ReplClient {
   const bus = new ReplBus(http, address, events);
   return {
     address,
@@ -494,7 +540,11 @@ function ensureDefault(): HttpClient {
 }
 
 function ensureDefaultClient(): ReplClient {
-  defaultClient ??= createClient(ensureDefault(), resolveAddress(), defaultEvents);
+  defaultClient ??= createClient(
+      ensureDefault(),
+      resolveAddress(),
+      defaultEvents,
+  );
   return defaultClient;
 }
 
@@ -516,8 +566,10 @@ export function health(): Promise<string> {
 
 /** Script tool invocation against the default client. */
 export const tools: ReplTools = {
-  start: (name, args, options) => ensureDefaultClient().tools.start(name, args, options),
-  invoke: (name, args, options) => ensureDefaultClient().tools.invoke(name, args, options),
+  start: (name, args, options) =>
+      ensureDefaultClient().tools.start(name, args, options),
+  invoke: (name, args, options) =>
+      ensureDefaultClient().tools.invoke(name, args, options),
 };
 
 /** Bus message hub for the default client; subscribe with `addEventListener(type, handler)`. */
@@ -525,7 +577,9 @@ export const events: EventTarget = defaultEvents;
 
 /** Comm channel operations against the default client. */
 export const comm: ReplComm = {
-  open: (commId, targetName, data) => ensureDefaultClient().comm.open(commId, targetName, data),
-  msg: (commId, data, buffers) => ensureDefaultClient().comm.msg(commId, data, buffers),
+  open: (commId, targetName, data) =>
+      ensureDefaultClient().comm.open(commId, targetName, data),
+  msg: (commId, data, buffers) =>
+      ensureDefaultClient().comm.msg(commId, data, buffers),
   close: (commId) => ensureDefaultClient().comm.close(commId),
 };

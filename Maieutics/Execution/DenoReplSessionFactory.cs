@@ -37,11 +37,12 @@ internal sealed class LocalDenoReplSessionFactory(
         "PATHEXT"
     ];
 
-    private readonly DenoReplOptions options = options ?? throw new ArgumentNullException(nameof(options));
-    private readonly ReplControlHost controlHost = controlHost ?? throw new ArgumentNullException(nameof(controlHost));
-
     private readonly ReplClientModule clientModule =
         clientModule ?? throw new ArgumentNullException(nameof(clientModule));
+
+    private readonly ReplControlHost controlHost = controlHost ?? throw new ArgumentNullException(nameof(controlHost));
+
+    private readonly DenoReplOptions options = options ?? throw new ArgumentNullException(nameof(options));
 
     public async Task<IJupyterKernelManager> StartAsync(
         string workingDirectory,
@@ -59,10 +60,8 @@ internal sealed class LocalDenoReplSessionFactory(
         if (OperatingSystem.IsWindows())
         {
             if (controlHost.WindowsPipeName is not { } pipeName)
-            {
                 throw new PlatformNotSupportedException(
                     "The Windows named-pipe bootstrap is not wired into the application host.");
-            }
 
             environment[ReplControlEnvironment.PipeName] = pipeName;
         }
@@ -93,10 +92,7 @@ internal sealed class LocalDenoReplSessionFactory(
         foreach (var name in AllowedEnvironmentNames)
         {
             var value = Environment.GetEnvironmentVariable(name);
-            if (!string.IsNullOrEmpty(value))
-            {
-                result[name] = value;
-            }
+            if (!string.IsNullOrEmpty(value)) result[name] = value;
         }
 
         return result;

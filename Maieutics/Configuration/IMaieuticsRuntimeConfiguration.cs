@@ -52,22 +52,19 @@ internal sealed record MaieuticsModelProfileInfo(
 
 internal static class MaieuticsAutomaticProfileSelector
 {
-    internal static string Format(string sourceId, string model) => $"@{sourceId}/{model}";
+    internal static string Format(string sourceId, string model)
+    {
+        return $"@{sourceId}/{model}";
+    }
 
     internal static bool TryParse(string value, out string sourceId, out string model)
     {
         sourceId = string.Empty;
         model = string.Empty;
-        if (value.Length < 4 || value[0] != '@')
-        {
-            return false;
-        }
+        if (value.Length < 4 || value[0] != '@') return false;
 
         var separator = value.IndexOf('/');
-        if (separator <= 1 || separator == value.Length - 1)
-        {
-            return false;
-        }
+        if (separator <= 1 || separator == value.Length - 1) return false;
 
         sourceId = value[1..separator];
         model = value[(separator + 1)..];

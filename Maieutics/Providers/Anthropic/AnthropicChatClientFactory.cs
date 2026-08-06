@@ -27,7 +27,8 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         return new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint);
     }
 
-    private sealed class AnthropicSource(AnthropicSourceOptions options) : IConfiguredChatClientSource, IModelDiscoverySource
+    private sealed class AnthropicSource(AnthropicSourceOptions options)
+        : IConfiguredChatClientSource, IModelDiscoverySource
     {
         private static readonly HttpClient DiscoveryHttpClient = new();
 
@@ -39,7 +40,10 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         public AgentModelCapabilities Capabilities =>
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
-        public IChatClient Create(string model) => AnthropicChatClientFactory.Create(model, options);
+        public IChatClient Create(string model)
+        {
+            return AnthropicChatClientFactory.Create(model, options);
+        }
 
         public async ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(
             CancellationToken cancellationToken = default)
@@ -64,17 +68,12 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
             foreach (var model in modelsElement.EnumerateArray())
             {
                 var id = model.GetProperty("id").GetString();
-                if (string.IsNullOrWhiteSpace(id))
-                {
-                    continue;
-                }
+                if (string.IsNullOrWhiteSpace(id)) continue;
 
                 DateTime? createdAt = null;
                 if (model.TryGetProperty("created_at", out var createdElement) &&
                     createdElement.TryGetDateTime(out var createdDt))
-                {
                     createdAt = createdDt;
-                }
 
                 models.Add(new AgentModelDescriptor(id, "Anthropic", "Anthropic", createdAt));
             }
@@ -88,18 +87,28 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         private readonly string apiKey = apiKey;
         private readonly string? endpoint = endpoint;
 
-        public bool Equals(SourceGenerationKey? other) =>
-            other is not null &&
-            string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
-            string.Equals(endpoint, other.endpoint, StringComparison.Ordinal);
+        public bool Equals(SourceGenerationKey? other)
+        {
+            return other is not null &&
+                   string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
+                   string.Equals(endpoint, other.endpoint, StringComparison.Ordinal);
+        }
 
-        public override bool Equals(object? obj) => Equals(obj as SourceGenerationKey);
+        public override bool Equals(object? obj)
+        {
+            return Equals(obj as SourceGenerationKey);
+        }
 
-        public override int GetHashCode() => HashCode.Combine(
-            StringComparer.Ordinal.GetHashCode(apiKey),
-            endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint));
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(
+                StringComparer.Ordinal.GetHashCode(apiKey),
+                endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint));
+        }
 
-        public override string ToString() =>
-            $"SourceGenerationKey {{ ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"} }}";
+        public override string ToString()
+        {
+            return $"SourceGenerationKey {{ ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"} }}";
+        }
     }
 }

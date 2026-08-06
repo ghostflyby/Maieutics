@@ -40,9 +40,6 @@ internal sealed class DenoReplOptions
 
     private static void ValidatePositive(TimeSpan value, string name)
     {
-        if (value <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(name, "The timeout must be positive.");
-        }
+        if (value <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(name, "The timeout must be positive.");
     }
 }

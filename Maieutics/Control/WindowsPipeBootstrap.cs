@@ -7,19 +7,19 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Windows bootstrap endpoint: listens on a named pipe, verifies the connecting REPL child
-/// through its client process id, and issues a session credential for the loopback TCP control
-/// channel. One pipe connection per REPL child; the child learns only the pipe name from its
-/// environment.
+///     Windows bootstrap endpoint: listens on a named pipe, verifies the connecting REPL child
+///     through its client process id, and issues a session credential for the loopback TCP control
+///     channel. One pipe connection per REPL child; the child learns only the pipe name from its
+///     environment.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDisposable
 {
-    private readonly ReplControlSessionRegistry sessionRegistry;
     private readonly ReplControlCredentialRegistry credentialRegistry;
-    private readonly ILogger<WindowsPipeBootstrap> logger;
     private readonly CancellationTokenSource lifetime = new();
+    private readonly ILogger<WindowsPipeBootstrap> logger;
     private readonly Task loop;
+    private readonly ReplControlSessionRegistry sessionRegistry;
 
     public WindowsPipeBootstrap(
         string pipeName,
@@ -34,8 +34,6 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
         loop = RunAsync();
     }
 
-    public string PipeName { get; }
-
     public async ValueTask DisposeAsync()
     {
         await lifetime.CancelAsync();
@@ -49,6 +47,8 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
         }
     }
 
+    public string PipeName { get; }
+
     private async Task RunAsync()
     {
         while (!lifetime.IsCancellationRequested)
@@ -56,7 +56,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
             await using var pipe = new NamedPipeServerStream(
                 PipeName,
                 PipeDirection.InOut,
-                maxNumberOfServerInstances: 1,
+                1,
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
             try
@@ -93,10 +93,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
     private static int GetClientProcessId(NamedPipeServerStream pipe)
     {
         var handle = pipe.SafePipeHandle.DangerousGetHandle();
-        if (GetNamedPipeClientProcessId(handle, out var processId))
-        {
-            return unchecked((int)processId);
-        }
+        if (GetNamedPipeClientProcessId(handle, out var processId)) return unchecked((int)processId);
 
         return 0;
     }

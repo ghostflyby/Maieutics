@@ -86,11 +86,15 @@ export type McpDiscoverFunction = McpDiscoverFunctionInput & {
   readonly [ExtensionPoint.McpDiscover]: true;
 };
 
-export type McpDiscoverInput = McpDiscoverObjectInput | McpDiscoverFunctionInput;
+export type McpDiscoverInput =
+    | McpDiscoverObjectInput
+    | McpDiscoverFunctionInput;
 export type McpDiscover = McpDiscoverObject | McpDiscoverFunction;
 
 export interface ToolPreInvokeObjectInput {
-  handler(context: ToolInvokeContext): ToolHookDecision | Promise<ToolHookDecision>;
+  handler(
+      context: ToolInvokeContext,
+  ): ToolHookDecision | Promise<ToolHookDecision>;
 }
 
 export interface ToolPreInvokeObject extends ToolPreInvokeObjectInput {
@@ -105,7 +109,9 @@ export type ToolPreInvokeFunction = ToolPreInvokeFunctionInput & {
   readonly [ExtensionPoint.ToolPreInvoke]: true;
 };
 
-export type ToolPreInvokeInput = ToolPreInvokeObjectInput | ToolPreInvokeFunctionInput;
+export type ToolPreInvokeInput =
+    | ToolPreInvokeObjectInput
+    | ToolPreInvokeFunctionInput;
 export type ToolPreInvoke = ToolPreInvokeObject | ToolPreInvokeFunction;
 
 export interface ToolPostInvokeObjectInput {
@@ -116,13 +122,17 @@ export interface ToolPostInvokeObject extends ToolPostInvokeObjectInput {
   readonly [ExtensionPoint.ToolPostInvoke]: true;
 }
 
-export type ToolPostInvokeFunctionInput = (context: ToolPostInvokeContext) => void | Promise<void>;
+export type ToolPostInvokeFunctionInput = (
+    context: ToolPostInvokeContext,
+) => void | Promise<void>;
 
 export type ToolPostInvokeFunction = ToolPostInvokeFunctionInput & {
   readonly [ExtensionPoint.ToolPostInvoke]: true;
 };
 
-export type ToolPostInvokeInput = ToolPostInvokeObjectInput | ToolPostInvokeFunctionInput;
+export type ToolPostInvokeInput =
+    | ToolPostInvokeObjectInput
+    | ToolPostInvokeFunctionInput;
 export type ToolPostInvoke = ToolPostInvokeObject | ToolPostInvokeFunction;
 
 interface ExtensionPointShape<K extends ExtensionPointName> {
@@ -137,9 +147,11 @@ interface ExtensionPointShape<K extends ExtensionPointName> {
     : ToolPostInvoke;
 }
 
-export type ExtensionPointInput<K extends ExtensionPointName> = ExtensionPointShape<K>["input"];
+export type ExtensionPointInput<K extends ExtensionPointName> =
+    ExtensionPointShape<K>["input"];
 
-export type ExtensionPointImpl<K extends ExtensionPointName> = ExtensionPointShape<K>["impl"];
+export type ExtensionPointImpl<K extends ExtensionPointName> =
+    ExtensionPointShape<K>["impl"];
 
 /**
  * Declares an extension point implementation by attaching the versioned marker
@@ -161,12 +173,20 @@ export function defineExtensionPoint<K extends ExtensionPointName>(
   } else {
     const object = impl as { handler?: unknown };
     if (typeof object.handler !== "function") {
-      throw new TypeError(`Extension point '${name}' object must expose a handler function.`);
+      throw new TypeError(
+          `Extension point '${name}' object must expose a handler function.`,
+      );
     }
   }
-  Object.defineProperty(impl, symbol, { value: true, enumerable: false, configurable: false });
+  Object.defineProperty(impl, symbol, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+  });
   if ((impl as unknown as Record<symbol, unknown>)[symbol] !== true) {
-    throw new TypeError(`Extension point '${name}' marker could not be attached.`);
+    throw new TypeError(
+        `Extension point '${name}' marker could not be attached.`,
+    );
   }
   return impl as ExtensionPointImpl<K>;
 }

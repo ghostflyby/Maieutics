@@ -9,23 +9,23 @@ public sealed class JupyterExecutionContext
     private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
         new ReadOnlyDictionary<string, JsonElement>(new Dictionary<string, JsonElement>());
 
-    private readonly Func<string, string, CancellationToken, ValueTask> writeStream;
+    private readonly Func<bool, CancellationToken, ValueTask> clearOutput;
     private readonly Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask> display;
 
     private readonly Func<MimeBundle, JupyterDisplayId?, IReadOnlyDictionary<string, JsonElement>, CancellationToken,
         ValueTask<JupyterDisplayId>> displayTracked;
 
-    private readonly Func<JupyterDisplayId, MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken,
-        ValueTask> updateDisplay;
-
-    private readonly Func<bool, CancellationToken, ValueTask> clearOutput;
+    private readonly Func<string, string, IReadOnlyList<string>, CancellationToken, ValueTask> publishError;
 
     private readonly Func<MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken, ValueTask>
         publishResult;
 
-    private readonly Func<string, string, IReadOnlyList<string>, CancellationToken, ValueTask> publishError;
-
     private readonly Func<string, bool, CancellationToken, Task<string>> requestInput;
+
+    private readonly Func<JupyterDisplayId, MimeBundle, IReadOnlyDictionary<string, JsonElement>, CancellationToken,
+        ValueTask> updateDisplay;
+
+    private readonly Func<string, string, CancellationToken, ValueTask> writeStream;
 
     internal JupyterExecutionContext(
         JupyterMessageId requestId,
@@ -57,42 +57,56 @@ public sealed class JupyterExecutionContext
 
     public int ExecutionCount { get; }
 
-    public ValueTask WriteStdoutAsync(string text, CancellationToken cancellationToken = default) =>
-        writeStream("stdout", text, cancellationToken);
+    public ValueTask WriteStdoutAsync(string text, CancellationToken cancellationToken = default)
+    {
+        return writeStream("stdout", text, cancellationToken);
+    }
 
-    public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken = default) =>
-        writeStream("stderr", text, cancellationToken);
+    public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken = default)
+    {
+        return writeStream("stderr", text, cancellationToken);
+    }
 
     public ValueTask DisplayAsync(
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
-        CancellationToken cancellationToken = default) =>
-        display(data, metadata ?? EmptyMetadata, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return display(data, metadata ?? EmptyMetadata, cancellationToken);
+    }
 
     public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
         MimeBundle data,
         JupyterDisplayId? displayId = null,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
-        CancellationToken cancellationToken = default) =>
-        displayTracked(data, displayId, metadata ?? EmptyMetadata, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return displayTracked(data, displayId, metadata ?? EmptyMetadata, cancellationToken);
+    }
 
     public ValueTask UpdateDisplayAsync(
         JupyterDisplayId displayId,
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
-        CancellationToken cancellationToken = default) =>
-        updateDisplay(displayId, data, metadata ?? EmptyMetadata, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return updateDisplay(displayId, data, metadata ?? EmptyMetadata, cancellationToken);
+    }
 
     public ValueTask ClearOutputAsync(
         bool wait = false,
-        CancellationToken cancellationToken = default) =>
-        clearOutput(wait, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return clearOutput(wait, cancellationToken);
+    }
 
     public ValueTask PublishResultAsync(
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement>? metadata = null,
-        CancellationToken cancellationToken = default) =>
-        publishResult(data, metadata ?? EmptyMetadata, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return publishResult(data, metadata ?? EmptyMetadata, cancellationToken);
+    }
 
     /// <summary>Publishes a Jupyter execution error without failing the enclosing application execution.</summary>
     public ValueTask PublishErrorAsync(
@@ -110,6 +124,8 @@ public sealed class JupyterExecutionContext
     public Task<string> RequestInputAsync(
         string prompt,
         bool password = false,
-        CancellationToken cancellationToken = default) =>
-        requestInput(prompt, password, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        return requestInput(prompt, password, cancellationToken);
+    }
 }

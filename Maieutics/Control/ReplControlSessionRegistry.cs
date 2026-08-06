@@ -3,14 +3,14 @@ using System.Collections.Concurrent;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Maps live Deno child process ids to their identity: the owning REPL session id for REPL
-/// children, or the plugin host id for out-of-process plugin hosts. The process-wide control
-/// channel attributes requests to either kind through peer process identity.
+///     Maps live Deno child process ids to their identity: the owning REPL session id for REPL
+///     children, or the plugin host id for out-of-process plugin hosts. The process-wide control
+///     channel attributes requests to either kind through peer process identity.
 /// </summary>
 internal sealed class ReplControlSessionRegistry
 {
-    private readonly ConcurrentDictionary<int, string> sessions = new();
     private readonly ConcurrentDictionary<int, string> pluginHosts = new();
+    private readonly ConcurrentDictionary<int, string> sessions = new();
 
     public void Register(int processId, string sessionId)
     {

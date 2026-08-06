@@ -5,20 +5,20 @@ using Maieutics.Jupyter.Shared;
 namespace Maieutics.Execution;
 
 /// <summary>
-/// Binds the `maieutics` REPL namespace by importing the materialized client module and verifying
-/// the control channel health probe, with bounded retries. The global binding is idempotent so a
-/// retry never re-declares an existing name.
+///     Binds the `maieutics` REPL namespace by importing the materialized client module and verifying
+///     the control channel health probe, with bounded retries. The global binding is idempotent so a
+///     retry never re-declares an existing name.
 /// </summary>
 internal static class ReplControlBootstrap
 {
     private const int MaxAttempts = 3;
+
+    private const string ProbeCell = "typeof maieutics";
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
 
     private static string BindCell =>
         $"globalThis.maieutics ??= await import(Deno.env.get(\"{ReplControlEnvironment.ClientModule}\"));" +
         " await globalThis.maieutics.health();";
-
-    private const string ProbeCell = "typeof maieutics";
 
     public static async Task RunAsync(
         IJupyterClient client,
@@ -31,10 +31,7 @@ internal static class ReplControlBootstrap
         Exception? lastFailure = null;
         for (var attempt = 0; attempt < MaxAttempts; attempt++)
         {
-            if (attempt > 0)
-            {
-                await Task.Delay(RetryDelay, timeoutSource.Token).ConfigureAwait(false);
-            }
+            if (attempt > 0) await Task.Delay(RetryDelay, timeoutSource.Token).ConfigureAwait(false);
 
             try
             {
@@ -71,10 +68,7 @@ internal static class ReplControlBootstrap
             .OfType<JupyterExecuteResultOutput>()
             .Select(output => output.Data.Data["text/plain"].GetString())
             .Any(value => value is not null && value.Contains("object"));
-        if (!bound)
-        {
-            throw new InvalidOperationException("The 'maieutics' namespace was not visible after binding.");
-        }
+        if (!bound) throw new InvalidOperationException("The 'maieutics' namespace was not visible after binding.");
     }
 
     private static async Task RequireSuccessAsync(
@@ -83,10 +77,8 @@ internal static class ReplControlBootstrap
     {
         var reply = await execution.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
         if (reply.Reply.Status != "ok")
-        {
             throw new InvalidOperationException(
                 $"The REPL control bootstrap cell failed with status '{reply.Reply.Status}'.");
-        }
     }
 
     private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
@@ -94,10 +86,7 @@ internal static class ReplControlBootstrap
         CancellationToken cancellationToken)
     {
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         return outputs;
     }

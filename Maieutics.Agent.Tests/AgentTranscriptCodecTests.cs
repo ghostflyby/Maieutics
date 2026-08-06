@@ -115,7 +115,7 @@ public sealed class AgentTranscriptCodecTests
             new(ChatRole.Assistant, "answer")
         ];
 
-        var truncated = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, truncated: true);
+        var truncated = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, true);
         truncated.Truncated.Should().BeTrue();
         var publicTruncated = AgentTranscriptCodec.CreatePublicTranscript(
             new AgentTranscriptState(sessionId, 1, [truncated]));
@@ -123,7 +123,7 @@ public sealed class AgentTranscriptCodecTests
         publicTruncated.Turns.Single().Messages.Select(static message => message.Text).Should().Equal(
             "question", "answer");
 
-        var complete = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, truncated: false);
+        var complete = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, false);
         complete.Truncated.Should().BeFalse();
         AgentTranscriptCodec.CreatePublicTranscript(
             new AgentTranscriptState(sessionId, 2, [complete])).Turns.Single().Truncated.Should().BeFalse();
@@ -221,11 +221,13 @@ public sealed class AgentTranscriptCodecTests
             .NotContain(static content => content is TextReasoningContent);
     }
 
-    private static AgentTranscriptStateTurn DetachAssistant(params AIContent[] contents) =>
-        AgentTranscriptCodec.DetachPrivateTurn(
+    private static AgentTranscriptStateTurn DetachAssistant(params AIContent[] contents)
+    {
+        return AgentTranscriptCodec.DetachPrivateTurn(
             AgentRunId.Create(),
             null,
             [new ChatMessage(ChatRole.Assistant, contents)]);
+    }
 
     private static object CreateBinaryDataLikeValue()
     {
@@ -429,10 +431,7 @@ public sealed class AgentTranscriptSessionTests
         CancellationToken cancellationToken)
     {
         var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-        {
-            events.Add(agentEvent);
-        }
+        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken)) events.Add(agentEvent);
 
         return events;
     }
@@ -447,10 +446,7 @@ public sealed class AgentTranscriptSessionTests
         params ChatResponseUpdate[] updates)
     {
         await Task.Yield();
-        foreach (var update in updates)
-        {
-            yield return update;
-        }
+        foreach (var update in updates) yield return update;
     }
 
     private static CancellationTokenSource CreateDeadline()
@@ -472,8 +468,10 @@ public sealed class AgentTranscriptSessionTests
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromException<ChatResponse>(new NotSupportedException());
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -485,7 +483,10 @@ public sealed class AgentTranscriptSessionTests
             return responses.Dequeue()(request, cancellationToken);
         }
 
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            return null;
+        }
 
         public void Dispose()
         {

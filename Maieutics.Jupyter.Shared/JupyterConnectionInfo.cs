@@ -60,10 +60,7 @@ public sealed record JupyterConnectionInfo(
     {
         ValidateSupported();
         var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
+        if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
         await using var stream = File.Create(path);
         await JsonSerializer.SerializeAsync(
@@ -89,39 +86,36 @@ public sealed record JupyterConnectionInfo(
         return $"{Transport}://{Ip}:{port}";
     }
 
-    internal JupyterConnectionFile ToConnectionFile() => new()
+    internal JupyterConnectionFile ToConnectionFile()
     {
-        Transport = Transport,
-        Ip = Ip,
-        ShellPort = ShellPort,
-        IopubPort = IopubPort,
-        StdinPort = StdinPort,
-        ControlPort = ControlPort,
-        HeartbeatPort = HeartbeatPort,
-        SignatureScheme = SignatureScheme,
-        Key = Key,
-        PublicKey = PublicKey,
-        PrivateKey = PrivateKey,
-        ServerKey = ServerKey,
-        Keychain = Keychain
-    };
+        return new JupyterConnectionFile
+        {
+            Transport = Transport,
+            Ip = Ip,
+            ShellPort = ShellPort,
+            IopubPort = IopubPort,
+            StdinPort = StdinPort,
+            ControlPort = ControlPort,
+            HeartbeatPort = HeartbeatPort,
+            SignatureScheme = SignatureScheme,
+            Key = Key,
+            PublicKey = PublicKey,
+            PrivateKey = PrivateKey,
+            ServerKey = ServerKey,
+            Keychain = Keychain
+        };
+    }
 
     public void ValidateSupported()
     {
         if (!string.Equals(Transport, "tcp", StringComparison.OrdinalIgnoreCase))
-        {
             throw new NotSupportedException($"Jupyter transport '{Transport}' is not supported.");
-        }
 
         if (!string.Equals(SignatureScheme, "hmac-sha256", StringComparison.OrdinalIgnoreCase))
-        {
             throw new NotSupportedException($"Jupyter signature scheme '{SignatureScheme}' is not supported.");
-        }
 
         if (PublicKey is not null || PrivateKey is not null || ServerKey is not null || Keychain is not null)
-        {
             throw new NotSupportedException("CurveZMQ Jupyter connections are not supported by the NetMQ transport.");
-        }
     }
 
     private static JupyterConnectionInfo FromConnectionFile(JupyterConnectionFile file)
@@ -162,10 +156,7 @@ public sealed record JupyterConnectionInfo(
         }
         finally
         {
-            foreach (var listener in listeners)
-            {
-                listener.Stop();
-            }
+            foreach (var listener in listeners) listener.Stop();
         }
     }
 }

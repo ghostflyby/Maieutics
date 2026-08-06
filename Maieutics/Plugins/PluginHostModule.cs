@@ -5,8 +5,8 @@ using Maieutics.Control;
 namespace Maieutics.Plugins;
 
 /// <summary>
-/// Materializes the embedded plugin SDK, host entry, and worker entry modules to per-process
-/// temp files and exposes their file URLs for host process injection.
+///     Materializes the embedded plugin SDK, host entry, and worker entry modules to per-process
+///     temp files and exposes their file URLs for host process injection.
 /// </summary>
 internal sealed class PluginHostModule
 {
@@ -21,25 +21,20 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginSdkConfig.json", "maieutics-plugin-sdk/deno.json")
     ];
 
-    private readonly string moduleDirectory;
-    private readonly string configFile;
-
     public PluginHostModule()
     {
-        moduleDirectory = Path.Combine(Path.GetTempPath(), $"mc-modules-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(moduleDirectory);
+        ModuleDirectory = Path.Combine(Path.GetTempPath(), $"mc-modules-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(ModuleDirectory);
         foreach (var (resource, relativePath) in Entries)
-        {
-            ReplClientModule.WriteEmbedded(resource, Path.Combine(moduleDirectory, relativePath));
-        }
+            ReplClientModule.WriteEmbedded(resource, Path.Combine(ModuleDirectory, relativePath));
 
-        SdkUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-sdk/mod.ts")).AbsoluteUri;
-        HostUrl = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-host/mod.ts")).AbsoluteUri;
+        SdkUrl = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-sdk/mod.ts")).AbsoluteUri;
+        HostUrl = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-host/mod.ts")).AbsoluteUri;
         WorkerEntryUrl = new Uri(
-            Path.Combine(moduleDirectory, "maieutics-plugin-host/worker_entry.ts")).AbsoluteUri;
-        var sdkDirectory = new Uri(Path.Combine(moduleDirectory, "maieutics-plugin-sdk")).AbsoluteUri;
-        configFile = Path.Combine(moduleDirectory, "deno.json");
-        File.WriteAllText(configFile, $"{{\"links\": [\"{sdkDirectory}\"]}}");
+            Path.Combine(ModuleDirectory, "maieutics-plugin-host/worker_entry.ts")).AbsoluteUri;
+        var sdkDirectory = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-sdk")).AbsoluteUri;
+        ConfigFile = Path.Combine(ModuleDirectory, "deno.json");
+        File.WriteAllText(ConfigFile, $"{{\"links\": [\"{sdkDirectory}\"]}}");
     }
 
     public string SdkUrl { get; }
@@ -49,10 +44,10 @@ internal sealed class PluginHostModule
     public string WorkerEntryUrl { get; }
 
     /// <summary>Directory containing all materialized modules, for precise process read grants.</summary>
-    public string ModuleDirectory => moduleDirectory;
+    public string ModuleDirectory { get; }
 
     /// <summary>Root deno.json whose `links` override the JSR-resolved SDK with the local copy.</summary>
-    public string ConfigFile => configFile;
+    public string ConfigFile { get; }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

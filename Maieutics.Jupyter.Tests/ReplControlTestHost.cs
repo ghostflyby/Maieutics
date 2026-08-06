@@ -42,10 +42,7 @@ internal static class ReplControlTestHost
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.AddServerHeader = false;
-            options.ListenUnixSocket(socketPath, listenOptions =>
-            {
-                listenOptions.Protocols = HttpProtocols.Http1;
-            });
+            options.ListenUnixSocket(socketPath, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
         });
         var application = builder.Build();
         controlHost.MapEndpoints(application);

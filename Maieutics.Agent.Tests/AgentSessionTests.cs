@@ -626,10 +626,7 @@ public sealed class AgentSessionTests
                 }
                 finally
                 {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        canceled.TrySetResult();
-                    }
+                    if (cancellationToken.IsCancellationRequested) canceled.TrySetResult();
                 }
             });
         var session = new AgentSession(
@@ -767,7 +764,8 @@ public sealed class AgentSessionTests
         }
 
         // The next turn replays the committed partial history without the unanswered tool call.
-        await using (var continued = await iterationLimited.StartTurnAsync(AgentTurn.FromText("Continue"), deadline.Token))
+        await using (var continued =
+                     await iterationLimited.StartTurnAsync(AgentTurn.FromText("Continue"), deadline.Token))
         {
             await ReadEventsAsync(continued, deadline.Token);
             (await continued.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("continued");
@@ -925,16 +923,15 @@ public sealed class AgentSessionTests
         CancellationToken cancellationToken)
     {
         var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-        {
-            events.Add(agentEvent);
-        }
+        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken)) events.Add(agentEvent);
 
         return events;
     }
 
-    private static (ChatRole Role, string Text) MessageTuple(ChatMessage message) =>
-        (message.Role, message.Text);
+    private static (ChatRole Role, string Text) MessageTuple(ChatMessage message)
+    {
+        return (message.Role, message.Text);
+    }
 
     private static AIFunction CreateTool(
         string name,
@@ -968,8 +965,9 @@ public sealed class AgentSessionTests
     private static ChatResponseUpdate ToolCallUpdate(
         string callId,
         string name,
-        params (string Name, object? Value)[] arguments) =>
-        new(
+        params (string Name, object? Value)[] arguments)
+    {
+        return new ChatResponseUpdate(
             ChatRole.Assistant,
             [
                 new FunctionCallContent(
@@ -977,22 +975,12 @@ public sealed class AgentSessionTests
                     name,
                     arguments.ToDictionary(static argument => argument.Name, static argument => argument.Value))
             ]);
+    }
 
     private static JsonElement ParseJson(string json)
     {
         using var document = JsonDocument.Parse(json);
         return document.RootElement.Clone();
-    }
-
-    // ReSharper disable once InconsistentNaming
-    private sealed class MetadataAIFunction(
-        AIFunction innerFunction,
-        string name,
-        JsonElement jsonSchema) : DelegatingAIFunction(innerFunction)
-    {
-        public override string Name { get; } = name;
-
-        public override JsonElement JsonSchema { get; } = jsonSchema.Clone();
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] text)
@@ -1014,10 +1002,7 @@ public sealed class AgentSessionTests
         params ChatResponseUpdate[] updates)
     {
         await Task.Yield();
-        foreach (var update in updates)
-        {
-            yield return update;
-        }
+        foreach (var update in updates) yield return update;
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> FailAfterTextAsync(
@@ -1097,6 +1082,17 @@ public sealed class AgentSessionTests
         return deadline;
     }
 
+    // ReSharper disable once InconsistentNaming
+    private sealed class MetadataAIFunction(
+        AIFunction innerFunction,
+        string name,
+        JsonElement jsonSchema) : DelegatingAIFunction(innerFunction)
+    {
+        public override string Name { get; } = name;
+
+        public override JsonElement JsonSchema { get; } = jsonSchema.Clone();
+    }
+
     private sealed class ScriptedChatClient(
         params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
         : IChatClient
@@ -1113,8 +1109,10 @@ public sealed class AgentSessionTests
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromException<ChatResponse>(new NotSupportedException());
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -1133,7 +1131,10 @@ public sealed class AgentSessionTests
             return response(request, cancellationToken);
         }
 
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            return null;
+        }
 
         public void Dispose()
         {

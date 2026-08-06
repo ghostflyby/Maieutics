@@ -100,7 +100,7 @@ public sealed class MaieuticsHostIntegrationTests
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-tool-{Guid.NewGuid():N}.json");
         var configurationFile = CreateEmptyConfigurationFile("tool");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
-        await using var provider = new FakeOpenAiServer(apiFlavor, toolFlow: true);
+        await using var provider = new FakeOpenAiServer(apiFlavor, true);
         var builder = MaieuticsHost.CreateApplicationBuilder(
             ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"]);
         builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
@@ -118,10 +118,7 @@ public sealed class MaieuticsHostIntegrationTests
 
             var execution = await client.ExecuteAsync(new JupyterExecuteRequest("use echo"), deadline.Token);
             var outputs = new List<JupyterOutput>();
-            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
-            {
-                outputs.Add(output);
-            }
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
 
             (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
             outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle()
@@ -179,7 +176,7 @@ public sealed class MaieuticsHostIntegrationTests
             "40 + 2";
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,
-            toolFlow: true,
+            true,
             toolName: "repl_execute",
             toolArgumentsJson: JsonSerializer.Serialize(new { code }));
         var endpoint = provider.Endpoint.ToString();
@@ -204,10 +201,7 @@ public sealed class MaieuticsHostIntegrationTests
             await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
             {
                 outputs.Add(output);
-                if (output is JupyterInputRequest input)
-                {
-                    await execution.ReplyInputAsync(input, "Ada", deadline.Token);
-                }
+                if (output is JupyterInputRequest input) await execution.ReplyInputAsync(input, "Ada", deadline.Token);
             }
 
             (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
@@ -307,10 +301,7 @@ public sealed class MaieuticsHostIntegrationTests
 
             var execution = await client.ExecuteAsync(new JupyterExecuteRequest("think"), deadline.Token);
             var outputs = new List<JupyterOutput>();
-            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
-            {
-                outputs.Add(output);
-            }
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
 
             (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
             outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle()
@@ -372,9 +363,7 @@ public sealed class MaieuticsHostIntegrationTests
         await foreach (var update in client.GetStreamingResponseAsync(
                            "think",
                            cancellationToken: TestContext.Current.CancellationToken))
-        {
             updates.Add(update);
-        }
 
         updates.SelectMany(static update => update.Contents)
             .OfType<TextReasoningContent>()
@@ -395,7 +384,7 @@ public sealed class MaieuticsHostIntegrationTests
         await using var provider = new FakeAnthropicServer(
             "claude-test",
             "tool-backed answer",
-            toolFlow: true);
+            true);
         var builder = MaieuticsHost.CreateApplicationBuilder(
             ["--config", configurationFile, "--connection-file", connectionFile]);
         builder.Configuration["Maieutics:DefaultProfile"] = "claude";
@@ -416,10 +405,7 @@ public sealed class MaieuticsHostIntegrationTests
 
             var execution = await client.ExecuteAsync(new JupyterExecuteRequest("use echo"), deadline.Token);
             var outputs = new List<JupyterOutput>();
-            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
-            {
-                outputs.Add(output);
-            }
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
 
             (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
             outputs.OfType<JupyterDisplayOutput>().Should().ContainSingle()
@@ -496,10 +482,7 @@ public sealed class MaieuticsHostIntegrationTests
 
             var execution = await client.ExecuteAsync(new JupyterExecuteRequest("hello"), deadline.Token);
             var outputs = new List<JupyterOutput>();
-            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
-            {
-                outputs.Add(output);
-            }
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
 
             (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
             outputs.OfType<JupyterDisplayOutput>().Single().Data.Data["text/markdown"].GetString().Should()
@@ -515,7 +498,7 @@ public sealed class MaieuticsHostIntegrationTests
         {
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                process.Kill(true);
                 await process.WaitForExitAsync(CancellationToken.None);
             }
 
@@ -540,7 +523,7 @@ public sealed class MaieuticsHostIntegrationTests
             deadline.Token);
         await using var provider = new FakeOpenAiServer(
             apiFlavor,
-            toolFlow: true,
+            true,
             toolName: "read_text",
             toolArgumentsJson: "{\"uri\":\"workspace://local/note.txt\"}",
             expectedToolResultText: "native workspace body");
@@ -570,11 +553,11 @@ public sealed class MaieuticsHostIntegrationTests
         {
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                process.Kill(true);
                 await process.WaitForExitAsync(CancellationToken.None);
             }
 
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -582,10 +565,7 @@ public sealed class MaieuticsHostIntegrationTests
     public async Task ExternalHostCompletesMcpFunctionLoopWhenTestServerIsConfigured()
     {
         var mcpServer = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE");
-        if (string.IsNullOrWhiteSpace(mcpServer))
-        {
-            return;
-        }
+        if (string.IsNullOrWhiteSpace(mcpServer)) return;
 
         using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-native-mcp-{Guid.NewGuid():N}");
@@ -597,7 +577,7 @@ public sealed class MaieuticsHostIntegrationTests
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,
-            toolFlow: true,
+            true,
             toolName: "echo",
             toolArgumentsJson: "{\"value\":\"native mcp value\"}",
             expectedToolResultText: "native mcp value");
@@ -636,11 +616,11 @@ public sealed class MaieuticsHostIntegrationTests
         {
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                process.Kill(true);
                 await process.WaitForExitAsync(CancellationToken.None);
             }
 
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -712,11 +692,11 @@ public sealed class MaieuticsHostIntegrationTests
         {
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                process.Kill(true);
                 await process.WaitForExitAsync(CancellationToken.None);
             }
 
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -867,11 +847,11 @@ public sealed class MaieuticsHostIntegrationTests
         {
             if (!process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                process.Kill(true);
                 await process.WaitForExitAsync(CancellationToken.None);
             }
 
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -897,10 +877,8 @@ public sealed class MaieuticsHostIntegrationTests
             ? null
             : Path.GetFullPath(nativeExecutable);
         if (executablePath is not null && !File.Exists(executablePath))
-        {
             throw new FileNotFoundException("The configured Maieutics test host executable does not exist.",
                 executablePath);
-        }
 
         var assemblyPath = executablePath is null ? GetManagedHostAssemblyPath() : null;
         var configurationFile = CreateEmptyConfigurationFile("process");
@@ -912,10 +890,7 @@ public sealed class MaieuticsHostIntegrationTests
             RedirectStandardError = true,
             UseShellExecute = false
         };
-        if (assemblyPath is not null)
-        {
-            startInfo.ArgumentList.Add(assemblyPath);
-        }
+        if (assemblyPath is not null) startInfo.ArgumentList.Add(assemblyPath);
 
         startInfo.ArgumentList.Add("--config");
         startInfo.ArgumentList.Add(configurationFile);
@@ -944,10 +919,7 @@ public sealed class MaieuticsHostIntegrationTests
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("Maieutics__Providers__OpenAI__ApiFlavor");
         startInfo.Environment.Remove("Maieutics__Workspace__Root");
-        if (endpoint is not null)
-        {
-            startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
-        }
+        if (endpoint is not null) startInfo.Environment["OPENAI_BASE_URL"] = endpoint.ToString();
 
         return StartProcess(startInfo, configurationFile);
     }
@@ -959,10 +931,8 @@ public sealed class MaieuticsHostIntegrationTests
             ? null
             : Path.GetFullPath(nativeExecutable);
         if (executablePath is not null && !File.Exists(executablePath))
-        {
             throw new FileNotFoundException("The configured Maieutics test host executable does not exist.",
                 executablePath);
-        }
 
         var assemblyPath = executablePath is null ? GetManagedHostAssemblyPath() : null;
         var startInfo = new ProcessStartInfo
@@ -973,10 +943,7 @@ public sealed class MaieuticsHostIntegrationTests
             RedirectStandardError = true,
             UseShellExecute = false
         };
-        if (assemblyPath is not null)
-        {
-            startInfo.ArgumentList.Add(assemblyPath);
-        }
+        if (assemblyPath is not null) startInfo.ArgumentList.Add(assemblyPath);
 
         startInfo.ArgumentList.Add("--config");
         startInfo.ArgumentList.Add(configurationFile);
@@ -1016,10 +983,7 @@ public sealed class MaieuticsHostIntegrationTests
         };
         process.ErrorDataReceived += (_, eventArgs) =>
         {
-            if (eventArgs.Data is not null)
-            {
-                standardError.Enqueue(eventArgs.Data);
-            }
+            if (eventArgs.Data is not null) standardError.Enqueue(eventArgs.Data);
         };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -1047,10 +1011,7 @@ public sealed class MaieuticsHostIntegrationTests
     {
         var execution = await client.ExecuteAsync(new JupyterExecuteRequest(code), cancellationToken);
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         (await execution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
         return outputs.OfType<JupyterDisplayOutput>().Single().Data.Data["text/markdown"].GetString()
@@ -1092,8 +1053,9 @@ public sealed class MaieuticsHostIntegrationTests
         return root.ToJsonString();
     }
 
-    private static string CreateMcpFile(string mcpServer) =>
-        new JsonObject
+    private static string CreateMcpFile(string mcpServer)
+    {
+        return new JsonObject
         {
             ["mcpServers"] = new JsonObject
             {
@@ -1105,9 +1067,11 @@ public sealed class MaieuticsHostIntegrationTests
                 }
             }
         }.ToJsonString();
+    }
 
-    private static string CreateMcpHostConfiguration(string connectionFile, Uri endpoint) =>
-        new JsonObject
+    private static string CreateMcpHostConfiguration(string connectionFile, Uri endpoint)
+    {
+        return new JsonObject
         {
             ["Maieutics"] = new JsonObject
             {
@@ -1128,13 +1092,15 @@ public sealed class MaieuticsHostIntegrationTests
                 ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
             }
         }.ToJsonString();
+    }
 
     private static string CreateMultiProviderHostConfiguration(
         string connectionFile,
         Uri openAiEndpoint,
         OpenAiApiFlavor apiFlavor,
-        Uri anthropicEndpoint) =>
-        new JsonObject
+        Uri anthropicEndpoint)
+    {
+        return new JsonObject
         {
             ["Maieutics"] = new JsonObject
             {
@@ -1174,6 +1140,7 @@ public sealed class MaieuticsHostIntegrationTests
                 }
             }
         }.ToJsonString();
+    }
 
     private static string GetManagedHostAssemblyPath()
     {
@@ -1192,6 +1159,27 @@ public sealed class MaieuticsHostIntegrationTests
             "maieutics.dll"));
     }
 
+    private static AIFunction CreateEchoFunction()
+    {
+        return AIFunctionFactory.Create(
+            (string text) => JsonSerializer.SerializeToElement(
+                text,
+                HostIntegrationJsonContext.Default.String),
+            new AIFunctionFactoryOptions
+            {
+                Name = "echo",
+                Description = "Returns the supplied text.",
+                SerializerOptions = HostIntegrationJsonContext.Default.Options
+            });
+    }
+
+    private static CancellationTokenSource CreateDeadline(TimeSpan timeout)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(timeout);
+        return deadline;
+    }
+
     private sealed class StartedHostProcess(
         Process process,
         ConcurrentQueue<string> standardOutput,
@@ -1200,6 +1188,13 @@ public sealed class MaieuticsHostIntegrationTests
         string? temporaryConfigurationFile) : IDisposable
     {
         public Process Process { get; } = process;
+
+        public void Dispose()
+        {
+            outputChanged.Dispose();
+            Process.Dispose();
+            if (temporaryConfigurationFile is not null) File.Delete(temporaryConfigurationFile);
+        }
 
         public string FailureDetails()
         {
@@ -1213,36 +1208,24 @@ public sealed class MaieuticsHostIntegrationTests
         public async Task WaitForOutputAsync(string text, CancellationToken cancellationToken)
         {
             while (!standardOutput.Any(line => line.Contains(text, StringComparison.Ordinal)))
-            {
                 await outputChanged.WaitAsync(cancellationToken);
-            }
-        }
-
-        public void Dispose()
-        {
-            outputChanged.Dispose();
-            Process.Dispose();
-            if (temporaryConfigurationFile is not null)
-            {
-                File.Delete(temporaryConfigurationFile);
-            }
         }
     }
 
     private sealed class FakeOpenAiServer : IAsyncDisposable
     {
-        private readonly OpenAiApiFlavor apiFlavor;
-        private readonly string model;
         private readonly string answer;
-        private readonly string? reasoning;
-        private readonly string toolArgumentsJson;
-        private readonly string toolName;
+        private readonly OpenAiApiFlavor apiFlavor;
+        private readonly CancellationTokenSource cancellation = new();
         private readonly string? expectedToolResultText;
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-        private readonly CancellationTokenSource cancellation = new();
+        private readonly string model;
+        private readonly string? reasoning;
+        private readonly int requestCount;
+        private readonly string toolArgumentsJson;
 
         private readonly bool toolFlow;
-        private readonly int requestCount;
+        private readonly string toolName;
 
         public FakeOpenAiServer(
             OpenAiApiFlavor apiFlavor,
@@ -1340,10 +1323,7 @@ public sealed class MaieuticsHostIntegrationTests
             request.Body.GetProperty("model").GetString().Should().Be(model);
             request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
             request.Body.GetProperty("store").GetBoolean().Should().BeFalse();
-            if (!toolFlow)
-            {
-                return;
-            }
+            if (!toolFlow) return;
 
             request.Body.GetProperty("tools").GetArrayLength().Should().BeGreaterThan(0);
             request.Body.GetRawText().Should().Contain(toolName);
@@ -1351,37 +1331,39 @@ public sealed class MaieuticsHostIntegrationTests
             {
                 request.Body.GetRawText().Should().Contain("status").And.Contain("ok");
                 if (expectedToolResultText is not null)
-                {
                     request.Body.GetRawText().Should().Contain(expectedToolResultText);
-                }
             }
         }
 
-        private static string CreateChatCompletionsStream(string text, string? reasoning = null) =>
-            (reasoning is null
-                ? string.Empty
-                : "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-                  "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
-                  "\"role\":\"assistant\",\"reasoning_content\":" + JsonSerializer.Serialize(reasoning) +
-                  "},\"finish_reason\":null}]}\n\n") +
-            "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
-            "\"role\":\"assistant\",\"content\":" + JsonSerializer.Serialize(text) +
-            "},\"finish_reason\":null}]}\n\n" +
-            "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
-            "data: [DONE]\n\n";
+        private static string CreateChatCompletionsStream(string text, string? reasoning = null)
+        {
+            return (reasoning is null
+                       ? string.Empty
+                       : "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                         "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+                         "\"role\":\"assistant\",\"reasoning_content\":" + JsonSerializer.Serialize(reasoning) +
+                         "},\"finish_reason\":null}]}\n\n") +
+                   "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                   "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+                   "\"role\":\"assistant\",\"content\":" + JsonSerializer.Serialize(text) +
+                   "},\"finish_reason\":null}]}\n\n" +
+                   "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                   "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+                   "data: [DONE]\n\n";
+        }
 
-        private static string CreateChatCompletionsToolStream(string toolName, string argumentsJson) =>
-            "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
-            "\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-test\"," +
-            "\"type\":\"function\",\"function\":{\"name\":" + JsonSerializer.Serialize(toolName) + "," +
-            "\"arguments\":" + JsonSerializer.Serialize(argumentsJson) + "}}]},\"finish_reason\":null}]}\n\n" +
-            "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
-            "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{}," +
-            "\"finish_reason\":\"tool_calls\"}]}\n\n" +
-            "data: [DONE]\n\n";
+        private static string CreateChatCompletionsToolStream(string toolName, string argumentsJson)
+        {
+            return "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                   "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
+                   "\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-test\"," +
+                   "\"type\":\"function\",\"function\":{\"name\":" + JsonSerializer.Serialize(toolName) + "," +
+                   "\"arguments\":" + JsonSerializer.Serialize(argumentsJson) + "}}]},\"finish_reason\":null}]}\n\n" +
+                   "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+                   "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{}," +
+                   "\"finish_reason\":\"tool_calls\"}]}\n\n" +
+                   "data: [DONE]\n\n";
+        }
 
         private static string CreateResponsesStream(string text)
         {
@@ -1504,49 +1486,35 @@ public sealed class MaieuticsHostIntegrationTests
             {
                 var count = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
                 if (count == 0)
-                {
                     throw new EndOfStreamException("The OpenAI-compatible request ended before its body was complete.");
-                }
 
                 request.Write(buffer, 0, count);
-                if (headerLength >= 0)
-                {
-                    continue;
-                }
+                if (headerLength >= 0) continue;
 
                 var bytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));
                 var delimiter = "\r\n\r\n"u8;
                 var delimiterIndex = bytes.IndexOf(delimiter);
-                if (delimiterIndex < 0)
-                {
-                    continue;
-                }
+                if (delimiterIndex < 0) continue;
 
                 headerLength = delimiterIndex + delimiter.Length;
                 var headers = Encoding.ASCII.GetString(bytes[..delimiterIndex]);
                 foreach (var line in headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
-                {
                     if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
                     {
                         contentLength = int.Parse(line["Content-Length:".Length..].Trim());
                         break;
                     }
-                }
             }
 
             var requestBytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));
             var requestLineEnd = requestBytes.IndexOf("\r\n"u8);
             if (requestLineEnd < 0)
-            {
                 throw new InvalidDataException("The OpenAI-compatible request did not contain a request line.");
-            }
 
             var requestLine = Encoding.ASCII.GetString(requestBytes[..requestLineEnd]);
             var requestLineParts = requestLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (requestLineParts.Length != 3)
-            {
                 throw new InvalidDataException($"Invalid OpenAI-compatible request line: '{requestLine}'.");
-            }
 
             var bodyBytes = request.GetBuffer().AsMemory(headerLength, contentLength);
             var body = JsonDocument.Parse(bodyBytes).RootElement.Clone();
@@ -1558,11 +1526,11 @@ public sealed class MaieuticsHostIntegrationTests
 
     private sealed class FakeAnthropicServer : IAsyncDisposable
     {
-        private readonly string model;
         private readonly string answer;
-        private readonly bool toolFlow;
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource cancellation = new();
+        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+        private readonly string model;
+        private readonly bool toolFlow;
 
         public FakeAnthropicServer(string model, string answer, bool toolFlow = false)
         {
@@ -1614,10 +1582,7 @@ public sealed class MaieuticsHostIntegrationTests
                 request.Body.GetProperty("model").GetString().Should().Be(model);
                 request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
                 RequestBodies.Enqueue(request.Body);
-                if (toolFlow)
-                {
-                    request.Body.GetRawText().Should().Contain("echo");
-                }
+                if (toolFlow) request.Body.GetRawText().Should().Contain("echo");
 
                 var data = toolFlow && requestIndex == 0 ? CreateToolStream() : CreateTextStream(answer);
                 var body = Encoding.UTF8.GetBytes(data);
@@ -1629,70 +1594,57 @@ public sealed class MaieuticsHostIntegrationTests
             }
         }
 
-        private static string CreateTextStream(string text) => """
-                                                               event: message_start
-                                                               data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+        private static string CreateTextStream(string text)
+        {
+            return """
+                   event: message_start
+                   data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
 
-                                                               event: content_block_start
-                                                               data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+                   event: content_block_start
+                   data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 
-                                                               event: content_block_delta
-                                                               data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":TEXT_PLACEHOLDER}}
+                   event: content_block_delta
+                   data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":TEXT_PLACEHOLDER}}
 
-                                                               event: content_block_stop
-                                                               data: {"type":"content_block_stop","index":0}
+                   event: content_block_stop
+                   data: {"type":"content_block_stop","index":0}
 
-                                                               event: message_delta
-                                                               data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
+                   event: message_delta
+                   data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
 
-                                                               event: message_stop
-                                                               data: {"type":"message_stop"}
+                   event: message_stop
+                   data: {"type":"message_stop"}
 
-                                                               """.Replace("TEXT_PLACEHOLDER",
-            JsonSerializer.Serialize(text), StringComparison.Ordinal);
+                   """.Replace("TEXT_PLACEHOLDER",
+                JsonSerializer.Serialize(text), StringComparison.Ordinal);
+        }
 
-        private static string CreateToolStream() => """
-                                                    event: message_start
-                                                    data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+        private static string CreateToolStream()
+        {
+            return """
+                   event: message_start
+                   data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
 
-                                                    event: content_block_start
-                                                    data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_test","name":"echo","input":{}}}
+                   event: content_block_start
+                   data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_test","name":"echo","input":{}}}
 
-                                                    event: content_block_delta
-                                                    data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\":"}}
+                   event: content_block_delta
+                   data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\":"}}
 
-                                                    event: content_block_delta
-                                                    data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
+                   event: content_block_delta
+                   data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
 
-                                                    event: content_block_stop
-                                                    data: {"type":"content_block_stop","index":0}
+                   event: content_block_stop
+                   data: {"type":"content_block_stop","index":0}
 
-                                                    event: message_delta
-                                                    data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
+                   event: message_delta
+                   data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
 
-                                                    event: message_stop
-                                                    data: {"type":"message_stop"}
+                   event: message_stop
+                   data: {"type":"message_stop"}
 
-                                                    """;
-    }
-
-    private static AIFunction CreateEchoFunction() =>
-        AIFunctionFactory.Create(
-            (string text) => JsonSerializer.SerializeToElement(
-                text,
-                HostIntegrationJsonContext.Default.String),
-            new AIFunctionFactoryOptions
-            {
-                Name = "echo",
-                Description = "Returns the supplied text.",
-                SerializerOptions = HostIntegrationJsonContext.Default.Options
-            });
-
-    private static CancellationTokenSource CreateDeadline(TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
+                   """;
+        }
     }
 }
 

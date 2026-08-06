@@ -203,18 +203,11 @@ public sealed class JupyterProtocolSessionTests
         Dictionary<string, JsonElement>? transient = [];
 
         if (displayIdKind == "empty")
-        {
             transient[JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement("");
-        }
         else if (displayIdKind == "number")
-        {
             transient[JupyterDisplayTransient.DisplayIdPropertyName] = JsonSerializer.SerializeToElement(42);
-        }
 
-        if (displayIdKind == "null")
-        {
-            transient = null;
-        }
+        if (displayIdKind == "null") transient = null;
 
         transport.Receive(
             JupyterTransportChannel.Iopub,
@@ -532,22 +525,27 @@ public sealed class JupyterProtocolSessionTests
         await request.Invoking(static task => task).Should().ThrowAsync<ObjectDisposedException>();
     }
 
-    private static JupyterKernelInfo KernelInfo() => new(
-        "5.5",
-        "test-kernel",
-        "1.0",
-        new JupyterLanguageInfo("test", "1.0"));
+    private static JupyterKernelInfo KernelInfo()
+    {
+        return new JupyterKernelInfo(
+            "5.5",
+            "test-kernel",
+            "1.0",
+            new JupyterLanguageInfo("test", "1.0"));
+    }
 
     private static JupyterDisplayData DisplayData(
         string text,
-        IReadOnlyDictionary<string, JsonElement>? transient = null) =>
-        new(
+        IReadOnlyDictionary<string, JsonElement>? transient = null)
+    {
+        return new JupyterDisplayData(
             new Dictionary<string, JsonElement>
             {
                 ["text/plain"] = JsonSerializer.SerializeToElement(text)
             },
             new Dictionary<string, JsonElement>(),
             transient);
+    }
 
     private static JupyterMessage Reply<TContent>(
         string messageType,
@@ -563,10 +561,7 @@ public sealed class JupyterProtocolSessionTests
         CancellationToken cancellationToken)
     {
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         return outputs;
     }

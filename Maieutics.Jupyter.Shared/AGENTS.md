@@ -6,9 +6,9 @@ Use `.agents/skills/maieutics-jupyter-protocol/SKILL.md` for cross-project proto
 ## Ownership
 
 This project is the transport-independent Jupyter wire-protocol foundation. It owns classic connection-file models,
-channels, headers and parent headers, wire envelopes and routing identities, multipart encoding, HMAC signing,
-protocol DTOs, MIME bundles, binary buffers, JSON contracts, message IDs, cursor conversion, display IDs, protocol
-exceptions, and compatibility helpers.
+channels, headers and parent headers, wire envelopes and routing identities, multipart encoding, HMAC signing, protocol
+DTOs, MIME bundles, binary buffers, JSON contracts, message IDs, cursor conversion, display IDs, protocol exceptions,
+and compatibility helpers.
 
 All Jupyter wire-format types belong here. Routing identities stay in `JupyterWireMessage`, not semantic content.
 

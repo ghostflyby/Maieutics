@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
@@ -12,10 +13,9 @@ using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
-using System.Runtime.Versioning;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -127,22 +127,16 @@ public static class MaieuticsHost
         {
             options.AddServerHeader = false;
             if (OperatingSystem.IsWindows())
-            {
                 options.ListenLocalhost(0, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
-            }
             else
-            {
                 options.ListenUnixSocket(controlSocketPath,
                     listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
-            }
         });
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
         if (OperatingSystem.IsWindows())
-        {
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
                 OperatingSystem.IsWindows() ? CreateWindowsBootstrap(services) : throw new UnreachableException()
             );
-        }
 
         builder.Services.AddSingleton<PluginHostModule>();
         builder.Services.AddSingleton<Task<PluginHostManager>>(services => PluginHostManager.CreateAsync(
@@ -200,32 +194,33 @@ public static class MaieuticsHost
         var application = builder.Build();
         var controlHost = application.Services.GetRequiredService<ReplControlHost>();
         if (OperatingSystem.IsWindows())
-        {
             application.Lifetime.ApplicationStarted.Register(() =>
             {
                 var addresses = application.Services.GetRequiredService<IServer>()
                     .Features.Get<IServerAddressesFeature>();
                 var address = addresses?.Addresses.FirstOrDefault();
                 if (address is not null && Uri.TryCreate(address, UriKind.Absolute, out var uri))
-                {
                     controlHost.WindowsControlAddress = $"{uri.Host}:{uri.Port}";
-                }
             });
-        }
 
         controlHost.MapEndpoints(application);
         return application;
     }
 
-    private static IAgentSession CreateAgentSession(IServiceProvider services) =>
-        new AgentSession(services.GetRequiredService<IAgentRunProfileProvider>());
+    private static IAgentSession CreateAgentSession(IServiceProvider services)
+    {
+        return new AgentSession(services.GetRequiredService<IAgentRunProfileProvider>());
+    }
 
     [SupportedOSPlatform("windows")]
-    private static WindowsPipeBootstrap CreateWindowsBootstrap(IServiceProvider services) => new(
-        $"maieutics-{Guid.NewGuid():N}",
-        services.GetRequiredService<ReplControlSessionRegistry>(),
-        services.GetRequiredService<ReplControlCredentialRegistry>(),
-        services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
+    private static WindowsPipeBootstrap CreateWindowsBootstrap(IServiceProvider services)
+    {
+        return new WindowsPipeBootstrap(
+            $"maieutics-{Guid.NewGuid():N}",
+            services.GetRequiredService<ReplControlSessionRegistry>(),
+            services.GetRequiredService<ReplControlCredentialRegistry>(),
+            services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
+    }
 
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {
@@ -258,20 +253,19 @@ public static class MaieuticsHost
     private static void AddAlias(IDictionary<string, string?> aliases, string environmentVariable, string key)
     {
         var value = Environment.GetEnvironmentVariable(environmentVariable);
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            aliases.Add(key, value);
-        }
+        if (!string.IsNullOrWhiteSpace(value)) aliases.Add(key, value);
     }
 
-    private static string? GetMcpConfigurationPath(MaieuticsConfigurationFile configurationFile) =>
-        configurationFile.Path is null
+    private static string? GetMcpConfigurationPath(MaieuticsConfigurationFile configurationFile)
+    {
+        return configurationFile.Path is null
             ? null
             : Path.Combine(
                 Path.GetDirectoryName(configurationFile.Path)
-                    ?? throw new InvalidOperationException(
-                        $"Cannot resolve the directory for '{configurationFile.Path}'."),
+                ?? throw new InvalidOperationException(
+                    $"Cannot resolve the directory for '{configurationFile.Path}'."),
                 "mcp.json");
+    }
 
     private static void ValidateInitialConfigurationFile(
         MaieuticsConfigurationFile configurationFile,
@@ -282,10 +276,8 @@ public static class MaieuticsHost
             if (!File.Exists(configurationFile.Path))
             {
                 if (configurationFile.Required)
-                {
                     throw new FileNotFoundException("The selected Maieutics configuration file does not exist.",
                         configurationFile.Path);
-                }
             }
             else
             {

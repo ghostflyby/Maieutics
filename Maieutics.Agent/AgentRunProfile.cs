@@ -23,10 +23,8 @@ public sealed record AgentRunProfile
         IEnumerable<AIFunction>? tools = null)
     {
         if ((capabilities & ~CompatibilityCapabilities) != 0)
-        {
             throw new ArgumentOutOfRangeException(nameof(capabilities), capabilities,
                 "The Agent run profile contains unknown model capabilities.");
-        }
 
         ChatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         Options = options ?? throw new ArgumentNullException(nameof(options));

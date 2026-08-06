@@ -13,9 +13,9 @@ internal interface IKernelInterruptCoordinator
 }
 
 /// <summary>
-/// Holds the running kernel host so signal handlers that outlive the host lifetime can request
-/// execution interrupts. The host reference is set when the hosted service starts and cleared on
-/// shutdown; interrupt requests without a host are no-ops.
+///     Holds the running kernel host so signal handlers that outlive the host lifetime can request
+///     execution interrupts. The host reference is set when the hosted service starts and cleared on
+///     shutdown; interrupt requests without a host are no-ops.
 /// </summary>
 internal sealed class KernelInterruptCoordinator : IKernelInterruptCoordinator
 {

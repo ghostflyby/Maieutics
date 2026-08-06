@@ -15,16 +15,28 @@ const GENERIC_WRITE = 0x40000000;
 const OPEN_EXISTING = 3;
 const MAX_PAYLOAD_BYTES = 4096;
 
-export function bootstrapWindowsCredential(pipeName: string): BootstrapCredential {
+export function bootstrapWindowsCredential(
+    pipeName: string,
+): BootstrapCredential {
   if (Deno.build.os !== "windows") {
-    throw new Error("The named-pipe bootstrap is only available on Windows.");
+    throw new Error(
+        "The named-pipe bootstrap is only available on Windows.",
+    );
   }
 
   const kernel32 = Deno.dlopen(
     "kernel32.dll",
     {
       CreateFileW: {
-        parameters: ["pointer", "u32", "u32", "pointer", "u32", "u32", "pointer"],
+        parameters: [
+          "pointer",
+          "u32",
+          "u32",
+          "pointer",
+          "u32",
+          "u32",
+          "pointer",
+        ],
         result: "pointer",
       },
       ReadFile: {
@@ -77,8 +89,13 @@ export function bootstrapWindowsCredential(pipeName: string): BootstrapCredentia
     const count = new DataView(bytesRead.buffer).getUint32(0, true);
     const text = new TextDecoder().decode(buffer.subarray(0, count));
     const credential = JSON.parse(text) as BootstrapCredential;
-    if (typeof credential.credential !== "string" || typeof credential.sessionId !== "string") {
-      throw new Error("The bootstrap payload is not a credential envelope.");
+    if (
+        typeof credential.credential !== "string" ||
+        typeof credential.sessionId !== "string"
+    ) {
+      throw new Error(
+          "The bootstrap payload is not a credential envelope.",
+      );
     }
     return credential;
   } finally {

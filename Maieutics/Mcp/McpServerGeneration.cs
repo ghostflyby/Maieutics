@@ -31,9 +31,11 @@ internal abstract record McpTransportDefinition
 }
 
 internal sealed record StdioMcpTransportDefinition(
-    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("command")]
+    string Command,
     [property: JsonPropertyName("args")] IReadOnlyList<string>? Arguments = null,
-    [property: JsonPropertyName("workingDirectory")] string? WorkingDirectory = null,
+    [property: JsonPropertyName("workingDirectory")]
+    string? WorkingDirectory = null,
     [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string?>? EnvironmentVariables = null)
     : McpTransportDefinition
 {
@@ -42,7 +44,8 @@ internal sealed record StdioMcpTransportDefinition(
 
 internal sealed record HttpMcpTransportDefinition(
     [property: JsonPropertyName("url")] Uri Endpoint,
-    [property: JsonPropertyName("headers")] IReadOnlyDictionary<string, string>? Headers = null)
+    [property: JsonPropertyName("headers")]
+    IReadOnlyDictionary<string, string>? Headers = null)
     : McpTransportDefinition
 {
     internal override McpServerTransportKind Kind => McpServerTransportKind.Http;
@@ -80,14 +83,11 @@ internal sealed record McpServerDefinition(
         {
             case StdioMcpTransportDefinition stdio:
                 Add(stdio.Command);
-                foreach (var argument in stdio.Arguments ?? [])
-                {
-                    Add(argument);
-                }
+                foreach (var argument in stdio.Arguments ?? []) Add(argument);
 
                 Add(stdio.WorkingDirectory);
                 foreach (var pair in (stdio.EnvironmentVariables ?? new Dictionary<string, string?>())
-                             .OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+                         .OrderBy(static pair => pair.Key, StringComparer.Ordinal))
                 {
                     Add(pair.Key);
                     Add(pair.Value);
@@ -98,7 +98,7 @@ internal sealed record McpServerDefinition(
             case HttpMcpTransportDefinition http:
                 Add(http.Endpoint.AbsoluteUri);
                 foreach (var pair in (http.Headers ?? new Dictionary<string, string>())
-                             .OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+                         .OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
                 {
                     Add(pair.Key);
                     Add(pair.Value);
@@ -127,18 +127,18 @@ internal sealed class McpServerGeneration
     private static readonly TimeSpan MaximumReconnectDelay = TimeSpan.FromSeconds(30);
 
     private readonly McpServerDefinition definition;
-    private readonly ILoggerFactory loggerFactory;
+    private readonly Lock gate = new();
+    private readonly CancellationTokenSource lifetime = new();
     private readonly ILogger logger;
+    private readonly ILoggerFactory loggerFactory;
+    private readonly IReadOnlySet<string>? reservedToolNames;
+    private readonly List<Task> retiredConnections = [];
     private readonly TimeProvider timeProvider;
     private readonly McpClientTransportFactory transportFactory;
-    private readonly IReadOnlySet<string>? reservedToolNames;
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly Lock gate = new();
-    private readonly List<Task> retiredConnections = [];
     private McpConnectionGeneration? current;
-    private Task supervisor = Task.CompletedTask;
-    private Task? retirement;
     private TimeSpan? nextReconnectDelay;
+    private Task? retirement;
+    private Task supervisor = Task.CompletedTask;
 
     private McpServerGeneration(
         McpServerDefinition definition,
@@ -191,10 +191,7 @@ internal sealed class McpServerGeneration
     {
         lock (gate)
         {
-            if (retirement is not null || current is null || current.Client.Completion.IsCompleted)
-            {
-                return null;
-            }
+            if (retirement is not null || current is null || current.Client.Completion.IsCompleted) return null;
 
             return current.Acquire();
         }
@@ -238,10 +235,7 @@ internal sealed class McpServerGeneration
             result = retirement;
         }
 
-        if (completion is not null)
-        {
-            _ = CompleteRetirementAsync(completion);
-        }
+        if (completion is not null) _ = CompleteRetirementAsync(completion);
 
         return result;
     }
@@ -302,10 +296,7 @@ internal sealed class McpServerGeneration
                 var completed = await Task.WhenAny(connection.Client.Completion, refreshWait).ConfigureAwait(false);
                 if (completed == refreshWait)
                 {
-                    if (!await refreshWait.ConfigureAwait(false))
-                    {
-                        break;
-                    }
+                    if (!await refreshWait.ConfigureAwait(false)) break;
 
                     connection.DrainRefreshSignals();
                     try
@@ -485,9 +476,7 @@ internal sealed class McpServerGeneration
     {
         var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
         foreach (var pair in transport.EnvironmentVariables ?? new Dictionary<string, string?>(StringComparer.Ordinal))
-        {
             environment[pair.Key] = pair.Value;
-        }
 
         return new StdioClientTransport(
             new StdioClientTransportOptions
@@ -507,8 +496,9 @@ internal sealed class McpServerGeneration
         string id,
         HttpMcpTransportDefinition transport,
         TimeSpan connectionTimeout,
-        ILoggerFactory loggerFactory) =>
-        new(
+        ILoggerFactory loggerFactory)
+    {
+        return new HttpClientTransport(
             new HttpClientTransportOptions
             {
                 Name = id,
@@ -520,6 +510,7 @@ internal sealed class McpServerGeneration
                     : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             },
             loggerFactory);
+    }
 
     internal sealed class McpConnectionGeneration(
         McpClient client,
@@ -527,12 +518,12 @@ internal sealed class McpServerGeneration
         Channel<byte> refreshSignals,
         IReadOnlySet<string>? reservedToolNames)
     {
-        private readonly Lock gate = new();
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private ImmutableArray<AIFunction> tools = [];
-        private ImmutableArray<MaieuticsMcpToolInfo> toolInfo = [];
+        private readonly Lock gate = new();
         private int references = 1;
         private bool retired;
+        private ImmutableArray<MaieuticsMcpToolInfo> toolInfo = [];
+        private ImmutableArray<AIFunction> tools = [];
 
         internal McpClient Client { get; } = client;
 
@@ -540,10 +531,7 @@ internal sealed class McpServerGeneration
         {
             lock (gate)
             {
-                if (retired)
-                {
-                    throw new ObjectDisposedException(nameof(McpConnectionGeneration));
-                }
+                if (retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
 
                 references = checked(references + 1);
                 return new McpServerLease(this, tools);
@@ -558,8 +546,10 @@ internal sealed class McpServerGeneration
             }
         }
 
-        internal ValueTask<bool> WaitForRefreshAsync(CancellationToken cancellationToken) =>
-            refreshSignals.Reader.WaitToReadAsync(cancellationToken);
+        internal ValueTask<bool> WaitForRefreshAsync(CancellationToken cancellationToken)
+        {
+            return refreshSignals.Reader.WaitToReadAsync(cancellationToken);
+        }
 
         internal void DrainRefreshSignals()
         {
@@ -588,10 +578,7 @@ internal sealed class McpServerGeneration
 
             lock (gate)
             {
-                if (retired)
-                {
-                    throw new ObjectDisposedException(nameof(McpConnectionGeneration));
-                }
+                if (retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
 
                 tools = exposed.ToImmutable();
                 toolInfo = info.ToImmutable();
@@ -610,10 +597,7 @@ internal sealed class McpServerGeneration
                 }
             }
 
-            if (dispose)
-            {
-                StartDisposeClient();
-            }
+            if (dispose) StartDisposeClient();
 
             return disposed.Task;
         }
@@ -623,10 +607,7 @@ internal sealed class McpServerGeneration
             var dispose = false;
             lock (gate)
             {
-                if (references > 0)
-                {
-                    dispose = --references == 0 && retired;
-                }
+                if (references > 0) dispose = --references == 0 && retired;
             }
 
             if (dispose)
@@ -638,7 +619,10 @@ internal sealed class McpServerGeneration
             return ValueTask.CompletedTask;
         }
 
-        private void StartDisposeClient() => _ = DisposeClientAndSignalAsync();
+        private void StartDisposeClient()
+        {
+            _ = DisposeClientAndSignalAsync();
+        }
 
         private async Task DisposeClientAndSignalAsync()
         {
@@ -677,9 +661,11 @@ internal sealed class McpServerGeneration
 
         internal IReadOnlyList<AIFunction> Tools { get; } = tools;
 
-        public ValueTask DisposeAsync() =>
-            Interlocked.Exchange(ref disposed, 1) == 0
+        public ValueTask DisposeAsync()
+        {
+            return Interlocked.Exchange(ref disposed, 1) == 0
                 ? generation.ReleaseAsync()
                 : ValueTask.CompletedTask;
+        }
     }
 }

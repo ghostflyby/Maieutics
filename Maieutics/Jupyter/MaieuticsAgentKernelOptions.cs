@@ -9,9 +9,7 @@ public sealed record MaieuticsAgentKernelOptions
     internal void Validate()
     {
         if (FlushInterval <= TimeSpan.Zero)
-        {
             throw new ArgumentOutOfRangeException(nameof(FlushInterval), "Flush interval must be positive.");
-        }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(FlushCharacters, 1);
     }

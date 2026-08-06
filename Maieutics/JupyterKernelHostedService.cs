@@ -41,10 +41,7 @@ internal sealed class JupyterKernelHostedService(
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (kernelHost is { } host)
-        {
-            await host.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
+        if (kernelHost is { } host) await host.StopAsync(cancellationToken).ConfigureAwait(false);
 
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }

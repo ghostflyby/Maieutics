@@ -7,9 +7,15 @@ namespace Maieutics.Jupyter.Shared;
 [JsonConverter(typeof(JupyterMessageIdJsonConverter))]
 public readonly record struct JupyterMessageId(string Value)
 {
-    public static JupyterMessageId Create() => new(Guid.NewGuid().ToString("N"));
+    public static JupyterMessageId Create()
+    {
+        return new JupyterMessageId(Guid.NewGuid().ToString("N"));
+    }
 
-    public override string ToString() => Value;
+    public override string ToString()
+    {
+        return Value;
+    }
 }
 
 public sealed record JupyterMessage(
@@ -48,7 +54,10 @@ public sealed record JupyterWireMessage(
     JupyterMessage Message,
     IReadOnlyList<byte[]> Buffers)
 {
-    public static JupyterWireMessage Create(JupyterMessage message) => new([], message, []);
+    public static JupyterWireMessage Create(JupyterMessage message)
+    {
+        return new JupyterWireMessage([], message, []);
+    }
 }
 
 public sealed class JupyterMessageHeader

@@ -5,9 +5,9 @@
  * messages between the kernel and the workers.
  */
 
-import { type PluginConfig, PluginHost } from "./host.ts";
-import { type BusConnection, connectBus } from "../shared/bus.ts";
-import { type ReplEnvelope } from "../shared/protocol.ts";
+import {type PluginConfig, PluginHost} from "./host.ts";
+import {connectBus} from "../shared/bus.ts";
+import {type ReplEnvelope} from "../shared/protocol.ts";
 
 const IPC_ENV = "MAIEUTICS_REPL_IPC";
 const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";
@@ -18,7 +18,9 @@ const WORKER_ENTRY_ENV = "MAIEUTICS_PLUGIN_WORKER_ENTRY";
 function requireEnv(name: string): string {
   const value = Deno.env.get(name);
   if (!value) {
-    throw new Error(`Missing ${name} environment variable for the plugin host.`);
+    throw new Error(
+        `Missing ${name} environment variable for the plugin host.`,
+    );
   }
   return value;
 }
@@ -45,7 +47,9 @@ async function main(): Promise<void> {
   const sdkUrl = requireEnv(SDK_ENV);
   const workerEntryUrl = requireEnv(WORKER_ENTRY_ENV);
 
-  const config = JSON.parse(await Deno.readTextFile(configPath)) as { plugins: PluginConfig[] };
+  const config = JSON.parse(await Deno.readTextFile(configPath)) as {
+    plugins: PluginConfig[];
+  };
   const host = new PluginHost({
     sdkUrl,
     workerEntryUrl,
@@ -58,7 +62,9 @@ async function main(): Promise<void> {
       `${config.plugins?.length ?? 0} plugin(s).`,
   );
 
-  const http = Deno.createHttpClient({ proxy: { transport: "unix", path: ipcAddress } });
+  const http = Deno.createHttpClient({
+    proxy: {transport: "unix", path: ipcAddress},
+  });
   const bus = await connectBus({
     http,
     hello: {
@@ -87,11 +93,19 @@ async function main(): Promise<void> {
       bus.send({
         type: "extension.error",
         correlationId: envelope.correlationId,
-        payload: { code: "invalid_invoke", message: "The extension.invoke payload is malformed." },
+        payload: {
+          code: "invalid_invoke",
+          message: "The extension.invoke payload is malformed.",
+        },
       });
       return;
     }
-    void host.invoke(payload.pluginId, payload.exportName, payload.extensionPoint, payload.request)
+    void host.invoke(
+        payload.pluginId,
+        payload.exportName,
+        payload.extensionPoint,
+        payload.request,
+    )
       .then((value) => {
         bus.send({
           type: "extension.result",
@@ -103,7 +117,10 @@ async function main(): Promise<void> {
         bus.send({
           type: "extension.error",
           correlationId: envelope.correlationId,
-          payload: { code: "extension_failed", message: error.message },
+          payload: {
+            code: "extension_failed",
+            message: error.message,
+          },
         });
       });
   }
@@ -115,7 +132,11 @@ function registryPayload(
     exportName: string;
     extensionPoint: string;
   }>,
-): { plugins: Array<{ pluginId: string; exportName: string; extensionPoints: string[] }> } {
+): {
+  plugins: Array<
+      { pluginId: string; exportName: string; extensionPoints: string[] }
+  >;
+} {
   const byWorker = new Map<string, Map<string, string[]>>();
   for (const registration of registrations) {
     let workers = byWorker.get(registration.pluginId);

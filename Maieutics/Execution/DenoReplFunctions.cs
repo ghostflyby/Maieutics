@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Agent;
 using Microsoft.Extensions.AI;
@@ -7,7 +8,7 @@ namespace Maieutics.Execution;
 
 internal sealed class DenoReplFunctions
 {
-    private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions =
+    private static readonly JsonSerializerOptions SerializerOptions =
         DenoReplJsonSerializerContext.Default.Options;
 
     private readonly DenoReplRegistry registry;
@@ -48,8 +49,9 @@ internal sealed class DenoReplFunctions
 
     internal IReadOnlyList<AIFunction> Functions { get; }
 
-    private static AIFunction CreateFunction(Delegate method, string name, string description) =>
-        AIFunctionFactory.Create(
+    private static AIFunction CreateFunction(Delegate method, string name, string description)
+    {
+        return AIFunctionFactory.Create(
             method,
             new AIFunctionFactoryOptions
             {
@@ -57,6 +59,7 @@ internal sealed class DenoReplFunctions
                 Description = description,
                 SerializerOptions = SerializerOptions
             });
+    }
 
     [Description("Executes TypeScript in one stateful Deno Jupyter REPL.")]
     private async ValueTask<DenoReplExecutionResult> ExecuteAsync(
@@ -68,9 +71,7 @@ internal sealed class DenoReplFunctions
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(code))
-        {
             throw new AgentToolException("repl_invalid_arguments", "code is required and cannot be empty.");
-        }
 
         return await registry.ExecuteAsync(
             AgentToolContext.GetRequired(arguments),
@@ -82,10 +83,12 @@ internal sealed class DenoReplFunctions
     [Description("Creates and starts an additional Deno Jupyter REPL process.")]
     private async ValueTask<DenoReplSessionResult> CreateAsync(
         AIFunctionArguments arguments,
-        CancellationToken cancellationToken = default) =>
-        await registry.CreateAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await registry.CreateAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             cancellationToken).ConfigureAwait(false);
+    }
 
     [Description("Lists Deno REPL sessions owned by the current Agent session.")]
     private ValueTask<DenoReplListResult> ListAsync(
@@ -101,22 +104,26 @@ internal sealed class DenoReplFunctions
         AIFunctionArguments arguments,
         [Description("An opaque REPL ID. Omit to restart the default REPL.")]
         string? sessionId = null,
-        CancellationToken cancellationToken = default) =>
-        await registry.RestartAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await registry.RestartAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             sessionId,
             cancellationToken).ConfigureAwait(false);
+    }
 
     [Description("Closes and removes a Deno REPL session.")]
     private async ValueTask<DenoReplCloseResult> CloseAsync(
         AIFunctionArguments arguments,
         [Description("An opaque REPL ID. Omit to close the default REPL.")]
         string? sessionId = null,
-        CancellationToken cancellationToken = default) =>
-        await registry.CloseAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await registry.CloseAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             sessionId,
             cancellationToken).ConfigureAwait(false);
+    }
 }
 
 [JsonSourceGenerationOptions(

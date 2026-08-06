@@ -22,11 +22,45 @@ internal sealed class DenoReplRegistry(
     private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> sessions = [];
     private int disposeState;
 
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
+        {
+            await disposalCompletion.Task.ConfigureAwait(false);
+            return;
+        }
+
+        Exception? failure = null;
+        DenoReplSession[] snapshot;
+        lock (gate)
+        {
+            snapshot = sessions.Values.SelectMany(static value => value.Values).ToArray();
+            sessions.Clear();
+        }
+
+        try
+        {
+            await Task.WhenAll(snapshot.Select(static session => session.DisposeAsync().AsTask()))
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+
+        if (failure is null)
+            disposalCompletion.TrySetResult();
+        else
+            disposalCompletion.TrySetException(failure);
+
+        await disposalCompletion.Task.ConfigureAwait(false);
+    }
+
     internal async Task<DenoReplSessionResult> CreateAsync(
         AgentSessionId ownerSessionId,
         CancellationToken cancellationToken)
     {
-        var session = Reserve(ownerSessionId, Guid.NewGuid().ToString("N"), isDefault: false);
+        var session = Reserve(ownerSessionId, Guid.NewGuid().ToString("N"), false);
         await session.StartAsync(cancellationToken).ConfigureAwait(false);
         return session.GetSnapshot();
     }
@@ -46,10 +80,7 @@ internal sealed class DenoReplRegistry(
         lock (gate)
         {
             ThrowIfDisposed();
-            if (!sessions.TryGetValue(ownerSessionId, out var owned))
-            {
-                return new DenoReplListResult([]);
-            }
+            if (!sessions.TryGetValue(ownerSessionId, out var owned)) return new DenoReplListResult([]);
 
             return new DenoReplListResult(owned.Values
                 .Select(static session => session.GetSnapshot())
@@ -99,44 +130,6 @@ internal sealed class DenoReplRegistry(
         return new DenoReplCloseResult(resolvedSessionId, true);
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
-        {
-            await disposalCompletion.Task.ConfigureAwait(false);
-            return;
-        }
-
-        Exception? failure = null;
-        DenoReplSession[] snapshot;
-        lock (gate)
-        {
-            snapshot = sessions.Values.SelectMany(static value => value.Values).ToArray();
-            sessions.Clear();
-        }
-
-        try
-        {
-            await Task.WhenAll(snapshot.Select(static session => session.DisposeAsync().AsTask()))
-                .ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            failure = exception;
-        }
-
-        if (failure is null)
-        {
-            disposalCompletion.TrySetResult();
-        }
-        else
-        {
-            disposalCompletion.TrySetException(failure);
-        }
-
-        await disposalCompletion.Task.ConfigureAwait(false);
-    }
-
     private DenoReplSession GetOrReserveDefault(AgentSessionId ownerSessionId, string? sessionId)
     {
         var resolvedSessionId = ResolveSessionId(sessionId);
@@ -145,17 +138,13 @@ internal sealed class DenoReplRegistry(
             ThrowIfDisposed();
             if (sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(resolvedSessionId, out var existing))
-            {
                 return existing;
-            }
 
             if (!string.Equals(resolvedSessionId, DefaultSessionId, StringComparison.Ordinal))
-            {
                 throw NotFound(resolvedSessionId);
-            }
         }
 
-        return Reserve(ownerSessionId, DefaultSessionId, isDefault: true);
+        return Reserve(ownerSessionId, DefaultSessionId, true);
     }
 
     private DenoReplSession Reserve(AgentSessionId ownerSessionId, string sessionId, bool isDefault)
@@ -169,17 +158,12 @@ internal sealed class DenoReplRegistry(
                 sessions.Add(ownerSessionId, owned);
             }
 
-            if (owned.TryGetValue(sessionId, out var existing))
-            {
-                return existing;
-            }
+            if (owned.TryGetValue(sessionId, out var existing)) return existing;
 
             if (owned.Count >= options.MaxSessionsPerAgent)
-            {
                 throw new AgentToolException(
                     "repl_session_limit",
                     $"An Agent session may own at most {options.MaxSessionsPerAgent} Deno REPL sessions.");
-            }
 
             var created = new DenoReplSession(
                 ownerSessionId,
@@ -203,9 +187,7 @@ internal sealed class DenoReplRegistry(
             ThrowIfDisposed();
             if (sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(sessionId, out var session))
-            {
                 return session;
-            }
         }
 
         throw NotFound(sessionId);
@@ -221,37 +203,32 @@ internal sealed class DenoReplRegistry(
             if (!sessions.TryGetValue(ownerSessionId, out var owned) ||
                 !owned.TryGetValue(sessionId, out var current) ||
                 !ReferenceEquals(current, expected))
-            {
                 return;
-            }
 
             owned.Remove(sessionId);
-            if (owned.Count == 0)
-            {
-                sessions.Remove(ownerSessionId);
-            }
+            if (owned.Count == 0) sessions.Remove(ownerSessionId);
         }
     }
 
     private static string ResolveSessionId(string? sessionId)
     {
-        if (sessionId is null)
-        {
-            return DefaultSessionId;
-        }
+        if (sessionId is null) return DefaultSessionId;
 
         if (string.IsNullOrWhiteSpace(sessionId))
-        {
             throw new AgentToolException("repl_invalid_arguments", "sessionId cannot be empty.");
-        }
 
         return sessionId;
     }
 
-    private static AgentToolException NotFound(string sessionId) => new(
-        "repl_session_not_found",
-        $"Deno REPL session '{sessionId}' does not exist.");
+    private static AgentToolException NotFound(string sessionId)
+    {
+        return new AgentToolException(
+            "repl_session_not_found",
+            $"Deno REPL session '{sessionId}' does not exist.");
+    }
 
-    private void ThrowIfDisposed() =>
+    private void ThrowIfDisposed()
+    {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+    }
 }

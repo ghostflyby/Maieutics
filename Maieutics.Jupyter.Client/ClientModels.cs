@@ -36,7 +36,7 @@ public sealed record JupyterDisplayUpdateOutput(
     JupyterDisplayId DisplayId) : JupyterOutput(RequestId);
 
 /// <summary>
-/// Represents a non-critical Jupyter output message that could not be projected into its typed output model.
+///     Represents a non-critical Jupyter output message that could not be projected into its typed output model.
 /// </summary>
 /// <param name="RequestId">The execution request that caused the output.</param>
 /// <param name="MessageType">The Jupyter message type that could not be projected.</param>

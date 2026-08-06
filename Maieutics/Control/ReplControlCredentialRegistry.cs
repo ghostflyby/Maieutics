@@ -4,10 +4,10 @@ using System.Security.Cryptography;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Maps bearer credentials to control identities (REPL session ids or plugin host ids) on
-/// platforms where peer process identity is not available on the control channel (Windows
-/// loopback TCP). A credential is issued once during bootstrap, stays valid for the identity
-/// lifetime, and is removed when the identity goes away.
+///     Maps bearer credentials to control identities (REPL session ids or plugin host ids) on
+///     platforms where peer process identity is not available on the control channel (Windows
+///     loopback TCP). A credential is issued once during bootstrap, stays valid for the identity
+///     lifetime, and is removed when the identity goes away.
 /// </summary>
 internal sealed class ReplControlCredentialRegistry
 {
@@ -40,11 +40,7 @@ internal sealed class ReplControlCredentialRegistry
     public void Remove(string identity)
     {
         foreach (var pair in credentials)
-        {
             if (string.Equals(pair.Value, identity, StringComparison.Ordinal))
-            {
                 credentials.TryRemove(pair.Key, out _);
-            }
-        }
     }
 }

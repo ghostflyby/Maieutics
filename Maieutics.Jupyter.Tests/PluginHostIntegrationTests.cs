@@ -10,15 +10,13 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class PluginHostIntegrationTests
 {
-    private static readonly JsonSerializerOptions JsonSerializerOptionsCaseInsensitive = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+    private static readonly JsonSerializerOptions JsonSerializerOptionsCaseInsensitive =
+        new() { PropertyNameCaseInsensitive = true };
 
     [Fact(Timeout = 120_000)]
     public async Task DiscoversAndInvokesExtensionPointsInARealDenoHost()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
@@ -74,10 +72,7 @@ public sealed class PluginHostIntegrationTests
     [Fact(Timeout = 120_000)]
     public async Task RejectsToolCallsThroughThePreInvokeHookChain()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
@@ -122,7 +117,7 @@ public sealed class PluginHostIntegrationTests
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "hook-session",
-                isDefault: false,
+                false,
                 Directory.GetCurrentDirectory(),
                 new DenoReplOptions(),
                 factory,
@@ -144,7 +139,7 @@ public sealed class PluginHostIntegrationTests
             }
         }
 
-        Directory.Delete(workspaceRoot, recursive: true);
+        Directory.Delete(workspaceRoot, true);
     }
 
     private static async Task<IReadOnlyList<PluginRegistration>> WaitForRegistrationsAsync(
@@ -156,10 +151,7 @@ public sealed class PluginHostIntegrationTests
         while (DateTime.UtcNow < deadline)
         {
             var registrations = manager.GetRegistrations(extensionPoint);
-            if (registrations.Count > 0)
-            {
-                return registrations;
-            }
+            if (registrations.Count > 0) return registrations;
 
             await Task.Delay(250, cancellationToken);
         }
@@ -175,29 +167,29 @@ public sealed class PluginHostIntegrationTests
         File.WriteAllText(
             Path.Combine(directory, "deno.json"),
             $$"""
-            {
-              "name": "@maieutics/{{pluginName}}",
-              "version": "0.1.0",
-              "exports": { "./main": "./mod.ts" },
-              "permissions": { "default": { "read": ["./"] } },
-              "maieutics": { "isolation": "auto" }
-            }
-            """);
+              {
+                "name": "@maieutics/{{pluginName}}",
+                "version": "0.1.0",
+                "exports": { "./main": "./mod.ts" },
+                "permissions": { "default": { "read": ["./"] } },
+                "maieutics": { "isolation": "auto" }
+              }
+              """);
         File.WriteAllText(
             Path.Combine(directory, "mod.ts"),
             pluginName == "rejecting"
-                ? $$"""
-                import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
-                export const pre = defineExtensionPoint("ToolPreInvoke", {
-                  handler: () => ({ action: "reject", error: { code: "denied_by_hook", message: "the hook denied this call" } }),
-                });
-                """
-                : $$"""
-                import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
-                export const discover = defineExtensionPoint("McpDiscover", {
-                  handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
-                });
-                """);
+                ? """
+                  import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+                  export const pre = defineExtensionPoint("ToolPreInvoke", {
+                    handler: () => ({ action: "reject", error: { code: "denied_by_hook", message: "the hook denied this call" } }),
+                  });
+                  """
+                : """
+                  import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+                  export const discover = defineExtensionPoint("McpDiscover", {
+                    handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
+                  });
+                  """);
         return root;
     }
 

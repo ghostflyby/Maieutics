@@ -8,6 +8,9 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class DenoReplExecutionCollectorTests
 {
+    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
+        new Dictionary<string, JsonElement>();
+
     [Fact]
     public async Task OutputTypesProduceSeparateModelAndNotebookProjections()
     {
@@ -56,7 +59,7 @@ public sealed class DenoReplExecutionCollectorTests
             .Equal("stdout", "stderr", "result", "error");
         result.Outputs.Single(output => output.Kind == "stdout").Text.Should().Be("private stdout");
         var resultValue = result.Outputs.Single(output => output.Kind == "result").Value
-            ?? throw new InvalidOperationException("The result execution has no value.");
+                          ?? throw new InvalidOperationException("The result execution has no value.");
         resultValue.GetInt32().Should().Be(42);
         JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
             .Should().NotContain("visible display").And.NotContain("visible update");
@@ -158,24 +161,30 @@ public sealed class DenoReplExecutionCollectorTests
             .Should().NotContain(payload);
     }
 
-    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
-        new Dictionary<string, JsonElement>();
-
-    private static MimeBundle TextBundle(string text) => new(new Dictionary<string, JsonElement>
+    private static MimeBundle TextBundle(string text)
     {
-        ["text/plain"] = JsonSerializer.SerializeToElement(text)
-    });
+        return new MimeBundle(new Dictionary<string, JsonElement>
+        {
+            ["text/plain"] = JsonSerializer.SerializeToElement(text)
+        });
+    }
 
-    private static MimeBundle JsonBundle(int value) => new(new Dictionary<string, JsonElement>
+    private static MimeBundle JsonBundle(int value)
     {
-        ["application/json"] = JsonSerializer.SerializeToElement(value)
-    });
+        return new MimeBundle(new Dictionary<string, JsonElement>
+        {
+            ["application/json"] = JsonSerializer.SerializeToElement(value)
+        });
+    }
 
     private sealed class TestExecution(
         JupyterMessageId requestId,
         IReadOnlyList<JupyterOutput> outputs,
         JupyterExecuteReply reply) : IJupyterExecution
     {
+        public List<string> InputReplies { get; } = [];
+
+        public int ObservedOutputCount { get; private set; }
         public JupyterMessageId RequestId { get; } = requestId;
 
         public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
@@ -188,10 +197,6 @@ public sealed class DenoReplExecutionCollectorTests
                     reply,
                     JupyterJsonContext.Default.JupyterExecuteReply,
                     new JupyterSessionIdentity("test", "tester"))));
-
-        public List<string> InputReplies { get; } = [];
-
-        public int ObservedOutputCount { get; private set; }
 
         public Task ReplyInputAsync(
             JupyterInputRequest request,
@@ -280,6 +285,9 @@ public sealed class DenoReplExecutionCollectorTests
         public Task<string> RequestInputAsync(
             string prompt,
             bool password,
-            CancellationToken cancellationToken) => Task.FromResult("Ada");
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult("Ada");
+        }
     }
 }

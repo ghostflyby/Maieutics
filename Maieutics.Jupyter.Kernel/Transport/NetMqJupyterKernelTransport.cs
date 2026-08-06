@@ -8,15 +8,15 @@ namespace Maieutics.Jupyter.Kernel.Transport;
 internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
 {
     private readonly JupyterConnectionInfo connectionInfo;
-    private readonly JupyterKernelTransportOptions options;
     private readonly Channel<JupyterKernelTransportEvent> incomingEvents;
+    private readonly Thread ioThread;
+    private readonly JupyterKernelTransportOptions options;
     private readonly Channel<KernelCommand> outgoingCommands;
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly Thread ioThread;
+    private int disposeState;
     private KernelIoLoop? ioLoop;
     private Exception? terminalError;
-    private int disposeState;
 
     private NetMqJupyterKernelTransport(JupyterConnectionInfo connectionInfo, JupyterKernelTransportOptions options)
     {
@@ -44,27 +44,6 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
 
     public IAsyncEnumerable<JupyterKernelTransportEvent> IncomingEvents => incomingEvents.Reader.ReadAllAsync();
 
-    public static async Task<NetMqJupyterKernelTransport> BindAsync(
-        JupyterConnectionInfo connectionInfo,
-        JupyterKernelTransportOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        connectionInfo.ValidateSupported();
-        var transport = new NetMqJupyterKernelTransport(connectionInfo, options ?? new JupyterKernelTransportOptions());
-        transport.ioThread.Start();
-        try
-        {
-            await transport.ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            return transport;
-        }
-        catch
-        {
-            await transport.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
-    }
-
     public async ValueTask SendAsync(
         JupyterKernelChannel channel,
         JupyterWireMessage message,
@@ -90,9 +69,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             var loop = Volatile.Read(ref ioLoop)
                        ?? throw new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
             if (!loop.TrySignalCommandsAvailable())
-            {
                 throw new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
-            }
         }
         catch (Exception exception)
         {
@@ -116,6 +93,27 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         await stopped.Task.ConfigureAwait(false);
     }
 
+    public static async Task<NetMqJupyterKernelTransport> BindAsync(
+        JupyterConnectionInfo connectionInfo,
+        JupyterKernelTransportOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        connectionInfo.ValidateSupported();
+        var transport = new NetMqJupyterKernelTransport(connectionInfo, options ?? new JupyterKernelTransportOptions());
+        transport.ioThread.Start();
+        try
+        {
+            await transport.ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return transport;
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
     private void RunIoThread()
     {
         KernelIoLoop? loop = null;
@@ -126,9 +124,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             loop = KernelIoLoop.Create(this);
             Volatile.Write(ref ioLoop, loop);
             if (Volatile.Read(ref disposeState) != 0 || Volatile.Read(ref terminalError) is not null)
-            {
                 loop.RequestStop();
-            }
 
             ready.TrySetResult();
             loop.Run();
@@ -141,17 +137,11 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         }
         finally
         {
-            if (loop is not null)
-            {
-                Interlocked.CompareExchange(ref ioLoop, null, loop);
-            }
+            if (loop is not null) Interlocked.CompareExchange(ref ioLoop, null, loop);
 
             var completionError = terminalError ?? failure;
             var pendingError = completionError ?? new ObjectDisposedException(nameof(NetMqJupyterKernelTransport));
-            while (outgoingCommands.Reader.TryRead(out var command))
-            {
-                command.Fail(pendingError);
-            }
+            while (outgoingCommands.Reader.TryRead(out var command)) command.Fail(pendingError);
 
             loop?.Dispose();
             incomingEvents.Writer.TryComplete(completionError);
@@ -177,10 +167,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, null)
         };
         var netMqMessage = new NetMQMessage();
-        foreach (var frame in serializer.Serialize(message))
-        {
-            netMqMessage.Append(frame);
-        }
+        foreach (var frame in serializer.Serialize(message)) netMqMessage.Append(frame);
 
         socket.SendMultipartMessage(netMqMessage);
     }
@@ -195,9 +182,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
     private void ThrowIfTerminated()
     {
         if (Volatile.Read(ref terminalError) is { } exception)
-        {
             throw new JupyterProtocolException("The Jupyter kernel transport has terminated.", exception);
-        }
     }
 
     private abstract record KernelCommand
@@ -210,7 +195,10 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         JupyterWireMessage Message,
         TaskCompletionSource Completion) : KernelCommand
     {
-        public override void Fail(Exception exception) => Completion.TrySetException(exception);
+        public override void Fail(Exception exception)
+        {
+            Completion.TrySetException(exception);
+        }
     }
 
     private enum IoSignal
@@ -221,18 +209,18 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
 
     private sealed class KernelIoLoop : IDisposable
     {
-        private readonly NetMqJupyterKernelTransport owner;
+        private readonly RouterSocket control;
+        private readonly ResponseSocket heartbeat;
+        private readonly XPublisherSocket iopub;
         private readonly Lock lifecycleGate = new();
+        private readonly NetMqJupyterKernelTransport owner;
+        private readonly NetMQPoller poller;
         private readonly IJupyterMessageSerializer serializer;
         private readonly RouterSocket shell;
-        private readonly RouterSocket control;
-        private readonly RouterSocket stdin;
-        private readonly XPublisherSocket iopub;
-        private readonly ResponseSocket heartbeat;
         private readonly NetMQQueue<IoSignal> signals;
-        private readonly NetMQPoller poller;
-        private int stopRequested;
+        private readonly RouterSocket stdin;
         private bool disposed;
+        private int stopRequested;
 
         private KernelIoLoop(NetMqJupyterKernelTransport owner)
         {
@@ -277,45 +265,11 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             }
         }
 
-        public static KernelIoLoop Create(NetMqJupyterKernelTransport owner) => new(owner);
-
-        public void Run() => poller.Run();
-
-        public bool TrySignalCommandsAvailable()
-        {
-            lock (lifecycleGate)
-            {
-                if (disposed || Volatile.Read(ref stopRequested) != 0)
-                {
-                    return false;
-                }
-
-                signals.Enqueue(IoSignal.CommandsAvailable);
-                return true;
-            }
-        }
-
-        public void RequestStop()
-        {
-            lock (lifecycleGate)
-            {
-                if (disposed || Interlocked.Exchange(ref stopRequested, 1) != 0)
-                {
-                    return;
-                }
-
-                signals.Enqueue(IoSignal.Stop);
-            }
-        }
-
         public void Dispose()
         {
             lock (lifecycleGate)
             {
-                if (disposed)
-                {
-                    return;
-                }
+                if (disposed) return;
 
                 disposed = true;
             }
@@ -341,17 +295,56 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             shell.Dispose();
         }
 
-        private void OnShellReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+        public static KernelIoLoop Create(NetMqJupyterKernelTransport owner)
+        {
+            return new KernelIoLoop(owner);
+        }
+
+        public void Run()
+        {
+            poller.Run();
+        }
+
+        public bool TrySignalCommandsAvailable()
+        {
+            lock (lifecycleGate)
+            {
+                if (disposed || Volatile.Read(ref stopRequested) != 0) return false;
+
+                signals.Enqueue(IoSignal.CommandsAvailable);
+                return true;
+            }
+        }
+
+        public void RequestStop()
+        {
+            lock (lifecycleGate)
+            {
+                if (disposed || Interlocked.Exchange(ref stopRequested, 1) != 0) return;
+
+                signals.Enqueue(IoSignal.Stop);
+            }
+        }
+
+        private void OnShellReceiveReady(object? sender, NetMQSocketEventArgs args)
+        {
             ReceiveMessages(JupyterKernelChannel.Shell, args.Socket);
+        }
 
-        private void OnControlReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+        private void OnControlReceiveReady(object? sender, NetMQSocketEventArgs args)
+        {
             ReceiveMessages(JupyterKernelChannel.Control, args.Socket);
+        }
 
-        private void OnStdinReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+        private void OnStdinReceiveReady(object? sender, NetMQSocketEventArgs args)
+        {
             ReceiveMessages(JupyterKernelChannel.Stdin, args.Socket);
+        }
 
-        private void OnIopubReceiveReady(object? sender, NetMQSocketEventArgs args) =>
+        private void OnIopubReceiveReady(object? sender, NetMQSocketEventArgs args)
+        {
             ReceiveSubscription(args.Socket);
+        }
 
         private static void OnHeartbeatReceiveReady(object? sender, NetMQSocketEventArgs args)
         {
@@ -363,9 +356,7 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         {
             var commandsAvailable = false;
             while (args.Queue.TryDequeue(out var signal, TimeSpan.Zero))
-            {
                 commandsAvailable |= signal == IoSignal.CommandsAvailable;
-            }
 
             if (Volatile.Read(ref stopRequested) != 0)
             {
@@ -373,16 +364,12 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
                 return;
             }
 
-            if (commandsAvailable)
-            {
-                ProcessCommands();
-            }
+            if (commandsAvailable) ProcessCommands();
         }
 
         private void ProcessCommands()
         {
             while (owner.outgoingCommands.Reader.TryRead(out var command))
-            {
                 switch (command)
                 {
                     case SendCommand send:
@@ -406,7 +393,6 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
 
                         break;
                 }
-            }
         }
 
         private void ReceiveMessages(JupyterKernelChannel channel, NetMQSocket socket)
@@ -414,17 +400,12 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
             while (true)
             {
                 var message = new NetMQMessage();
-                if (!socket.TryReceiveMultipartMessage(TimeSpan.Zero, ref message))
-                {
-                    return;
-                }
+                if (!socket.TryReceiveMultipartMessage(TimeSpan.Zero, ref message)) return;
 
                 var wireMessage = serializer.Deserialize(
                     message.Select(frame => frame.ToByteArray()).ToArray());
                 if (owner.incomingEvents.Writer.TryWrite(new JupyterKernelMessageReceived(channel, wireMessage)))
-                {
                     continue;
-                }
 
                 FailBackpressure();
                 return;
@@ -435,15 +416,10 @@ internal sealed class NetMqJupyterKernelTransport : IJupyterKernelTransport
         {
             while (socket.TryReceiveFrameBytes(out var subscription))
             {
-                if (subscription.Length == 0 || subscription[0] == 0)
-                {
-                    continue;
-                }
+                if (subscription.Length == 0 || subscription[0] == 0) continue;
 
                 if (owner.incomingEvents.Writer.TryWrite(new JupyterIopubSubscriptionReceived(subscription[1..])))
-                {
                     continue;
-                }
 
                 FailBackpressure();
                 return;

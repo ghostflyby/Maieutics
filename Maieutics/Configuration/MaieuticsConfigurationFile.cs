@@ -20,43 +20,35 @@ internal sealed record MaieuticsConfigurationFile(string? Path, bool Required, s
 
         var commandLinePath = GetCommandLinePath(args);
         if (commandLinePath is not null)
-        {
             return new MaieuticsConfigurationFile(
                 Normalize(commandLinePath, currentDirectory),
-                Required: true,
-                Source: "command line");
-        }
+                true,
+                "command line");
 
         var environmentPath = getEnvironmentVariable("MAIEUTICS_CONFIG");
         if (!string.IsNullOrWhiteSpace(environmentPath))
-        {
             return new MaieuticsConfigurationFile(
                 Normalize(environmentPath, currentDirectory),
-                Required: true,
-                Source: "MAIEUTICS_CONFIG");
-        }
+                true,
+                "MAIEUTICS_CONFIG");
 
         var portablePath = System.IO.Path.Combine(applicationBaseDirectory, "maieutics.json");
         if (File.Exists(portablePath))
-        {
             return new MaieuticsConfigurationFile(
                 System.IO.Path.GetFullPath(portablePath),
-                Required: true,
-                Source: "portable");
-        }
+                true,
+                "portable");
 
         if (string.IsNullOrWhiteSpace(applicationDataDirectory))
-        {
-            return new MaieuticsConfigurationFile(null, Required: false, Source: "none");
-        }
+            return new MaieuticsConfigurationFile(null, false, "none");
 
         return new MaieuticsConfigurationFile(
             System.IO.Path.GetFullPath(System.IO.Path.Combine(
                 applicationDataDirectory,
                 "Maieutics",
                 "maieutics.json")),
-            Required: false,
-            Source: "user");
+            false,
+            "user");
     }
 
     private static string? GetCommandLinePath(IReadOnlyList<string> args)
@@ -69,9 +61,7 @@ internal sealed record MaieuticsConfigurationFile(string? Path, bool Required, s
             if (string.Equals(argument, "--config", StringComparison.Ordinal))
             {
                 if (++index >= args.Count || args[index].StartsWith("--", StringComparison.Ordinal))
-                {
                     throw new ArgumentException("The --config option requires a path.", nameof(args));
-                }
 
                 value = args[index];
             }
@@ -80,16 +70,11 @@ internal sealed record MaieuticsConfigurationFile(string? Path, bool Required, s
                 value = argument["--config=".Length..];
             }
 
-            if (value is null)
-            {
-                continue;
-            }
+            if (value is null) continue;
 
             ArgumentException.ThrowIfNullOrWhiteSpace(value);
             if (result is not null)
-            {
                 throw new ArgumentException("The --config option may be specified only once.", nameof(args));
-            }
 
             result = value;
         }
@@ -97,10 +82,12 @@ internal sealed record MaieuticsConfigurationFile(string? Path, bool Required, s
         return result;
     }
 
-    private static string Normalize(string path, string currentDirectory) =>
-        System.IO.Path.IsPathFullyQualified(path)
+    private static string Normalize(string path, string currentDirectory)
+    {
+        return System.IO.Path.IsPathFullyQualified(path)
             ? System.IO.Path.GetFullPath(path)
             : System.IO.Path.GetFullPath(path, currentDirectory);
+    }
 }
 
 internal sealed class MaieuticsConfigurationFileProvider : IDisposable
@@ -121,15 +108,18 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
     internal bool IsDisposed => Volatile.Read(ref disposed) != 0;
 
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) == 0) owner?.Dispose();
+    }
+
     internal static MaieuticsConfigurationFileProvider Create(string? path)
     {
         if (path is null)
-        {
             return new MaieuticsConfigurationFileProvider(
                 new NullFileProvider(),
                 "maieutics.json",
-                owner: null);
-        }
+                null);
 
         var fullPath = Path.GetFullPath(path);
         var directory = Path.GetDirectoryName(fullPath)
@@ -148,21 +138,13 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
         return new MaieuticsConfigurationFileProvider(provider, relativePath, provider);
     }
 
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref disposed, 1) == 0)
-        {
-            owner?.Dispose();
-        }
-    }
-
     private sealed class PollingFileProvider : IFileProvider, IDisposable
     {
         private readonly PhysicalFileProvider inner;
         private readonly TimeSpan interval;
         private readonly ConcurrentDictionary<long, PollingChangeToken> tokens = new();
-        private long nextTokenId;
         private int disposed;
+        private long nextTokenId;
 
         internal PollingFileProvider(string root, TimeSpan interval)
         {
@@ -170,9 +152,25 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
             this.interval = interval;
         }
 
-        public IFileInfo GetFileInfo(string subpath) => inner.GetFileInfo(subpath);
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
 
-        public IDirectoryContents GetDirectoryContents(string subpath) => inner.GetDirectoryContents(subpath);
+            foreach (var token in tokens.Values) token.Dispose();
+
+            tokens.Clear();
+            inner.Dispose();
+        }
+
+        public IFileInfo GetFileInfo(string subpath)
+        {
+            return inner.GetFileInfo(subpath);
+        }
+
+        public IDirectoryContents GetDirectoryContents(string subpath)
+        {
+            return inner.GetDirectoryContents(subpath);
+        }
 
         public IChangeToken Watch(string filter)
         {
@@ -188,30 +186,14 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
             return token;
         }
-
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref disposed, 1) != 0)
-            {
-                return;
-            }
-
-            foreach (var token in tokens.Values)
-            {
-                token.Dispose();
-            }
-
-            tokens.Clear();
-            inner.Dispose();
-        }
     }
 
     private sealed class PollingChangeToken : IChangeToken, IDisposable
     {
         private readonly CancellationTokenSource changed = new();
-        private readonly Action onChanged;
-        private readonly TimeSpan interval;
         private readonly FileStamp initialStamp;
+        private readonly TimeSpan interval;
+        private readonly Action onChanged;
         private readonly Timer timer;
         private int disposed;
 
@@ -245,10 +227,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0)
-            {
-                return;
-            }
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
 
             timer.Dispose();
             changed.Dispose();
@@ -256,15 +235,9 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
         private void Poll(object? state)
         {
-            if (Volatile.Read(ref disposed) != 0 || state is not string path)
-            {
-                return;
-            }
+            if (Volatile.Read(ref disposed) != 0 || state is not string path) return;
 
-            if (FileStamp.Read(path) == initialStamp)
-            {
-                return;
-            }
+            if (FileStamp.Read(path) == initialStamp) return;
 
             timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             Exception? consumerFailure = null;
@@ -346,9 +319,7 @@ internal sealed class MaieuticsConfigurationFileErrors
     {
         ArgumentNullException.ThrowIfNull(callback);
         if (Interlocked.CompareExchange(ref signal, callback, null) is not null)
-        {
             throw new InvalidOperationException("A configuration error signal is already registered.");
-        }
 
         return new SignalRegistration(this, callback);
     }
@@ -356,10 +327,7 @@ internal sealed class MaieuticsConfigurationFileErrors
     internal Exception? TakeLatest()
     {
         Exception? latest = null;
-        while (errors.TryDequeue(out var error))
-        {
-            latest = error;
-        }
+        while (errors.TryDequeue(out var error)) latest = error;
 
         return latest;
     }
@@ -371,9 +339,7 @@ internal sealed class MaieuticsConfigurationFileErrors
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposed, 1) == 0)
-            {
                 Interlocked.CompareExchange(ref owner.signal, null, callback);
-            }
         }
     }
 }

@@ -11,6 +11,7 @@ namespace Maieutics.Execution;
 
 internal sealed class DenoReplSession : IAsyncDisposable
 {
+    private readonly ReplControlSessionRegistry controlRegistry;
     private readonly Dictionary<string, JupyterDisplayId> displayIds = new(StringComparer.Ordinal);
 
     private readonly TaskCompletionSource disposalCompletion =
@@ -18,22 +19,21 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private readonly SemaphoreSlim executionGate = new(1, 1);
     private readonly IDenoReplSessionFactory factory;
-    private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
+    private readonly CancellationTokenSource lifetime = new();
     private readonly ILogger<DenoReplSession> logger;
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
-    private readonly ReplControlSessionRegistry controlRegistry;
     private readonly Lock stateGate = new();
+    private int disposeState;
+    private int generation = 1;
     private CancellationTokenSource? generationLifetime;
     private Task? generationLoop;
+    private int latePresentationEventsRemaining;
+    private int latePresentationTextBytesRemaining;
     private IJupyterKernelManager? manager;
     private int? registeredControlPid;
     private DenoReplSessionState state = DenoReplSessionState.Created;
-    private int disposeState;
-    private int generation = 1;
-    private int latePresentationEventsRemaining;
-    private int latePresentationTextBytesRemaining;
 
     internal DenoReplSession(
         AgentSessionId ownerSessionId,
@@ -67,6 +67,38 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     internal string WorkingDirectory { get; }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
+        {
+            await disposalCompletion.Task.ConfigureAwait(false);
+            return;
+        }
+
+        Exception? failure = null;
+        try
+        {
+            await CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        finally
+        {
+            lifetime.Dispose();
+            lifecycleGate.Dispose();
+            executionGate.Dispose();
+        }
+
+        if (failure is null)
+            disposalCompletion.TrySetResult();
+        else
+            disposalCompletion.TrySetException(failure);
+
+        await disposalCompletion.Task.ConfigureAwait(false);
+    }
+
     internal DenoReplSessionResult GetSnapshot()
     {
         lock (stateGate)
@@ -87,15 +119,9 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             ThrowIfDisposed();
             var current = GetState();
-            if (current is DenoReplSessionState.Idle or DenoReplSessionState.Busy)
-            {
-                return;
-            }
+            if (current is DenoReplSessionState.Idle or DenoReplSessionState.Busy) return;
 
-            if (current == DenoReplSessionState.Faulted)
-            {
-                throw CreateFaultedException();
-            }
+            if (current == DenoReplSessionState.Faulted) throw CreateFaultedException();
 
             SetState(DenoReplSessionState.Starting);
             try
@@ -139,10 +165,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         try
         {
             ThrowIfDisposed();
-            if (GetState() == DenoReplSessionState.Faulted)
-            {
-                throw CreateFaultedException();
-            }
+            if (GetState() == DenoReplSessionState.Faulted) throw CreateFaultedException();
 
             var currentManager = manager ?? throw CreateFaultedException();
             var currentGeneration = GetGeneration();
@@ -198,24 +221,17 @@ internal sealed class DenoReplSession : IAsyncDisposable
             catch (OperationCanceledException) when (wait.IsCancellationRequested)
             {
                 var escalated = await InterruptAndDrainAsync(currentManager, completion).ConfigureAwait(false);
-                if (escalated)
-                {
-                    MarkFaulted();
-                }
+                if (escalated) MarkFaulted();
 
                 if (cancellationToken.IsCancellationRequested || lifetime.IsCancellationRequested)
-                {
                     throw new OperationCanceledException(cancellationToken.IsCancellationRequested
                         ? cancellationToken
                         : lifetime.Token);
-                }
 
                 if (timeout.IsCancellationRequested)
-                {
                     throw new AgentToolException(
                         "repl_timeout",
                         $"Deno REPL session '{SessionId}' exceeded its execution timeout.");
-                }
 
                 throw;
             }
@@ -236,10 +252,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             lock (stateGate)
             {
-                if (state == DenoReplSessionState.Busy)
-                {
-                    state = DenoReplSessionState.Idle;
-                }
+                if (state == DenoReplSessionState.Busy) state = DenoReplSessionState.Idle;
             }
 
             executionGate.Release();
@@ -266,16 +279,12 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 try
                 {
                     if (manager is null)
-                    {
                         manager = await factory.StartAsync(
                             WorkingDirectory,
                             SessionId,
                             cancellationToken).ConfigureAwait(false);
-                    }
                     else
-                    {
                         await manager.RestartAsync(cancellationToken).ConfigureAwait(false);
-                    }
 
                     await StartControlChannelAsync(cancellationToken).ConfigureAwait(false);
                     StartGenerationLoop(manager.Client);
@@ -316,17 +325,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (GetState() == DenoReplSessionState.Closed)
-                {
-                    return;
-                }
+                if (GetState() == DenoReplSessionState.Closed) return;
 
                 SetState(DenoReplSessionState.Closing);
                 await StopGenerationLoopAsync().ConfigureAwait(false);
                 var currentManager = manager;
                 manager = null;
                 if (currentManager is not null)
-                {
                     try
                     {
                         await currentManager.ShutdownAsync(cancellationToken).ConfigureAwait(false);
@@ -335,7 +340,6 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     {
                         await currentManager.DisposeAsync().ConfigureAwait(false);
                     }
-                }
 
                 UnregisterControlSession();
 
@@ -350,42 +354,6 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             executionGate.Release();
         }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
-        {
-            await disposalCompletion.Task.ConfigureAwait(false);
-            return;
-        }
-
-        Exception? failure = null;
-        try
-        {
-            await CloseAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            failure = exception;
-        }
-        finally
-        {
-            lifetime.Dispose();
-            lifecycleGate.Dispose();
-            executionGate.Dispose();
-        }
-
-        if (failure is null)
-        {
-            disposalCompletion.TrySetResult();
-        }
-        else
-        {
-            disposalCompletion.TrySetException(failure);
-        }
-
-        await disposalCompletion.Task.ConfigureAwait(false);
     }
 
     private async Task<bool> InterruptAndDrainAsync(
@@ -444,15 +412,9 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private async Task StartControlChannelAsync(CancellationToken cancellationToken)
     {
-        if (manager?.ProcessId is not { } processId)
-        {
-            return;
-        }
+        if (manager?.ProcessId is not { } processId) return;
 
-        if (registeredControlPid is { } previous && previous != processId)
-        {
-            controlRegistry.Unregister(previous);
-        }
+        if (registeredControlPid is { } previous && previous != processId) controlRegistry.Unregister(previous);
 
         controlRegistry.Register(processId, SessionId);
         registeredControlPid = processId;
@@ -477,18 +439,12 @@ internal sealed class DenoReplSession : IAsyncDisposable
         var loop = generationLoop;
         generationLifetime = null;
         generationLoop = null;
-        if (cancellation is null)
-        {
-            return;
-        }
+        if (cancellation is null) return;
 
         await cancellation.CancelAsync();
         try
         {
-            if (loop is not null)
-            {
-                await loop.ConfigureAwait(false);
-            }
+            if (loop is not null) await loop.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -504,7 +460,6 @@ internal sealed class DenoReplSession : IAsyncDisposable
         try
         {
             await foreach (var clientEvent in client.WatchEventsAsync(cancellationToken).ConfigureAwait(false))
-            {
                 switch (clientEvent)
                 {
                     case JupyterLateOutput { Output: { } output }:
@@ -518,7 +473,6 @@ internal sealed class DenoReplSession : IAsyncDisposable
                             SessionId);
                         return;
                 }
-            }
 
             if (!cancellationToken.IsCancellationRequested)
             {
@@ -553,28 +507,22 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             case JupyterDisplayOutput display when CanPresentLateBundle(display.Data, display.Metadata):
                 if (display.DisplayId is { } innerDisplayId)
-                {
                     await sink.DisplayTrackedAsync(
                         display.Data,
                         GetOrCreateDisplayId(innerDisplayId),
                         display.Metadata,
                         cancellationToken).ConfigureAwait(false);
-                }
                 else
-                {
                     await sink.DisplayAsync(display.Data, display.Metadata, cancellationToken).ConfigureAwait(false);
-                }
 
                 break;
             case JupyterDisplayUpdateOutput update when CanPresentLateBundle(update.Data, update.Metadata):
                 if (GetDisplayId(update.DisplayId) is { } updateDisplayId)
-                {
                     await sink.UpdateDisplayAsync(
                         updateDisplayId,
                         update.Data,
                         update.Metadata,
                         cancellationToken).ConfigureAwait(false);
-                }
 
                 break;
             case JupyterClearOutput clear when TryReserveLatePresentationEvent():
@@ -582,10 +530,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 break;
             case JupyterStderr stderr when TryReserveLatePresentationEvent():
                 var text = TakeLatePresentationText(stderr.Text);
-                if (text.Length > 0)
-                {
-                    await sink.WriteStderrAsync(text, cancellationToken).ConfigureAwait(false);
-                }
+                if (text.Length > 0) await sink.WriteStderrAsync(text, cancellationToken).ConfigureAwait(false);
 
                 break;
             case JupyterExecutionError error when TryReserveLatePresentationEvent():
@@ -618,23 +563,24 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private bool CanPresentLateBundle(
         MimeBundle bundle,
-        IReadOnlyDictionary<string, JsonElement> metadata) =>
-        TryReserveLatePresentationEvent() &&
-        DenoReplExecutionCollector.CountJsonBytes(bundle.Data) +
-        DenoReplExecutionCollector.CountJsonBytes(metadata) <= options.MaxPresentationBundleBytes;
+        IReadOnlyDictionary<string, JsonElement> metadata)
+    {
+        return TryReserveLatePresentationEvent() &&
+               DenoReplExecutionCollector.CountJsonBytes(bundle.Data) +
+               DenoReplExecutionCollector.CountJsonBytes(metadata) <= options.MaxPresentationBundleBytes;
+    }
 
-    private bool TryReserveLatePresentationEvent() =>
-        Interlocked.Decrement(ref latePresentationEventsRemaining) >= 0;
+    private bool TryReserveLatePresentationEvent()
+    {
+        return Interlocked.Decrement(ref latePresentationEventsRemaining) >= 0;
+    }
 
     private string TakeLatePresentationText(string text)
     {
         while (true)
         {
             var remaining = Volatile.Read(ref latePresentationTextBytesRemaining);
-            if (remaining <= 0)
-            {
-                return string.Empty;
-            }
+            if (remaining <= 0) return string.Empty;
 
             var bytes = Encoding.UTF8.GetByteCount(text);
             if (bytes <= remaining)
@@ -643,9 +589,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                         ref latePresentationTextBytesRemaining,
                         remaining - bytes,
                         remaining) == remaining)
-                {
                     return text;
-                }
 
                 continue;
             }
@@ -656,10 +600,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 var selectedBytes = 0;
                 foreach (var rune in text.EnumerateRunes())
                 {
-                    if (selectedBytes + rune.Utf8SequenceLength > remaining)
-                    {
-                        break;
-                    }
+                    if (selectedBytes + rune.Utf8SequenceLength > remaining) break;
 
                     selected.Append(rune.ToString());
                     selectedBytes += rune.Utf8SequenceLength;
@@ -674,10 +615,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
     {
         lock (stateGate)
         {
-            if (displayIds.TryGetValue(innerDisplayId.Value, out var existing))
-            {
-                return existing;
-            }
+            if (displayIds.TryGetValue(innerDisplayId.Value, out var existing)) return existing;
 
             var identity = Encoding.UTF8.GetBytes(
                 $"{OwnerSessionId}:{SessionId}:{generation}:{innerDisplayId.Value}");
@@ -725,36 +663,45 @@ internal sealed class DenoReplSession : IAsyncDisposable
         lock (stateGate)
         {
             if (state is not DenoReplSessionState.Closing and not DenoReplSessionState.Closed)
-            {
                 state = DenoReplSessionState.Faulted;
-            }
         }
     }
 
-    private AgentToolException CreateFaultedException() => new(
-        "repl_faulted",
-        $"Deno REPL session '{SessionId}' is faulted and requires an explicit restart or close.");
+    private AgentToolException CreateFaultedException()
+    {
+        return new AgentToolException(
+            "repl_faulted",
+            $"Deno REPL session '{SessionId}' is faulted and requires an explicit restart or close.");
+    }
 
-    private void ThrowIfDisposed() =>
+    private void ThrowIfDisposed()
+    {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+    }
 
-    private static string ToWireState(DenoReplSessionState value) => value switch
+    private static string ToWireState(DenoReplSessionState value)
     {
-        DenoReplSessionState.Created => "created",
-        DenoReplSessionState.Starting => "starting",
-        DenoReplSessionState.Idle => "idle",
-        DenoReplSessionState.Busy => "busy",
-        DenoReplSessionState.Restarting => "restarting",
-        DenoReplSessionState.Faulted => "faulted",
-        DenoReplSessionState.Closing => "closing",
-        DenoReplSessionState.Closed => "closed",
-        _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
-    };
+        return value switch
+        {
+            DenoReplSessionState.Created => "created",
+            DenoReplSessionState.Starting => "starting",
+            DenoReplSessionState.Idle => "idle",
+            DenoReplSessionState.Busy => "busy",
+            DenoReplSessionState.Restarting => "restarting",
+            DenoReplSessionState.Faulted => "faulted",
+            DenoReplSessionState.Closing => "closing",
+            DenoReplSessionState.Closed => "closed",
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
+        };
+    }
 
-    private static string GetSafeMessage(Exception exception) => exception switch
+    private static string GetSafeMessage(Exception exception)
     {
-        FileNotFoundException => "The configured Deno executable was not found.",
-        UnauthorizedAccessException => "The operating system denied access to the Deno executable or workspace.",
-        _ => "The Deno kernel process or Jupyter connection failed."
-    };
+        return exception switch
+        {
+            FileNotFoundException => "The configured Deno executable was not found.",
+            UnauthorizedAccessException => "The operating system denied access to the Deno executable or workspace.",
+            _ => "The Deno kernel process or Jupyter connection failed."
+        };
+    }
 }

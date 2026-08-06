@@ -10,13 +10,30 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class ReplControlChannelIntegrationTests
 {
+    private const string ReplChildProbeScript = """
+                                                if (!Deno.env.get("MAIEUTICS_REPL_IPC")) {
+                                                  throw new Error("MAIEUTICS_REPL_IPC is missing");
+                                                }
+                                                const clientUrl = Deno.env.get("MAIEUTICS_REPL_CLIENT");
+                                                if (!clientUrl) throw new Error("MAIEUTICS_REPL_CLIENT is missing");
+                                                const maieutics = await import(clientUrl);
+                                                const healthText = await maieutics.health();
+                                                if (healthText !== "ok") throw new Error(`unexpected health: ${healthText}`);
+                                                const task = maieutics.tools.start("list_directory", {});
+                                                const listing = await task;
+                                                if (listing === null || typeof listing !== "object") {
+                                                  throw new Error("tool result is not a structured object");
+                                                }
+                                                await maieutics.comm.open("probe-comm", "test");
+                                                await maieutics.comm.msg("probe-comm", { value: 42 });
+                                                await maieutics.comm.close("probe-comm");
+                                                "control-ok";
+                                                """;
+
     [Fact(Timeout = 120_000)]
     public async Task BootstrapBindingIsUsableFromUserCells()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
@@ -35,7 +52,7 @@ public sealed class ReplControlChannelIntegrationTests
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "verify",
-                isDefault: false,
+                false,
                 Directory.GetCurrentDirectory(),
                 new DenoReplOptions(),
                 factory,
@@ -62,10 +79,8 @@ public sealed class ReplControlChannelIntegrationTests
     public async Task RealDenoChildTalksToItsOwnControlChannel()
     {
         if (OperatingSystem.IsWindows())
-        {
             // Windows fails explicitly until the named-pipe bootstrap milestone.
             return;
-        }
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
@@ -106,38 +121,15 @@ public sealed class ReplControlChannelIntegrationTests
             }
         }
 
-        Directory.Delete(workspaceRoot, recursive: true);
+        Directory.Delete(workspaceRoot, true);
     }
-
-    private const string ReplChildProbeScript = """
-                                                if (!Deno.env.get("MAIEUTICS_REPL_IPC")) {
-                                                  throw new Error("MAIEUTICS_REPL_IPC is missing");
-                                                }
-                                                const clientUrl = Deno.env.get("MAIEUTICS_REPL_CLIENT");
-                                                if (!clientUrl) throw new Error("MAIEUTICS_REPL_CLIENT is missing");
-                                                const maieutics = await import(clientUrl);
-                                                const healthText = await maieutics.health();
-                                                if (healthText !== "ok") throw new Error(`unexpected health: ${healthText}`);
-                                                const task = maieutics.tools.start("list_directory", {});
-                                                const listing = await task;
-                                                if (listing === null || typeof listing !== "object") {
-                                                  throw new Error("tool result is not a structured object");
-                                                }
-                                                await maieutics.comm.open("probe-comm", "test");
-                                                await maieutics.comm.msg("probe-comm", { value: 42 });
-                                                await maieutics.comm.close("probe-comm");
-                                                "control-ok";
-                                                """;
 
     private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
         IJupyterExecution execution,
         CancellationToken cancellationToken)
     {
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         return outputs;
     }

@@ -15,8 +15,10 @@ internal static class AgentTranscriptCodec
     private static readonly JsonTypeInfo<ChatMessage[]> ChatMessageArrayTypeInfo =
         (JsonTypeInfo<ChatMessage[]>)SerializerOptions.GetTypeInfo(typeof(ChatMessage[]));
 
-    internal static AgentTranscriptState CreateInitialState(AgentSessionId sessionId) =>
-        new(sessionId, 0, []);
+    internal static AgentTranscriptState CreateInitialState(AgentSessionId sessionId)
+    {
+        return new AgentTranscriptState(sessionId, 0, []);
+    }
 
     internal static AgentTranscriptStateTurn DetachPrivateTurn(
         AgentRunId runId,
@@ -55,10 +57,7 @@ internal static class AgentTranscriptCodec
         foreach (var content in message.Contents)
         {
             ValidateContent(content);
-            if (content is TextReasoningContent)
-            {
-                continue;
-            }
+            if (content is TextReasoningContent) continue;
 
             try
             {
@@ -94,9 +93,7 @@ internal static class AgentTranscriptCodec
         {
             var messages = new ChatMessage[turn.Messages.Length];
             for (var index = 0; index < turn.Messages.Length; index++)
-            {
                 messages[index] = CreatePublicMessage(turn.Messages[index]);
-            }
 
             turns.Add(new AgentTranscriptTurn(turn.RunId, messages, turn.ModelIdentity, turn.Truncated));
         }
@@ -116,32 +113,30 @@ internal static class AgentTranscriptCodec
         }
     }
 
-    private static ChatMessage[] DeserializeMessages(ReadOnlySpan<byte> messages) =>
-        JsonSerializer.Deserialize(messages, ChatMessageArrayTypeInfo)
-        ?? throw new JsonException("A canonical Agent transcript turn contains no message array.");
+    private static ChatMessage[] DeserializeMessages(ReadOnlySpan<byte> messages)
+    {
+        return JsonSerializer.Deserialize(messages, ChatMessageArrayTypeInfo)
+               ?? throw new JsonException("A canonical Agent transcript turn contains no message array.");
+    }
 
     private static AgentContentCompatibilityException CreateCompatibilityException(
         IReadOnlyList<ChatMessage> messages,
         Exception innerException)
     {
         foreach (var message in messages)
-        {
-            foreach (var content in message.Contents)
+        foreach (var content in message.Contents)
+            try
             {
-                try
-                {
-                    _ = JsonSerializer.SerializeToUtf8Bytes(
-                        [new ChatMessage(message.Role, [content])],
-                        ChatMessageArrayTypeInfo);
-                }
-                catch (Exception exception) when (exception is JsonException or NotSupportedException)
-                {
-                    return new AgentContentCompatibilityException(
-                        content.GetType().FullName ?? content.GetType().Name,
-                        innerException);
-                }
+                _ = JsonSerializer.SerializeToUtf8Bytes(
+                    [new ChatMessage(message.Role, [content])],
+                    ChatMessageArrayTypeInfo);
             }
-        }
+            catch (Exception exception) when (exception is JsonException or NotSupportedException)
+            {
+                return new AgentContentCompatibilityException(
+                    content.GetType().FullName ?? content.GetType().Name,
+                    innerException);
+            }
 
         return new AgentContentCompatibilityException(
             typeof(ChatMessage).FullName ?? typeof(ChatMessage).Name,
@@ -154,31 +149,23 @@ internal static class AgentTranscriptCodec
         {
             var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
             ValidateValue(message.AdditionalProperties, visited);
-            foreach (var content in message.Contents)
-            {
-                ValidateContent(content, visited);
-            }
+            foreach (var content in message.Contents) ValidateContent(content, visited);
         }
     }
 
-    private static void ValidateContent(AIContent content) =>
+    private static void ValidateContent(AIContent content)
+    {
         ValidateContent(content, new HashSet<object>(ReferenceEqualityComparer.Instance));
+    }
 
     private static void ValidateContent(AIContent content, HashSet<object> visited)
     {
-        if (!visited.Add(content))
-        {
-            return;
-        }
+        if (!visited.Add(content)) return;
 
         ValidateValue(content.AdditionalProperties, visited);
         if (content.Annotations is not null)
-        {
             foreach (var annotation in content.Annotations)
-            {
                 ValidateValue(annotation.AdditionalProperties, visited);
-            }
-        }
 
         switch (content)
         {
@@ -223,15 +210,9 @@ internal static class AgentTranscriptCodec
 
     private static void ValidateContents(IEnumerable<AIContent>? contents, HashSet<object> visited)
     {
-        if (contents is null)
-        {
-            return;
-        }
+        if (contents is null) return;
 
-        foreach (var content in contents)
-        {
-            ValidateContent(content, visited);
-        }
+        foreach (var content in contents) ValidateContent(content, visited);
     }
 
     private static void ValidateValue(object? value, HashSet<object> visited)
@@ -251,36 +232,22 @@ internal static class AgentTranscriptCodec
         }
 
         if (string.Equals(value.GetType().FullName, "System.BinaryData", StringComparison.Ordinal))
-        {
             throw CreateInlineBinaryException(value.GetType().Name);
-        }
 
-        if (value.GetType().IsValueType || !visited.Add(value))
-        {
-            return;
-        }
+        if (value.GetType().IsValueType || !visited.Add(value)) return;
 
         switch (value)
         {
             case IEnumerable<KeyValuePair<string, object?>> properties:
-                foreach (var (_, item) in properties)
-                {
-                    ValidateValue(item, visited);
-                }
+                foreach (var (_, item) in properties) ValidateValue(item, visited);
 
                 break;
             case IDictionary dictionary:
-                foreach (DictionaryEntry entry in dictionary)
-                {
-                    ValidateValue(entry.Value, visited);
-                }
+                foreach (DictionaryEntry entry in dictionary) ValidateValue(entry.Value, visited);
 
                 break;
             case IEnumerable sequence:
-                foreach (var item in sequence)
-                {
-                    ValidateValue(item, visited);
-                }
+                foreach (var item in sequence) ValidateValue(item, visited);
 
                 break;
         }
@@ -289,9 +256,7 @@ internal static class AgentTranscriptCodec
     private static void ValidateDataContent(DataContent data)
     {
         if (!string.Equals(data.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
-        {
             throw CreateInlineBinaryException(data.MediaType);
-        }
 
         try
         {
@@ -304,19 +269,18 @@ internal static class AgentTranscriptCodec
         }
     }
 
-    private static AgentUnsupportedResponseException CreateInlineBinaryException(string? description) =>
-        new(
+    private static AgentUnsupportedResponseException CreateInlineBinaryException(string? description)
+    {
+        return new AgentUnsupportedResponseException(
             $"The model provider returned unsupported inline binary content '{description ?? "unknown"}'. " +
             "Binary content requires an artifact reference.");
+    }
 
     private static void SanitizePublicContent(AIContent content)
     {
         content.RawRepresentation = null;
         content.AdditionalProperties = null;
-        if (content.Annotations is null)
-        {
-            return;
-        }
+        if (content.Annotations is null) return;
 
         foreach (var annotation in content.Annotations)
         {

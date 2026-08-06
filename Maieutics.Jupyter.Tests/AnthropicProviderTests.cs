@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -22,9 +23,7 @@ public sealed class AnthropicProviderTests
         await foreach (var update in client.GetStreamingResponseAsync(
                            "Say hello",
                            cancellationToken: TestContext.Current.CancellationToken))
-        {
             updates.Add(update);
-        }
 
         var request = await server.Request.WaitAsync(TestContext.Current.CancellationToken);
         request.Method.Should().Be("POST");
@@ -50,9 +49,7 @@ public sealed class AnthropicProviderTests
         await foreach (var update in client.GetStreamingResponseAsync(
                            "Call the echo tool",
                            cancellationToken: TestContext.Current.CancellationToken))
-        {
             updates.Add(update);
-        }
 
         await server.Request.WaitAsync(TestContext.Current.CancellationToken);
         var call = updates.SelectMany(static update => update.Contents)
@@ -86,8 +83,8 @@ public sealed class AnthropicProviderTests
         using var client = new AnthropicMessagesChatClient(
             "claude-test",
             "configured-key",
-            endpoint: null,
-            handler: new StreamingResponseHandler(
+            null,
+            new StreamingResponseHandler(
                 "event: content_block_delta\n" +
                 "data: {\"type\":\"content_block_delta\",\"index\":0," +
                 "\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"));
@@ -115,56 +112,62 @@ public sealed class AnthropicProviderTests
         }
     }
 
-    private static string CreateTextStream(string text) => """
-                                                           event: message_start
-                                                           data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+    private static string CreateTextStream(string text)
+    {
+        return """
+               event: message_start
+               data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
 
-                                                           event: content_block_start
-                                                           data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+               event: content_block_start
+               data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 
-                                                           event: content_block_delta
-                                                           data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":TEXT_PLACEHOLDER}}
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":TEXT_PLACEHOLDER}}
 
-                                                           event: content_block_stop
-                                                           data: {"type":"content_block_stop","index":0}
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":0}
 
-                                                           event: message_delta
-                                                           data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
+               event: message_delta
+               data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
 
-                                                           event: message_stop
-                                                           data: {"type":"message_stop"}
+               event: message_stop
+               data: {"type":"message_stop"}
 
-                                                           """.Replace("TEXT_PLACEHOLDER",
-        JsonSerializer.Serialize(text), StringComparison.Ordinal);
+               """.Replace("TEXT_PLACEHOLDER",
+            JsonSerializer.Serialize(text), StringComparison.Ordinal);
+    }
 
-    private static string CreateToolStream() => """
-                                                event: message_start
-                                                data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+    private static string CreateToolStream()
+    {
+        return """
+               event: message_start
+               data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
 
-                                                event: content_block_start
-                                                data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_test","name":"echo","input":{}}}
+               event: content_block_start
+               data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_test","name":"echo","input":{}}}
 
-                                                event: content_block_delta
-                                                data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\":"}}
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\":"}}
 
-                                                event: content_block_delta
-                                                data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
 
-                                                event: content_block_stop
-                                                data: {"type":"content_block_stop","index":0}
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":0}
 
-                                                event: message_delta
-                                                data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
+               event: message_delta
+               data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
 
-                                                event: message_stop
-                                                data: {"type":"message_stop"}
+               event: message_stop
+               data: {"type":"message_stop"}
 
-                                                """;
+               """;
+    }
 
     private sealed class FakeAnthropicServer : IAsyncDisposable
     {
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource cancellation = new();
+        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
 
         public FakeAnthropicServer(string response)
         {
@@ -221,10 +224,7 @@ public sealed class AnthropicProviderTests
             {
                 var buffer = new byte[1];
                 var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    throw new EndOfStreamException("HTTP request ended before its headers completed.");
-                }
+                if (read == 0) throw new EndOfStreamException("HTTP request ended before its headers completed.");
 
                 headerBytes.Add(buffer[0]);
             }
@@ -264,7 +264,7 @@ public sealed class AnthropicProviderTests
             {
                 Content = new StreamContent(new BlockingSseStream(Encoding.UTF8.GetBytes(response)))
             };
-            responseMessage.Content.Headers.ContentType = new("text/event-stream");
+            responseMessage.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
             return Task.FromResult(responseMessage);
         }
     }
@@ -287,7 +287,10 @@ public sealed class AnthropicProviderTests
             set => throw new NotSupportedException();
         }
 
-        public override int Read(byte[] buffer, int _, int count) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int _, int count)
+        {
+            throw new NotSupportedException();
+        }
 
         public override async ValueTask<int> ReadAsync(
             Memory<byte> buffer,
@@ -309,10 +312,19 @@ public sealed class AnthropicProviderTests
         {
         }
 
-        public override long Seek(long _, SeekOrigin origin) => throw new NotSupportedException();
+        public override long Seek(long _, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
 
-        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
 
-        public override void Write(byte[] buffer, int _, int count) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int _, int count)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

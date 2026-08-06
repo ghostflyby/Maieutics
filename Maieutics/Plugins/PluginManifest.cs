@@ -57,10 +57,7 @@ internal sealed class PluginPermissionGrantJsonConverter : JsonConverter<PluginP
         }
 
         writer.WriteStartArray();
-        foreach (var item in value.Values)
-        {
-            writer.WriteStringValue(item);
-        }
+        foreach (var item in value.Values) writer.WriteStringValue(item);
 
         writer.WriteEndArray();
     }
@@ -80,7 +77,7 @@ internal sealed class PluginPermissionGrantJsonConverter : JsonConverter<PluginP
 /// <summary>Reads a plugin's deno.json into a runtime descriptor without executing plugin code.</summary>
 internal static class PluginManifest
 {
-    public static bool TryLoad(string directory,[NotNullWhen(true)] out PluginDescriptor? descriptor, out string error)
+    public static bool TryLoad(string directory, [NotNullWhen(true)] out PluginDescriptor? descriptor, out string error)
     {
         descriptor = null;
         var configPath = FindConfig(directory);
@@ -94,8 +91,9 @@ internal static class PluginManifest
         try
         {
             manifest = JsonSerializer.Deserialize(
-                File.ReadAllText(configPath),
-                PluginManifestJsonContext.Default.PluginManifestFile) ?? throw new JsonException("The manifest is null.");
+                           File.ReadAllText(configPath),
+                           PluginManifestJsonContext.Default.PluginManifestFile) ??
+                       throw new JsonException("The manifest is null.");
         }
         catch (JsonException exception)
         {
@@ -122,10 +120,7 @@ internal static class PluginManifest
     private static string? FindConfig(string directory)
     {
         var denoJson = Path.Combine(directory, "deno.json");
-        if (File.Exists(denoJson))
-        {
-            return denoJson;
-        }
+        if (File.Exists(denoJson)) return denoJson;
 
         var denoJsonc = Path.Combine(directory, "deno.jsonc");
         return File.Exists(denoJsonc) ? denoJsonc : null;
@@ -133,29 +128,17 @@ internal static class PluginManifest
 
     private static IReadOnlyList<PluginWorkerDescriptor> ReadWorkers(JsonElement? exports, string directory)
     {
-        if (exports is not { ValueKind: JsonValueKind.Object } exportsObject)
-        {
-            return [];
-        }
+        if (exports is not { ValueKind: JsonValueKind.Object } exportsObject) return [];
 
         var workers = new List<PluginWorkerDescriptor>();
         foreach (var property in exportsObject.EnumerateObject())
         {
-            if (property.Name == ".")
-            {
-                continue;
-            }
+            if (property.Name == ".") continue;
 
-            if (property.Value.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
+            if (property.Value.ValueKind != JsonValueKind.String) continue;
 
             var relative = property.Value.GetString();
-            if (string.IsNullOrWhiteSpace(relative))
-            {
-                continue;
-            }
+            if (string.IsNullOrWhiteSpace(relative)) continue;
 
             var fullPath = Path.GetFullPath(Path.Combine(directory, relative));
             workers.Add(new PluginWorkerDescriptor(property.Name, new Uri(fullPath).AbsoluteUri));
@@ -165,7 +148,8 @@ internal static class PluginManifest
     }
 
     private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
-        => new(
+    {
+        return new PluginPermissionGrants(
             set?.Env ?? PluginPermissionGrant.None,
             set?.Net ?? PluginPermissionGrant.None,
             set?.Read ?? PluginPermissionGrant.None,
@@ -174,6 +158,7 @@ internal static class PluginManifest
             set?.Ffi ?? PluginPermissionGrant.None,
             set?.Sys ?? PluginPermissionGrant.None,
             set?.Import ?? PluginPermissionGrant.None);
+    }
 }
 
 [JsonSourceGenerationOptions(

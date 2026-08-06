@@ -13,7 +13,8 @@ public sealed class JupyterKernelLifetimeTests
     {
         var application = new FakeApplicationLifetime();
         var coordinator = new FakeInterruptCoordinator();
-        using var lifetime = new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
+        using var lifetime =
+            new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
 
         lifetime.HandleSignal(PosixSignal.SIGINT);
 
@@ -28,7 +29,8 @@ public sealed class JupyterKernelLifetimeTests
     {
         var application = new FakeApplicationLifetime();
         var coordinator = new FakeInterruptCoordinator();
-        using var lifetime = new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
+        using var lifetime =
+            new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
 
         lifetime.HandleSignal(signal);
 
@@ -41,7 +43,8 @@ public sealed class JupyterKernelLifetimeTests
     {
         var application = new FakeApplicationLifetime();
         var coordinator = new FakeInterruptCoordinator();
-        using var lifetime = new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
+        using var lifetime =
+            new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
 
         await lifetime.WaitForStartAsync(CancellationToken.None);
         await lifetime.StopAsync(CancellationToken.None);
@@ -69,7 +72,10 @@ public sealed class JupyterKernelLifetimeTests
 
         public CancellationToken ApplicationStopped { get; } = new CancellationTokenSource().Token;
 
-        public void StopApplication() => Interlocked.Increment(ref stoppingCount);
+        public void StopApplication()
+        {
+            Interlocked.Increment(ref stoppingCount);
+        }
     }
 
     private sealed class FakeInterruptCoordinator : IKernelInterruptCoordinator
@@ -86,6 +92,9 @@ public sealed class JupyterKernelLifetimeTests
         {
         }
 
-        public void RequestInterrupt() => Interlocked.Increment(ref interruptRequests);
+        public void RequestInterrupt()
+        {
+            Interlocked.Increment(ref interruptRequests);
+        }
     }
 }

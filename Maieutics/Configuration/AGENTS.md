@@ -15,8 +15,8 @@ session-level profile selection, and reference-counted provider generation lifet
 - MCP servers live in an optional `mcp.json` beside the active `maieutics.json`, using the conventional `mcpServers`
   or `servers` top-level keys. A syntactically invalid `mcp.json` present at startup fails startup; invalid runtime
   updates retain the last-known-good snapshot.
-- Precedence is defaults, active JSON, shortcut environment variables, standard .NET hierarchical environment
-  variables, then command line.
+- Precedence is defaults, active JSON, shortcut environment variables, standard .NET hierarchical environment variables,
+  then command line.
 - The active path is startup-only. JSON contents may reload; environment and command-line sources do not hot reload.
 - Bind with the configuration source generator and validate the complete `Maieutics` subtree.
 - Invalid JSON, options, references, unknown provider fields, or provider construction retain the last-known-good
@@ -25,8 +25,8 @@ session-level profile selection, and reference-counted provider generation lifet
 
 ## Catalog and lifetime rules
 
-- Source and profile IDs are case-insensitive and validated. Sources own credentials, endpoint, and API flavor;
-  profiles reference a source and model ID.
+- Source and profile IDs are case-insensitive and validated. Sources own credentials, endpoint, and API flavor; profiles
+  reference a source and model ID.
 - Legacy and new configuration may be normalized only under the documented compatibility rule; mixed structures fail.
 - Construct every changed profile generation before atomic publication. If any construction fails, dispose new clients
   and keep the previous catalog unchanged.

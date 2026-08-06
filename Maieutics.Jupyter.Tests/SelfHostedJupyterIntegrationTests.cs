@@ -91,7 +91,7 @@ public sealed class SelfHostedJupyterIntegrationTests
             .Be(new JupyterDisplayId("specified-display"));
 
         var silentExecution = await client.ExecuteAsync(
-            new JupyterExecuteRequest("display", Silent: true),
+            new JupyterExecuteRequest("display", true),
             cancellationToken);
         var silentOutputs = await ReadOutputsAsync(silentExecution, cancellationToken);
         await silentExecution.Completion.WaitAsync(cancellationToken);
@@ -127,9 +127,7 @@ public sealed class SelfHostedJupyterIntegrationTests
         {
             inputOutputs.Add(output);
             if (output is JupyterInputRequest input)
-            {
                 await inputExecution.ReplyInputAsync(input, "Ada", cancellationToken);
-            }
         }
 
         (await inputExecution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should()
@@ -247,13 +245,11 @@ public sealed class SelfHostedJupyterIntegrationTests
 
         JupyterLateOutput? late = null;
         while (await events.MoveNextAsync())
-        {
             if (events.Current is JupyterLateOutput lateOutput)
             {
                 late = lateOutput;
                 break;
             }
-        }
 
         late.Should().NotBeNull();
         var lateEvent = late;
@@ -361,16 +357,15 @@ public sealed class SelfHostedJupyterIntegrationTests
         CancellationToken cancellationToken)
     {
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         return outputs;
     }
 
-    private static bool IsNotebookDisplayOutput(JupyterOutput output) =>
-        output is JupyterDisplayOutput or JupyterDisplayUpdateOutput or JupyterClearOutput;
+    private static bool IsNotebookDisplayOutput(JupyterOutput output)
+    {
+        return output is JupyterDisplayOutput or JupyterDisplayUpdateOutput or JupyterClearOutput;
+    }
 
     private static CancellationTokenSource CreateDeadline(TimeSpan? timeout = null)
     {
@@ -385,9 +380,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     {
         var message = new NetMQMessage();
         if (!subscriber.TryReceiveMultipartMessage(TimeSpan.FromSeconds(5), ref message))
-        {
             throw new TimeoutException("Timed out while waiting for the Kernel IOPub initialization messages.");
-        }
 
         return serializer.Deserialize(message.Select(frame => frame.ToByteArray()).ToArray());
     }
@@ -398,9 +391,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     {
         var message = new NetMQMessage();
         if (!dealer.TryReceiveMultipartMessage(TimeSpan.FromSeconds(5), ref message))
-        {
             throw new TimeoutException("Timed out while waiting for the Kernel shell reply.");
-        }
 
         return serializer.Deserialize(message.Select(frame => frame.ToByteArray()).ToArray());
     }
@@ -411,10 +402,7 @@ public sealed class SelfHostedJupyterIntegrationTests
         JupyterWireMessage wireMessage)
     {
         var message = new NetMQMessage();
-        foreach (var frame in serializer.Serialize(wireMessage))
-        {
-            message.Append(frame);
-        }
+        foreach (var frame in serializer.Serialize(wireMessage)) message.Append(frame);
 
         dealer.SendMultipartMessage(message);
     }
@@ -428,6 +416,47 @@ public sealed class SelfHostedJupyterIntegrationTests
         public TaskCompletionSource WaitStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public JupyterDisplayId LateDisplayId { get; private set; }
+
+        public ValueTask<JupyterCodeCompletenessResult> IsCompleteAsync(
+            JupyterIsCompleteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.Code == "fail")
+                throw new JupyterKernelExecutionException("CompletenessFailure", "completeness failed", ["trace"]);
+
+            var incomplete = request.Code.EndsWith('{');
+            return ValueTask.FromResult(new JupyterCodeCompletenessResult(
+                incomplete ? JupyterCodeCompletenessStatus.Incomplete : JupyterCodeCompletenessStatus.Complete,
+                incomplete ? "  " : null));
+        }
+
+        public ValueTask<JupyterCompletionResult> CompleteAsync(
+            JupyterCompleteRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.Code == "fail")
+                throw new JupyterKernelExecutionException("CompletionFailure", "completion failed", ["trace"]);
+
+            return ValueTask.FromResult(new JupyterCompletionResult(["console"], 0, request.CursorPosition));
+        }
+
+        public ValueTask<JupyterInspectionResult> InspectAsync(
+            JupyterInspectRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.Code == "fail")
+                throw new JupyterKernelExecutionException("InspectionFailure", "inspection failed", ["trace"]);
+
+            return ValueTask.FromResult(new JupyterInspectionResult(
+                true,
+                new MimeBundle(new Dictionary<string, JsonElement>
+                {
+                    ["text/plain"] = JsonSerializer.SerializeToElement($"Documentation for {request.Code}")
+                })));
+        }
 
         public JupyterKernelInfo KernelInfo { get; } = new(
             "5.5",
@@ -507,57 +536,13 @@ public sealed class SelfHostedJupyterIntegrationTests
                 cancellationToken: cancellationToken);
         }
 
-        public ValueTask<JupyterCompletionResult> CompleteAsync(
-            JupyterCompleteRequest request,
-            CancellationToken cancellationToken)
+        private static MimeBundle TextBundle(string text)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (request.Code == "fail")
+            return new MimeBundle(new Dictionary<string, JsonElement>
             {
-                throw new JupyterKernelExecutionException("CompletionFailure", "completion failed", ["trace"]);
-            }
-
-            return ValueTask.FromResult(new JupyterCompletionResult(["console"], 0, request.CursorPosition));
+                ["text/plain"] = JsonSerializer.SerializeToElement(text)
+            });
         }
-
-        public ValueTask<JupyterInspectionResult> InspectAsync(
-            JupyterInspectRequest request,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (request.Code == "fail")
-            {
-                throw new JupyterKernelExecutionException("InspectionFailure", "inspection failed", ["trace"]);
-            }
-
-            return ValueTask.FromResult(new JupyterInspectionResult(
-                true,
-                new MimeBundle(new Dictionary<string, JsonElement>
-                {
-                    ["text/plain"] = JsonSerializer.SerializeToElement($"Documentation for {request.Code}")
-                })));
-        }
-
-        public ValueTask<JupyterCodeCompletenessResult> IsCompleteAsync(
-            JupyterIsCompleteRequest request,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (request.Code == "fail")
-            {
-                throw new JupyterKernelExecutionException("CompletenessFailure", "completeness failed", ["trace"]);
-            }
-
-            var incomplete = request.Code.EndsWith('{');
-            return ValueTask.FromResult(new JupyterCodeCompletenessResult(
-                incomplete ? JupyterCodeCompletenessStatus.Incomplete : JupyterCodeCompletenessStatus.Complete,
-                incomplete ? "  " : null));
-        }
-
-        private static MimeBundle TextBundle(string text) => new(new Dictionary<string, JsonElement>
-        {
-            ["text/plain"] = JsonSerializer.SerializeToElement(text)
-        });
     }
 
     private sealed class ExecuteOnlyKernelApplication : IJupyterKernelApplication
@@ -571,7 +556,9 @@ public sealed class SelfHostedJupyterIntegrationTests
         public ValueTask<JupyterExecuteResult> ExecuteAsync(
             JupyterExecutionContext context,
             JupyterExecuteRequest request,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(JupyterExecuteResult.Ok);
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(JupyterExecuteResult.Ok);
+        }
     }
 }

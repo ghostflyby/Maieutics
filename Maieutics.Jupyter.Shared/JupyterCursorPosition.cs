@@ -8,22 +8,14 @@ public static class JupyterCursorPosition
     {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentOutOfRangeException.ThrowIfNegative(utf16Index);
-        if (utf16Index > text.Length)
-        {
-            throw new ArgumentOutOfRangeException(nameof(utf16Index));
-        }
+        if (utf16Index > text.Length) throw new ArgumentOutOfRangeException(nameof(utf16Index));
 
         if (utf16Index > 0 && utf16Index < text.Length &&
             char.IsHighSurrogate(text[utf16Index - 1]) && char.IsLowSurrogate(text[utf16Index]))
-        {
             throw new ArgumentException("The UTF-16 index splits a surrogate pair.", nameof(utf16Index));
-        }
 
         var codePointOffset = 0;
-        foreach (var _ in text.AsSpan(0, utf16Index).EnumerateRunes())
-        {
-            codePointOffset++;
-        }
+        foreach (var _ in text.AsSpan(0, utf16Index).EnumerateRunes()) codePointOffset++;
 
         return codePointOffset;
     }
@@ -37,19 +29,13 @@ public static class JupyterCursorPosition
         var utf16Index = 0;
         foreach (var rune in text.EnumerateRunes())
         {
-            if (currentOffset == codePointOffset)
-            {
-                return utf16Index;
-            }
+            if (currentOffset == codePointOffset) return utf16Index;
 
             currentOffset++;
             utf16Index += rune.Utf16SequenceLength;
         }
 
-        if (currentOffset == codePointOffset)
-        {
-            return utf16Index;
-        }
+        if (currentOffset == codePointOffset) return utf16Index;
 
         throw new ArgumentOutOfRangeException(nameof(codePointOffset));
     }
@@ -65,25 +51,16 @@ public static class JupyterCursorPosition
         while (line < position.Line)
         {
             var newline = text.IndexOf('\n', lineStart);
-            if (newline < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(position));
-            }
+            if (newline < 0) throw new ArgumentOutOfRangeException(nameof(position));
 
             line++;
             lineStart = newline + 1;
         }
 
         var lineEnd = text.IndexOf('\n', lineStart);
-        if (lineEnd < 0)
-        {
-            lineEnd = text.Length;
-        }
+        if (lineEnd < 0) lineEnd = text.Length;
 
-        if (position.Utf16Column > lineEnd - lineStart)
-        {
-            throw new ArgumentOutOfRangeException(nameof(position));
-        }
+        if (position.Utf16Column > lineEnd - lineStart) throw new ArgumentOutOfRangeException(nameof(position));
 
         return FromUtf16Index(text, lineStart + position.Utf16Column);
     }
@@ -94,13 +71,11 @@ public static class JupyterCursorPosition
         var line = 0;
         var lineStart = 0;
         for (var index = 0; index < utf16Index; index++)
-        {
             if (text[index] == '\n')
             {
                 line++;
                 lineStart = index + 1;
             }
-        }
 
         return new JupyterTextPosition(line, utf16Index - lineStart);
     }

@@ -13,6 +13,17 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
     private readonly List<JupyterTransportMessage> sentMessages = [];
     private readonly Lock sentMessagesGate = new();
 
+    public IReadOnlyList<JupyterTransportMessage> SentMessages
+    {
+        get
+        {
+            lock (sentMessagesGate)
+            {
+                return sentMessages.ToArray();
+            }
+        }
+    }
+
     public IAsyncEnumerable<JupyterTransportMessage> IncomingMessages => incomingMessages.Reader.ReadAllAsync();
 
     public int PendingIncomingCount => incomingMessages.Reader.Count;
@@ -31,10 +42,7 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
 
     public async ValueTask<bool> WaitToReadAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
-        if (incomingMessages.Reader.Count > 0)
-        {
-            return true;
-        }
+        if (incomingMessages.Reader.Count > 0) return true;
 
         try
         {
@@ -44,17 +52,6 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         catch (TimeoutException)
         {
             return false;
-        }
-    }
-
-    public IReadOnlyList<JupyterTransportMessage> SentMessages
-    {
-        get
-        {
-            lock (sentMessagesGate)
-            {
-                return sentMessages.ToArray();
-            }
         }
     }
 
@@ -72,8 +69,16 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         return ValueTask.CompletedTask;
     }
 
-    public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult(TimeSpan.FromMilliseconds(1));
+    public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(TimeSpan.FromMilliseconds(1));
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        incomingMessages.Writer.TryComplete();
+        return ValueTask.CompletedTask;
+    }
 
     public void Receive(
         JupyterTransportChannel channel,
@@ -83,11 +88,5 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         incomingMessages.Writer.TryWrite(new JupyterTransportMessage(
             channel,
             new JupyterWireMessage(identities ?? [], message, [])));
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        incomingMessages.Writer.TryComplete();
-        return ValueTask.CompletedTask;
     }
 }

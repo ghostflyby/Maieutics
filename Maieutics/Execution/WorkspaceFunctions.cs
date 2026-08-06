@@ -76,8 +76,9 @@ internal sealed class WorkspaceFunctions
 
     internal IReadOnlyList<AIFunction> Functions { get; }
 
-    private static AIFunction CreateFunction(Delegate method, string name, string description) =>
-        AIFunctionFactory.Create(
+    private static AIFunction CreateFunction(Delegate method, string name, string description)
+    {
+        return AIFunctionFactory.Create(
             method,
             new AIFunctionFactoryOptions
             {
@@ -85,6 +86,7 @@ internal sealed class WorkspaceFunctions
                 Description = description,
                 SerializerOptions = SerializerOptions
             });
+    }
 
     [Description("Lists one workspace directory without recursion.")]
     private ValueTask<ListDirectoryResult> ListDirectoryAsync(
@@ -102,19 +104,15 @@ internal sealed class WorkspaceFunctions
             var snapshot = workspace.Capture();
             var requestedPageSize = pageSize ?? DefaultPageSize;
             if (requestedPageSize is < 1 or > MaximumPageSize)
-            {
                 throw new WorkspaceException(
                     "workspace_invalid_arguments",
                     $"pageSize must be between 1 and {MaximumPageSize}.");
-            }
 
             var directory = snapshot.Resolve(uri);
             if (!directory.IsDirectory)
-            {
                 throw new WorkspaceException(
                     "workspace_not_directory",
                     "The workspace URI does not identify a directory.");
-            }
 
             var decodedCursor = DecodeCursor(cursor, directory.Uri, snapshot.Version);
             var entries = new List<FileSystemInfo>();
@@ -123,20 +121,15 @@ internal sealed class WorkspaceFunctions
                 cancellationToken.ThrowIfCancellationRequested();
                 entries.Add(entry);
                 if (entries.Count > maximumDirectoryEntries)
-                {
                     throw new WorkspaceException(
                         "workspace_directory_too_large",
                         $"A directory cannot contain more than {maximumDirectoryEntries} visible entries.");
-                }
             }
 
             var comparisons = 0;
             entries.Sort((left, right) =>
             {
-                if ((++comparisons & 255) == 0)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                }
+                if ((++comparisons & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
 
                 return StringComparer.Ordinal.Compare(left.Name, right.Name);
             });
@@ -144,10 +137,7 @@ internal sealed class WorkspaceFunctions
             var offset = decodedCursor is null
                 ? 0
                 : entries.FindIndex(entry => StringComparer.Ordinal.Compare(entry.Name, decodedCursor.LastName) > 0);
-            if (offset < 0)
-            {
-                offset = entries.Count;
-            }
+            if (offset < 0) offset = entries.Count;
 
             var page = entries
                 .Skip(offset)
@@ -185,34 +175,26 @@ internal sealed class WorkspaceFunctions
         try
         {
             if (string.IsNullOrWhiteSpace(uri))
-            {
                 throw new WorkspaceException("workspace_invalid_arguments", "uri is required.");
-            }
 
             var requestedStartLine = startLine ?? 1;
             var maximumLines = maxLines ?? DefaultMaximumLines;
             if (requestedStartLine < 1 || maximumLines is < 1 or > MaximumLines)
-            {
                 throw new WorkspaceException(
                     "workspace_invalid_arguments",
                     $"startLine must be positive and maxLines must be between 1 and {MaximumLines}.");
-            }
 
             var snapshot = workspace.Capture();
-            var file = snapshot.Resolve(uri, allowRoot: false);
+            var file = snapshot.Resolve(uri, false);
             if (file.IsDirectory)
-            {
                 throw new WorkspaceException(
                     "workspace_not_file",
                     "The workspace URI does not identify a regular file.");
-            }
 
             if (!file.IsRegularFile)
-            {
                 throw new WorkspaceException(
                     "workspace_not_regular_file",
                     "Workspace text tools can read only regular files.");
-            }
 
             return await ReadTextCoreAsync(
                 snapshot,
@@ -254,29 +236,23 @@ internal sealed class WorkspaceFunctions
         try
         {
             if (string.IsNullOrEmpty(query))
-            {
                 throw new WorkspaceException(
                     "workspace_invalid_arguments",
                     "query is required and cannot be empty.");
-            }
 
             var requestedMaximumResults = maxResults ?? MaximumResults;
             if (requestedMaximumResults is < 1 or > MaximumResults)
-            {
                 throw new WorkspaceException(
                     "workspace_invalid_arguments",
                     $"maxResults must be between 1 and {MaximumResults}.");
-            }
 
             Regex? compiledRegex = null;
             if (regex is true)
             {
                 if (query.Length > MaximumRegexPatternCharacters)
-                {
                     throw new WorkspaceException(
                         "workspace_invalid_arguments",
                         $"Regular expression queries cannot exceed {MaximumRegexPatternCharacters} characters.");
-                }
 
                 try
                 {
@@ -326,33 +302,24 @@ internal sealed class WorkspaceFunctions
     {
         var attributes = entry.Attributes;
         if ((attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null)
-        {
             return new WorkspaceDirectoryEntry(entry.Name, snapshot.ToWorkspaceUri(entry.FullName), "symbolic_link");
-        }
 
         if ((attributes & FileAttributes.Directory) != 0)
-        {
             return new WorkspaceDirectoryEntry(entry.Name, snapshot.ToWorkspaceUri(entry.FullName), "directory");
-        }
 
         if ((attributes & FileAttributes.Normal) != 0 || File.Exists(entry.FullName))
-        {
             return new WorkspaceDirectoryEntry(
                 entry.Name,
                 snapshot.ToWorkspaceUri(entry.FullName),
                 "file",
                 ((FileInfo)entry).Length);
-        }
 
         return new WorkspaceDirectoryEntry(entry.Name, snapshot.ToWorkspaceUri(entry.FullName), "other");
     }
 
     private static DirectoryCursor? DecodeCursor(string? cursor, string uri, long workspaceVersion)
     {
-        if (cursor is null)
-        {
-            return null;
-        }
+        if (cursor is null) return null;
 
         try
         {
@@ -363,9 +330,7 @@ internal sealed class WorkspaceFunctions
                 WorkspaceJsonSerializerContext.Default.DirectoryCursor);
             if (value is null || value.LastName.Length == 0 || value.WorkspaceVersion != workspaceVersion ||
                 !string.Equals(value.Uri, uri, StringComparison.Ordinal))
-            {
                 throw new FormatException();
-            }
 
             return value;
         }
@@ -418,34 +383,27 @@ internal sealed class WorkspaceFunctions
 
             var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
             if (line is null)
-            {
                 return new ReadTextResult(
                     file.Uri,
                     actualStartLine,
                     actualEndLine,
                     text.ToString(),
-                    Truncated: false,
-                    NextStartLine: null);
-            }
+                    false,
+                    null);
 
             lineNumber++;
-            if (lineNumber < requestedStartLine)
-            {
-                continue;
-            }
+            if (lineNumber < requestedStartLine) continue;
 
             var separatorBytes = actualStartLine.HasValue ? 1 : 0;
             var lineBytes = StrictUtf8.GetByteCount(line);
             if (outputBytes + separatorBytes + lineBytes > MaximumUtf8Bytes)
-            {
                 return new ReadTextResult(
                     file.Uri,
                     actualStartLine,
                     actualEndLine,
                     text.ToString(),
-                    Truncated: true,
-                    NextStartLine: lineNumber);
-            }
+                    true,
+                    lineNumber);
 
             if (separatorBytes != 0)
             {
@@ -535,10 +493,7 @@ internal sealed class WorkspaceFunctions
                 continue;
             }
 
-            if (content.Length > 0 && content[0] == '\uFEFF')
-            {
-                content = content[1..];
-            }
+            if (content.Length > 0 && content[0] == '\uFEFF') content = content[1..];
 
             if (content.Any(static character =>
                     char.IsControl(character) && character is not '\r' and not '\n' and not '\t'))
@@ -550,7 +505,6 @@ internal sealed class WorkspaceFunctions
             var fileUri = snapshot.ToWorkspaceUri(file.FullName);
             var lineMap = new TextLineMap(content);
             if (regex is null)
-            {
                 AddLiteralMatches(
                     matches,
                     content,
@@ -559,11 +513,8 @@ internal sealed class WorkspaceFunctions
                     fileUri,
                     lineMap,
                     maximumResults);
-            }
             else
-            {
                 AddRegexMatches(matches, content, regex, fileUri, lineMap, maximumResults);
-            }
 
             if (matches.Count >= maximumResults)
             {
@@ -614,9 +565,7 @@ internal sealed class WorkspaceFunctions
                 if ((attributes & FileAttributes.Directory) != 0)
                 {
                     if (!entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
-                    {
                         childDirectories.Add((DirectoryInfo)entry);
-                    }
 
                     continue;
                 }
@@ -630,10 +579,7 @@ internal sealed class WorkspaceFunctions
                 yield return file;
             }
 
-            for (var index = childDirectories.Count - 1; index >= 0; index--)
-            {
-                directories.Push(childDirectories[index]);
-            }
+            for (var index = childDirectories.Count - 1; index >= 0; index--) directories.Push(childDirectories[index]);
         }
     }
 
@@ -648,11 +594,9 @@ internal sealed class WorkspaceFunctions
             cancellationToken.ThrowIfCancellationRequested();
             statistics.VisitedEntries++;
             if (statistics.VisitedEntries > maximumDirectoryEntries)
-            {
                 throw new WorkspaceException(
                     "workspace_directory_too_large",
                     $"A search cannot enumerate more than {maximumDirectoryEntries} workspace entries.");
-            }
 
             entries.Add(entry);
         }
@@ -660,10 +604,7 @@ internal sealed class WorkspaceFunctions
         var comparisons = 0;
         entries.Sort((left, right) =>
         {
-            if ((++comparisons & 255) == 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-            }
+            if ((++comparisons & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
 
             return StringComparer.Ordinal.Compare(left.Name, right.Name);
         });
@@ -684,10 +625,7 @@ internal sealed class WorkspaceFunctions
         while (offset <= content.Length - query.Length && matches.Count < maximumResults)
         {
             var index = content.IndexOf(query, offset, comparison);
-            if (index < 0)
-            {
-                return;
-            }
+            if (index < 0) return;
 
             matches.Add(lineMap.CreateMatch(index, uri));
             offset = index + query.Length;
@@ -705,28 +643,30 @@ internal sealed class WorkspaceFunctions
         foreach (Match match in regex.Matches(content))
         {
             matches.Add(lineMap.CreateMatch(match.Index, uri));
-            if (matches.Count >= maximumResults)
-            {
-                return;
-            }
+            if (matches.Count >= maximumResults) return;
         }
     }
 
-    private static bool IsRecoverable(Exception exception) =>
-        exception is WorkspaceException or UnauthorizedAccessException or IOException;
-
-    private static AgentToolException ToAgentToolException(Exception exception) => exception switch
+    private static bool IsRecoverable(Exception exception)
     {
-        WorkspaceException workspaceException =>
-            new AgentToolException(workspaceException.Code, workspaceException.Message),
-        UnauthorizedAccessException => new AgentToolException(
-            "workspace_access_denied",
-            "The operating system denied access to the requested workspace path."),
-        IOException => new AgentToolException(
-            "workspace_io_error",
-            "The workspace operation could not be completed because of an I/O error."),
-        _ => throw new ArgumentOutOfRangeException(nameof(exception), exception, null)
-    };
+        return exception is WorkspaceException or UnauthorizedAccessException or IOException;
+    }
+
+    private static AgentToolException ToAgentToolException(Exception exception)
+    {
+        return exception switch
+        {
+            WorkspaceException workspaceException =>
+                new AgentToolException(workspaceException.Code, workspaceException.Message),
+            UnauthorizedAccessException => new AgentToolException(
+                "workspace_access_denied",
+                "The operating system denied access to the requested workspace path."),
+            IOException => new AgentToolException(
+                "workspace_io_error",
+                "The workspace operation could not be completed because of an I/O error."),
+            _ => throw new ArgumentOutOfRangeException(nameof(exception), exception, null)
+        };
+    }
 
     private sealed class BoundedUtf8LineReader(FileStream stream)
     {
@@ -744,21 +684,13 @@ internal sealed class WorkspaceFunctions
             {
                 var value = buffer[bufferOffset++];
                 if (value == 0)
-                {
                     throw new WorkspaceException(
                         "workspace_binary_file",
                         "The requested file contains binary data.");
-                }
 
-                if (value == (byte)'\n')
-                {
-                    return DecodeLine(lineLength);
-                }
+                if (value == (byte)'\n') return DecodeLine(lineLength);
 
-                if (lineLength == lineBuffer.Length)
-                {
-                    throw LineTooLong();
-                }
+                if (lineLength == lineBuffer.Length) throw LineTooLong();
 
                 lineBuffer[lineLength++] = value;
             }
@@ -766,15 +698,14 @@ internal sealed class WorkspaceFunctions
             return lineLength == 0 ? null : DecodeLine(lineLength);
         }
 
-        internal ValueTask<bool> HasMoreDataAsync(CancellationToken cancellationToken) =>
-            EnsureBufferAsync(cancellationToken);
+        internal ValueTask<bool> HasMoreDataAsync(CancellationToken cancellationToken)
+        {
+            return EnsureBufferAsync(cancellationToken);
+        }
 
         private async ValueTask<bool> EnsureBufferAsync(CancellationToken cancellationToken)
         {
-            if (bufferOffset < bufferCount)
-            {
-                return true;
-            }
+            if (bufferOffset < bufferCount) return true;
 
             var remaining = MaximumReadScanBytes - scannedBytes;
             var requested = Math.Min(buffer.Length, remaining + 1);
@@ -783,50 +714,40 @@ internal sealed class WorkspaceFunctions
             bufferOffset = 0;
             scannedBytes += bufferCount;
             if (scannedBytes > MaximumReadScanBytes)
-            {
                 throw new WorkspaceException(
                     "workspace_file_too_large",
                     $"read_text scans at most {MaximumReadScanBytes} bytes per call.");
-            }
 
             return bufferCount != 0;
         }
 
         private string DecodeLine(int length)
         {
-            if (length > 0 && lineBuffer[length - 1] == (byte)'\r')
-            {
-                length--;
-            }
+            if (length > 0 && lineBuffer[length - 1] == (byte)'\r') length--;
 
             var line = StrictUtf8.GetString(lineBuffer, 0, length);
             if (firstLine)
             {
                 firstLine = false;
-                if (line.Length > 0 && line[0] == '\uFEFF')
-                {
-                    line = line[1..];
-                }
+                if (line.Length > 0 && line[0] == '\uFEFF') line = line[1..];
             }
 
-            if (StrictUtf8.GetByteCount(line) > MaximumLineUtf8Bytes)
-            {
-                throw LineTooLong();
-            }
+            if (StrictUtf8.GetByteCount(line) > MaximumLineUtf8Bytes) throw LineTooLong();
 
             if (line.Any(static character => char.IsControl(character) && character != '\t'))
-            {
                 throw new WorkspaceException(
                     "workspace_binary_file",
                     "The requested file contains binary control characters.");
-            }
 
             return line;
         }
 
-        private static WorkspaceException LineTooLong() => new(
-            "workspace_line_too_long",
-            $"A text line cannot exceed {MaximumLineUtf8Bytes} UTF-8 bytes.");
+        private static WorkspaceException LineTooLong()
+        {
+            return new WorkspaceException(
+                "workspace_line_too_long",
+                $"A text line cannot exceed {MaximumLineUtf8Bytes} UTF-8 bytes.");
+        }
     }
 
     private sealed class TextLineMap
@@ -840,12 +761,8 @@ internal sealed class WorkspaceFunctions
             this.content = content;
             var starts = new List<int> { 0 };
             for (var index = 0; index < content.Length; index++)
-            {
                 if (content[index] == '\n' && index + 1 < content.Length)
-                {
                     starts.Add(index + 1);
-                }
-            }
 
             lineStarts = starts.ToArray();
         }
@@ -853,39 +770,26 @@ internal sealed class WorkspaceFunctions
         internal WorkspaceSearchMatch CreateMatch(int index, string uri)
         {
             var lineIndex = Array.BinarySearch(lineStarts, index);
-            if (lineIndex < 0)
-            {
-                lineIndex = ~lineIndex - 1;
-            }
+            if (lineIndex < 0) lineIndex = ~lineIndex - 1;
 
             var lineStart = lineStarts[lineIndex];
             var lineEnd = lineIndex + 1 < lineStarts.Length
                 ? lineStarts[lineIndex + 1] - 1
                 : content.Length;
-            if (lineEnd > lineStart && content[lineEnd - 1] == '\r')
-            {
-                lineEnd--;
-            }
+            if (lineEnd > lineStart && content[lineEnd - 1] == '\r') lineEnd--;
 
             var previewStart = lineStart;
             if (lineEnd - lineStart > MaximumPreviewCharacters)
-            {
                 previewStart = Math.Clamp(
                     index - MaximumPreviewCharacters / 4,
                     lineStart,
                     lineEnd - MaximumPreviewCharacters);
-            }
 
             var previewEnd = Math.Min(lineEnd, previewStart + MaximumPreviewCharacters);
-            if (previewStart > lineStart && char.IsLowSurrogate(content[previewStart]))
-            {
-                previewStart++;
-            }
+            if (previewStart > lineStart && char.IsLowSurrogate(content[previewStart])) previewStart++;
 
-            if (previewEnd > previewStart && previewEnd < lineEnd && char.IsHighSurrogate(content[previewEnd - 1]))
-            {
-                previewEnd--;
-            }
+            if (previewEnd > previewStart && previewEnd < lineEnd &&
+                char.IsHighSurrogate(content[previewEnd - 1])) previewEnd--;
 
             return new WorkspaceSearchMatch(
                 uri,

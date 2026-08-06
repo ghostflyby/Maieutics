@@ -90,10 +90,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
             foreach (var model in modelsElement.EnumerateArray())
             {
                 var id = model.GetProperty("id").GetString();
-                if (string.IsNullOrWhiteSpace(id))
-                {
-                    continue;
-                }
+                if (string.IsNullOrWhiteSpace(id)) continue;
 
                 var ownedBy = model.TryGetProperty("owned_by", out var ownedByElement)
                     ? ownedByElement.GetString()
@@ -102,9 +99,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
                 DateTime? createdAt = null;
                 if (model.TryGetProperty("created", out var createdElement) &&
                     createdElement.TryGetInt64(out var createdUnix))
-                {
                     createdAt = DateTimeOffset.FromUnixTimeSeconds(createdUnix).UtcDateTime;
-                }
 
                 models.Add(new AgentModelDescriptor(id, "OpenAI", ownedBy, createdAt));
             }
@@ -122,21 +117,32 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         private readonly string apiKey = apiKey;
         private readonly string? endpoint = endpoint;
 
-        public bool Equals(SourceGenerationKey? other) =>
-            other is not null &&
-            apiFlavor == other.apiFlavor &&
-            string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
-            string.Equals(endpoint, other.endpoint, StringComparison.Ordinal);
+        public bool Equals(SourceGenerationKey? other)
+        {
+            return other is not null &&
+                   apiFlavor == other.apiFlavor &&
+                   string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
+                   string.Equals(endpoint, other.endpoint, StringComparison.Ordinal);
+        }
 
-        public override bool Equals(object? obj) => Equals(obj as SourceGenerationKey);
+        public override bool Equals(object? obj)
+        {
+            return Equals(obj as SourceGenerationKey);
+        }
 
-        public override int GetHashCode() => HashCode.Combine(
-            apiFlavor,
-            StringComparer.Ordinal.GetHashCode(apiKey),
-            endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint));
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(
+                apiFlavor,
+                StringComparer.Ordinal.GetHashCode(apiKey),
+                endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint));
+        }
 
-        public override string ToString() =>
-            $"SourceGenerationKey {{ ApiFlavor = {apiFlavor}, ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"} }}";
+        public override string ToString()
+        {
+            return
+                $"SourceGenerationKey {{ ApiFlavor = {apiFlavor}, ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"} }}";
+        }
     }
 }
 
@@ -153,21 +159,15 @@ internal sealed class OpenAiSourceOptions
     internal void Validate()
     {
         if (Provider is not null && !string.Equals(Provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
-        {
             throw new ArgumentException("The OpenAI source Provider must be 'OpenAI'.", nameof(Provider));
-        }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(ApiKey);
         if (!Enum.IsDefined(ApiFlavor))
-        {
             throw new ArgumentOutOfRangeException(nameof(ApiFlavor), ApiFlavor, "Unsupported OpenAI API flavor.");
-        }
 
         if (Endpoint is not null &&
             (!Endpoint.IsAbsoluteUri || Endpoint.Scheme is not ("http" or "https")))
-        {
             throw new ArgumentException("The OpenAI endpoint must be an absolute HTTP or HTTPS URI.",
                 nameof(Endpoint));
-        }
     }
 }

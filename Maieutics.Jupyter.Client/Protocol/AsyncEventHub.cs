@@ -8,9 +8,9 @@ internal sealed class AsyncEventHub<T>(int capacity)
 {
     private readonly Lock gate = new();
     private readonly Dictionary<long, Channel<T>> subscribers = [];
-    private long nextSubscriberId;
     private bool completed;
     private Exception? completionError;
+    private long nextSubscriberId;
 
     public IAsyncEnumerable<T> SubscribeAsync(CancellationToken cancellationToken = default)
     {
@@ -46,19 +46,15 @@ internal sealed class AsyncEventHub<T>(int capacity)
         try
         {
             await foreach (var item in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            {
                 yield return item;
-            }
         }
         finally
         {
             if (subscriberId >= 0)
-            {
                 lock (gate)
                 {
                     subscribers.Remove(subscriberId);
                 }
-            }
         }
     }
 
@@ -67,20 +63,14 @@ internal sealed class AsyncEventHub<T>(int capacity)
         KeyValuePair<long, Channel<T>>[] snapshot;
         lock (gate)
         {
-            if (completed)
-            {
-                return;
-            }
+            if (completed) return;
 
             snapshot = subscribers.ToArray();
         }
 
         foreach (var subscriber in snapshot)
         {
-            if (subscriber.Value.Writer.TryWrite(item))
-            {
-                continue;
-            }
+            if (subscriber.Value.Writer.TryWrite(item)) continue;
 
             subscriber.Value.Writer.TryComplete(new JupyterBackpressureException(
                 "A Jupyter client event subscriber stopped consuming events."));
@@ -96,10 +86,7 @@ internal sealed class AsyncEventHub<T>(int capacity)
         Channel<T>[] snapshot;
         lock (gate)
         {
-            if (completed)
-            {
-                return;
-            }
+            if (completed) return;
 
             completed = true;
             completionError = error;
@@ -107,9 +94,6 @@ internal sealed class AsyncEventHub<T>(int capacity)
             subscribers.Clear();
         }
 
-        foreach (var subscriber in snapshot)
-        {
-            subscriber.Writer.TryComplete(error);
-        }
+        foreach (var subscriber in snapshot) subscriber.Writer.TryComplete(error);
     }
 }

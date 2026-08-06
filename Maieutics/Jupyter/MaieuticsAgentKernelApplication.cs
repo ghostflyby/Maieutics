@@ -17,14 +17,15 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
         new Dictionary<string, JsonElement>();
 
-    private readonly IAgentSession session;
-    private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
-    private readonly IMaieuticsMcpController? mcpController;
-    private readonly Workspace? workspace;
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
+    private readonly IMaieuticsMcpController? mcpController;
     private readonly JupyterDenoReplPresentationRouter? replPresentationRouter;
+    private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
+
+    private readonly IAgentSession session;
     private readonly TimeProvider timeProvider;
+    private readonly Workspace? workspace;
 
     public MaieuticsAgentKernelApplication(
         IAgentSession session,
@@ -51,62 +52,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         this.mcpController = mcpController;
         this.workspace = workspace;
         this.replPresentationRouter = replPresentationRouter;
-        if (runtimeConfiguration is null)
-        {
-            this.getOptions().Validate();
-        }
+        if (runtimeConfiguration is null) this.getOptions().Validate();
 
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
         this.timeProvider = timeProvider ?? TimeProvider.System;
-    }
-
-    public JupyterKernelInfo KernelInfo { get; } = new(
-        "5.5",
-        "maieutics",
-        Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0",
-        new JupyterLanguageInfo("markdown", "1.0", "text/markdown", ".md"),
-        "Maieutics notebook-native agent kernel");
-
-    public async ValueTask<JupyterExecuteResult> ExecuteAsync(
-        JupyterExecutionContext context,
-        JupyterExecuteRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(request.Code))
-        {
-            return JupyterExecuteResult.Ok;
-        }
-
-        if (IsMaieuticsCommand(request.Code))
-        {
-            await ExecuteCommandAsync(context, request.Code, cancellationToken).ConfigureAwait(false);
-            return JupyterExecuteResult.Ok;
-        }
-
-        try
-        {
-            var options = getOptions();
-            options.Validate();
-            if (runtimeConfiguration is not null &&
-                runtimeConfiguration.GetModelProfileSelection().Profiles.Count == 0)
-            {
-                throw Create(
-                    "AgentConfigurationError",
-                    "No model profile is configured. Configure a model before submitting an Agent turn.");
-            }
-
-            await RenderTurnAsync(context, request.Code, options, cancellationToken).ConfigureAwait(false);
-            return JupyterExecuteResult.Ok;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (AgentException exception)
-        {
-            logger.LogError(exception, "Agent turn failed for Jupyter request {RequestId}.", context.RequestId);
-            throw ToKernelException(exception);
-        }
     }
 
     public ValueTask<JupyterCompletionResult> CompleteAsync(
@@ -124,6 +73,50 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             sourceIds));
     }
 
+    public JupyterKernelInfo KernelInfo { get; } = new(
+        "5.5",
+        "maieutics",
+        Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0",
+        new JupyterLanguageInfo("markdown", "1.0", "text/markdown", ".md"),
+        "Maieutics notebook-native agent kernel");
+
+    public async ValueTask<JupyterExecuteResult> ExecuteAsync(
+        JupyterExecutionContext context,
+        JupyterExecuteRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Code)) return JupyterExecuteResult.Ok;
+
+        if (IsMaieuticsCommand(request.Code))
+        {
+            await ExecuteCommandAsync(context, request.Code, cancellationToken).ConfigureAwait(false);
+            return JupyterExecuteResult.Ok;
+        }
+
+        try
+        {
+            var options = getOptions();
+            options.Validate();
+            if (runtimeConfiguration is not null &&
+                runtimeConfiguration.GetModelProfileSelection().Profiles.Count == 0)
+                throw Create(
+                    "AgentConfigurationError",
+                    "No model profile is configured. Configure a model before submitting an Agent turn.");
+
+            await RenderTurnAsync(context, request.Code, options, cancellationToken).ConfigureAwait(false);
+            return JupyterExecuteResult.Ok;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (AgentException exception)
+        {
+            logger.LogError(exception, "Agent turn failed for Jupyter request {RequestId}.", context.RequestId);
+            throw ToKernelException(exception);
+        }
+    }
+
     private async ValueTask ExecuteCommandAsync(
         JupyterExecutionContext context,
         string code,
@@ -133,10 +126,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         var originalArguments = code.Split((char[]?)null,
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var arguments = MaieuticsCommandLanguage.NormalizeCommandArguments(originalArguments);
-        if (arguments is null)
-        {
-            throw Create("MaieuticsCommandError", "Unknown Maieutics command.");
-        }
+        if (arguments is null) throw Create("MaieuticsCommandError", "Unknown Maieutics command.");
 
         try
         {
@@ -179,9 +169,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         CancellationToken cancellationToken)
     {
         if (runtimeConfiguration is null)
-        {
             throw new ArgumentException("Model profile commands are not available in this host.");
-        }
 
         if (arguments.Length >= 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase))
@@ -199,19 +187,15 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         }
 
         if (arguments.Length == 2 ||
-            arguments.Length == 3 && string.Equals(
+            (arguments.Length == 3 && string.Equals(
                 arguments[2],
                 MaieuticsCommandLanguage.Current,
-                StringComparison.OrdinalIgnoreCase))
-        {
+                StringComparison.OrdinalIgnoreCase)))
             return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
-        }
 
         if (arguments.Length == 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
-        {
             return RenderList(runtimeConfiguration.GetModelProfileSelection());
-        }
 
         if (arguments.Length == 4 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
@@ -232,33 +216,25 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private string ExecuteMcpCommand(string[] arguments)
     {
-        if (mcpController is null)
-        {
-            throw new ArgumentException("MCP commands are not available in this host.");
-        }
+        if (mcpController is null) throw new ArgumentException("MCP commands are not available in this host.");
 
         if (arguments.Length == 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
-        {
             return RenderMcpList(mcpController.GetMcpServers());
-        }
 
         throw new ArgumentException("Unknown MCP command or invalid arguments.");
     }
 
     private string ExecuteWorkspaceCommand(string code, string[] arguments, int pathTokenCount)
     {
-        if (workspace is null)
-        {
-            throw new ArgumentException("Workspace commands are not available in this host.");
-        }
+        if (workspace is null) throw new ArgumentException("Workspace commands are not available in this host.");
 
         WorkspaceSnapshot selection;
         if (arguments.Length == 2 ||
-            arguments.Length == 3 && string.Equals(
+            (arguments.Length == 3 && string.Equals(
                 arguments[2],
                 MaieuticsCommandLanguage.Current,
-                StringComparison.OrdinalIgnoreCase))
+                StringComparison.OrdinalIgnoreCase)))
         {
             selection = workspace.Capture();
         }
@@ -272,9 +248,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         {
             var path = GetRemainderAfterTokens(code, pathTokenCount);
             if (path.Length == 0 || path.IndexOfAny(['\r', '\n']) >= 0)
-            {
                 throw new ArgumentException("A single-line workspace path is required.");
-            }
 
             selection = workspace.Use(path);
         }
@@ -291,34 +265,24 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         var index = 0;
         for (var token = 0; token < tokenCount; token++)
         {
-            while (index < code.Length && char.IsWhiteSpace(code[index]))
-            {
-                index++;
-            }
+            while (index < code.Length && char.IsWhiteSpace(code[index])) index++;
 
-            while (index < code.Length && !char.IsWhiteSpace(code[index]))
-            {
-                index++;
-            }
+            while (index < code.Length && !char.IsWhiteSpace(code[index])) index++;
         }
 
-        while (index < code.Length && char.IsWhiteSpace(code[index]))
-        {
-            index++;
-        }
+        while (index < code.Length && char.IsWhiteSpace(code[index])) index++;
 
         return code[index..].TrimEnd();
     }
 
     private static bool IsMaieuticsCommand(string code)
-        => MaieuticsCommandLanguage.IsCommandCell(code);
+    {
+        return MaieuticsCommandLanguage.IsCommandCell(code);
+    }
 
     private static string RenderCurrent(MaieuticsModelProfileSelection selection)
     {
-        if (selection.Profiles.Count == 0)
-        {
-            return "### Current model\n\nNo model profile is configured.";
-        }
+        if (selection.Profiles.Count == 0) return "### Current model\n\nNo model profile is configured.";
 
         var profile = selection.Profiles.Single(profile => profile.IsSelected);
         var selectionSource = profile.IsAutomatic
@@ -348,10 +312,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private static string RenderMcpList(IReadOnlyList<MaieuticsMcpServerInfo> servers)
     {
-        if (servers.Count == 0)
-        {
-            return "### MCP servers\n\nNo MCP servers are enabled.";
-        }
+        if (servers.Count == 0) return "### MCP servers\n\nNo MCP servers are enabled.";
 
         var output = new StringBuilder("### MCP servers\n\n");
         foreach (var server in servers)
@@ -364,11 +325,9 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 .Append(server.State)
                 .Append('`');
             if (server is { State: MaieuticsMcpServerState.Reconnecting, NextReconnectDelay: { } reconnectDelay })
-            {
                 output.Append(", next reconnect in `")
                     .Append(reconnectDelay)
                     .Append('`');
-            }
 
             output.AppendLine();
             foreach (var tool in server.Tools)
@@ -378,10 +337,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                     .Append("` → `")
                     .Append(EscapeCode(tool.ExposedName))
                     .Append('`');
-                if (!tool.Available)
-                {
-                    output.Append(" (unavailable)");
-                }
+                if (!tool.Available) output.Append(" (unavailable)");
 
                 output.AppendLine();
             }
@@ -398,16 +354,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         var longestRun = 0;
         var currentRun = 0;
         foreach (var character in sanitized)
-        {
             if (character == '`')
-            {
                 longestRun = Math.Max(longestRun, ++currentRun);
-            }
             else
-            {
                 currentRun = 0;
-            }
-        }
 
         var delimiter = new string('`', longestRun + 1);
         return $"{delimiter}{sanitized}{delimiter}";
@@ -415,29 +365,17 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
     private static string RenderList(MaieuticsModelProfileSelection selection)
     {
-        if (selection.Profiles.Count == 0)
-        {
-            return "### Model profiles\n\nNo model profiles are configured.";
-        }
+        if (selection.Profiles.Count == 0) return "### Model profiles\n\nNo model profiles are configured.";
 
         var output = new StringBuilder("### Model profiles\n\n");
         foreach (var profile in selection.Profiles)
         {
             var markers = new List<string>(2);
-            if (profile.IsSelected)
-            {
-                markers.Add("selected");
-            }
+            if (profile.IsSelected) markers.Add("selected");
 
-            if (profile.IsDefault)
-            {
-                markers.Add("default");
-            }
+            if (profile.IsDefault) markers.Add("default");
 
-            if (profile.IsAutomatic)
-            {
-                markers.Add("automatic");
-            }
+            if (profile.IsAutomatic) markers.Add("automatic");
 
             var suffix = markers.Count == 0 ? string.Empty : $" ({string.Join(", ", markers)})";
             output.Append("- `")
@@ -455,7 +393,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         return output.ToString();
     }
 
-    private static string EscapeCode(string value) => value.Replace("`", "\\`", StringComparison.Ordinal);
+    private static string EscapeCode(string value)
+    {
+        return value.Replace("`", "\\`", StringComparison.Ordinal);
+    }
 
 
     private static string RenderAvailable(
@@ -504,9 +445,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             {
                 output.Append("- `").Append(EscapeCode(model.Id)).Append('`');
                 if (model.ContextWindow.HasValue)
-                {
                     output.Append(" (").Append(model.ContextWindow.Value).Append(" context)");
-                }
 
                 var configured = configuredModelIds
                     .Contains((group.SourceId, model.Id));
@@ -534,28 +473,12 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             output.AppendLine();
             output.AppendLine("> ⚠️ The following configured models were not found in API results:");
             foreach (var profile in missingFromApi)
-            {
                 output.Append("- `").Append(EscapeCode(profile.Id))
                     .Append("`: `").Append(EscapeCode(profile.Model))
                     .Append("` (source `").Append(EscapeCode(profile.SourceId)).AppendLine("`)");
-            }
         }
 
         return output.ToString();
-    }
-
-    private sealed class TupleComparer : IEqualityComparer<(string SourceId, string Model)>
-    {
-        internal static readonly TupleComparer Instance = new();
-
-        public bool Equals((string SourceId, string Model) x, (string SourceId, string Model) y) =>
-            string.Equals(x.SourceId, y.SourceId, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(x.Model, y.Model, StringComparison.OrdinalIgnoreCase);
-
-        public int GetHashCode((string SourceId, string Model) obj) =>
-            HashCode.Combine(
-                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.SourceId),
-                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Model));
     }
 
     private async Task RenderTurnAsync(
@@ -577,7 +500,6 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         try
         {
             await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken).ConfigureAwait(false))
-            {
                 switch (agentEvent)
                 {
                     case AgentTextDelta { Text.Length: > 0 } delta:
@@ -586,20 +508,16 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                         {
                             displayId = JupyterDisplayId.Create();
                             if (presentationSink is null)
-                            {
                                 await context.DisplayTrackedAsync(
                                     MimeBundle.FromMarkdown(response.ToString()),
                                     displayId,
                                     cancellationToken: cancellationToken).ConfigureAwait(false);
-                            }
                             else
-                            {
                                 await presentationSink.DisplayTrackedAsync(
                                     MimeBundle.FromMarkdown(response.ToString()),
                                     displayId.Value,
                                     EmptyMetadata,
                                     cancellationToken).ConfigureAwait(false);
-                            }
 
                             flushedLength = response.Length;
                             flushTimestamp = timeProvider.GetTimestamp();
@@ -639,7 +557,6 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                         replPresentationRouter?.OpenCall(session.Id, started.CallId);
                         break;
                 }
-            }
 
             // Once the event writer closes normally, the run has crossed its commit boundary.
             var result = await run.Completion.ConfigureAwait(false);
@@ -653,20 +570,16 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 {
                     displayId = JupyterDisplayId.Create();
                     if (presentationSink is null)
-                    {
                         await context.DisplayTrackedAsync(
                             MimeBundle.FromMarkdown(response.ToString()),
                             displayId,
                             cancellationToken: cancellationToken).ConfigureAwait(false);
-                    }
                     else
-                    {
                         await presentationSink.DisplayTrackedAsync(
                             MimeBundle.FromMarkdown(response.ToString()),
                             displayId.Value,
                             EmptyMetadata,
                             cancellationToken).ConfigureAwait(false);
-                    }
 
                     flushedLength = response.Length;
                     timeProvider.GetTimestamp();
@@ -689,10 +602,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         }
 
         if (displayId is not null && flushedLength != response.Length)
-        {
             await FlushAsync(context, presentationSink, displayId.Value, response, cancellationToken)
                 .ConfigureAwait(false);
-        }
     }
 
     private async Task TryFlushPartialAsync(
@@ -702,10 +613,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         StringBuilder response,
         int flushedLength)
     {
-        if (displayId is null || flushedLength == response.Length)
-        {
-            return;
-        }
+        if (displayId is null || flushedLength == response.Length) return;
 
         try
         {
@@ -738,40 +646,67 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         IDenoReplPresentationSink? presentationSink,
         JupyterDisplayId displayId,
         StringBuilder response,
-        CancellationToken cancellationToken) => presentationSink?.UpdateDisplayAsync(
-        displayId,
-        MimeBundle.FromMarkdown(response.ToString()),
-        EmptyMetadata,
-        cancellationToken) ?? context.UpdateDisplayAsync(
-        displayId,
-        MimeBundle.FromMarkdown(response.ToString()),
-        cancellationToken: cancellationToken);
-
-    private static JupyterKernelExecutionException ToKernelException(AgentException exception) => exception switch
+        CancellationToken cancellationToken)
     {
-        AgentProviderException => Create("AgentProviderError", "The model provider failed while producing a response."),
-        AgentInputLimitExceededException => Create("AgentInputTooLarge", exception.Message),
-        AgentResponseLimitExceededException => Create("AgentResponseTooLarge", exception.Message),
-        AgentToolLimitExceededException => Create("AgentToolLimitExceeded", exception.Message),
-        AgentToolArgumentsException => Create(
-            "AgentToolArgumentsError",
-            "The model supplied an invalid tool request."),
-        AgentToolInvocationException => Create(
-            "AgentToolError",
-            "An Agent tool failed while processing the request."),
-        AgentTurnDurationExceededException => Create("AgentTurnDurationExceeded", exception.Message),
-        AgentModelIterationLimitExceededException => Create("AgentModelIterationLimit", exception.Message),
-        AgentModelCapabilityException => Create("AgentModelCapabilityError", exception.Message),
-        AgentContentCompatibilityException => Create(
-            "AgentUnsupportedResponse",
-            "The model provider returned a response that this kernel does not support."),
-        AgentUnsupportedResponseException => Create(
-            "AgentUnsupportedResponse",
-            "The model provider returned a response that this kernel does not support."),
-        AgentTurnInProgressException => Create("AgentBusy", exception.Message),
-        _ => Create("AgentError", "The agent turn failed.")
-    };
+        return presentationSink?.UpdateDisplayAsync(
+            displayId,
+            MimeBundle.FromMarkdown(response.ToString()),
+            EmptyMetadata,
+            cancellationToken) ?? context.UpdateDisplayAsync(
+            displayId,
+            MimeBundle.FromMarkdown(response.ToString()),
+            cancellationToken: cancellationToken);
+    }
 
-    private static JupyterKernelExecutionException Create(string name, string message) =>
-        new(name, message, []);
+    private static JupyterKernelExecutionException ToKernelException(AgentException exception)
+    {
+        return exception switch
+        {
+            AgentProviderException => Create("AgentProviderError",
+                "The model provider failed while producing a response."),
+            AgentInputLimitExceededException => Create("AgentInputTooLarge", exception.Message),
+            AgentResponseLimitExceededException => Create("AgentResponseTooLarge", exception.Message),
+            AgentToolLimitExceededException => Create("AgentToolLimitExceeded", exception.Message),
+            AgentToolArgumentsException => Create(
+                "AgentToolArgumentsError",
+                "The model supplied an invalid tool request."),
+            AgentToolInvocationException => Create(
+                "AgentToolError",
+                "An Agent tool failed while processing the request."),
+            AgentTurnDurationExceededException => Create("AgentTurnDurationExceeded", exception.Message),
+            AgentModelIterationLimitExceededException => Create("AgentModelIterationLimit", exception.Message),
+            AgentModelCapabilityException => Create("AgentModelCapabilityError", exception.Message),
+            AgentContentCompatibilityException => Create(
+                "AgentUnsupportedResponse",
+                "The model provider returned a response that this kernel does not support."),
+            AgentUnsupportedResponseException => Create(
+                "AgentUnsupportedResponse",
+                "The model provider returned a response that this kernel does not support."),
+            AgentTurnInProgressException => Create("AgentBusy", exception.Message),
+            _ => Create("AgentError", "The agent turn failed.")
+        };
+    }
+
+    private static JupyterKernelExecutionException Create(string name, string message)
+    {
+        return new JupyterKernelExecutionException(name, message, []);
+    }
+
+    private sealed class TupleComparer : IEqualityComparer<(string SourceId, string Model)>
+    {
+        internal static readonly TupleComparer Instance = new();
+
+        public bool Equals((string SourceId, string Model) x, (string SourceId, string Model) y)
+        {
+            return string.Equals(x.SourceId, y.SourceId, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(x.Model, y.Model, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public int GetHashCode((string SourceId, string Model) obj)
+        {
+            return HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.SourceId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Model));
+        }
+    }
 }

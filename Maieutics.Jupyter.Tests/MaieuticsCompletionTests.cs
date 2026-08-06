@@ -9,8 +9,8 @@ public sealed class MaieuticsCompletionTests
 {
     private static readonly MaieuticsModelProfileInfo[] Profiles =
     [
-        new("gpt", "openai", "OpenAI", "gpt-test", IsDefault: true, IsSelected: true),
-        new("claude", "anthropic", "Anthropic", "claude-test", IsDefault: false, IsSelected: false)
+        new("gpt", "openai", "OpenAI", "gpt-test", true, true),
+        new("claude", "anthropic", "Anthropic", "claude-test", false, false)
     ];
 
     [Fact]
@@ -116,25 +116,25 @@ public sealed class MaieuticsCompletionTests
                 "vendor",
                 "Vendor",
                 "model-alpha",
-                IsDefault: false,
-                IsSelected: false,
-                IsAutomatic: true),
+                false,
+                false,
+                true),
             new(
                 "@other/model-alpha",
                 "other",
                 "Vendor",
                 "model-alpha",
-                IsDefault: false,
-                IsSelected: false,
-                IsAutomatic: true),
+                false,
+                false,
+                true),
             new(
                 "@vendor/model-beta",
                 "vendor",
                 "Vendor",
                 "model-beta",
-                IsDefault: false,
-                IsSelected: false,
-                IsAutomatic: true)
+                false,
+                false,
+                true)
         ];
 
         var all = Complete(
@@ -149,14 +149,14 @@ public sealed class MaieuticsCompletionTests
 
         var uniqueModel = Complete(
             "%maieutics model use model-",
-            profiles: [],
-            automaticProfiles: automaticProfiles);
+            [],
+            automaticProfiles);
         uniqueModel.Matches.Should().Equal("model-beta");
 
         var selectedAfterCacheExpiry = Complete(
             "%maieutics model use @ven",
-            profiles: [automaticProfiles[2] with { IsSelected = true }],
-            automaticProfiles: []);
+            [automaticProfiles[2] with { IsSelected = true }],
+            []);
         selectedAfterCacheExpiry.Matches.Should().Equal("@vendor/model-beta");
     }
 
@@ -181,19 +181,19 @@ public sealed class MaieuticsCompletionTests
     {
         var sourceOnly = Complete(
             "%maieutics model available v",
-            profiles: [],
+            [],
             sourceIds: ["vendor"]);
         sourceOnly.Matches.Should().Equal("vendor");
 
         var commands = Complete(
             "%maieutics model ",
-            profiles: [],
+            [],
             sourceIds: []);
         commands.Matches.Should().Equal("available", "current", "list", "reset", "use");
 
         var use = Complete(
             "%maieutics model use ",
-            profiles: [],
+            [],
             sourceIds: ["vendor"]);
         use.Matches.Should().BeEmpty();
     }
@@ -203,8 +203,8 @@ public sealed class MaieuticsCompletionTests
     {
         MaieuticsModelProfileInfo[] profiles =
         [
-            new("Z-profile", "source", "Vendor", "shared", IsDefault: true, IsSelected: true),
-            new("a-profile", "source", "Vendor", "Shared", IsDefault: false, IsSelected: false)
+            new("Z-profile", "source", "Vendor", "shared", true, true),
+            new("a-profile", "source", "Vendor", "Shared", false, false)
         ];
 
         var use = Complete("%maieutics model use ", profiles, []);
@@ -300,25 +300,25 @@ public sealed class MaieuticsCompletionTests
                 "vendor",
                 "Vendor",
                 "model-alpha",
-                IsDefault: false,
-                IsSelected: false,
-                IsAutomatic: true),
+                false,
+                false,
+                true),
             new(
                 "@other/model-alpha",
                 "other",
                 "Vendor",
                 "model-alpha",
-                IsDefault: false,
-                IsSelected: false,
-                IsAutomatic: true),
+                false,
+                false,
+                true),
             new(
                 "@vendor/model-beta",
                 "vendor",
                 "Vendor",
                 "model-beta",
-                IsDefault: false,
-                IsSelected: false,
-                IsAutomatic: true)
+                false,
+                false,
+                true)
         ];
 
         var qualified = Complete("%model use @", automaticProfiles: automaticProfiles);
@@ -345,12 +345,14 @@ public sealed class MaieuticsCompletionTests
         string code,
         IReadOnlyList<MaieuticsModelProfileInfo>? profiles = null,
         IReadOnlyList<MaieuticsModelProfileInfo>? automaticProfiles = null,
-        IReadOnlyList<string>? sourceIds = null) =>
-        MaieuticsCommandLanguage.Complete(
+        IReadOnlyList<string>? sourceIds = null)
+    {
+        return MaieuticsCommandLanguage.Complete(
             new JupyterCompleteRequest(
                 code,
                 JupyterCursorPosition.FromUtf16Index(code, code.Length)),
             profiles ?? Profiles,
             automaticProfiles ?? [],
             sourceIds ?? []);
+    }
 }

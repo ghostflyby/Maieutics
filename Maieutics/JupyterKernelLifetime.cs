@@ -5,9 +5,9 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics;
 
 /// <summary>
-/// Replaces the default console lifetime so SIGINT interrupts the currently executing kernel
-/// request instead of shutting the application down, while SIGQUIT and SIGTERM keep the standard
-/// graceful shutdown behavior.
+///     Replaces the default console lifetime so SIGINT interrupts the currently executing kernel
+///     request instead of shutting the application down, while SIGQUIT and SIGTERM keep the standard
+///     graceful shutdown behavior.
 /// </summary>
 internal sealed class JupyterKernelLifetime(
     IHostApplicationLifetime applicationLifetime,
@@ -23,10 +23,17 @@ internal sealed class JupyterKernelLifetime(
         coordinator ?? throw new ArgumentNullException(nameof(coordinator));
 
     private readonly Lock gate = new();
+    private int disposed;
     private PosixSignalRegistration? sigintRegistration;
     private PosixSignalRegistration? sigquitRegistration;
     private PosixSignalRegistration? sigtermRegistration;
-    private int disposed;
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+
+        Unregister();
+    }
 
     public Task WaitForStartAsync(CancellationToken cancellationToken)
     {
@@ -48,16 +55,6 @@ internal sealed class JupyterKernelLifetime(
     {
         Unregister();
         return Task.CompletedTask;
-    }
-
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
-        {
-            return;
-        }
-
-        Unregister();
     }
 
     internal void HandleSignal(PosixSignal signal)

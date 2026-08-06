@@ -29,8 +29,8 @@ internal sealed record PluginHostProcessGrants(
     IReadOnlyList<string> Import);
 
 /// <summary>
-/// Owns the out-of-process plugin host: launches the restricted `deno run` process with the
-/// control channel address and the kernel-written plugin configuration, and observes its exit.
+///     Owns the out-of-process plugin host: launches the restricted `deno run` process with the
+///     control channel address and the kernel-written plugin configuration, and observes its exit.
 /// </summary>
 internal sealed class PluginHostProcess : IAsyncDisposable
 {
@@ -54,22 +54,27 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         "PATHEXT"
     ];
 
-    private readonly Process process;
-    private readonly Task completion;
     private readonly CancellationTokenSource lifetime = new();
+
+    private readonly Process process;
     private bool stopped;
 
     private PluginHostProcess(Process process, Task completion)
     {
         this.process = process;
-        this.completion = completion;
+        this.Completion = completion;
     }
 
     public int ProcessId => process.Id;
 
-    public Task Completion => completion;
+    public Task Completion { get; }
 
     public int? ExitCode => process.HasExited ? process.ExitCode : null;
+
+    public ValueTask DisposeAsync()
+    {
+        return new ValueTask(StopAsync());
+    }
 
     public static PluginHostProcess Start(
         PluginHostProcessOptions options,
@@ -104,14 +109,11 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         foreach (var name in AllowedEnvironmentNames)
         {
             var value = Environment.GetEnvironmentVariable(name);
-            if (!string.IsNullOrEmpty(value))
-            {
-                startInfo.EnvironmentVariables[name] = value;
-            }
+            if (!string.IsNullOrEmpty(value)) startInfo.EnvironmentVariables[name] = value;
         }
 
         var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("The plugin host process could not be started.");
+                      ?? throw new InvalidOperationException("The plugin host process could not be started.");
         _ = DrainAsync(process.StandardOutput, process.StandardError, logger, process.Id);
         var completion = process.WaitForExitAsync();
         logger.LogInformation("Plugin host started with pid {ProcessId}.", process.Id);
@@ -131,27 +133,18 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         }
 
         var distinct = values.Distinct(StringComparer.Ordinal).ToArray();
-        if (distinct.Length > 0)
-        {
-            startInfo.ArgumentList.Add($"{flag}={string.Join(",", distinct)}");
-        }
+        if (distinct.Length > 0) startInfo.ArgumentList.Add($"{flag}={string.Join(",", distinct)}");
     }
 
     public async Task StopAsync()
     {
-        if (stopped)
-        {
-            return;
-        }
+        if (stopped) return;
 
         stopped = true;
         lifetime.Cancel();
         try
         {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
+            if (!process.HasExited) process.Kill(true);
         }
         catch (InvalidOperationException)
         {
@@ -160,15 +153,13 @@ internal sealed class PluginHostProcess : IAsyncDisposable
 
         try
         {
-            await completion.ConfigureAwait(false);
+            await Completion.ConfigureAwait(false);
         }
         catch
         {
             // Exit observation must not mask shutdown.
         }
     }
-
-    public ValueTask DisposeAsync() => new(StopAsync());
 
     private static async Task DrainAsync(
         TextReader standardOutput,
@@ -179,14 +170,9 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         var output = await standardOutput.ReadToEndAsync().ConfigureAwait(false);
         var error = await standardError.ReadToEndAsync().ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(output))
-        {
             logger.LogDebug("Plugin host {ProcessId} stdout: {Output}", processId, output);
-        }
 
         if (!string.IsNullOrWhiteSpace(error))
-        {
             logger.LogDebug("Plugin host {ProcessId} stderr: {Error}", processId, error);
-        }
     }
-
 }

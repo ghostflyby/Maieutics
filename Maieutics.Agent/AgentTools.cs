@@ -10,9 +10,7 @@ public readonly record struct AgentToolCallId
     private AgentToolCallId(Guid value)
     {
         if (value == Guid.Empty)
-        {
             throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(value));
-        }
 
         Value = value;
     }
@@ -21,10 +19,16 @@ public readonly record struct AgentToolCallId
     public Guid Value { get; }
 
     /// <summary>Creates a new identifier.</summary>
-    public static AgentToolCallId Create() => new(Guid.NewGuid());
+    public static AgentToolCallId Create()
+    {
+        return new AgentToolCallId(Guid.NewGuid());
+    }
 
     /// <inheritdoc />
-    public override string ToString() => Value.ToString("N");
+    public override string ToString()
+    {
+        return Value.ToString("N");
+    }
 }
 
 /// <summary>Provides invocation identity and progress reporting to an Agent tool.</summary>
@@ -59,9 +63,7 @@ public sealed class AgentToolContext
         ArgumentNullException.ThrowIfNull(arguments);
         if (arguments.Context?.TryGetValue(typeof(AgentToolContext), out var value) == true &&
             value is AgentToolContext context)
-        {
             return context;
-        }
 
         throw new InvalidOperationException("The AI function is not running inside a Maieutics Agent tool call.");
     }
@@ -104,15 +106,11 @@ public sealed record AgentToolStarted : AgentEvent
         JsonElement arguments) : base(runId, sequence)
     {
         if (callId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(callId));
-        }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         if (arguments.ValueKind != JsonValueKind.Object)
-        {
             throw new ArgumentException("Tool arguments must be a JSON object.", nameof(arguments));
-        }
 
         CallId = callId;
         ToolName = toolName;
@@ -151,14 +149,10 @@ public sealed record AgentToolFinished : AgentEvent
         JsonElement result) : base(runId, sequence)
     {
         if (callId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(callId));
-        }
 
         if (result.ValueKind != JsonValueKind.Object)
-        {
             throw new ArgumentException("Tool result envelopes must be JSON objects.", nameof(result));
-        }
 
         CallId = callId;
         Result = result.Clone();

@@ -20,9 +20,7 @@ public sealed record JupyterKernelSpec(
                    ?? throw new JupyterProtocolException($"Kernel spec '{path}' did not contain valid JSON.");
 
         if (file.Argv.Count == 0 || string.IsNullOrWhiteSpace(file.Argv[0]))
-        {
             throw new JupyterProtocolException($"Kernel spec '{path}' did not define a valid argv.");
-        }
 
         return new JupyterKernelSpec(
             file.Argv,

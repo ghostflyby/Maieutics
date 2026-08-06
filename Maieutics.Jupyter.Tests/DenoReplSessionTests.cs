@@ -18,8 +18,8 @@ public sealed class DenoReplSessionTests
     public async Task SameSessionSerializesWhileDifferentSessionsCanExecuteConcurrently()
     {
         var probe = new ConcurrencyProbe();
-        var firstManager = new ControlledManager(probe, releaseOnInterrupt: true);
-        var secondManager = new ControlledManager(probe, releaseOnInterrupt: true);
+        var firstManager = new ControlledManager(probe, true);
+        var secondManager = new ControlledManager(probe, true);
         var options = LongRunningOptions();
         var owner = AgentSessionId.Create();
         await using var firstSession = CreateSession(owner, "first", options, firstManager);
@@ -86,8 +86,8 @@ public sealed class DenoReplSessionTests
     [Fact(Timeout = 15_000)]
     public async Task ExecutionTimeoutReturnsTypedFailureAfterInterrupt()
     {
-        var manager = new ControlledManager(new ConcurrencyProbe(), releaseOnInterrupt: true);
-        var options = LongRunningOptions(executionTimeout: TimeSpan.FromMilliseconds(25));
+        var manager = new ControlledManager(new ConcurrencyProbe(), true);
+        var options = LongRunningOptions(TimeSpan.FromMilliseconds(25));
         await using var session = CreateSession(AgentSessionId.Create(), "timeout", options, manager);
 
         var execution = session.ExecuteAsync(
@@ -106,7 +106,7 @@ public sealed class DenoReplSessionTests
     [Fact(Timeout = 15_000)]
     public async Task RestartWaitsForActiveExecutionAndThenAdvancesGeneration()
     {
-        var manager = new ControlledManager(new ConcurrencyProbe(), releaseOnInterrupt: true);
+        var manager = new ControlledManager(new ConcurrencyProbe(), true);
         await using var session = CreateSession(
             AgentSessionId.Create(),
             "restart",
@@ -131,26 +131,32 @@ public sealed class DenoReplSessionTests
 
     private static DenoReplOptions LongRunningOptions(
         TimeSpan? executionTimeout = null,
-        TimeSpan? interruptGracePeriod = null) => new()
+        TimeSpan? interruptGracePeriod = null)
     {
-        ExecutionTimeout = executionTimeout ?? TimeSpan.FromSeconds(5),
-        InterruptGracePeriod = interruptGracePeriod ?? TimeSpan.FromSeconds(1)
-    };
+        return new DenoReplOptions
+        {
+            ExecutionTimeout = executionTimeout ?? TimeSpan.FromSeconds(5),
+            InterruptGracePeriod = interruptGracePeriod ?? TimeSpan.FromSeconds(1)
+        };
+    }
 
     private static DenoReplSession CreateSession(
         AgentSessionId owner,
         string id,
         DenoReplOptions options,
-        ControlledManager manager) => new(
-        owner,
-        id,
-        isDefault: false,
-        Directory.GetCurrentDirectory(),
-        options,
-        new SingleManagerFactory(manager),
-        new ImmediatePresentationRouter(),
-        new ReplControlSessionRegistry(),
-        NullLogger<DenoReplSession>.Instance);
+        ControlledManager manager)
+    {
+        return new DenoReplSession(
+            owner,
+            id,
+            false,
+            Directory.GetCurrentDirectory(),
+            options,
+            new SingleManagerFactory(manager),
+            new ImmediatePresentationRouter(),
+            new ReplControlSessionRegistry(),
+            NullLogger<DenoReplSession>.Instance);
+    }
 
     private sealed class SingleManagerFactory(ControlledManager manager) : IDenoReplSessionFactory
     {
@@ -168,10 +174,6 @@ public sealed class DenoReplSessionTests
     {
         public ControlledClient ClientImpl { get; } = new(probe);
 
-        public IJupyterClient Client => ClientImpl;
-
-        public int? ProcessId => null;
-
         public int InterruptCount { get; private set; }
 
         public int RestartCount { get; private set; }
@@ -180,14 +182,15 @@ public sealed class DenoReplSessionTests
 
         public int TerminateCount { get; private set; }
 
+        public IJupyterClient Client => ClientImpl;
+
+        public int? ProcessId => null;
+
         public Task InterruptAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             InterruptCount++;
-            if (releaseOnInterrupt)
-            {
-                ClientImpl.ReleaseAll();
-            }
+            if (releaseOnInterrupt) ClientImpl.ReleaseAll();
 
             return Task.CompletedTask;
         }
@@ -215,13 +218,16 @@ public sealed class DenoReplSessionTests
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ControlledClient(ConcurrencyProbe probe) : IJupyterClient
     {
-        private readonly Lock gate = new();
         private readonly List<ControlledExecution> executions = [];
+        private readonly Lock gate = new();
         private readonly Channel<ControlledExecution> started = Channel.CreateUnbounded<ControlledExecution>();
         private int startedCount;
 
@@ -250,8 +256,46 @@ public sealed class DenoReplSessionTests
             return Task.FromResult<IJupyterExecution>(execution);
         }
 
-        public Task<ControlledExecution> NextExecutionAsync(CancellationToken cancellationToken) =>
-            started.Reader.ReadAsync(cancellationToken).AsTask();
+        public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<JupyterCompleteReply> CompleteAsync(
+            JupyterCompleteRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<JupyterInspectReply> InspectAsync(
+            JupyterInspectRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<JupyterIsCompleteReply> IsCompleteAsync(
+            JupyterIsCompleteRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public Task<ControlledExecution> NextExecutionAsync(CancellationToken cancellationToken)
+        {
+            return started.Reader.ReadAsync(cancellationToken).AsTask();
+        }
 
         public void ReleaseAll()
         {
@@ -261,31 +305,8 @@ public sealed class DenoReplSessionTests
                 snapshot = executions.ToArray();
             }
 
-            foreach (var execution in snapshot)
-            {
-                execution.Release();
-            }
+            foreach (var execution in snapshot) execution.Release();
         }
-
-        public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<JupyterCompleteReply> CompleteAsync(
-            JupyterCompleteRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<JupyterInspectReply> InspectAsync(
-            JupyterInspectRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<JupyterIsCompleteReply> IsCompleteAsync(
-            JupyterIsCompleteRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class ControlledExecution : IJupyterExecution
@@ -306,12 +327,18 @@ public sealed class DenoReplSessionTests
 
         public Task<JupyterExecutionResult> Completion { get; }
 
-        public void Release() => release.TrySetResult();
-
         public Task ReplyInputAsync(
             JupyterInputRequest request,
             string value,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void Release()
+        {
+            release.TrySetResult();
+        }
 
         private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
         {
@@ -355,14 +382,15 @@ public sealed class DenoReplSessionTests
             while (true)
             {
                 var observed = Volatile.Read(ref maximum);
-                if (observed >= current || Interlocked.CompareExchange(ref maximum, current, observed) == observed)
-                {
-                    return;
-                }
+                if (observed >= current ||
+                    Interlocked.CompareExchange(ref maximum, current, observed) == observed) return;
             }
         }
 
-        public void Exit() => Interlocked.Decrement(ref active);
+        public void Exit()
+        {
+            Interlocked.Decrement(ref active);
+        }
     }
 
     internal sealed class ImmediatePresentationRouter : IDenoReplPresentationRouter
@@ -390,33 +418,54 @@ public sealed class DenoReplSessionTests
         public ValueTask DisplayAsync(
             MimeBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
             MimeBundle data,
             JupyterDisplayId displayId,
             IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken) => ValueTask.FromResult(displayId);
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(displayId);
+        }
 
         public ValueTask UpdateDisplayAsync(
             JupyterDisplayId displayId,
             MimeBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
 
-        public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
 
-        public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask PublishErrorAsync(
             string name,
             string value,
             IReadOnlyList<string> traceback,
-            CancellationToken cancellationToken) => ValueTask.CompletedTask;
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
 
         public Task<string> RequestInputAsync(
             string prompt,
             bool password,
-            CancellationToken cancellationToken) => Task.FromResult(string.Empty);
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(string.Empty);
+        }
     }
 }

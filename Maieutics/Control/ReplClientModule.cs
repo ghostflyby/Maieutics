@@ -1,8 +1,8 @@
 namespace Maieutics.Control;
 
 /// <summary>
-/// Materializes the embedded Deno REPL client module to a per-process temp file and exposes its
-/// file URL for injection through the REPL child environment.
+///     Materializes the embedded Deno REPL client module to a per-process temp file and exposes its
+///     file URL for injection through the REPL child environment.
 /// </summary>
 internal sealed class ReplClientModule
 {
@@ -24,10 +24,7 @@ internal sealed class ReplClientModule
     {
         var root = Path.Combine(Path.GetTempPath(), $"mc-repl-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        foreach (var (resource, relativePath) in Entries)
-        {
-            WriteEmbedded(resource, Path.Combine(root, relativePath));
-        }
+        foreach (var (resource, relativePath) in Entries) WriteEmbedded(resource, Path.Combine(root, relativePath));
 
         return new Uri(Path.Combine(root, "maieutics-repl-client/mod.ts")).AbsoluteUri;
     }
@@ -35,12 +32,13 @@ internal sealed class ReplClientModule
     internal static void WriteEmbedded(string resourceName, string path)
     {
         using var stream = typeof(ReplClientModule).Assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException(
-                $"Missing embedded Deno module '{resourceName}'.");
+                           ?? throw new InvalidOperationException(
+                               $"Missing embedded Deno module '{resourceName}'.");
         using var reader = new StreamReader(stream);
         var source = reader.ReadToEnd();
         Directory.CreateDirectory(
-            Path.GetDirectoryName(path) ?? throw new InvalidOperationException($"Cannot resolve the directory for '{path}'."));
+            Path.GetDirectoryName(path) ??
+            throw new InvalidOperationException($"Cannot resolve the directory for '{path}'."));
         File.WriteAllText(path, source);
     }
 }

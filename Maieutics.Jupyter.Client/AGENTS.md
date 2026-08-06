@@ -25,10 +25,10 @@ It must remain usable without `Maieutics.Agent`, the product executable, or `Mai
 
 - The dedicated I/O thread creates, polls, uses, and disposes shell, control, stdin, IOPub, and heartbeat sockets.
 - Shell and stdin share an identity; control has its own identity.
-- External producers communicate through bounded command queues. Queue saturation terminates the connection with a
-  typed backpressure failure; never drop protocol messages.
-- Startup cancellation, owner-thread failure, disconnect, backpressure, and concurrent disposal converge on one
-  terminal cause and promptly fail pending sends and pings.
+- External producers communicate through bounded command queues. Queue saturation terminates the connection with a typed
+  backpressure failure; never drop protocol messages.
+- Startup cancellation, owner-thread failure, disconnect, backpressure, and concurrent disposal converge on one terminal
+  cause and promptly fail pending sends and pings.
 - Use an explicit I/O-loop owner object to dispose related NetMQ resources together. Do not scatter closure-captured
   `using` locals across `RunIoThread`.
 

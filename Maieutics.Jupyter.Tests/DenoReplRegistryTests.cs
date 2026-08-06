@@ -116,7 +116,7 @@ public sealed class DenoReplRegistryTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -158,7 +158,7 @@ public sealed class DenoReplRegistryTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -200,7 +200,7 @@ public sealed class DenoReplRegistryTests
         finally
         {
             factory.Manager.AllowShutdown.TrySetResult();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -235,14 +235,16 @@ public sealed class DenoReplRegistryTests
         {
             factory.Manager.AllowShutdown.TrySetResult();
             await registry.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
-    private static string[] SchemaProperties(AIFunction function) =>
-        function.JsonSchema.GetProperty("properties").EnumerateObject()
+    private static string[] SchemaProperties(AIFunction function)
+    {
+        return function.JsonSchema.GetProperty("properties").EnumerateObject()
             .Select(static property => property.Name)
             .ToArray();
+    }
 
     private sealed class RecordingFactory : IDenoReplSessionFactory
     {
@@ -271,10 +273,7 @@ public sealed class DenoReplRegistryTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Attempts++;
-            if (Attempts == 1)
-            {
-                throw new FileNotFoundException("deno");
-            }
+            if (Attempts == 1) throw new FileNotFoundException("deno");
 
             return Task.FromResult<IJupyterKernelManager>(new RecordingManager());
         }
@@ -302,17 +301,23 @@ public sealed class DenoReplRegistryTests
         public TaskCompletionSource AllowShutdown { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public IJupyterClient Client { get; } = new RecordingClient();
-
-        public int? ProcessId => null;
-
         public int ShutdownCount { get; private set; }
 
         public int DisposeCount { get; private set; }
 
-        public Task InterruptAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public IJupyterClient Client { get; } = new RecordingClient();
 
-        public Task RestartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public int? ProcessId => null;
+
+        public Task InterruptAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task RestartAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
 
         public async Task ShutdownAsync(CancellationToken cancellationToken = default)
         {
@@ -337,13 +342,15 @@ public sealed class DenoReplRegistryTests
 
     private sealed class RecordingManager : IJupyterKernelManager
     {
+        public int RestartCount { get; private set; }
         public IJupyterClient Client { get; } = new RecordingClient();
 
         public int? ProcessId => null;
 
-        public int RestartCount { get; private set; }
-
-        public Task InterruptAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task InterruptAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
 
         public Task RestartAsync(CancellationToken cancellationToken = default)
         {
@@ -352,11 +359,20 @@ public sealed class DenoReplRegistryTests
             return Task.CompletedTask;
         }
 
-        public Task ShutdownAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task ShutdownAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
 
-        public Task TerminateAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task TerminateAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class RecordingClient : IJupyterClient
@@ -368,29 +384,48 @@ public sealed class DenoReplRegistryTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
 
-        public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default) =>
+        public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<IJupyterExecution> ExecuteAsync(
             JupyterExecuteRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<JupyterCompleteReply> CompleteAsync(
             JupyterCompleteRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<JupyterInspectReply> InspectAsync(
             JupyterInspectRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<JupyterIsCompleteReply> IsCompleteAsync(
             JupyterIsCompleteRequest request,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class UnusedPresentationRouter : IDenoReplPresentationRouter
@@ -398,7 +433,10 @@ public sealed class DenoReplRegistryTests
         public ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
             AgentSessionId sessionId,
             AgentToolCallId callId,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
 
         public bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
         {

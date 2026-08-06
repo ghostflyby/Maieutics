@@ -342,8 +342,10 @@ public sealed class AgentRunProfileTests
         nextLease.DisposeCount.Should().Be(1);
     }
 
-    private static AgentRunProfile CreateProfile(IChatClient client, string instructions) =>
-        new(client, new AgentSessionOptions { SystemPrompt = instructions });
+    private static AgentRunProfile CreateProfile(IChatClient client, string instructions)
+    {
+        return new AgentRunProfile(client, new AgentSessionOptions { SystemPrompt = instructions });
+    }
 
     private static async Task<AgentRunResult> CompleteTurnAsync(
         AgentSession session,
@@ -362,16 +364,15 @@ public sealed class AgentRunProfileTests
         }
     }
 
-    private static (ChatRole Role, string Text) MessageTuple(ChatMessage message) =>
-        (message.Role, message.Text);
+    private static (ChatRole Role, string Text) MessageTuple(ChatMessage message)
+    {
+        return (message.Role, message.Text);
+    }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] values)
     {
         await Task.Yield();
-        foreach (var value in values)
-        {
-            yield return new ChatResponseUpdate(ChatRole.Assistant, value);
-        }
+        foreach (var value in values) yield return new ChatResponseUpdate(ChatRole.Assistant, value);
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(ChatResponseUpdate update)
@@ -403,6 +404,14 @@ public sealed class AgentRunProfileTests
         return deadline;
     }
 
+    private static AIFunction CreateSuccessfulTool(string name = "echo")
+    {
+        return AIFunctionFactory.Create(
+            () => "ok",
+            name,
+            "Returns success.");
+    }
+
     private sealed class QueueProfileProvider(params TrackingProfileLease[] leases) : IAgentRunProfileProvider
     {
         private readonly Queue<TrackingProfileLease> leases = new(leases);
@@ -421,26 +430,19 @@ public sealed class AgentRunProfileTests
         Task? release = null,
         Exception? releaseException = null) : IAgentRunProfileLease
     {
-        public AgentRunProfile Profile { get; } = profile;
-
         public TaskCompletionSource DisposeStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int DisposeCount { get; private set; }
+        public AgentRunProfile Profile { get; } = profile;
 
         public async ValueTask DisposeAsync()
         {
             DisposeCount++;
             DisposeStarted.TrySetResult();
-            if (release is not null)
-            {
-                await release.ConfigureAwait(false);
-            }
+            if (release is not null) await release.ConfigureAwait(false);
 
-            if (releaseException is not null)
-            {
-                throw releaseException;
-            }
+            if (releaseException is not null) throw releaseException;
         }
     }
 
@@ -460,8 +462,10 @@ public sealed class AgentRunProfileTests
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromException<ChatResponse>(new NotSupportedException());
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -474,16 +478,13 @@ public sealed class AgentRunProfileTests
             return responses.Dequeue()(Requests[^1], cancellationToken);
         }
 
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            return null;
+        }
 
         public void Dispose()
         {
         }
     }
-
-    private static AIFunction CreateSuccessfulTool(string name = "echo") =>
-        AIFunctionFactory.Create(
-            () => "ok",
-            name: name,
-            description: "Returns success.");
 }

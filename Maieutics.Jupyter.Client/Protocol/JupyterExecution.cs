@@ -24,9 +24,7 @@ internal sealed class JupyterExecution(
         CancellationToken cancellationToken = default)
     {
         if (request.RequestId != requestId)
-        {
             throw new ArgumentException("The input request belongs to a different execution.", nameof(request));
-        }
 
         return replyInput(request, value, cancellationToken);
     }
@@ -35,13 +33,8 @@ internal sealed class JupyterExecution(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref outputEnumerationStarted, 1) != 0)
-        {
             throw new InvalidOperationException("Jupyter execution output is a single-consumer stream.");
-        }
 
-        await foreach (var output in outputs.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-        {
-            yield return output;
-        }
+        await foreach (var output in outputs.ReadAllAsync(cancellationToken).ConfigureAwait(false)) yield return output;
     }
 }

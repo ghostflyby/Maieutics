@@ -157,10 +157,7 @@ public sealed class WorkspaceToolsTests
     [Fact]
     public void UnixSafeOpenRejectsPathComponentsReplacedWithSymbolicLinks()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var workspace = TemporaryWorkspace.Create();
         var outside = Path.Combine(workspace.ParentPath, "outside.txt");
@@ -169,7 +166,7 @@ public sealed class WorkspaceToolsTests
         var file = Path.Combine(directory, "value.txt");
         File.WriteAllText(file, "inside");
         var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
-        var resolved = snapshot.Resolve("workspace://local/directory/value.txt", allowRoot: false);
+        var resolved = snapshot.Resolve("workspace://local/directory/value.txt", false);
 
         File.Delete(file);
         File.CreateSymbolicLink(file, outside);
@@ -309,11 +306,9 @@ public sealed class WorkspaceToolsTests
         }
 
         if (!OperatingSystem.IsWindows())
-        {
             File.CreateSymbolicLink(
                 Path.Combine(workspace.Path, "linked.txt"),
                 Path.Combine(workspace.Path, "a.txt"));
-        }
 
         var tool = Function(CreateFunctions(workspace.Path), "search_text");
         var result = Result<SearchTextResult>(await InvokeAsync(
@@ -327,10 +322,7 @@ public sealed class WorkspaceToolsTests
         result.Matches.Should().OnlyContain(static match => match.Preview.Length <= 512);
         result.Matches.Single(static match => match.Uri.EndsWith("preview.txt", StringComparison.Ordinal))
             .Column.Should().Be(551);
-        if (!OperatingSystem.IsWindows())
-        {
-            result.SkippedSymbolicLinks.Should().Be(1);
-        }
+        if (!OperatingSystem.IsWindows()) result.SkippedSymbolicLinks.Should().Be(1);
 
         var regex = Result<SearchTextResult>(await InvokeAsync(
                 tool,
@@ -348,7 +340,7 @@ public sealed class WorkspaceToolsTests
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.txt"), "target",
             TestContext.Current.CancellationToken);
         var fileLimited = Function(
-            CreateFunctions(workspace.Path, maximumFiles: 1, maximumDirectoryEntries: 10),
+            CreateFunctions(workspace.Path, 1, 10),
             "search_text");
         var limited = Result<SearchTextResult>(await InvokeAsync(
                 fileLimited,
@@ -358,7 +350,7 @@ public sealed class WorkspaceToolsTests
         limited.Truncated.Should().BeTrue();
 
         var directoryLimited = Function(
-            CreateFunctions(workspace.Path, maximumFiles: 10, maximumDirectoryEntries: 1),
+            CreateFunctions(workspace.Path, 10, 1),
             "search_text");
         ShouldFailure(await InvokeAsync(directoryLimited, """{"query":"target"}"""))
             .Code.Should().Be("workspace_directory_too_large");
@@ -376,10 +368,10 @@ public sealed class WorkspaceToolsTests
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "c.txt"), "x", TestContext.Current.CancellationToken);
         var scanLimited = Function(CreateFunctions(
             workspace.Path,
-            maximumFiles: 10,
-            maximumDirectoryEntries: 10,
-            maximumFileBytes: 4,
-            maximumSearchBytes: 5), "search_text");
+            10,
+            10,
+            4,
+            5), "search_text");
         var scanResult = Result<SearchTextResult>(await InvokeAsync(
                 scanLimited,
                 """{"query":"x"}"""),
@@ -400,10 +392,7 @@ public sealed class WorkspaceToolsTests
     [Fact(Timeout = 10_000)]
     public async Task TextToolsRejectNonRegularFilesWithoutBlocking()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var workspace = TemporaryWorkspace.Create();
         var fifo = Path.Combine(workspace.Path, "input.fifo");
@@ -615,16 +604,20 @@ public sealed class WorkspaceToolsTests
         int maximumFiles = 10_000,
         int maximumDirectoryEntries = 10_000,
         int maximumFileBytes = 2 * 1_024 * 1_024,
-        long maximumSearchBytes = 64L * 1_024 * 1_024) =>
-        new(
+        long maximumSearchBytes = 64L * 1_024 * 1_024)
+    {
+        return new WorkspaceFunctions(
             Workspace.Create(root, root),
             maximumFiles,
             maximumDirectoryEntries,
             maximumFileBytes,
             maximumSearchBytes);
+    }
 
-    private static AIFunction Function(WorkspaceFunctions functions, string name) =>
-        functions.Functions.Single(function => function.Name == name);
+    private static AIFunction Function(WorkspaceFunctions functions, string name)
+    {
+        return functions.Functions.Single(function => function.Name == name);
+    }
 
     private static AIFunctionArguments Arguments(string json)
     {
@@ -651,8 +644,9 @@ public sealed class WorkspaceToolsTests
     private static ChatResponseUpdate ToolCallUpdate(
         string callId,
         string name,
-        params (string Name, object? Value)[] arguments) =>
-        new(
+        params (string Name, object? Value)[] arguments)
+    {
+        return new ChatResponseUpdate(
             ChatRole.Assistant,
             [
                 new FunctionCallContent(
@@ -660,6 +654,7 @@ public sealed class WorkspaceToolsTests
                     name,
                     arguments.ToDictionary(static argument => argument.Name, static argument => argument.Value))
             ]);
+    }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamUpdateAsync(ChatResponseUpdate update)
     {
@@ -667,8 +662,10 @@ public sealed class WorkspaceToolsTests
         yield return update;
     }
 
-    private static AgentToolException ShouldFailure(ToolInvocation invocation) =>
-        invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
+    private static AgentToolException ShouldFailure(ToolInvocation invocation)
+    {
+        return invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
+    }
 
     private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)
     {
@@ -677,8 +674,6 @@ public sealed class WorkspaceToolsTests
         return result.Deserialize(jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }
-
-    private sealed record ToolInvocation(object? Result, AgentToolException? Failure);
 
     private static void WriteWorkspaceConfiguration(string path, string root)
     {
@@ -694,6 +689,8 @@ public sealed class WorkspaceToolsTests
         }.ToJsonString());
     }
 
+    private sealed record ToolInvocation(object? Result, AgentToolException? Failure);
+
     private sealed class TemporaryWorkspace : IDisposable
     {
         private TemporaryWorkspace(string parentPath, string path)
@@ -706,6 +703,11 @@ public sealed class WorkspaceToolsTests
 
         internal string Path { get; }
 
+        public void Dispose()
+        {
+            Directory.Delete(ParentPath, true);
+        }
+
         internal static TemporaryWorkspace Create()
         {
             var parent = System.IO.Path.Combine(
@@ -714,11 +716,6 @@ public sealed class WorkspaceToolsTests
             var path = System.IO.Path.Combine(parent, "workspace");
             Directory.CreateDirectory(path);
             return new TemporaryWorkspace(parent, path);
-        }
-
-        public void Dispose()
-        {
-            Directory.Delete(ParentPath, recursive: true);
         }
     }
 
@@ -737,10 +734,7 @@ public sealed class WorkspaceToolsTests
 
         public void Dispose()
         {
-            foreach (var (name, value) in original)
-            {
-                Environment.SetEnvironmentVariable(name, value);
-            }
+            foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
         }
     }
 
@@ -758,8 +752,10 @@ public sealed class WorkspaceToolsTests
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromException<ChatResponse>(new NotSupportedException());
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -777,7 +773,10 @@ public sealed class WorkspaceToolsTests
             return response(request, cancellationToken);
         }
 
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            return null;
+        }
 
         public void Dispose()
         {

@@ -10,9 +10,7 @@ public readonly record struct AgentSessionId
     public AgentSessionId(Guid value)
     {
         if (value == Guid.Empty)
-        {
             throw new ArgumentException("Agent session identifiers cannot be empty.", nameof(value));
-        }
 
         Value = value;
     }
@@ -21,10 +19,16 @@ public readonly record struct AgentSessionId
     public Guid Value { get; }
 
     /// <summary>Creates a new identifier.</summary>
-    public static AgentSessionId Create() => new(Guid.NewGuid());
+    public static AgentSessionId Create()
+    {
+        return new AgentSessionId(Guid.NewGuid());
+    }
 
     /// <inheritdoc />
-    public override string ToString() => Value.ToString("N");
+    public override string ToString()
+    {
+        return Value.ToString("N");
+    }
 }
 
 /// <summary>Identifies one Agent run.</summary>
@@ -33,10 +37,7 @@ public readonly record struct AgentRunId
     /// <summary>Initializes a run identifier.</summary>
     public AgentRunId(Guid value)
     {
-        if (value == Guid.Empty)
-        {
-            throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(value));
-        }
+        if (value == Guid.Empty) throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(value));
 
         Value = value;
     }
@@ -45,10 +46,16 @@ public readonly record struct AgentRunId
     public Guid Value { get; }
 
     /// <summary>Creates a new identifier.</summary>
-    public static AgentRunId Create() => new(Guid.NewGuid());
+    public static AgentRunId Create()
+    {
+        return new AgentRunId(Guid.NewGuid());
+    }
 
     /// <inheritdoc />
-    public override string ToString() => Value.ToString("N");
+    public override string ToString()
+    {
+        return Value.ToString("N");
+    }
 }
 
 /// <summary>Identifies one transcript message.</summary>
@@ -58,9 +65,7 @@ public readonly record struct AgentMessageId
     public AgentMessageId(Guid value)
     {
         if (value == Guid.Empty)
-        {
             throw new ArgumentException("Agent message identifiers cannot be empty.", nameof(value));
-        }
 
         Value = value;
     }
@@ -69,10 +74,16 @@ public readonly record struct AgentMessageId
     public Guid Value { get; }
 
     /// <summary>Creates a new identifier.</summary>
-    public static AgentMessageId Create() => new(Guid.NewGuid());
+    public static AgentMessageId Create()
+    {
+        return new AgentMessageId(Guid.NewGuid());
+    }
 
     /// <inheritdoc />
-    public override string ToString() => Value.ToString("N");
+    public override string ToString()
+    {
+        return Value.ToString("N");
+    }
 }
 
 /// <summary>Identifies a configured model profile independently of any provider SDK.</summary>
@@ -85,11 +96,9 @@ public readonly record struct AgentModelProfileId
         if (value.Length > 64 || !IsAsciiLetterOrDigit(value[0]) ||
             value.AsSpan(1).ContainsAnyExcept(
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"))
-        {
             throw new ArgumentException(
                 "Agent model profile identifiers must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}.",
                 nameof(value));
-        }
 
         Value = value;
     }
@@ -98,10 +107,15 @@ public readonly record struct AgentModelProfileId
     public string Value { get; }
 
     /// <inheritdoc />
-    public override string ToString() => Value ?? string.Empty;
+    public override string ToString()
+    {
+        return Value ?? string.Empty;
+    }
 
-    private static bool IsAsciiLetterOrDigit(char value) =>
-        value is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9';
+    private static bool IsAsciiLetterOrDigit(char value)
+    {
+        return value is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9';
+    }
 }
 
 /// <summary>Identifies the configured provider and model used by an Agent run.</summary>
@@ -111,9 +125,7 @@ public sealed record AgentModelIdentity
     public AgentModelIdentity(AgentModelProfileId profileId, string provider, string model)
     {
         if (string.IsNullOrEmpty(profileId.Value))
-        {
             throw new ArgumentException("Agent model profile identifiers cannot be empty.", nameof(profileId));
-        }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(provider);
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
@@ -153,9 +165,7 @@ public sealed record AgentTurn
     public AgentTurn(ImmutableArray<AIContent> contents)
     {
         if (contents.IsDefault)
-        {
             throw new ArgumentException("Agent turn contents must be initialized.", nameof(contents));
-        }
 
         Contents = contents;
     }
@@ -164,7 +174,10 @@ public sealed record AgentTurn
     public ImmutableArray<AIContent> Contents { get; }
 
     /// <summary>Creates a text-only turn.</summary>
-    public static AgentTurn FromText(string text) => new([new TextContent(text)]);
+    public static AgentTurn FromText(string text)
+    {
+        return new AgentTurn([new TextContent(text)]);
+    }
 }
 
 /// <summary>Represents an immutable snapshot of committed conversation history.</summary>
@@ -177,15 +190,11 @@ public sealed record AgentTranscript
         ImmutableArray<AgentTranscriptTurn> turns)
     {
         if (sessionId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent session identifiers cannot be empty.", nameof(sessionId));
-        }
 
         ArgumentOutOfRangeException.ThrowIfNegative(version);
         if (turns.IsDefault)
-        {
             throw new ArgumentException("Transcript turns must be initialized and non-null.", nameof(turns));
-        }
 
         SessionId = sessionId;
         Version = version;
@@ -213,23 +222,17 @@ public sealed record AgentTranscriptTurn
         bool truncated = false)
     {
         if (runId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(runId));
-        }
 
         ArgumentNullException.ThrowIfNull(messages);
         if (messages.Count == 0)
-        {
             throw new ArgumentException("Transcript turn messages must be initialized and non-empty.",
                 nameof(messages));
-        }
 
         if (messages[0].Role != ChatRole.User || messages[^1].Role != ChatRole.Assistant)
-        {
             throw new ArgumentException(
                 "A transcript turn must begin with a user message and end with an assistant message.",
                 nameof(messages));
-        }
 
         RunId = runId;
         Messages = messages;
@@ -263,9 +266,7 @@ public sealed record AgentRunResult
         bool truncated = false)
     {
         if (runId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(runId));
-        }
 
         RunId = runId;
         UserMessage = userMessage ?? throw new ArgumentNullException(nameof(userMessage));
@@ -301,9 +302,7 @@ public abstract record AgentEvent
     protected AgentEvent(AgentRunId runId, long sequence)
     {
         if (runId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(runId));
-        }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(sequence, 1);
         RunId = runId;
@@ -328,9 +327,7 @@ public sealed record AgentTextDelta : AgentEvent
         string text) : base(runId, sequence)
     {
         if (messageId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent message identifiers cannot be empty.", nameof(messageId));
-        }
 
         MessageId = messageId;
         Text = text ?? throw new ArgumentNullException(nameof(text));
@@ -354,9 +351,7 @@ public sealed record AgentMessageCompleted : AgentEvent
         ChatMessage message) : base(runId, sequence)
     {
         if (agentMessageId.Value == Guid.Empty)
-        {
             throw new ArgumentException("Agent message identifiers cannot be empty.", nameof(agentMessageId));
-        }
 
         AgentMessageId = agentMessageId;
         Message = message ?? throw new ArgumentNullException(nameof(message));

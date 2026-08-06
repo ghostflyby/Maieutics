@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.Execution;
@@ -10,13 +11,60 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class ReplControlHostTests
 {
+    private const string DenoControlClientScript = """
+                                                   const socketPath = Deno.args[0];
+                                                   const client = Deno.createHttpClient({ proxy: { transport: "unix", path: socketPath } });
+
+                                                   async function waitForHealth() {
+                                                     for (let i = 0; i < 200; i++) {
+                                                       try {
+                                                         const res = await fetch("http://localhost/health", { client });
+                                                         if (res.ok && (await res.text()) === "ok") return;
+                                                       } catch {}
+                                                       await new Promise((resolve) => setTimeout(resolve, 100));
+                                                     }
+                                                     throw new Error("control channel health never became available");
+                                                   }
+
+                                                   await waitForHealth();
+
+                                                   const ws = new WebSocket("ws://localhost/ws", { client });
+                                                   const waiters = new Map();
+                                                   ws.onmessage = (event) => {
+                                                     const message = JSON.parse(String(event.data));
+                                                     const waiter = waiters.get(message.type);
+                                                     if (waiter !== undefined) {
+                                                       waiters.delete(message.type);
+                                                       waiter(message);
+                                                     }
+                                                   };
+                                                   function waitFor(type) {
+                                                     return new Promise((resolve, reject) => {
+                                                       const timer = setTimeout(() => reject(new Error(`timed out waiting for ${type}`)), 5000);
+                                                       waiters.set(type, (message) => { clearTimeout(timer); resolve(message); });
+                                                     });
+                                                   }
+                                                   await new Promise((resolve, reject) => {
+                                                     ws.onopen = () => resolve(undefined);
+                                                     ws.onerror = () => reject(new Error("websocket failed to open"));
+                                                   });
+                                                   ws.send(JSON.stringify({
+                                                     version: 1,
+                                                     type: "control.hello",
+                                                     payload: { sessionId: "test-session" },
+                                                   }));
+                                                   await waitFor("control.ready");
+                                                   ws.send(JSON.stringify({ version: 1, type: "control.ping", correlationId: "p1" }));
+                                                   await waitFor("control.pong");
+                                                   ws.close();
+                                                   client.close();
+                                                   console.log("deno control channel ok");
+                                                   """;
+
     [Fact(Timeout = 30_000)]
     public async Task HealthEndpointRespondsOverUnixSocket()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -33,10 +81,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task BusHandshakeBindsSessionAndPings()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -65,10 +110,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task BusValidatesCommOrderingAndRejectsUnknownTypes()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -112,10 +154,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ControlCancelCancelsInFlightToolCall()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -158,10 +197,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ToolProgressIsPushedOverTheBus()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -202,10 +238,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task LinuxRejectsPeerNotInRegistry()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        if (!OperatingSystem.IsLinux()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -221,10 +254,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task LinuxRegistryRebindChangesAcceptedPeer()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            return;
-        }
+        if (!OperatingSystem.IsLinux()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
@@ -245,10 +275,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task DisposeRemovesSocketFile()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var (application, host) = await ReplControlTestHost.StartAsync(
@@ -265,10 +292,7 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ToolInvokeEndpointRunsWorkspaceFunctions()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var root = Path.Combine(Path.GetTempPath(), $"mc-tools-{Guid.NewGuid():N}");
@@ -288,7 +312,7 @@ public sealed class ReplControlHostTests
                     host.SocketPath,
                     "list_directory",
                     "{}",
-                    correlationId: null,
+                    null,
                     timeout.Token);
                 success.Should().Contain("\"status\":\"ok\"");
                 success.Should().Contain("\"uri\"");
@@ -297,24 +321,21 @@ public sealed class ReplControlHostTests
                     host.SocketPath,
                     "repl_execute",
                     "{}",
-                    correlationId: null,
+                    null,
                     timeout.Token);
                 missing.Should().Contain("tool_not_found");
             }
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
     [Fact(Timeout = 90_000)]
     public async Task RealDenoClientTalksToControlChannelOverUnixSocket()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        if (OperatingSystem.IsWindows()) return;
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var registry = new ReplControlSessionRegistry();
@@ -341,7 +362,8 @@ public sealed class ReplControlHostTests
                 startInfo.ArgumentList.Add(scriptPath);
                 startInfo.ArgumentList.Add(host.SocketPath);
                 using var process = Process.Start(startInfo)
-                    ?? throw new InvalidOperationException("Could not start the deno control channel client.");
+                                    ?? throw new InvalidOperationException(
+                                        "Could not start the deno control channel client.");
                 registry.Register(process.Id, "test-session");
 
                 await process.WaitForExitAsync(timeout.Token);
@@ -353,56 +375,6 @@ public sealed class ReplControlHostTests
             }
         }
     }
-
-    private const string DenoControlClientScript = """
-        const socketPath = Deno.args[0];
-        const client = Deno.createHttpClient({ proxy: { transport: "unix", path: socketPath } });
-
-        async function waitForHealth() {
-          for (let i = 0; i < 200; i++) {
-            try {
-              const res = await fetch("http://localhost/health", { client });
-              if (res.ok && (await res.text()) === "ok") return;
-            } catch {}
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          }
-          throw new Error("control channel health never became available");
-        }
-
-        await waitForHealth();
-
-        const ws = new WebSocket("ws://localhost/ws", { client });
-        const waiters = new Map();
-        ws.onmessage = (event) => {
-          const message = JSON.parse(String(event.data));
-          const waiter = waiters.get(message.type);
-          if (waiter !== undefined) {
-            waiters.delete(message.type);
-            waiter(message);
-          }
-        };
-        function waitFor(type) {
-          return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error(`timed out waiting for ${type}`)), 5000);
-            waiters.set(type, (message) => { clearTimeout(timer); resolve(message); });
-          });
-        }
-        await new Promise((resolve, reject) => {
-          ws.onopen = () => resolve(undefined);
-          ws.onerror = () => reject(new Error("websocket failed to open"));
-        });
-        ws.send(JSON.stringify({
-          version: 1,
-          type: "control.hello",
-          payload: { sessionId: "test-session" },
-        }));
-        await waitFor("control.ready");
-        ws.send(JSON.stringify({ version: 1, type: "control.ping", correlationId: "p1" }));
-        await waitFor("control.pong");
-        ws.close();
-        client.close();
-        console.log("deno control channel ok");
-        """;
 
     private static async Task<string> SendHttpRequestAsync(string socketPath, string requestLine, CancellationToken ct)
     {
@@ -429,7 +401,7 @@ public sealed class ReplControlHostTests
             "{\"version\":1,\"tool\":\"" + tool + "\",\"arguments\":" + argumentsJson +
             correlation + ",\"sessionId\":\"test-session\"}";
         var request =
-            $"POST /v1/tool.invoke HTTP/1.1\r\n" +
+            "POST /v1/tool.invoke HTTP/1.1\r\n" +
             "Host: localhost\r\n" +
             "Content-Type: application/json\r\n" +
             $"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n" +
@@ -471,17 +443,20 @@ public sealed class ReplControlHostTests
         return Encoding.UTF8.GetString(payload);
     }
 
-    private static AIFunction CreateBlockingFunction() =>
-        AIFunctionFactory.Create(
+    private static AIFunction CreateBlockingFunction()
+    {
+        return AIFunctionFactory.Create(
             (CancellationToken ct) => WaitForCancellationAsync(ct),
             new AIFunctionFactoryOptions
             {
                 Name = "blocking_test",
                 Description = "Blocks until cancelled."
             });
+    }
 
-    private static AIFunction CreateProgressFunction() =>
-        AIFunctionFactory.Create(
+    private static AIFunction CreateProgressFunction()
+    {
+        return AIFunctionFactory.Create(
             (AIFunctionArguments arguments, CancellationToken ct) =>
                 ReportProgressAsync(arguments, ct),
             new AIFunctionFactoryOptions
@@ -489,6 +464,7 @@ public sealed class ReplControlHostTests
                 Name = "progress_test",
                 Description = "Reports progress then returns."
             });
+    }
 
     private static async Task<object?> ReportProgressAsync(
         AIFunctionArguments arguments,
@@ -497,22 +473,19 @@ public sealed class ReplControlHostTests
         if (arguments.Context is { } map &&
             map.TryGetValue(typeof(ReplToolProgress), out var raw) &&
             raw is ReplToolProgress progress)
-        {
             await progress.ReportAsync(
-                new ToolProgressPayload(Progress: 50, Total: 100, Stage: "building"),
+                new ToolProgressPayload(50, 100, "building"),
                 ct);
-        }
 
-        return System.Text.Json.JsonSerializer.SerializeToElement(new { done = true });
+        return JsonSerializer.SerializeToElement(new { done = true });
     }
 
     private static async Task<object?> WaitForCancellationAsync(CancellationToken ct)
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var registration = ct.Register(
-            () => completion.TrySetResult());
+        await using var registration = ct.Register(() => completion.TrySetResult());
         await completion.Task.WaitAsync(ct);
-        return System.Text.Json.JsonSerializer.SerializeToElement(new { cancelled = true });
+        return JsonSerializer.SerializeToElement(new { cancelled = true });
     }
 
     private static async Task<string> ReadUntilEndAsync(Socket socket, CancellationToken ct)
@@ -522,10 +495,7 @@ public sealed class ReplControlHostTests
         while (true)
         {
             var read = await socket.ReceiveAsync(buffer.AsMemory(), SocketFlags.None, ct);
-            if (read == 0)
-            {
-                return builder.ToString();
-            }
+            if (read == 0) return builder.ToString();
 
             builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
         }
@@ -538,10 +508,7 @@ public sealed class ReplControlHostTests
         while (!builder.ToString().Contains("\r\n\r\n", StringComparison.Ordinal))
         {
             var read = await socket.ReceiveAsync(buffer.AsMemory(), SocketFlags.None, ct);
-            if (read == 0)
-            {
-                return builder.ToString();
-            }
+            if (read == 0) return builder.ToString();
 
             builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
         }
@@ -552,9 +519,7 @@ public sealed class ReplControlHostTests
     private static byte[] BuildClientFrame(byte[] payload, int opcode)
     {
         if (payload.Length >= 126)
-        {
             throw new ArgumentOutOfRangeException(nameof(payload), "Test frames must be shorter than 126 bytes.");
-        }
 
         var mask = new byte[4];
         Random.Shared.NextBytes(mask);
@@ -562,10 +527,7 @@ public sealed class ReplControlHostTests
         stream.WriteByte((byte)(0x80 | opcode));
         stream.WriteByte((byte)(0x80 | payload.Length));
         stream.Write(mask);
-        for (var i = 0; i < payload.Length; i++)
-        {
-            stream.WriteByte((byte)(payload[i] ^ mask[i % 4]));
-        }
+        for (var i = 0; i < payload.Length; i++) stream.WriteByte((byte)(payload[i] ^ mask[i % 4]));
 
         return stream.ToArray();
     }
@@ -595,10 +557,7 @@ public sealed class ReplControlHostTests
         while (offset < count)
         {
             var read = await socket.ReceiveAsync(result.AsMemory(offset, count - offset), SocketFlags.None, ct);
-            if (read == 0)
-            {
-                throw new EndOfStreamException("The control channel closed the connection.");
-            }
+            if (read == 0) throw new EndOfStreamException("The control channel closed the connection.");
 
             offset += read;
         }

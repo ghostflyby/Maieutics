@@ -12,42 +12,6 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
     private readonly Lock gate = new();
     private readonly Dictionary<AgentSessionId, RunState> runs = [];
 
-    internal JupyterDenoReplPresentationScope Attach(
-        AgentSessionId sessionId,
-        JupyterExecutionContext context)
-    {
-        var state = new RunState(new JupyterDenoReplPresentationSink(context));
-        lock (gate)
-        {
-            if (!runs.TryAdd(sessionId, state))
-            {
-                throw new InvalidOperationException(
-                    "A Notebook presentation sink is already attached to this Agent session.");
-            }
-        }
-
-        return new JupyterDenoReplPresentationScope(this, sessionId, state);
-    }
-
-    internal void OpenCall(AgentSessionId sessionId, AgentToolCallId callId)
-    {
-        TaskCompletionSource<IDenoReplPresentationSink>? waiter;
-        IDenoReplPresentationSink? sink;
-        lock (gate)
-        {
-            if (!runs.TryGetValue(sessionId, out var state))
-            {
-                return;
-            }
-
-            state.OpenedCalls.Add(callId);
-            state.Waiters.Remove(callId, out waiter);
-            sink = state.Sink;
-        }
-
-        waiter?.TrySetResult(sink);
-    }
-
     public async ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
         AgentSessionId sessionId,
         AgentToolCallId callId,
@@ -56,15 +20,9 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
         Task<IDenoReplPresentationSink> task;
         lock (gate)
         {
-            if (!runs.TryGetValue(sessionId, out var state))
-            {
-                throw PresentationUnavailable();
-            }
+            if (!runs.TryGetValue(sessionId, out var state)) throw PresentationUnavailable();
 
-            if (state.OpenedCalls.Contains(callId))
-            {
-                return state.Sink;
-            }
+            if (state.OpenedCalls.Contains(callId)) return state.Sink;
 
             if (!state.Waiters.TryGetValue(callId, out var waiter))
             {
@@ -96,15 +54,43 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
         return false;
     }
 
+    internal JupyterDenoReplPresentationScope Attach(
+        AgentSessionId sessionId,
+        JupyterExecutionContext context)
+    {
+        var state = new RunState(new JupyterDenoReplPresentationSink(context));
+        lock (gate)
+        {
+            if (!runs.TryAdd(sessionId, state))
+                throw new InvalidOperationException(
+                    "A Notebook presentation sink is already attached to this Agent session.");
+        }
+
+        return new JupyterDenoReplPresentationScope(this, sessionId, state);
+    }
+
+    internal void OpenCall(AgentSessionId sessionId, AgentToolCallId callId)
+    {
+        TaskCompletionSource<IDenoReplPresentationSink>? waiter;
+        IDenoReplPresentationSink? sink;
+        lock (gate)
+        {
+            if (!runs.TryGetValue(sessionId, out var state)) return;
+
+            state.OpenedCalls.Add(callId);
+            state.Waiters.Remove(callId, out waiter);
+            sink = state.Sink;
+        }
+
+        waiter?.TrySetResult(sink);
+    }
+
     private async ValueTask DetachAsync(AgentSessionId sessionId, RunState expected)
     {
         TaskCompletionSource<IDenoReplPresentationSink>[] waiters;
         lock (gate)
         {
-            if (!runs.TryGetValue(sessionId, out var current) || !ReferenceEquals(current, expected))
-            {
-                return;
-            }
+            if (!runs.TryGetValue(sessionId, out var current) || !ReferenceEquals(current, expected)) return;
 
             runs.Remove(sessionId);
             waiters = current.Waiters.Values.ToArray();
@@ -112,17 +98,17 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
             current.OpenedCalls.Clear();
         }
 
-        foreach (var waiter in waiters)
-        {
-            waiter.TrySetException(PresentationUnavailable());
-        }
+        foreach (var waiter in waiters) waiter.TrySetException(PresentationUnavailable());
 
         await expected.Sink.DeactivateAsync().ConfigureAwait(false);
     }
 
-    private static AgentToolException PresentationUnavailable() => new(
-        "repl_presentation_unavailable",
-        "The active Agent run does not have a Notebook presentation sink.");
+    private static AgentToolException PresentationUnavailable()
+    {
+        return new AgentToolException(
+            "repl_presentation_unavailable",
+            "The active Agent run does not have a Notebook presentation sink.");
+    }
 
     internal sealed class RunState(JupyterDenoReplPresentationSink sink)
     {
@@ -142,10 +128,12 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
 
         internal IDenoReplPresentationSink Sink => state.Sink;
 
-        public ValueTask DisposeAsync() =>
-            Interlocked.Exchange(ref disposeState, 1) == 0
+        public ValueTask DisposeAsync()
+        {
+            return Interlocked.Exchange(ref disposeState, 1) == 0
                 ? owner.DetachAsync(sessionId, state)
                 : ValueTask.CompletedTask;
+        }
     }
 }
 
@@ -159,50 +147,61 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
     public ValueTask DisplayAsync(
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
-        CancellationToken cancellationToken) =>
-        SerializeAsync(token => context.DisplayAsync(data, metadata, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        return SerializeAsync(token => context.DisplayAsync(data, metadata, token), cancellationToken);
+    }
 
     public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
         MimeBundle data,
         JupyterDisplayId displayId,
         IReadOnlyDictionary<string, JsonElement> metadata,
-        CancellationToken cancellationToken) =>
-        SerializeAsync(
+        CancellationToken cancellationToken)
+    {
+        return SerializeAsync(
             token => context.DisplayTrackedAsync(data, displayId, metadata, token),
             cancellationToken);
+    }
 
     public ValueTask UpdateDisplayAsync(
         JupyterDisplayId displayId,
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
-        CancellationToken cancellationToken) =>
-        SerializeAsync(token => context.UpdateDisplayAsync(displayId, data, metadata, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        return SerializeAsync(token => context.UpdateDisplayAsync(displayId, data, metadata, token), cancellationToken);
+    }
 
-    public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken) =>
-        SerializeAsync(token => context.ClearOutputAsync(wait, token), cancellationToken);
+    public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
+    {
+        return SerializeAsync(token => context.ClearOutputAsync(wait, token), cancellationToken);
+    }
 
-    public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken) =>
-        SerializeAsync(token => context.WriteStderrAsync(text, token), cancellationToken);
+    public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
+    {
+        return SerializeAsync(token => context.WriteStderrAsync(text, token), cancellationToken);
+    }
 
     public ValueTask PublishErrorAsync(
         string name,
         string value,
         IReadOnlyList<string> traceback,
-        CancellationToken cancellationToken) =>
-        SerializeAsync(token => context.PublishErrorAsync(name, value, traceback, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        return SerializeAsync(token => context.PublishErrorAsync(name, value, traceback, token), cancellationToken);
+    }
 
     public Task<string> RequestInputAsync(
         string prompt,
         bool password,
-        CancellationToken cancellationToken) =>
-        SerializeTaskAsync(token => context.RequestInputAsync(prompt, password, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        return SerializeTaskAsync(token => context.RequestInputAsync(prompt, password, token), cancellationToken);
+    }
 
     internal async ValueTask DeactivateAsync()
     {
-        if (Interlocked.Exchange(ref active, 0) == 0)
-        {
-            return;
-        }
+        if (Interlocked.Exchange(ref active, 0) == 0) return;
 
         await gate.WaitAsync().ConfigureAwait(false);
         gate.Release();
@@ -215,10 +214,7 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (IsActive)
-            {
-                await operation(cancellationToken).ConfigureAwait(false);
-            }
+            if (IsActive) await operation(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -233,10 +229,7 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!IsActive)
-            {
-                throw new OperationCanceledException("The Notebook presentation sink is no longer active.");
-            }
+            if (!IsActive) throw new OperationCanceledException("The Notebook presentation sink is no longer active.");
 
             return await operation(cancellationToken).ConfigureAwait(false);
         }
@@ -253,10 +246,7 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!IsActive)
-            {
-                throw new OperationCanceledException("The Notebook presentation sink is no longer active.");
-            }
+            if (!IsActive) throw new OperationCanceledException("The Notebook presentation sink is no longer active.");
 
             return await operation(cancellationToken).ConfigureAwait(false);
         }

@@ -84,7 +84,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -108,7 +108,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -147,7 +147,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -206,7 +206,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -256,7 +256,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -314,7 +314,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -359,7 +359,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -417,7 +417,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -428,10 +428,10 @@ public sealed class MaieuticsConfigurationTests
         Directory.CreateDirectory(root);
         var configurationFile = Path.Combine(root, "maieutics.json");
         File.WriteAllText(configurationFile, CreateConfiguration(
-            connectionFile: Path.Combine(root, "connection.json"),
-            provider: "OpenAI",
-            model: "json-model",
-            apiFlavor: OpenAiApiFlavor.Responses));
+            Path.Combine(root, "connection.json"),
+            "OpenAI",
+            "json-model",
+            OpenAiApiFlavor.Responses));
 
         using var environment = new EnvironmentVariableScope(new Dictionary<string, string?>
         {
@@ -456,7 +456,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -506,7 +506,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -596,7 +596,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -634,7 +634,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -670,7 +670,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -706,14 +706,15 @@ public sealed class MaieuticsConfigurationTests
                 await host.DisposeAsync();
             }
 
-            FluentActions.Invoking(() => new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate())
+            FluentActions.Invoking(() =>
+                    new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate())
                 .Should().Throw<ArgumentOutOfRangeException>();
             FluentActions.Invoking(() => new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.Zero }.Validate())
                 .Should().NotThrow();
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -808,7 +809,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -916,7 +917,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1020,7 +1021,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1063,7 +1064,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1141,7 +1142,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
 
         void AssertRejected(JsonObject servers, string expectedMessage)
@@ -1205,7 +1206,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.StopAsync(deadline.Token);
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1252,20 +1253,11 @@ public sealed class MaieuticsConfigurationTests
         {
             ["MaxInputCharacters"] = maxInputCharacters
         };
-        if (maxTurnDuration is not null)
-        {
-            agent["MaxTurnDuration"] = maxTurnDuration;
-        }
+        if (maxTurnDuration is not null) agent["MaxTurnDuration"] = maxTurnDuration;
 
-        if (maxHistoryBytes.HasValue)
-        {
-            agent["MaxHistoryBytes"] = maxHistoryBytes.Value;
-        }
+        if (maxHistoryBytes.HasValue) agent["MaxHistoryBytes"] = maxHistoryBytes.Value;
 
-        if (maxHistoryCharacters.HasValue)
-        {
-            agent["MaxHistoryCharacters"] = maxHistoryCharacters.Value;
-        }
+        if (maxHistoryCharacters.HasValue) agent["MaxHistoryCharacters"] = maxHistoryCharacters.Value;
 
         var root = new JsonObject
         {
@@ -1296,40 +1288,53 @@ public sealed class MaieuticsConfigurationTests
         return root.ToJsonString();
     }
 
-    private static string CreateMcpFile(JsonObject servers) =>
-        new JsonObject
+    private static string CreateMcpFile(JsonObject servers)
+    {
+        return new JsonObject
         {
             ["mcpServers"] = servers
         }.ToJsonString();
+    }
 
-    private static string CreateMcpHostConfigurationBase(string connectionFile) =>
-        new JsonObject
+    private static string CreateMcpHostConfigurationBase(string connectionFile)
+    {
+        return new JsonObject
         {
             ["Maieutics"] = new JsonObject
             {
                 ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
             }
         }.ToJsonString();
+    }
 
-    private static JsonObject StdioMcpServer() => new()
+    private static JsonObject StdioMcpServer()
     {
-        ["command"] = "/usr/bin/false",
-        ["args"] = new JsonArray(),
-        ["env"] = new JsonObject()
-    };
+        return new JsonObject
+        {
+            ["command"] = "/usr/bin/false",
+            ["args"] = new JsonArray(),
+            ["env"] = new JsonObject()
+        };
+    }
 
-    private static JsonObject HttpMcpServer(string url) => new()
+    private static JsonObject HttpMcpServer(string url)
     {
-        ["type"] = "http",
-        ["url"] = url,
-        ["headers"] = new JsonObject()
-    };
+        return new JsonObject
+        {
+            ["type"] = "http",
+            ["url"] = url,
+            ["headers"] = new JsonObject()
+        };
+    }
 
-    private static JsonObject SseMcpServer(string url) => new()
+    private static JsonObject SseMcpServer(string url)
     {
-        ["type"] = "sse",
-        ["url"] = url
-    };
+        return new JsonObject
+        {
+            ["type"] = "sse",
+            ["url"] = url
+        };
+    }
 
     private static string CreateNamedConfiguration(
         string connectionFile,
@@ -1373,13 +1378,11 @@ public sealed class MaieuticsConfigurationTests
     {
         var sourceNodes = new JsonObject();
         foreach (var source in sources)
-        {
             sourceNodes[source.Id] = new JsonObject
             {
                 ["Provider"] = "Fake",
                 ["Revision"] = source.Revision
             };
-        }
 
         return new JsonObject
         {
@@ -1402,9 +1405,7 @@ public sealed class MaieuticsConfigurationTests
             ["Source:ApiKey"] = apiKey
         };
         if (string.Equals(providerName, "OpenAI", StringComparison.Ordinal))
-        {
             values["Source:ApiFlavor"] = nameof(OpenAiApiFlavor.Responses);
-        }
 
         return new ConfigurationBuilder()
             .AddInMemoryCollection(values)
@@ -1412,136 +1413,36 @@ public sealed class MaieuticsConfigurationTests
             .GetSection("Source");
     }
 
-    private static Dictionary<string, string?> ClearedProviderEnvironment() => new()
+    private static Dictionary<string, string?> ClearedProviderEnvironment()
     {
-        ["MAIEUTICS_CONFIG"] = null,
-        ["MAIEUTICS_PROFILE"] = null,
-        ["MAIEUTICS_PROVIDER"] = null,
-        ["MAIEUTICS_MODEL"] = null,
-        ["MAIEUTICS_OPENAI_API"] = null,
-        ["MAIEUTICS_WORKSPACE"] = null,
-        ["OPENAI_API_KEY"] = null,
-        ["OPENAI_BASE_URL"] = null,
-        ["ANTHROPIC_API_KEY"] = null,
-        ["ANTHROPIC_BASE_URL"] = null,
-        ["Maieutics__DefaultProfile"] = null,
-        ["Maieutics__Sources__openai__ApiFlavor"] = null,
-        ["Maieutics__Sources__openai__ApiKey"] = null,
-        ["Maieutics__Sources__openai__Endpoint"] = null,
-        ["Maieutics__Sources__anthropic__ApiKey"] = null,
-        ["Maieutics__Sources__anthropic__Endpoint"] = null,
-        ["Maieutics__Model__Provider"] = null,
-        ["Maieutics__Model__Name"] = null,
-        ["Maieutics__Workspace__Root"] = null,
-        ["Maieutics__Agent__MaxHistoryBytes"] = null,
-        ["Maieutics__Agent__MaxHistoryCharacters"] = null,
-        ["Maieutics__Providers__OpenAI__ApiFlavor"] = null,
-        ["Maieutics__Providers__OpenAI__ApiKey"] = null,
-        ["Maieutics__Providers__OpenAI__Endpoint"] = null
-    };
-
-    private sealed class TrackingChatClientFactory : IConfiguredChatClientFactory
-    {
-        public string ProviderName => "Fake";
-
-        public List<TrackingChatClient> Clients { get; } = [];
-
-        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
-            new TrackingSource(this, sourceId, configuration["Revision"] ?? sourceId);
-
-        private IChatClient Create(string model)
+        return new Dictionary<string, string?>
         {
-            if (model == "fail")
-            {
-                throw new InvalidOperationException("Configured provider creation failure.");
-            }
-
-            var client = new TrackingChatClient(model);
-            Clients.Add(client);
-            return client;
-        }
-
-        private sealed class TrackingSource(
-            TrackingChatClientFactory factory,
-            string sourceId,
-            string revision) : IConfiguredChatClientSource
-        {
-            public string ProviderName => "Fake";
-
-            public object ClientGenerationKey => (sourceId, revision);
-
-            public AgentModelCapabilities Capabilities =>
-                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
-
-            public IChatClient Create(string model) => factory.Create(model);
-        }
+            ["MAIEUTICS_CONFIG"] = null,
+            ["MAIEUTICS_PROFILE"] = null,
+            ["MAIEUTICS_PROVIDER"] = null,
+            ["MAIEUTICS_MODEL"] = null,
+            ["MAIEUTICS_OPENAI_API"] = null,
+            ["MAIEUTICS_WORKSPACE"] = null,
+            ["OPENAI_API_KEY"] = null,
+            ["OPENAI_BASE_URL"] = null,
+            ["ANTHROPIC_API_KEY"] = null,
+            ["ANTHROPIC_BASE_URL"] = null,
+            ["Maieutics__DefaultProfile"] = null,
+            ["Maieutics__Sources__openai__ApiFlavor"] = null,
+            ["Maieutics__Sources__openai__ApiKey"] = null,
+            ["Maieutics__Sources__openai__Endpoint"] = null,
+            ["Maieutics__Sources__anthropic__ApiKey"] = null,
+            ["Maieutics__Sources__anthropic__Endpoint"] = null,
+            ["Maieutics__Model__Provider"] = null,
+            ["Maieutics__Model__Name"] = null,
+            ["Maieutics__Workspace__Root"] = null,
+            ["Maieutics__Agent__MaxHistoryBytes"] = null,
+            ["Maieutics__Agent__MaxHistoryCharacters"] = null,
+            ["Maieutics__Providers__OpenAI__ApiFlavor"] = null,
+            ["Maieutics__Providers__OpenAI__ApiKey"] = null,
+            ["Maieutics__Providers__OpenAI__Endpoint"] = null
+        };
     }
-
-    private sealed class BlockingChatClientFactory : IConfiguredChatClientFactory
-    {
-        public string ProviderName => "Fake";
-
-        public TaskCompletionSource CreateStarted { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public TaskCompletionSource ReleaseCreation { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
-            new BlockingSource(this, sourceId);
-
-        private IChatClient Create(string model)
-        {
-            if (model == "one")
-            {
-                CreateStarted.TrySetResult();
-                ReleaseCreation.Task.GetAwaiter().GetResult();
-            }
-
-            return new TrackingChatClient(model);
-        }
-
-        private sealed class BlockingSource(
-            BlockingChatClientFactory factory,
-            string sourceId) : IConfiguredChatClientSource
-        {
-            public string ProviderName => "Fake";
-
-            public object ClientGenerationKey => sourceId;
-
-            public AgentModelCapabilities Capabilities =>
-                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
-
-            public IChatClient Create(string model) => factory.Create(model);
-        }
-    }
-
-    private sealed class TrackingChatClient(string model) : IChatClient
-    {
-        public string Model { get; } = model;
-
-        public bool Disposed { get; private set; }
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromException<ChatResponse>(new NotSupportedException());
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose() => Disposed = true;
-    }
-
-    private sealed record NamedProfile(string Id, string SourceId, string Model, string SourceRevision);
-
-    private sealed record NamedSource(string Id, string Revision);
 
     [Fact]
     public async Task GetDiscoveredModelsReturnsModelsFromDiscoveryEnabledSources()
@@ -1586,7 +1487,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1633,7 +1534,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1670,7 +1571,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
@@ -1711,20 +1612,140 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, recursive: true);
+            Directory.Delete(root, true);
         }
     }
 
-    private sealed class DiscoveryChatClientFactory : IConfiguredChatClientFactory
+    private sealed class TrackingChatClientFactory : IConfiguredChatClientFactory
     {
+        public List<TrackingChatClient> Clients { get; } = [];
         public string ProviderName => "Fake";
 
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
+        {
+            return new TrackingSource(this, sourceId, configuration["Revision"] ?? sourceId);
+        }
+
+        private IChatClient Create(string model)
+        {
+            if (model == "fail") throw new InvalidOperationException("Configured provider creation failure.");
+
+            var client = new TrackingChatClient(model);
+            Clients.Add(client);
+            return client;
+        }
+
+        private sealed class TrackingSource(
+            TrackingChatClientFactory factory,
+            string sourceId,
+            string revision) : IConfiguredChatClientSource
+        {
+            public string ProviderName => "Fake";
+
+            public object ClientGenerationKey => (sourceId, revision);
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public IChatClient Create(string model)
+            {
+                return factory.Create(model);
+            }
+        }
+    }
+
+    private sealed class BlockingChatClientFactory : IConfiguredChatClientFactory
+    {
+        public TaskCompletionSource CreateStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseCreation { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string ProviderName => "Fake";
+
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
+        {
+            return new BlockingSource(this, sourceId);
+        }
+
+        private IChatClient Create(string model)
+        {
+            if (model == "one")
+            {
+                CreateStarted.TrySetResult();
+                ReleaseCreation.Task.GetAwaiter().GetResult();
+            }
+
+            return new TrackingChatClient(model);
+        }
+
+        private sealed class BlockingSource(
+            BlockingChatClientFactory factory,
+            string sourceId) : IConfiguredChatClientSource
+        {
+            public string ProviderName => "Fake";
+
+            public object ClientGenerationKey => sourceId;
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public IChatClient Create(string model)
+            {
+                return factory.Create(model);
+            }
+        }
+    }
+
+    private sealed class TrackingChatClient(string model) : IChatClient
+    {
+        public string Model { get; } = model;
+
+        public bool Disposed { get; private set; }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            return null;
+        }
+
+        public void Dispose()
+        {
+            Disposed = true;
+        }
+    }
+
+    private sealed record NamedProfile(string Id, string SourceId, string Model, string SourceRevision);
+
+    private sealed record NamedSource(string Id, string Revision);
+
+    private sealed class DiscoveryChatClientFactory : IConfiguredChatClientFactory
+    {
         public int DiscoveryCount { get; private set; }
 
         public List<TrackingChatClient> Clients { get; } = [];
+        public string ProviderName => "Fake";
 
-        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
-            new DiscoverySource(this, sourceId, configuration["Revision"] ?? sourceId);
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
+        {
+            return new DiscoverySource(this, sourceId, configuration["Revision"] ?? sourceId);
+        }
 
         private sealed class DiscoverySource(
             DiscoveryChatClientFactory factory,
@@ -1761,8 +1782,10 @@ public sealed class MaieuticsConfigurationTests
     {
         public string ProviderName => "Fake";
 
-        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
-            new FailingSource(sourceId);
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
+        {
+            return new FailingSource(sourceId);
+        }
 
         private sealed class FailingSource(
             string sourceId) : IConfiguredChatClientSource, IModelDiscoverySource
@@ -1774,12 +1797,16 @@ public sealed class MaieuticsConfigurationTests
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
-            public IChatClient Create(string model) =>
-                new TrackingChatClient(model);
+            public IChatClient Create(string model)
+            {
+                return new TrackingChatClient(model);
+            }
 
             public ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(
-                CancellationToken cancellationToken = default) =>
+                CancellationToken cancellationToken = default)
+            {
                 throw new InvalidOperationException("simulated discovery failure");
+            }
         }
     }
 
@@ -1798,28 +1825,27 @@ public sealed class MaieuticsConfigurationTests
 
         public void Dispose()
         {
-            foreach (var (name, value) in original)
-            {
-                Environment.SetEnvironmentVariable(name, value);
-            }
+            foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
         }
     }
 
     private sealed class CoordinatedDiscoveryChatClientFactory : IConfiguredChatClientFactory
     {
-        public string ProviderName => "Fake";
-
         public TaskCompletionSource FirstDiscoveryStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource ReleaseFirstDiscovery { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration) =>
-            new CoordinatedDiscoverySource(
+        public string ProviderName => "Fake";
+
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
+        {
+            return new CoordinatedDiscoverySource(
                 this,
                 sourceId,
                 configuration["Revision"] ?? throw new InvalidOperationException("A revision is required."));
+        }
 
         private async ValueTask<IReadOnlyList<AgentModelDescriptor>> DiscoverAsync(
             string revision,
@@ -1846,11 +1872,16 @@ public sealed class MaieuticsConfigurationTests
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
-            public IChatClient Create(string model) => new TrackingChatClient(model);
+            public IChatClient Create(string model)
+            {
+                return new TrackingChatClient(model);
+            }
 
             public ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(
-                CancellationToken cancellationToken = default) =>
-                factory.DiscoverAsync(revision, cancellationToken);
+                CancellationToken cancellationToken = default)
+            {
+                return factory.DiscoverAsync(revision, cancellationToken);
+            }
         }
     }
 }

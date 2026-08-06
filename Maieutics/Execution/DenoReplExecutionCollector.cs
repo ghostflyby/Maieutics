@@ -8,9 +8,9 @@ namespace Maieutics.Execution;
 internal sealed class DenoReplExecutionCollector
 {
     private const int ModelItemOverheadBytes = 64;
-    private readonly Func<JupyterDisplayId, JupyterDisplayId> getOrCreateDisplayId;
-    private readonly Func<JupyterDisplayId, JupyterDisplayId?> getDisplayId;
     private readonly int generation;
+    private readonly Func<JupyterDisplayId, JupyterDisplayId?> getDisplayId;
+    private readonly Func<JupyterDisplayId, JupyterDisplayId> getOrCreateDisplayId;
     private readonly DenoReplOptions options;
     private readonly List<DenoReplOutputItem> outputs = [];
     private readonly IDenoReplPresentationSink presentation;
@@ -47,19 +47,15 @@ internal sealed class DenoReplExecutionCollector
         CancellationToken inputCancellationToken)
     {
         await foreach (var output in execution.Outputs.ConfigureAwait(false).WithCancellation(inputCancellationToken))
-        {
             await ObserveAsync(execution, output, inputCancellationToken).ConfigureAwait(false);
-        }
 
         var completion = await execution.Completion.ConfigureAwait(false);
         if (string.Equals(completion.Reply.Status, "error", StringComparison.Ordinal) &&
             outputs.All(static output => output.Kind != "error"))
-        {
             AddError(
                 completion.Reply.ErrorName ?? "DenoExecutionError",
                 completion.Reply.ErrorValue ?? "Deno execution failed.",
                 completion.Reply.Traceback ?? []);
-        }
 
         return new DenoReplExecutionResult(
             sessionId,
@@ -133,10 +129,7 @@ internal sealed class DenoReplExecutionCollector
         JupyterDisplayOutput display,
         CancellationToken cancellationToken)
     {
-        if (!CanPresentBundle(display.Data, display.Metadata))
-        {
-            return;
-        }
+        if (!CanPresentBundle(display.Data, display.Metadata)) return;
 
         if (display.DisplayId is { } innerDisplayId)
         {
@@ -159,10 +152,7 @@ internal sealed class DenoReplExecutionCollector
         JupyterDisplayUpdateOutput update,
         CancellationToken cancellationToken)
     {
-        if (!CanPresentBundle(update.Data, update.Metadata))
-        {
-            return;
-        }
+        if (!CanPresentBundle(update.Data, update.Metadata)) return;
 
         var displayId = getDisplayId(update.DisplayId);
         if (displayId is null)
@@ -181,10 +171,7 @@ internal sealed class DenoReplExecutionCollector
 
     private async ValueTask PresentStderrAsync(string text, CancellationToken cancellationToken)
     {
-        if (!TryReservePresentationEvent())
-        {
-            return;
-        }
+        if (!TryReservePresentationEvent()) return;
 
         var available = options.MaxPresentationTextBytes - presentationTextBytes;
         if (available <= 0)
@@ -196,10 +183,7 @@ internal sealed class DenoReplExecutionCollector
         var fullBytes = Encoding.UTF8.GetByteCount(text);
         var selected = fullBytes <= available ? text : TruncateUtf8(text, available, out _);
         presentationTextBytes += Encoding.UTF8.GetByteCount(selected);
-        if (selected.Length > 0)
-        {
-            await presentation.WriteStderrAsync(selected, cancellationToken).ConfigureAwait(false);
-        }
+        if (selected.Length > 0) await presentation.WriteStderrAsync(selected, cancellationToken).ConfigureAwait(false);
 
         if (fullBytes > available && !presentationTextTruncated)
         {
@@ -212,10 +196,7 @@ internal sealed class DenoReplExecutionCollector
         JupyterExecutionError error,
         CancellationToken cancellationToken)
     {
-        if (!TryReservePresentationEvent())
-        {
-            return;
-        }
+        if (!TryReservePresentationEvent()) return;
 
         var available = options.MaxPresentationTextBytes - presentationTextBytes;
         if (available <= 0)
@@ -233,10 +214,7 @@ internal sealed class DenoReplExecutionCollector
         {
             var lineBytes = Encoding.UTF8.GetByteCount(line);
             fullTracebackBytes = checked(fullTracebackBytes + lineBytes);
-            if (available <= 0)
-            {
-                continue;
-            }
+            if (available <= 0) continue;
 
             var selected = lineBytes <= available
                 ? line
@@ -248,9 +226,7 @@ internal sealed class DenoReplExecutionCollector
 
         presentationTextBytes += valueBytes + selectedTracebackBytes;
         if (valueBytes < Encoding.UTF8.GetByteCount(error.Value) || selectedTracebackBytes < fullTracebackBytes)
-        {
             skippedCount++;
-        }
 
         await presentation.PublishErrorAsync(
             error.Name,
@@ -263,16 +239,10 @@ internal sealed class DenoReplExecutionCollector
         MimeBundle bundle,
         IReadOnlyDictionary<string, JsonElement> metadata)
     {
-        if (!TryReservePresentationEvent())
-        {
-            return false;
-        }
+        if (!TryReservePresentationEvent()) return false;
 
         var bytes = CountJsonBytes(bundle.Data) + CountJsonBytes(metadata);
-        if (bytes <= options.MaxPresentationBundleBytes)
-        {
-            return true;
-        }
+        if (bytes <= options.MaxPresentationBundleBytes) return true;
 
         skippedCount++;
         return false;
@@ -302,17 +272,11 @@ internal sealed class DenoReplExecutionCollector
 
         var selectedBytes = fullBytes;
         var selected = fullBytes <= available ? text : TruncateUtf8(text, available, out selectedBytes);
-        if (fullBytes <= available)
-        {
-            selectedBytes = fullBytes;
-        }
+        if (fullBytes <= available) selectedBytes = fullBytes;
 
-        outputs.Add(new DenoReplOutputItem(kind, Text: selected));
+        outputs.Add(new DenoReplOutputItem(kind, selected));
         modelBytes += ModelItemOverheadBytes + selectedBytes;
-        if (selectedBytes < fullBytes)
-        {
-            MarkOmitted(fullBytes - selectedBytes);
-        }
+        if (selectedBytes < fullBytes) MarkOmitted(fullBytes - selectedBytes);
     }
 
     private void AddResult(MimeBundle bundle)
@@ -341,13 +305,9 @@ internal sealed class DenoReplExecutionCollector
         var mediaTypes = bundle.Data.Keys.Order(StringComparer.Ordinal).ToArray();
         var mediaBytes = mediaTypes.Sum(Encoding.UTF8.GetByteCount);
         if (TryReserveModelBytes(mediaBytes))
-        {
             outputs.Add(new DenoReplOutputItem("result", MediaTypes: mediaTypes));
-        }
         else
-        {
             MarkOmitted(mediaBytes);
-        }
     }
 
     private void AddTextResult(string text)
@@ -362,17 +322,11 @@ internal sealed class DenoReplExecutionCollector
 
         var selectedBytes = fullBytes;
         var selected = fullBytes <= available ? text : TruncateUtf8(text, available, out selectedBytes);
-        if (fullBytes <= available)
-        {
-            selectedBytes = fullBytes;
-        }
+        if (fullBytes <= available) selectedBytes = fullBytes;
 
-        outputs.Add(new DenoReplOutputItem("result", Text: selected, MediaType: "text/plain"));
+        outputs.Add(new DenoReplOutputItem("result", selected, "text/plain"));
         modelBytes += ModelItemOverheadBytes + selectedBytes;
-        if (selectedBytes < fullBytes)
-        {
-            MarkOmitted(fullBytes - selectedBytes);
-        }
+        if (selectedBytes < fullBytes) MarkOmitted(fullBytes - selectedBytes);
     }
 
     private void AddError(string name, string value, IReadOnlyList<string> traceback)
@@ -383,7 +337,7 @@ internal sealed class DenoReplExecutionCollector
         {
             outputs.Add(new DenoReplOutputItem(
                 "error",
-                Text: value,
+                value,
                 Name: name,
                 Traceback: traceback.ToArray()));
             return;
@@ -393,7 +347,7 @@ internal sealed class DenoReplExecutionCollector
         var selected = TruncateUtf8(value, available, out var selectedBytes);
         if (selected.Length > 0)
         {
-            outputs.Add(new DenoReplOutputItem("error", Text: selected, Name: name));
+            outputs.Add(new DenoReplOutputItem("error", selected, Name: name));
             modelBytes += ModelItemOverheadBytes + selectedBytes;
         }
 
@@ -402,10 +356,7 @@ internal sealed class DenoReplExecutionCollector
 
     private bool TryReserveModelBytes(int contentBytes)
     {
-        if (contentBytes > options.MaxModelOutputBytes - modelBytes - ModelItemOverheadBytes)
-        {
-            return false;
-        }
+        if (contentBytes > options.MaxModelOutputBytes - modelBytes - ModelItemOverheadBytes) return false;
 
         modelBytes += ModelItemOverheadBytes + contentBytes;
         return true;
@@ -421,10 +372,8 @@ internal sealed class DenoReplExecutionCollector
     {
         var result = 0;
         foreach (var (name, value) in values)
-        {
             result = checked(result + Encoding.UTF8.GetByteCount(name) +
                              Encoding.UTF8.GetByteCount(value.GetRawText()));
-        }
 
         return result;
     }
@@ -441,10 +390,7 @@ internal sealed class DenoReplExecutionCollector
         selectedBytes = 0;
         foreach (var rune in value.EnumerateRunes())
         {
-            if (selectedBytes + rune.Utf8SequenceLength > maximumBytes)
-            {
-                break;
-            }
+            if (selectedBytes + rune.Utf8SequenceLength > maximumBytes) break;
 
             selectedBytes += rune.Utf8SequenceLength;
             characters += rune.Utf16SequenceLength;

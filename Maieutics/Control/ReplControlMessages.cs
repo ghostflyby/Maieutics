@@ -31,8 +31,8 @@ internal sealed record ToolInvokeRequest(
     string? SessionId = null);
 
 /// <summary>
-/// Versioned message envelope shared by every control channel bus message. Payloads are
-/// domain-shaped JSON; binary data rides the <see cref="Buffers"/> list as base64 for now.
+///     Versioned message envelope shared by every control channel bus message. Payloads are
+///     domain-shaped JSON; binary data rides the <see cref="Buffers" /> list as base64 for now.
 /// </summary>
 internal sealed record ReplEnvelope(
     int Version,
@@ -97,8 +97,10 @@ internal sealed class ReplToolProgress(Func<ToolProgressPayload, CancellationTok
     private readonly Func<ToolProgressPayload, CancellationToken, ValueTask> report =
         report ?? throw new ArgumentNullException(nameof(report));
 
-    public ValueTask ReportAsync(ToolProgressPayload progress, CancellationToken cancellationToken) =>
-        report(progress, cancellationToken);
+    public ValueTask ReportAsync(ToolProgressPayload progress, CancellationToken cancellationToken)
+    {
+        return report(progress, cancellationToken);
+    }
 }
 
 /// <summary>Kernel-to-host request to invoke one extension point on one plugin worker.</summary>

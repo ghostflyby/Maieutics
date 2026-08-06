@@ -13,6 +13,55 @@ public sealed class JupyterClient : IJupyterClient
         this.protocolSession = protocolSession;
     }
 
+    public IAsyncEnumerable<JupyterClientEvent> WatchEventsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.WatchEventsAsync(cancellationToken);
+    }
+
+    public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default)
+    {
+        return protocolSession.GetKernelInfoAsync(cancellationToken);
+    }
+
+    public Task<IJupyterExecution> ExecuteAsync(
+        JupyterExecuteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.StartExecutionAsync(request, cancellationToken);
+    }
+
+    public Task<JupyterCompleteReply> CompleteAsync(
+        JupyterCompleteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.CompleteAsync(request, cancellationToken);
+    }
+
+    public Task<JupyterInspectReply> InspectAsync(
+        JupyterInspectRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.InspectAsync(request, cancellationToken);
+    }
+
+    public Task<JupyterIsCompleteReply> IsCompleteAsync(
+        JupyterIsCompleteRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.IsCompleteAsync(request, cancellationToken);
+    }
+
+    public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default)
+    {
+        return protocolSession.PingAsync(cancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return protocolSession.DisposeAsync();
+    }
+
     public static async Task<JupyterClient> ConnectAsync(
         JupyterConnectionInfo connectionInfo,
         JupyterSessionIdentity? session = null,
@@ -28,49 +77,25 @@ public sealed class JupyterClient : IJupyterClient
 
     internal static JupyterClient CreateForTransport(
         IJupyterTransport transport,
-        JupyterSessionIdentity? session = null) =>
-        new(new JupyterProtocolSession(transport, session));
+        JupyterSessionIdentity? session = null)
+    {
+        return new JupyterClient(new JupyterProtocolSession(transport, session));
+    }
 
-    public IAsyncEnumerable<JupyterClientEvent> WatchEventsAsync(
-        CancellationToken cancellationToken = default) =>
-        protocolSession.WatchEventsAsync(cancellationToken);
+    internal Task<JupyterKernelInfo> WaitForReadyAsync(CancellationToken cancellationToken = default)
+    {
+        return protocolSession.WaitForReadyAsync(cancellationToken);
+    }
 
-    public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default) =>
-        protocolSession.GetKernelInfoAsync(cancellationToken);
-
-    internal Task<JupyterKernelInfo> WaitForReadyAsync(CancellationToken cancellationToken = default) =>
-        protocolSession.WaitForReadyAsync(cancellationToken);
-
-    public Task<IJupyterExecution> ExecuteAsync(
-        JupyterExecuteRequest request,
-        CancellationToken cancellationToken = default) =>
-        protocolSession.StartExecutionAsync(request, cancellationToken);
-
-    public Task<JupyterCompleteReply> CompleteAsync(
-        JupyterCompleteRequest request,
-        CancellationToken cancellationToken = default) =>
-        protocolSession.CompleteAsync(request, cancellationToken);
-
-    public Task<JupyterInspectReply> InspectAsync(
-        JupyterInspectRequest request,
-        CancellationToken cancellationToken = default) =>
-        protocolSession.InspectAsync(request, cancellationToken);
-
-    public Task<JupyterIsCompleteReply> IsCompleteAsync(
-        JupyterIsCompleteRequest request,
-        CancellationToken cancellationToken = default) =>
-        protocolSession.IsCompleteAsync(request, cancellationToken);
-
-    public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default) =>
-        protocolSession.PingAsync(cancellationToken);
-
-    internal Task<JupyterInterruptReply> InterruptAsync(CancellationToken cancellationToken = default) =>
-        protocolSession.InterruptAsync(cancellationToken);
+    internal Task<JupyterInterruptReply> InterruptAsync(CancellationToken cancellationToken = default)
+    {
+        return protocolSession.InterruptAsync(cancellationToken);
+    }
 
     internal Task<JupyterShutdownReply> ShutdownAsync(
         bool restart,
-        CancellationToken cancellationToken = default) =>
-        protocolSession.ShutdownAsync(restart, cancellationToken);
-
-    public ValueTask DisposeAsync() => protocolSession.DisposeAsync();
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.ShutdownAsync(restart, cancellationToken);
+    }
 }

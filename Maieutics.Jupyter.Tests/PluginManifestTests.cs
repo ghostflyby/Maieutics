@@ -9,25 +9,25 @@ public sealed class PluginManifestTests
     public void LoadsSubpathExportsAndPositivePermissions()
     {
         var descriptor = LoadPlugin("""
-            {
-              "name": "@maieutics/example",
-              "version": "0.1.0",
-              "exports": {
-                ".": "./mod.ts",
-                "./mcp": "./src/mcp.ts"
-              },
-              "permissions": {
-                "default": {
-                  "read": ["./"],
-                  "net": [],
-                  "write": true
-                }
-              },
-              "maieutics": {
-                "isolation": "auto"
-              }
-            }
-            """);
+                                    {
+                                      "name": "@maieutics/example",
+                                      "version": "0.1.0",
+                                      "exports": {
+                                        ".": "./mod.ts",
+                                        "./mcp": "./src/mcp.ts"
+                                      },
+                                      "permissions": {
+                                        "default": {
+                                          "read": ["./"],
+                                          "net": [],
+                                          "write": true
+                                        }
+                                      },
+                                      "maieutics": {
+                                        "isolation": "auto"
+                                      }
+                                    }
+                                    """);
 
         descriptor.Name.Should().Be("@maieutics/example");
         descriptor.Workers.Should().HaveCount(1);
@@ -44,12 +44,12 @@ public sealed class PluginManifestTests
     public void RejectsDirectoriesWithoutTheMaieuticsMarker()
     {
         var directory = CreatePluginDirectory("""
-            {
-              "name": "@plain/package",
-              "version": "0.1.0",
-              "exports": "./mod.ts"
-            }
-            """);
+                                              {
+                                                "name": "@plain/package",
+                                                "version": "0.1.0",
+                                                "exports": "./mod.ts"
+                                              }
+                                              """);
 
         PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
         error.Should().Contain("maieutics");
@@ -59,13 +59,13 @@ public sealed class PluginManifestTests
     public void TreatsStringExportsAsHavingNoCarrierWorkers()
     {
         var descriptor = LoadPlugin("""
-            {
-              "name": "@maieutics/single",
-              "version": "0.1.0",
-              "exports": "./mod.ts",
-              "maieutics": {}
-            }
-            """);
+                                    {
+                                      "name": "@maieutics/single",
+                                      "version": "0.1.0",
+                                      "exports": "./mod.ts",
+                                      "maieutics": {}
+                                    }
+                                    """);
 
         descriptor.Workers.Should().BeEmpty();
     }
@@ -83,21 +83,21 @@ public sealed class PluginManifestTests
     public void IgnoresUnknownPermissionElementsAndShapes()
     {
         var descriptor = LoadPlugin("""
-            {
-              "name": "@maieutics/unknown",
-              "tasks": { "start": "deno run mod.ts" },
-              "permissions": {
-                "default": {
-                  "read": ["./", 42, null, { "path": "/tmp" }, ""],
-                  "net": "https://example.com",
-                  "notify": true,
-                  "allow-all": true
-                },
-                "dev": { "read": true }
-              },
-              "maieutics": {}
-            }
-            """);
+                                    {
+                                      "name": "@maieutics/unknown",
+                                      "tasks": { "start": "deno run mod.ts" },
+                                      "permissions": {
+                                        "default": {
+                                          "read": ["./", 42, null, { "path": "/tmp" }, ""],
+                                          "net": "https://example.com",
+                                          "notify": true,
+                                          "allow-all": true
+                                        },
+                                        "dev": { "read": true }
+                                      },
+                                      "maieutics": {}
+                                    }
+                                    """);
 
         descriptor.Permissions.Read.AllowAll.Should().BeFalse();
         descriptor.Permissions.Read.Values.Should().Equal("./");
@@ -110,9 +110,7 @@ public sealed class PluginManifestTests
     private static PluginDescriptor LoadPlugin(string denoJson)
     {
         if (PluginManifest.TryLoad(CreatePluginDirectory(denoJson), out var descriptor, out var error))
-        {
             return descriptor;
-        }
 
         throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
     }

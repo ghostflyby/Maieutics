@@ -131,14 +131,10 @@ public sealed class MaieuticsJupyterOptions
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ConnectionFile);
         if (!File.Exists(ConnectionFile))
-        {
             throw new FileNotFoundException("The configured Jupyter connection file does not exist.", ConnectionFile);
-        }
 
         if (FlushInterval <= TimeSpan.Zero)
-        {
             throw new ArgumentOutOfRangeException(nameof(FlushInterval), "Flush interval must be positive.");
-        }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(FlushCharacters, 1);
     }

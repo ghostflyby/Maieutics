@@ -230,21 +230,16 @@ public sealed class AgentJupyterIntegrationTests
         await using var outputs = execution.Outputs.GetAsyncEnumerator(deadline.Token);
         JupyterDisplayOutput? partialDisplay = null;
         while (await outputs.MoveNextAsync())
-        {
             if (outputs.Current is JupyterDisplayOutput display)
             {
                 partialDisplay = display;
                 break;
             }
-        }
 
         await responseStarted.Task.WaitAsync(deadline.Token);
         await client.InterruptAsync(deadline.Token);
         var remainingOutputs = new List<JupyterOutput>();
-        while (await outputs.MoveNextAsync())
-        {
-            remainingOutputs.Add(outputs.Current);
-        }
+        while (await outputs.MoveNextAsync()) remainingOutputs.Add(outputs.Current);
 
         partialDisplay.Should().NotBeNull();
         partialDisplay.Data.Data["text/markdown"].GetString().Should().Be("part");
@@ -302,7 +297,7 @@ public sealed class AgentJupyterIntegrationTests
             var application = new MaieuticsAgentKernelApplication(
                 session,
                 static () => new MaieuticsAgentKernelOptions(),
-                runtimeConfiguration: null,
+                null,
                 workspace: workspace);
             var connection = JupyterConnectionInfo.CreateLocalTcp();
             await using var host = await JupyterKernelHost.StartAsync(
@@ -340,7 +335,7 @@ public sealed class AgentJupyterIntegrationTests
             workspace.Capture().RootPath.Should().Be(other);
 
             var reset = await client.ExecuteAsync(
-                new JupyterExecuteRequest("%maieutics workspace reset", Silent: true),
+                new JupyterExecuteRequest("%maieutics workspace reset", true),
                 deadline.Token);
             var resetOutputs = await ReadOutputsAsync(reset, deadline.Token);
             (await reset.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
@@ -362,7 +357,7 @@ public sealed class AgentJupyterIntegrationTests
         }
         finally
         {
-            Directory.Delete(parent, recursive: true);
+            Directory.Delete(parent, true);
         }
     }
 
@@ -382,7 +377,7 @@ public sealed class AgentJupyterIntegrationTests
             var application = new MaieuticsAgentKernelApplication(
                 session,
                 static () => new MaieuticsAgentKernelOptions(),
-                runtimeConfiguration: controller,
+                controller,
                 workspace: workspace);
             var connection = JupyterConnectionInfo.CreateLocalTcp();
             await using var host = await JupyterKernelHost.StartAsync(
@@ -446,7 +441,7 @@ public sealed class AgentJupyterIntegrationTests
         }
         finally
         {
-            Directory.Delete(parent, recursive: true);
+            Directory.Delete(parent, true);
         }
     }
 
@@ -493,7 +488,7 @@ public sealed class AgentJupyterIntegrationTests
         controller.GetModelProfileSelection().SelectedProfileId.Should().Be("claude");
 
         var silentReset = await client.ExecuteAsync(
-            new JupyterExecuteRequest("%maieutics model reset", Silent: true),
+            new JupyterExecuteRequest("%maieutics model reset", true),
             deadline.Token);
         var resetOutputs = await ReadOutputsAsync(silentReset, deadline.Token);
         (await silentReset.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
@@ -618,31 +613,37 @@ public sealed class AgentJupyterIntegrationTests
         await host.Completion.WaitAsync(deadline.Token);
     }
 
-    private static string? ReadMarkdown(JupyterOutput output) => output switch
+    private static string? ReadMarkdown(JupyterOutput output)
     {
-        JupyterDisplayOutput display => display.Data.Data["text/markdown"].GetString(),
-        JupyterDisplayUpdateOutput update => update.Data.Data["text/markdown"].GetString(),
-        _ => null
-    };
+        return output switch
+        {
+            JupyterDisplayOutput display => display.Data.Data["text/markdown"].GetString(),
+            JupyterDisplayUpdateOutput update => update.Data.Data["text/markdown"].GetString(),
+            _ => null
+        };
+    }
 
-    private static string? ReadPlainText(JupyterOutput output) => output switch
+    private static string? ReadPlainText(JupyterOutput output)
     {
-        JupyterDisplayOutput display => display.Data.Data["text/plain"].GetString(),
-        JupyterDisplayUpdateOutput update => update.Data.Data["text/plain"].GetString(),
-        _ => null
-    };
+        return output switch
+        {
+            JupyterDisplayOutput display => display.Data.Data["text/plain"].GetString(),
+            JupyterDisplayUpdateOutput update => update.Data.Data["text/plain"].GetString(),
+            _ => null
+        };
+    }
 
-    private static string ReadText(ChatMessage message) => message.Text;
+    private static string ReadText(ChatMessage message)
+    {
+        return message.Text;
+    }
 
     private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
         IJupyterExecution execution,
         CancellationToken cancellationToken)
     {
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         return outputs;
     }
@@ -679,8 +680,11 @@ public sealed class AgentJupyterIntegrationTests
         yield return update;
     }
 
-    private static ChatResponseUpdate ToolCallUpdate(string callId, string name) =>
-        new(ChatRole.Assistant, [new FunctionCallContent(callId, name, new Dictionary<string, object?>())]);
+    private static ChatResponseUpdate ToolCallUpdate(string callId, string name)
+    {
+        return new ChatResponseUpdate(ChatRole.Assistant,
+            [new FunctionCallContent(callId, name, new Dictionary<string, object?>())]);
+    }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> WaitOnTokenAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -769,8 +773,10 @@ public sealed class AgentJupyterIntegrationTests
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromException<ChatResponse>(new NotSupportedException());
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -782,7 +788,10 @@ public sealed class AgentJupyterIntegrationTests
             return responses.Dequeue()(request, cancellationToken);
         }
 
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public object? GetService(Type serviceType, object? serviceKey = null)
+        {
+            return null;
+        }
 
         public void Dispose()
         {
@@ -797,17 +806,23 @@ public sealed class AgentJupyterIntegrationTests
 
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
-        public override long GetTimestamp() => Volatile.Read(ref timestamp);
+        public override long GetTimestamp()
+        {
+            return Volatile.Read(ref timestamp);
+        }
 
-        public void Advance(TimeSpan elapsed) => Interlocked.Add(ref timestamp, elapsed.Ticks);
+        public void Advance(TimeSpan elapsed)
+        {
+            Interlocked.Add(ref timestamp, elapsed.Ticks);
+        }
     }
 
     private sealed class TestRuntimeConfiguration : IMaieuticsRuntimeConfiguration
     {
         private readonly MaieuticsModelProfileInfo[] profiles =
         [
-            new("gpt", "openai", "OpenAI", "gpt-test", IsDefault: true, IsSelected: true),
-            new("claude", "anthropic", "Anthropic", "claude-test", IsDefault: false, IsSelected: false)
+            new("gpt", "openai", "OpenAI", "gpt-test", true, true),
+            new("claude", "anthropic", "Anthropic", "claude-test", false, false)
         ];
 
         private string? sessionOverride;
@@ -829,9 +844,15 @@ public sealed class AgentJupyterIntegrationTests
                 }).ToArray());
         }
 
-        public IReadOnlyList<string> GetModelSourceIds() => ["openai", "anthropic"];
+        public IReadOnlyList<string> GetModelSourceIds()
+        {
+            return ["openai", "anthropic"];
+        }
 
-        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles() => [];
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles()
+        {
+            return [];
+        }
 
         public void SelectModelProfile(string profileId)
         {
@@ -840,23 +861,31 @@ public sealed class AgentJupyterIntegrationTests
             profile ??= profiles.SingleOrDefault(profileInfo =>
                 string.Equals(profileInfo.Model, profileId, StringComparison.OrdinalIgnoreCase));
             if (profile is null)
-            {
                 throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
-            }
 
             sessionOverride = profile.Id;
         }
 
-        public void ResetModelProfile() => sessionOverride = null;
+        public void ResetModelProfile()
+        {
+            sessionOverride = null;
+        }
 
-        public IAgentRunProfileLease Acquire() =>
+        public IAgentRunProfileLease Acquire()
+        {
             throw new NotSupportedException();
+        }
 
-        public MaieuticsAgentKernelOptions GetKernelOptions() => new();
+        public MaieuticsAgentKernelOptions GetKernelOptions()
+        {
+            return new MaieuticsAgentKernelOptions();
+        }
 
         public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(string? sourceId = null,
-            bool refresh = false, CancellationToken cancellationToken = default) =>
-            new([]);
+            bool refresh = false, CancellationToken cancellationToken = default)
+        {
+            return new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
+        }
     }
 
     private sealed class EmptyRuntimeConfiguration : IMaieuticsRuntimeConfiguration
@@ -865,30 +894,47 @@ public sealed class AgentJupyterIntegrationTests
 
         public long Version => 1;
 
-        public MaieuticsModelProfileSelection GetModelProfileSelection() =>
-            new(string.Empty, string.Empty, false, []);
+        public MaieuticsModelProfileSelection GetModelProfileSelection()
+        {
+            return new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
+        }
 
-        public IReadOnlyList<string> GetModelSourceIds() => [];
+        public IReadOnlyList<string> GetModelSourceIds()
+        {
+            return [];
+        }
 
-        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles() => [];
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles()
+        {
+            return [];
+        }
 
-        public void SelectModelProfile(string profileId) =>
+        public void SelectModelProfile(string profileId)
+        {
             throw new ArgumentException("No model profiles are configured.", nameof(profileId));
+        }
 
         public void ResetModelProfile()
         {
         }
 
-        public IAgentRunProfileLease Acquire() =>
+        public IAgentRunProfileLease Acquire()
+        {
             throw new InvalidOperationException("No model profile is configured.");
+        }
 
-        public MaieuticsAgentKernelOptions GetKernelOptions() => new();
+        public MaieuticsAgentKernelOptions GetKernelOptions()
+        {
+            return new MaieuticsAgentKernelOptions();
+        }
 
         public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
             string? sourceId = null,
             bool refresh = false,
-            CancellationToken cancellationToken = default) =>
-            new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
+            CancellationToken cancellationToken = default)
+        {
+            return new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([]);
+        }
     }
 
     private sealed class AutomaticRuntimeConfiguration : IMaieuticsRuntimeConfiguration
@@ -900,58 +946,78 @@ public sealed class AgentJupyterIntegrationTests
 
         public long Version => 1;
 
-        public MaieuticsModelProfileSelection GetModelProfileSelection() => selected
-            ? new MaieuticsModelProfileSelection(
-                string.Empty,
-                Selector,
-                HasSessionOverride: true,
-                [CreateProfile(isSelected: true)])
-            : new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
+        public MaieuticsModelProfileSelection GetModelProfileSelection()
+        {
+            return selected
+                ? new MaieuticsModelProfileSelection(
+                    string.Empty,
+                    Selector,
+                    true,
+                    [CreateProfile(true)])
+                : new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
+        }
 
-        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles() =>
-            [CreateProfile(selected)];
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles()
+        {
+            return [CreateProfile(selected)];
+        }
 
-        public IReadOnlyList<string> GetModelSourceIds() => ["vendor"];
+        public IReadOnlyList<string> GetModelSourceIds()
+        {
+            return ["vendor"];
+        }
 
         public void SelectModelProfile(string profileId)
         {
             if (!string.Equals(profileId, Selector, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(profileId, "model-alpha", StringComparison.OrdinalIgnoreCase))
-            {
                 throw new ArgumentException(
                     $"The model profile or discovered model '{profileId}' does not exist.",
                     nameof(profileId));
-            }
 
             selected = true;
         }
 
-        public void ResetModelProfile() => selected = false;
+        public void ResetModelProfile()
+        {
+            selected = false;
+        }
 
-        public IAgentRunProfileLease Acquire() => throw new NotSupportedException();
+        public IAgentRunProfileLease Acquire()
+        {
+            throw new NotSupportedException();
+        }
 
-        public MaieuticsAgentKernelOptions GetKernelOptions() => new();
+        public MaieuticsAgentKernelOptions GetKernelOptions()
+        {
+            return new MaieuticsAgentKernelOptions();
+        }
 
         public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
             string? sourceId = null,
             bool refresh = false,
-            CancellationToken cancellationToken = default) =>
-            new([
+            CancellationToken cancellationToken = default)
+        {
+            return new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([
                 new DiscoveredModelGroup(
                     "vendor",
                     "Vendor",
-                    Error: null,
+                    null,
                     [new AgentModelDescriptor("model-alpha", "Vendor")])
             ]);
+        }
 
-        private static MaieuticsModelProfileInfo CreateProfile(bool isSelected) => new(
-            Selector,
-            "vendor",
-            "Vendor",
-            "model-alpha",
-            IsDefault: false,
-            IsSelected: isSelected,
-            IsAutomatic: true);
+        private static MaieuticsModelProfileInfo CreateProfile(bool isSelected)
+        {
+            return new MaieuticsModelProfileInfo(
+                Selector,
+                "vendor",
+                "Vendor",
+                "model-alpha",
+                false,
+                isSelected,
+                true);
+        }
     }
 
     private sealed class CommitBoundarySession : IAgentSession
@@ -962,9 +1028,9 @@ public sealed class AgentJupyterIntegrationTests
             Run = new CommitBoundaryRun(Id);
         }
 
-        public AgentSessionId Id { get; }
-
         public CommitBoundaryRun Run { get; }
+
+        public AgentSessionId Id { get; }
 
         public Task<IAgentRun> StartTurnAsync(
             AgentTurn turn,
@@ -974,17 +1040,22 @@ public sealed class AgentJupyterIntegrationTests
             return Task.FromResult<IAgentRun>(Run);
         }
 
-        public AgentTranscript GetTranscriptSnapshot() => new(Id, 0, []);
+        public AgentTranscript GetTranscriptSnapshot()
+        {
+            return new AgentTranscript(Id, 0, []);
+        }
     }
 
     private sealed class CommitBoundaryRun : IAgentRun
     {
+        private readonly ChatMessage assistant;
+
+        private readonly AgentMessageId assistantId = AgentMessageId.Create();
+
         private readonly TaskCompletionSource<AgentRunResult> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly AgentMessageId assistantId = AgentMessageId.Create();
         private readonly ChatMessage user;
-        private readonly ChatMessage assistant;
 
         public CommitBoundaryRun(AgentSessionId sessionId)
         {
@@ -993,6 +1064,9 @@ public sealed class AgentJupyterIntegrationTests
             user = new ChatMessage(ChatRole.User, "commit");
             assistant = new ChatMessage(ChatRole.Assistant, "committed");
         }
+
+        public TaskCompletionSource CompletionObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public AgentRunId Id { get; }
 
@@ -1009,16 +1083,16 @@ public sealed class AgentJupyterIntegrationTests
             }
         }
 
-        public TaskCompletionSource CompletionObserved { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
         public Task CancelAsync(CancellationToken cancellationToken = default)
         {
             completion.TrySetCanceled(cancellationToken);
             return Task.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
 
         public void Complete()
         {

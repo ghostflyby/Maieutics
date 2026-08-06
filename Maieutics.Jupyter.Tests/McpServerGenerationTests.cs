@@ -62,7 +62,7 @@ public sealed class McpServerGenerationTests
             TimeProvider.System,
             deadline.Token,
             serverFactory.CreateTransportAsync,
-            reservedToolNames: new HashSet<string>(StringComparer.Ordinal) { "echo" });
+            new HashSet<string>(StringComparer.Ordinal) { "echo" });
 
         var acquired = generation.TryAcquire();
         acquired.Should().NotBeNull();
@@ -148,6 +148,23 @@ public sealed class McpServerGenerationTests
         private readonly CancellationTokenSource lifetime = new();
         private readonly List<(McpServer Server, Task Completion)> servers = [];
 
+        public async ValueTask DisposeAsync()
+        {
+            await lifetime.CancelAsync();
+            foreach (var (server, _) in servers) await server.DisposeAsync();
+
+            foreach (var (_, completion) in servers)
+                try
+                {
+                    await completion;
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                {
+                }
+
+            lifetime.Dispose();
+        }
+
         internal ValueTask<IClientTransport> CreateTransportAsync(
             McpServerDefinition definition,
             ILoggerFactory loggerFactory,
@@ -163,8 +180,8 @@ public sealed class McpServerGenerationTests
                 loggerFactory);
             var function = AIFunctionFactory.Create(
                 (string value) => new EchoResult(value),
-                name: "echo",
-                description: "Echoes one value.");
+                "echo",
+                "Echoes one value.");
             var server = McpServer.Create(
                 serverTransport,
                 new McpServerOptions
@@ -178,35 +195,13 @@ public sealed class McpServerGenerationTests
                     ]
                 },
                 loggerFactory,
-                serviceProvider: null);
+                null);
             servers.Add((server, server.RunAsync(lifetime.Token)));
             IClientTransport clientTransport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),
                 serverToClient.Reader.AsStream(),
                 loggerFactory);
             return ValueTask.FromResult(clientTransport);
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await lifetime.CancelAsync();
-            foreach (var (server, _) in servers)
-            {
-                await server.DisposeAsync();
-            }
-
-            foreach (var (_, completion) in servers)
-            {
-                try
-                {
-                    await completion;
-                }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-                {
-                }
-            }
-
-            lifetime.Dispose();
         }
     }
 

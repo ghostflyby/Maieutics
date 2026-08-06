@@ -103,10 +103,7 @@ public sealed class DenoKernelIntegrationTests
         await foreach (var output in inputExecution.Outputs.WithCancellation(deadline.Token))
         {
             inputOutputs.Add(output);
-            if (output is JupyterInputRequest input)
-            {
-                await inputExecution.ReplyInputAsync(input, "Ada", deadline.Token);
-            }
+            if (output is JupyterInputRequest input) await inputExecution.ReplyInputAsync(input, "Ada", deadline.Token);
         }
 
         (await inputExecution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
@@ -206,7 +203,7 @@ public sealed class DenoKernelIntegrationTests
         }
         finally
         {
-            Directory.Delete(runtimeDirectory, recursive: true);
+            Directory.Delete(runtimeDirectory, true);
         }
     }
 
@@ -257,7 +254,7 @@ public sealed class DenoKernelIntegrationTests
         finally
         {
             Environment.SetEnvironmentVariable(inheritedName, null);
-            Directory.Delete(workingDirectory, recursive: true);
+            Directory.Delete(workingDirectory, true);
         }
     }
 
@@ -290,25 +287,18 @@ public sealed class DenoKernelIntegrationTests
             {
                 if (forceTimeout && outputs.Current is JupyterStdout { Text: var text } &&
                     text.Contains("stopping", StringComparison.Ordinal))
-                {
                     break;
-                }
 
                 if (!forceTimeout &&
                     outputs.Current is JupyterExecutionStatusChanged { State: JupyterKernelState.Busy })
-                {
                     break;
-                }
             }
 
             var elapsed = Stopwatch.StartNew();
             await manager.ShutdownAsync(deadline.Token);
             elapsed.Stop();
 
-            if (forceTimeout)
-            {
-                elapsed.Elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800));
-            }
+            if (forceTimeout) elapsed.Elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(800));
 
             elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
             Directory.GetFiles(runtimeDirectory, "maieutics-kernel-*.json").Should().BeEmpty();
@@ -316,7 +306,7 @@ public sealed class DenoKernelIntegrationTests
         }
         finally
         {
-            Directory.Delete(runtimeDirectory, recursive: true);
+            Directory.Delete(runtimeDirectory, true);
         }
     }
 
@@ -343,12 +333,8 @@ public sealed class DenoKernelIntegrationTests
                 deadline.Token);
             await using var outputs = execution.Outputs.GetAsyncEnumerator(deadline.Token);
             while (await outputs.MoveNextAsync())
-            {
                 if (outputs.Current is JupyterExecutionStatusChanged { State: JupyterKernelState.Busy })
-                {
                     break;
-                }
-            }
 
             var elapsed = Stopwatch.StartNew();
             await manager.TerminateAsync(deadline.Token);
@@ -360,7 +346,7 @@ public sealed class DenoKernelIntegrationTests
         }
         finally
         {
-            Directory.Delete(runtimeDirectory, recursive: true);
+            Directory.Delete(runtimeDirectory, true);
         }
     }
 
@@ -369,10 +355,7 @@ public sealed class DenoKernelIntegrationTests
         CancellationToken cancellationToken)
     {
         var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
-        {
-            outputs.Add(output);
-        }
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
 
         return outputs;
     }

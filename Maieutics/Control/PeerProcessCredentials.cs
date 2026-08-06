@@ -5,13 +5,18 @@ using System.Runtime.Versioning;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Resolves the peer process identity of a connected unix domain socket. Linux exposes the peer
-/// process id; macOS exposes only the peer user id.
+///     Resolves the peer process identity of a connected unix domain socket. Linux exposes the peer
+///     process id; macOS exposes only the peer user id.
 /// </summary>
 internal static partial class PeerProcessCredentials
 {
+    private const int SolSocket = 1;
+    private const int SoPeerCred = 17;
+    private const int SolLocal = 0;
+    private const int LocalPeerPid = 0x002;
+
     /// <summary>
-    /// Gets the peer process identity when the platform exposes it.
+    ///     Gets the peer process identity when the platform exposes it.
     /// </summary>
     /// <param name="socket">The accepted unix domain socket.</param>
     /// <param name="processId">The peer process id, or zero when the platform does not expose it.</param>
@@ -20,16 +25,10 @@ internal static partial class PeerProcessCredentials
     {
         processId = 0;
         userId = 0;
-        if (socket.AddressFamily != AddressFamily.Unix)
-        {
-            return false;
-        }
+        if (socket.AddressFamily != AddressFamily.Unix) return false;
 
         var handle = socket.Handle;
-        if (OperatingSystem.IsLinux())
-        {
-            return TryGetLinuxPeerIdentity(handle, out processId, out userId);
-        }
+        if (OperatingSystem.IsLinux()) return TryGetLinuxPeerIdentity(handle, out processId, out userId);
 
         return OperatingSystem.IsMacOS() && TryGetMacOsPeerIdentity(handle, out processId, out userId);
     }
@@ -37,10 +36,7 @@ internal static partial class PeerProcessCredentials
     /// <summary>Gets the effective user id of the current process.</summary>
     public static uint GetCurrentUserId()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return 0;
-        }
+        if (OperatingSystem.IsWindows()) return 0;
 
         return GetEuid();
     }
@@ -49,7 +45,7 @@ internal static partial class PeerProcessCredentials
     private static unsafe bool TryGetLinuxPeerIdentity(IntPtr socketHandle, out int processId, out uint userId)
     {
         var credential = new UCred();
-        uint size = (uint)sizeof(UCred);
+        var size = (uint)sizeof(UCred);
         if (GetSockOpt(socketHandle, SolSocket, SoPeerCred, ref credential, in size) != 0)
         {
             processId = 0;
@@ -83,19 +79,6 @@ internal static partial class PeerProcessCredentials
         return true;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct UCred
-    {
-        public uint Pid;
-        public uint Uid;
-        public uint Gid;
-    }
-
-    private const int SolSocket = 1;
-    private const int SoPeerCred = 17;
-    private const int SolLocal = 0;
-    private const int LocalPeerPid = 0x002;
-
 
     [SupportedOSPlatform("Linux")]
     [LibraryImport("libc", EntryPoint = "getsockopt", SetLastError = true)]
@@ -118,4 +101,12 @@ internal static partial class PeerProcessCredentials
     [UnsupportedOSPlatform("Windows")]
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEuid();
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct UCred
+    {
+        public uint Pid;
+        public uint Uid;
+        public uint Gid;
+    }
 }

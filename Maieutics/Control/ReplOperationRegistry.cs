@@ -3,8 +3,8 @@ using System.Collections.Concurrent;
 namespace Maieutics.Control;
 
 /// <summary>
-/// Tracks in-flight control channel operations by correlation id so they can be cancelled
-/// through a <c>control.cancel</c> message or session teardown.
+///     Tracks in-flight control channel operations by correlation id so they can be cancelled
+///     through a <c>control.cancel</c> message or session teardown.
 /// </summary>
 internal sealed class ReplOperationRegistry
 {
@@ -19,10 +19,7 @@ internal sealed class ReplOperationRegistry
 
     public bool TryCancel(string correlationId)
     {
-        if (!operations.TryGetValue(correlationId, out var operation))
-        {
-            return false;
-        }
+        if (!operations.TryGetValue(correlationId, out var operation)) return false;
 
         operation.Cancel();
         return true;

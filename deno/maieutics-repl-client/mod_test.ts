@@ -7,7 +7,7 @@ Deno.test("the repl client graph imports only the shared control module", async 
   assertEquals(imports.length > 0, true);
   for (const specifier of imports) {
     assert(
-      specifier.startsWith("../shared/"),
+      specifier.startsWith("../shared/") || specifier === "./windows_bootstrap.ts",
       `unexpected import '${specifier}' in the repl client`,
     );
   }

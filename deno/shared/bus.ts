@@ -13,18 +13,24 @@ export interface BusConnection {
   close(): void;
 }
 
+export interface ConnectBusOptions {
+  /** HttpClient for the unix socket proxy; omit on Windows loopback TCP. */
+  http?: HttpClient;
+  /** WebSocket endpoint; defaults to the unix-socket control channel. */
+  url?: string;
+  hello: Omit<ReplEnvelope, "version">;
+  onMessage: (envelope: ReplEnvelope) => void;
+  onClose?: () => void;
+}
+
 /**
  * Opens the control bus, sends the hello handshake, and dispatches every parsed
  * envelope to `onMessage`. The returned connection is valid once the promise
  * resolves; no server readiness handshake is assumed.
  */
-export function connectBus(
-  http: HttpClient,
-  hello: Omit<ReplEnvelope, "version">,
-  onMessage: (envelope: ReplEnvelope) => void,
-  onClose?: () => void,
-): Promise<BusConnection> {
-  const socket = new WebSocket("ws://localhost/ws", { client: http });
+export function connectBus(options: ConnectBusOptions): Promise<BusConnection> {
+  const { http, url = "ws://localhost/ws", hello, onMessage, onClose } = options;
+  const socket = http === undefined ? new WebSocket(url) : new WebSocket(url, { client: http });
   socket.onclose = () => onClose?.();
   socket.onmessage = (event) => {
     let envelope: ReplEnvelope;

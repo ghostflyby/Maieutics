@@ -37,6 +37,8 @@
     <ItemGroup>
         <EmbeddedResource Include="..\deno\maieutics-repl-client\mod.ts"
                           LogicalName="Maieutics.Deno.ReplClient.ts"/>
+        <EmbeddedResource Include="..\deno\maieutics-repl-client\windows_bootstrap.ts"
+                          LogicalName="Maieutics.Deno.ReplClientWindowsBootstrap.ts"/>
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts"
                           LogicalName="Maieutics.Deno.PluginSdk.ts"/>
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\mod.ts"

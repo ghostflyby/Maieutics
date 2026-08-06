@@ -25,10 +25,13 @@ internal sealed class ReplControlHost : IDisposable
 {
     private const int WebSocketBufferSize = 256 * 1024;
     private const int EnvelopeVersion = 1;
+    private const string CredentialHeader = "X-Maieutics-Credential";
     private readonly ReplControlSessionRegistry registry;
+    private readonly ReplControlCredentialRegistry? credentials;
     private readonly ILogger<ReplControlHost> logger;
     private readonly IReadOnlyList<AIFunction> scriptTools;
     private readonly PluginHostManager? pluginHosts;
+    private readonly IWindowsPipeBootstrap? windowsBootstrap;
     private readonly ConcurrentDictionary<string, WebSocket> connections = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> comms =
@@ -41,7 +44,9 @@ internal sealed class ReplControlHost : IDisposable
         ReplControlSessionRegistry registry,
         ILogger<ReplControlHost> logger,
         IReadOnlyList<AIFunction>? scriptTools = null,
-        PluginHostManager? pluginHosts = null)
+        PluginHostManager? pluginHosts = null,
+        ReplControlCredentialRegistry? credentials = null,
+        IWindowsPipeBootstrap? windowsBootstrap = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
@@ -49,10 +54,22 @@ internal sealed class ReplControlHost : IDisposable
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.scriptTools = scriptTools ?? [];
         this.pluginHosts = pluginHosts;
+        this.credentials = credentials;
+        this.windowsBootstrap = windowsBootstrap;
     }
 
     /// <summary>Gets the unix domain socket path the channel listens on.</summary>
     public string SocketPath { get; }
+
+    /// <summary>Loopback TCP address on Windows, resolved after the host starts.</summary>
+    public string? WindowsControlAddress { get; set; }
+
+    /// <summary>Address REPL children connect to: unix socket path, or TCP host:port on Windows.</summary>
+    public string ControlAddress =>
+        OperatingSystem.IsWindows() ? WindowsControlAddress ?? string.Empty : SocketPath;
+
+    /// <summary>Named pipe REPL children bootstrap through on Windows.</summary>
+    public string? WindowsPipeName => windowsBootstrap?.PipeName;
 
     /// <summary>Creates a short socket path within the platform unix socket length limit.</summary>
     internal static string CreateSocketPath()
@@ -95,6 +112,13 @@ internal sealed class ReplControlHost : IDisposable
 
     private bool Authorize(HttpContext context)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            // Windows cannot resolve peer credentials on loopback TCP; the named-pipe bootstrap
+            // issued a session-bound credential that each request carries in a header.
+            return ResolveCredentialIdentity(context) is not null;
+        }
+
         var peerSocket = GetPeerSocket(context);
         if (peerSocket is null ||
             !PeerProcessCredentials.TryGetPeerIdentity(peerSocket, out var peerProcessId, out var peerUserId))
@@ -213,6 +237,16 @@ internal sealed class ReplControlHost : IDisposable
             return null;
         }
 
+        if (OperatingSystem.IsWindows())
+        {
+            return string.Equals(
+                ResolveCredentialIdentity(context),
+                sessionId,
+                StringComparison.Ordinal)
+                ? sessionId
+                : null;
+        }
+
         var processId = ResolvePeerProcessId(context);
         if (processId > 0)
         {
@@ -250,9 +284,15 @@ internal sealed class ReplControlHost : IDisposable
         }
 
         if (payload.TryGetProperty("hostId", out var host) &&
-            !string.IsNullOrWhiteSpace(host.GetString()))
+            host.GetString() is { } hostId && !hostId.IsWhiteSpace())
         {
-            var hostId = host.GetString()!;
+            if (OperatingSystem.IsWindows())
+            {
+                return string.Equals(ResolveCredentialIdentity(payload), hostId, StringComparison.Ordinal)
+                    ? new HelloIdentity("host", hostId)
+                    : null;
+            }
+
             if (peerProcessId > 0 && registry.IsPluginHostOwnedBy(peerProcessId, hostId))
             {
                 return new HelloIdentity("host", hostId);
@@ -262,18 +302,51 @@ internal sealed class ReplControlHost : IDisposable
         }
 
         if (!payload.TryGetProperty("sessionId", out var session) ||
-            string.IsNullOrWhiteSpace(session.GetString()))
+            session.GetString() is not { } sessionId || sessionId.IsWhiteSpace())
         {
             return null;
         }
 
-        var sessionId = session.GetString()!;
+        if (OperatingSystem.IsWindows())
+        {
+            return string.Equals(ResolveCredentialIdentity(payload), sessionId, StringComparison.Ordinal)
+                ? new HelloIdentity("session", sessionId)
+                : null;
+        }
+
         if (peerProcessId > 0)
         {
             return registry.IsOwnedBy(peerProcessId, sessionId) ? new HelloIdentity("session", sessionId) : null;
         }
 
         return registry.ContainsSession(sessionId) ? new HelloIdentity("session", sessionId) : null;
+    }
+
+    private string? ResolveCredentialIdentity(JsonElement payload)
+    {
+        if (credentials is null ||
+            !payload.TryGetProperty("credential", out var credential) ||
+            credential.ValueKind != JsonValueKind.String ||
+            credential.GetString() is not { } s || s.IsWhiteSpace())
+        {
+            return null;
+        }
+
+        return credentials.TryResolve(s, out var identity) ? identity : null;
+    }
+
+    private string? ResolveCredentialIdentity(HttpContext context)
+    {
+        if (credentials is null)
+        {
+            return null;
+        }
+
+        var credential = context.Request.Headers[CredentialHeader].ToString();
+        return !string.IsNullOrWhiteSpace(credential) &&
+               credentials.TryResolve(credential, out var identity)
+            ? identity
+            : null;
     }
 
     private async Task HandleBusMessageAsync(string sessionId, string text, CancellationToken ct)
@@ -660,6 +733,7 @@ internal sealed class ReplControlHost : IDisposable
                     {
                         current = DeserializeArguments(replacement);
                     }
+
                     break;
                 case "continue":
                     break;
@@ -727,12 +801,12 @@ internal sealed class ReplControlHost : IDisposable
     {
         if (value is not { ValueKind: JsonValueKind.Object } decision ||
             !decision.TryGetProperty("action", out var action) ||
-            action.ValueKind != JsonValueKind.String)
+            action.ValueKind != JsonValueKind.String ||
+            action.GetString() is not { } actionValue)
         {
             return ("invalid", null, "tool_hook_invalid", "A hook returned a non-object decision.");
         }
 
-        var actionValue = action.GetString()!;
         JsonElement? arguments = null;
         if (decision.TryGetProperty("arguments", out var replaced) && replaced.ValueKind == JsonValueKind.Object)
         {
@@ -741,17 +815,22 @@ internal sealed class ReplControlHost : IDisposable
 
         var code = "tool_hook_rejected";
         var message = "A hook rejected the tool call.";
-        if (decision.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+        if (!decision.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object)
+            return (actionValue, arguments, code, message);
+        if (error.TryGetProperty("code", out var codeValue)
+            && codeValue.ValueKind == JsonValueKind.String
+            && codeValue.GetString() is { } s
+           )
         {
-            if (error.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String)
-            {
-                code = codeValue.GetString()!;
-            }
+            code = s;
+        }
 
-            if (error.TryGetProperty("message", out var messageValue) && messageValue.ValueKind == JsonValueKind.String)
-            {
-                message = messageValue.GetString()!;
-            }
+        if (error.TryGetProperty("message", out var messageValue) &&
+            messageValue.ValueKind == JsonValueKind.String
+            && messageValue.GetString() is { } mes)
+
+        {
+            message = mes;
         }
 
         return (actionValue, arguments, code, message);
@@ -800,7 +879,8 @@ internal sealed class ReplControlHost : IDisposable
 
     private static JsonElement? ResolvePostResult(JsonElement envelope)
     {
-        if (!envelope.TryGetProperty("value", out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        if (!envelope.TryGetProperty("value", out var value) ||
+            value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
             return null;
         }

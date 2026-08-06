@@ -50,10 +50,21 @@ internal sealed class LocalDenoReplSessionFactory(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [ReplControlEnvironment.IpcAddress] = controlHost.ControlAddress,
+            [ReplControlEnvironment.ClientModule] = clientModule.ClientUrl,
+            [ReplControlEnvironment.SessionId] = sessionId
+        };
         if (OperatingSystem.IsWindows())
         {
-            throw new PlatformNotSupportedException(
-                "The Deno REPL control channel requires named-pipe bootstrap, which is not implemented on Windows yet.");
+            if (controlHost.WindowsPipeName is not { } pipeName)
+            {
+                throw new PlatformNotSupportedException(
+                    "The Windows named-pipe bootstrap is not wired into the application host.");
+            }
+
+            environment[ReplControlEnvironment.PipeName] = pipeName;
         }
 
         var kernelSpec = new JupyterKernelSpec(
@@ -61,12 +72,7 @@ internal sealed class LocalDenoReplSessionFactory(
             "Deno",
             "typescript",
             "signal",
-            new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                [ReplControlEnvironment.IpcAddress] = controlHost.SocketPath,
-                [ReplControlEnvironment.ClientModule] = clientModule.ClientUrl,
-                [ReplControlEnvironment.SessionId] = sessionId
-            });
+            environment);
         return await LocalJupyterKernelManager.StartAsync(
             kernelSpec,
             new LocalJupyterKernelManagerOptions

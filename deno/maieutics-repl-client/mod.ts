@@ -14,11 +14,40 @@
 
 const ADDRESS_ENV = "MAIEUTICS_REPL_IPC";
 const SESSION_ENV = "MAIEUTICS_REPL_SESSION";
+const PIPE_ENV = "MAIEUTICS_REPL_PIPE";
+const CREDENTIAL_HEADER = "X-Maieutics-Credential";
 const SERVER_URL = "http://localhost";
 const BUS_TIMEOUT_MS = 5_000;
 
 import { type BusConnection, connectBus } from "../shared/bus.ts";
 import { ENVELOPE_VERSION, type HttpClient, type ReplEnvelope } from "../shared/protocol.ts";
+import { type BootstrapCredential, bootstrapWindowsCredential } from "./windows_bootstrap.ts";
+
+const IS_WINDOWS = Deno.build.os === "windows";
+let windowsCredential: BootstrapCredential | undefined;
+
+function ensureCredential(): BootstrapCredential | undefined {
+  if (!IS_WINDOWS) {
+    return undefined;
+  }
+  if (windowsCredential === undefined) {
+    const pipeName = Deno.env.get(PIPE_ENV);
+    if (!pipeName) {
+      throw new Error(`Missing ${PIPE_ENV} environment variable on Windows.`);
+    }
+    windowsCredential = bootstrapWindowsCredential(pipeName);
+  }
+  return windowsCredential;
+}
+
+function credentialHeaders(): Record<string, string> | undefined {
+  const credential = ensureCredential()?.credential;
+  return credential === undefined ? undefined : { [CREDENTIAL_HEADER]: credential };
+}
+
+function serverBase(address: string): string {
+  return IS_WINDOWS ? `http://${address}` : SERVER_URL;
+}
 
 export interface ReplClientOptions {
   /** Unix domain socket path of the kernel control channel. */
@@ -165,11 +194,17 @@ export class ToolTask<T = unknown> extends EventTarget implements PromiseLike<T>
 }
 
 function createHttp(address: string): HttpClient {
+  if (IS_WINDOWS) {
+    return Deno.createHttpClient({});
+  }
   return Deno.createHttpClient({ proxy: { transport: "unix", path: address } });
 }
 
 async function healthProbe(http: HttpClient): Promise<string> {
-  const response = await fetch(`${SERVER_URL}/health`, { client: http });
+  const response = await fetch(`${serverBase(resolveAddress())}/health`, {
+    client: http,
+    headers: credentialHeaders(),
+  });
   if (!response.ok) {
     throw new Error(
       `REPL control channel health check failed with status ${response.status}.`,
@@ -186,13 +221,15 @@ class ReplBus {
   readonly events: EventTarget;
 
   private readonly http: HttpClient;
+  private readonly address: string;
   private readonly sessionId: string;
   private readonly waiters = new Map<string, (envelope: ReplEnvelope) => void>();
   private bus: BusConnection | undefined;
   private connecting: Promise<void> | undefined;
 
-  constructor(http: HttpClient, events: EventTarget) {
+  constructor(http: HttpClient, address: string, events: EventTarget) {
     this.http = http;
+    this.address = address;
     this.events = events;
     this.sessionId = Deno.env.get(SESSION_ENV) ?? "";
   }
@@ -265,17 +302,18 @@ class ReplBus {
         `Missing ${SESSION_ENV} environment variable; cannot open the REPL control bus.`,
       );
     }
-    this.bus = await connectBus(
-      this.http,
-      {
+    this.bus = await connectBus({
+      http: IS_WINDOWS ? undefined : this.http,
+      url: IS_WINDOWS ? `ws://${this.address}/ws` : "ws://localhost/ws",
+      hello: {
         type: "control.hello",
-        payload: { sessionId: this.sessionId },
+        payload: { sessionId: this.sessionId, credential: ensureCredential()?.credential },
       },
-      (envelope) => this.route(envelope),
-      () => {
+      onMessage: (envelope) => this.route(envelope),
+      onClose: () => {
         this.bus = undefined;
       },
-    );
+    });
     try {
       await this.waitForType("control.ready");
     } catch (error) {
@@ -355,10 +393,10 @@ function startTool(
     abort.signal.addEventListener("abort", sendCancel, { once: true });
     try {
       current.status = "working";
-      const response = await fetch(`${SERVER_URL}/v1/tool.invoke`, {
+      const response = await fetch(`${serverBase(resolveAddress())}/v1/tool.invoke`, {
         client: http,
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...credentialHeaders() },
         body: JSON.stringify({
           version: ENVELOPE_VERSION,
           tool: name,
@@ -422,7 +460,7 @@ function createComm(bus: ReplBus): ReplComm {
 }
 
 function createClient(http: HttpClient, address: string, events: EventTarget): ReplClient {
-  const bus = new ReplBus(http, events);
+  const bus = new ReplBus(http, address, events);
   return {
     address,
     health: () => healthProbe(http),

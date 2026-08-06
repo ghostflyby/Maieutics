@@ -59,10 +59,14 @@ async function main(): Promise<void> {
   );
 
   const http = Deno.createHttpClient({ proxy: { transport: "unix", path: ipcAddress } });
-  const bus = await connectBus(http, {
-    type: "control.hello",
-    payload: { hostId },
-  }, handleMessage);
+  const bus = await connectBus({
+    http,
+    hello: {
+      type: "control.hello",
+      payload: { hostId },
+    },
+    onMessage: handleMessage,
+  });
   bus.send({
     type: "extension.registry",
     payload: registryPayload(registered),

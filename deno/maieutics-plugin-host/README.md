@@ -9,8 +9,8 @@ The plugin SDK lives in `../maieutics-plugin-sdk`; the SDK and host are embedded
 materialized per process, so versions are lockstep.
 
 The host process runs with a materialized root `deno.json` whose `links` entry maps
-`jsr:@maieutics/plugin-sdk` to the local materialized SDK package. Plugins therefore import the
-SDK with a stable specifier (`import "@maieutics/plugin-sdk"` or
+`jsr:@maieutics/plugin-sdk` to the local materialized SDK package. Plugins therefore import the SDK
+with a stable specifier (`import "@maieutics/plugin-sdk"` or
 `import "jsr:@maieutics/plugin-sdk@^0.1"`) and Deno resolves it to the kernel-provided local copy;
 this keeps JSR-distributed plugins working without a registry round trip.
 

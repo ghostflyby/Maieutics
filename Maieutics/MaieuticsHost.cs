@@ -11,6 +11,9 @@ using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using System.Runtime.Versioning;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.AI;
@@ -122,11 +125,28 @@ public static class MaieuticsHost
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.AddServerHeader = false;
-            options.ListenUnixSocket(controlSocketPath, listenOptions =>
+            if (OperatingSystem.IsWindows())
             {
-                listenOptions.Protocols = HttpProtocols.Http1;
-            });
+                options.ListenLocalhost(0, listenOptions =>
+                {
+                    listenOptions.Protocols = HttpProtocols.Http1;
+                });
+            }
+            else
+            {
+                options.ListenUnixSocket(controlSocketPath, listenOptions =>
+                {
+                    listenOptions.Protocols = HttpProtocols.Http1;
+                });
+            }
         });
+        builder.Services.AddSingleton<ReplControlCredentialRegistry>();
+        if (OperatingSystem.IsWindows())
+        {
+            builder.Services.AddSingleton<IWindowsPipeBootstrap>(
+                static services => CreateWindowsBootstrap(services));
+        }
+
         builder.Services.AddSingleton<PluginHostModule>();
         builder.Services.AddSingleton(services => new PluginHostManager(
             Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".maieutics", "plugins"),
@@ -145,7 +165,11 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<ReplControlHost>>(),
             services.GetRequiredService<WorkspaceFunctions>().Functions,
-            services.GetRequiredService<PluginHostManager>()));
+            services.GetRequiredService<PluginHostManager>(),
+            services.GetRequiredService<ReplControlCredentialRegistry>(),
+            OperatingSystem.IsWindows()
+                ? services.GetRequiredService<IWindowsPipeBootstrap>()
+                : null));
         builder.Services.AddSingleton<ReplClientModule>();
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();
@@ -177,12 +201,34 @@ public static class MaieuticsHost
         var builder = CreateApplicationBuilder(args);
         configure?.Invoke(builder);
         var application = builder.Build();
-        application.Services.GetRequiredService<ReplControlHost>().MapEndpoints(application);
+        var controlHost = application.Services.GetRequiredService<ReplControlHost>();
+        if (OperatingSystem.IsWindows())
+        {
+            application.Lifetime.ApplicationStarted.Register(() =>
+            {
+                var addresses = application.Services.GetRequiredService<IServer>()
+                    .Features.Get<IServerAddressesFeature>();
+                var address = addresses?.Addresses.FirstOrDefault();
+                if (address is not null && Uri.TryCreate(address, UriKind.Absolute, out var uri))
+                {
+                    controlHost.WindowsControlAddress = $"{uri.Host}:{uri.Port}";
+                }
+            });
+        }
+
+        controlHost.MapEndpoints(application);
         return application;
     }
 
     private static IAgentSession CreateAgentSession(IServiceProvider services) =>
         new AgentSession(services.GetRequiredService<IAgentRunProfileProvider>());
+
+    [SupportedOSPlatform("windows")]
+    private static WindowsPipeBootstrap CreateWindowsBootstrap(IServiceProvider services) => new(
+        $"maieutics-{Guid.NewGuid():N}",
+        services.GetRequiredService<ReplControlSessionRegistry>(),
+        services.GetRequiredService<ReplControlCredentialRegistry>(),
+        services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
 
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {

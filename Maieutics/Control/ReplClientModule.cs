@@ -10,6 +10,7 @@ internal sealed class ReplClientModule
     private static readonly (string Resource, string RelativePath)[] Entries =
     [
         ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),
+        ("Maieutics.Deno.ReplClientWindowsBootstrap.ts", "maieutics-repl-client/windows_bootstrap.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts")
     ];

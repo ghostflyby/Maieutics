@@ -22,4 +22,7 @@ internal static class ReplControlEnvironment
 
     /// <summary>File URL of the materialized plugin worker entry module.</summary>
     public const string PluginWorkerEntry = "MAIEUTICS_PLUGIN_WORKER_ENTRY";
+
+    /// <summary>Named pipe name for the Windows credential bootstrap.</summary>
+    public const string PipeName = "MAIEUTICS_REPL_PIPE";
 }

@@ -106,6 +106,55 @@ public sealed class JupyterProtocolSessionTests
         var collected = await outputs.WaitAsync(TestContext.Current.CancellationToken);
         completion.Reply.Status.Should().Be("ok");
         collected.Should().ContainSingle(output => output is JupyterExecuteResultOutput);
+        collected.Last().Should().BeOfType<JupyterExecutionStatusChanged>()
+            .Which.State.Should().Be(JupyterKernelState.Idle);
+    }
+
+    [Fact]
+    public async Task ParentedIopubAfterIdleIsLateEvenWhenShellReplyHasNotArrived()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        await using var events = session.WatchEventsAsync(TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        (await events.MoveNextAsync()).Should().BeTrue();
+
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("display()"),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        var outputsTask = ReadOutputsAsync(execution, TestContext.Current.CancellationToken);
+
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, request));
+        execution.Completion.IsCompleted.Should().BeFalse();
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "display_data",
+                DisplayData("late"),
+                JupyterJsonContext.Default.JupyterDisplayData,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                request));
+
+        (await execution.Completion.WaitAsync(TestContext.Current.CancellationToken)).Reply.Status.Should().Be("ok");
+        var outputs = await outputsTask.WaitAsync(TestContext.Current.CancellationToken);
+        outputs.OfType<JupyterDisplayOutput>().Should().BeEmpty();
+        outputs.Last().Should().BeOfType<JupyterExecutionStatusChanged>()
+            .Which.State.Should().Be(JupyterKernelState.Idle);
+
+        (await events.MoveNextAsync()).Should().BeTrue();
+        var late = events.Current.Should().BeOfType<JupyterLateOutput>().Subject;
+        late.Message.MessageType.Should().Be("display_data");
+        late.Output.Should().BeOfType<JupyterDisplayOutput>()
+            .Which.Data.Data["text/plain"].GetString().Should().Be("late");
     }
 
     [Fact]

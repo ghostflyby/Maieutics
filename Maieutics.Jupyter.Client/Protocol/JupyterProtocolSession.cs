@@ -12,7 +12,6 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
 {
     private const int ExecutionOutputCapacity = 512;
     private const int CompletedExecutionHistory = 256;
-    private static readonly TimeSpan TailSettleTimeout = TimeSpan.FromMilliseconds(50);
     private readonly HashSet<JupyterMessageId> completedExecutions = [];
     private readonly Lock completedGate = new();
     private readonly Queue<JupyterMessageId> completedOrder = [];
@@ -364,15 +363,10 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     {
         try
         {
-            while (true)
-            {
-                if (!await transport.WaitToReadAsync(Timeout.InfiniteTimeSpan, disposal.Token)
-                        .ConfigureAwait(false)) break;
-
-                while (transport.TryReadIncoming(out var transportMessage)) RouteMessage(transportMessage);
-
-                await SettleDeferredCompletionsAsync(disposal.Token).ConfigureAwait(false);
-            }
+            await foreach (var transportMessage in transport.IncomingMessages
+                               .WithCancellation(disposal.Token)
+                               .ConfigureAwait(false))
+                RouteMessage(transportMessage);
         }
         catch (OperationCanceledException) when (disposal.IsCancellationRequested)
         {
@@ -412,6 +406,12 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         if (message.ParentHeader is { } executionParent &&
             executions.TryGetValue(executionParent.MessageId, out var execution))
         {
+            if (transportMessage.Channel == JupyterTransportChannel.Iopub && execution.IdleSeen)
+            {
+                PublishLateOutput(executionParent.MessageId, message);
+                return;
+            }
+
             RouteExecutionMessage(execution, transportMessage);
             return;
         }
@@ -420,11 +420,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             message.ParentHeader is { } lateParent &&
             IsCompletedExecution(lateParent.MessageId))
         {
-            var lateOutput = new JupyterLateOutput(lateParent.MessageId, message);
-            if (TryCreateOutput(lateParent.MessageId, message, out var output))
-                lateOutput = lateOutput with { Output = output };
-
-            events.Publish(lateOutput);
+            PublishLateOutput(lateParent.MessageId, message);
             return;
         }
 
@@ -455,58 +451,26 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         CompleteExecutionIfReady(execution);
     }
 
-    private static void CompleteExecutionIfReady(ExecutionState execution)
+    private void CompleteExecutionIfReady(ExecutionState execution)
     {
         if (!execution.IdleSeen ||
             execution.Reply is not { } reply ||
-            execution.ReplyMessage is not { } replyMessage ||
-            execution.DeferredReply is not null)
+            execution.ReplyMessage is not { } replyMessage)
             return;
 
-        // The kernel's asynchronous output drain can publish the tail of an execution's IOPub
-        // output after idle; keep the execution open until the mailbox is drained and settled so
-        // that tail is counted as part of the execution instead of routed as late output.
-        execution.DeferredReply = (reply, replyMessage);
-    }
+        if (!executions.TryRemove(execution.RequestHeader.MessageId, out _)) return;
 
-    private void FinalizeDeferredExecution(ExecutionState execution)
-    {
-        if (!executions.TryRemove(execution.RequestHeader.MessageId, out _) ||
-            execution.DeferredReply is not { } deferred)
-            return;
-
-        execution.Outputs.Writer.TryComplete();
-        execution.Completion.TrySetResult(new JupyterExecutionResult(deferred.Reply, deferred.ReplyMessage));
         RememberCompletedExecution(execution.RequestHeader.MessageId);
+        execution.Outputs.Writer.TryComplete();
+        execution.Completion.TrySetResult(new JupyterExecutionResult(reply, replyMessage));
     }
 
-    private async Task SettleDeferredCompletionsAsync(CancellationToken cancellationToken)
+    private void PublishLateOutput(JupyterMessageId requestId, JupyterMessage message)
     {
-        while (true)
-        {
-            var deferred = executions.Values.FirstOrDefault(static execution => execution.DeferredReply is not null);
-            if (deferred is null) return;
+        var lateOutput = new JupyterLateOutput(requestId, message);
+        if (TryCreateOutput(requestId, message, out var output)) lateOutput = lateOutput with { Output = output };
 
-            while (transport.PendingIncomingCount > 0)
-            {
-                if (!transport.TryReadIncoming(out var next)) break;
-
-                RouteMessage(next);
-            }
-
-            if (!await transport.WaitToReadAsync(TailSettleTimeout, cancellationToken).ConfigureAwait(false))
-            {
-                FinalizeDeferredExecution(deferred);
-                continue;
-            }
-
-            if (transport.TryReadIncoming(out var arrived))
-            {
-                var belongsToDeferred = arrived.Message.ParentHeader?.MessageId == deferred.RequestHeader.MessageId;
-                RouteMessage(arrived);
-                if (!belongsToDeferred) FinalizeDeferredExecution(deferred);
-            }
-        }
+        events.Publish(lateOutput);
     }
 
     private static bool TryCreateOutput(JupyterMessageId requestId, JupyterMessage message,
@@ -728,7 +692,5 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         public JupyterMessage? ReplyMessage { get; set; }
 
         public bool IdleSeen { get; set; }
-
-        public (JupyterExecuteReply Reply, JupyterMessage ReplyMessage)? DeferredReply { get; set; }
     }
 }

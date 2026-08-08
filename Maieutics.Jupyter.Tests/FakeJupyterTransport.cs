@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Client.Transport;
 using Maieutics.Jupyter.Shared;
@@ -25,35 +24,6 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
     }
 
     public IAsyncEnumerable<JupyterTransportMessage> IncomingMessages => incomingMessages.Reader.ReadAllAsync();
-
-    public int PendingIncomingCount => incomingMessages.Reader.Count;
-
-    public bool TryReadIncoming([NotNullWhen(true)] out JupyterTransportMessage? message)
-    {
-        if (incomingMessages.Reader.TryRead(out var item))
-        {
-            message = item;
-            return true;
-        }
-
-        message = null;
-        return false;
-    }
-
-    public async ValueTask<bool> WaitToReadAsync(TimeSpan timeout, CancellationToken cancellationToken)
-    {
-        if (incomingMessages.Reader.Count > 0) return true;
-
-        try
-        {
-            return await incomingMessages.Reader.WaitToReadAsync(cancellationToken).AsTask()
-                .WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            return false;
-        }
-    }
 
     public ValueTask SendAsync(
         JupyterTransportChannel channel,

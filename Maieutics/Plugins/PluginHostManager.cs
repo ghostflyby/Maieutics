@@ -54,9 +54,9 @@ internal sealed class PluginHostManager(
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
     private readonly List<PluginDescriptor> descriptors = [];
-    private readonly List<McpServerDefinition> dynamicDefinitions = [];
-    private readonly ConcurrentDictionary<string, McpServerGeneration> dynamicMcp = new(StringComparer.Ordinal);
     private readonly Lock gate = new();
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly Lock lifecycleGate = new();
 
     private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -76,8 +76,11 @@ internal sealed class PluginHostManager(
     private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     private string? configPath;
 
+    private PluginMcpCoordinator? dynamicMcpCoordinator;
     private PluginHostProcess? process;
+    private Task processExitObservation = Task.CompletedTask;
     private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
+    private Task? stopping;
     private WebSocket? Socket { get; set; }
 
     private string HostId { get; } = $"host-{Guid.NewGuid():N}"[..12];
@@ -113,7 +116,10 @@ internal sealed class PluginHostManager(
     public void SetReservedToolNames(IReadOnlySet<string> names)
     {
         ArgumentNullException.ThrowIfNull(names);
-        reservedToolNames = names;
+        lock (gate)
+        {
+            reservedToolNames = names.ToHashSet(StringComparer.Ordinal);
+        }
     }
 
     public IReadOnlyList<PluginRegistration> GetRegistrations(string extensionPoint)
@@ -136,6 +142,7 @@ internal sealed class PluginHostManager(
 
         if (descriptors.Count == 0)
         {
+            StartDynamicMcpCoordinator();
             logger.LogInformation("No Maieutics plugins found under '{PluginsRoot}'.", pluginsRoot);
             return;
         }
@@ -154,7 +161,18 @@ internal sealed class PluginHostManager(
                 BuildProcessGrants(configPath)),
             logger);
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
-        _ = ObserveExitAsync(process, configPath);
+        processExitObservation = ObserveExitAsync(process, configPath);
+        StartDynamicMcpCoordinator();
+    }
+
+    private void StartDynamicMcpCoordinator()
+    {
+        var coordinator = new PluginMcpCoordinator(
+            DiscoverDynamicMcpAsync,
+            CreateDynamicMcpGenerationAsync,
+            logger);
+        coordinator.Start();
+        dynamicMcpCoordinator = coordinator;
     }
 
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
@@ -168,7 +186,7 @@ internal sealed class PluginHostManager(
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         pending[correlationId] = tcs;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         timeout.CancelAfter(InvokeTimeout);
         try
         {
@@ -195,12 +213,7 @@ internal sealed class PluginHostManager(
     /// <summary>Acquires leases for plugin-discovered MCP servers that are ready.</summary>
     public IReadOnlyList<McpServerGeneration.McpServerLease> AcquireDynamicMcpLeases()
     {
-        var leases = new List<McpServerGeneration.McpServerLease>();
-        foreach (var generation in dynamicMcp.Values)
-            if (generation.TryAcquire() is { } lease)
-                leases.Add(lease);
-
-        return leases;
+        return dynamicMcpCoordinator?.AcquireLeases() ?? [];
     }
 
     /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.</summary>
@@ -232,15 +245,27 @@ internal sealed class PluginHostManager(
         }
     }
 
-    private async Task StopAsync()
+    private Task StopAsync()
     {
+        lock (lifecycleGate)
+        {
+            return stopping ??= StopCoreAsync();
+        }
+    }
+
+    private async Task StopCoreAsync()
+    {
+        await Task.Yield();
+        await lifetime.CancelAsync().ConfigureAwait(false);
+        FailPending("The plugin host is stopping.");
+        if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
+
         if (process is not null)
         {
-            sessionRegistry.UnregisterPluginHost(process.ProcessId);
             await process.StopAsync().ConfigureAwait(false);
+            await processExitObservation.ConfigureAwait(false);
         }
-
-        if (configPath is not null)
+        else if (configPath is not null)
             try
             {
                 File.Delete(configPath);
@@ -249,6 +274,8 @@ internal sealed class PluginHostManager(
             {
                 // Best-effort temp cleanup must not mask shutdown.
             }
+
+        lifetime.Dispose();
     }
 
     private async Task ObserveExitAsync(PluginHostProcess pluginProcess, string path)
@@ -470,6 +497,7 @@ internal sealed class PluginHostManager(
     {
         if (payload is null) return;
 
+        PluginRegistration[] snapshot;
         lock (gate)
         {
             registrations.Clear();
@@ -481,92 +509,62 @@ internal sealed class PluginHostManager(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
                 registrations.Count,
                 payload.Plugins.Count);
+
+            snapshot = registrations
+                .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
+                .ToArray();
         }
 
-        _ = RefreshDynamicMcpAsync();
+        dynamicMcpCoordinator?.PublishRegistry(snapshot);
     }
 
-    private async Task RefreshDynamicMcpAsync()
+    private async Task<PluginMcpDiscoveryResult> DiscoverDynamicMcpAsync(
+        PluginRegistration registration,
+        CancellationToken cancellationToken)
     {
-        var discoveries = GetRegistrations(ReplExtensionPointName.McpDiscover);
-        if (discoveries.Count == 0) return;
+        var request = JsonSerializer.SerializeToElement(
+            new DiscoverContextPayload("registry_update"),
+            ReplControlJsonContext.Default.DiscoverContextPayload);
+        var outcome = await InvokeExtensionPointAsync(
+                registration.PluginId,
+                registration.ExportName,
+                ReplExtensionPointName.McpDiscover,
+                request,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (outcome.IsError) return PluginMcpDiscoveryResult.Failed(outcome.Code);
+        if (outcome.Value is not { ValueKind: JsonValueKind.Array } array)
+            return PluginMcpDiscoveryResult.Failed("invalid_discovery_result");
 
         var definitions = new List<McpServerDefinition>();
-        foreach (var registration in discoveries)
-            try
-            {
-                var request = JsonSerializer.SerializeToElement(
-                    new DiscoverContextPayload("startup"),
-                    ReplControlJsonContext.Default.DiscoverContextPayload);
-                var outcome = await InvokeExtensionPointAsync(
-                    registration.PluginId,
-                    registration.ExportName,
-                    ReplExtensionPointName.McpDiscover,
-                    request,
-                    CancellationToken.None).ConfigureAwait(false);
-                if (outcome.IsError)
-                {
-                    logger.LogWarning(
-                        "Plugin '{PluginId}' MCP discovery failed: {Message}",
-                        registration.PluginId,
-                        outcome.Message);
-                    continue;
-                }
-
-                if (outcome.Value is not { ValueKind: JsonValueKind.Array } array) continue;
-
-                foreach (var item in array.EnumerateArray())
-                    if (TryToMcpDefinition(registration.PluginId, item, out var definition))
-                        definitions.Add(definition);
-            }
-            catch (Exception exception)
-            {
-                logger.LogWarning(
-                    exception,
-                    "Plugin '{PluginId}' MCP discovery raised an unexpected failure.",
-                    registration.PluginId);
-            }
-
-        lock (gate)
+        foreach (var item in array.EnumerateArray())
         {
-            dynamicDefinitions.Clear();
-            dynamicDefinitions.AddRange(definitions.DistinctBy(static definition => definition.Id));
+            if (!TryToMcpDefinition(registration.PluginId, item, out var definition))
+                return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
+
+            definitions.Add(definition);
         }
 
-        await RefreshDynamicGenerationsAsync().ConfigureAwait(false);
+        return PluginMcpDiscoveryResult.Success(definitions);
     }
 
-    private async Task RefreshDynamicGenerationsAsync()
+    private Task<McpServerGeneration> CreateDynamicMcpGenerationAsync(
+        McpServerDefinition definition,
+        CancellationToken cancellationToken)
     {
-        McpServerDefinition[] definitions;
+        IReadOnlySet<string> reservedNames;
         lock (gate)
         {
-            definitions = dynamicDefinitions.ToArray();
+            reservedNames = reservedToolNames;
         }
 
-        foreach (var definition in definitions)
-        {
-            if (dynamicMcp.ContainsKey(definition.Id)) continue;
-
-            try
-            {
-                var generation = await McpServerGeneration.CreateAsync(
-                    definition,
-                    loggerFactory,
-                    timeProvider,
-                    CancellationToken.None,
-                    null,
-                    reservedToolNames).ConfigureAwait(false);
-                if (!dynamicMcp.TryAdd(definition.Id, generation)) await generation.Retire().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                logger.LogWarning(
-                    exception,
-                    "Plugin-discovered MCP server '{ServerId}' could not be started.",
-                    definition.Id);
-            }
-        }
+        return McpServerGeneration.CreateAsync(
+            definition,
+            loggerFactory,
+            timeProvider,
+            cancellationToken,
+            null,
+            reservedNames);
     }
 
     private static bool TryToMcpDefinition(

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using Maieutics.Control;
 using Microsoft.Extensions.Logging;
@@ -34,6 +35,9 @@ internal sealed record PluginHostProcessGrants(
 /// </summary>
 internal sealed class PluginHostProcess : IAsyncDisposable
 {
+    private const int DrainBufferCharacters = 4096;
+    private const int MaximumLoggedCharactersPerStream = 32 * 1024;
+
     private static readonly string[] AllowedEnvironmentNames =
     [
         "PATH",
@@ -54,22 +58,33 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         "PATHEXT"
     ];
 
-    private readonly CancellationTokenSource lifetime = new();
-
+    private readonly Lock gate = new();
     private readonly Process process;
-    private bool stopped;
+    private readonly int processId;
+    private int exitCode = int.MinValue;
+    private Task? stopping;
 
-    private PluginHostProcess(Process process, Task completion)
+    private PluginHostProcess(Process process, ILogger logger)
     {
         this.process = process;
-        this.Completion = completion;
+        processId = process.Id;
+        var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", logger, processId);
+        var stderrDrain = DrainAsync(process.StandardError, "stderr", logger, processId);
+        Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
     }
 
-    public int ProcessId => process.Id;
+    public int ProcessId => processId;
 
     public Task Completion { get; }
 
-    public int? ExitCode => process.HasExited ? process.ExitCode : null;
+    public int? ExitCode
+    {
+        get
+        {
+            var value = Volatile.Read(ref exitCode);
+            return value == int.MinValue ? null : value;
+        }
+    }
 
     public ValueTask DisposeAsync()
     {
@@ -114,10 +129,8 @@ internal sealed class PluginHostProcess : IAsyncDisposable
 
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException("The plugin host process could not be started.");
-        _ = DrainAsync(process.StandardOutput, process.StandardError, logger, process.Id);
-        var completion = process.WaitForExitAsync();
         logger.LogInformation("Plugin host started with pid {ProcessId}.", process.Id);
-        return new PluginHostProcess(process, completion);
+        return new PluginHostProcess(process, logger);
     }
 
     private static void AddGrant(
@@ -136,17 +149,22 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         if (distinct.Length > 0) startInfo.ArgumentList.Add($"{flag}={string.Join(",", distinct)}");
     }
 
-    public async Task StopAsync()
+    public Task StopAsync()
     {
-        if (stopped) return;
+        lock (gate)
+        {
+            return stopping ??= StopCoreAsync();
+        }
+    }
 
-        stopped = true;
-        lifetime.Cancel();
+    private async Task StopCoreAsync()
+    {
+        await Task.Yield();
         try
         {
-            if (!process.HasExited) process.Kill(true);
+            if (!Completion.IsCompleted && !process.HasExited) process.Kill(true);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
         {
             // The process exited between the check and the kill.
         }
@@ -159,20 +177,78 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         {
             // Exit observation must not mask shutdown.
         }
+
+        process.Dispose();
     }
 
     private static async Task DrainAsync(
-        TextReader standardOutput,
-        TextReader standardError,
+        TextReader reader,
+        string streamName,
         ILogger logger,
         int processId)
     {
-        var output = await standardOutput.ReadToEndAsync().ConfigureAwait(false);
-        var error = await standardError.ReadToEndAsync().ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(output))
-            logger.LogDebug("Plugin host {ProcessId} stdout: {Output}", processId, output);
+        var buffer = ArrayPool<char>.Shared.Rent(DrainBufferCharacters);
+        var remainingLogBudget = logger.IsEnabled(LogLevel.Debug) ? MaximumLoggedCharactersPerStream : 0;
+        var truncationLogged = false;
+        try
+        {
+            while (true)
+            {
+                var read = await reader.ReadAsync(buffer.AsMemory(0, DrainBufferCharacters)).ConfigureAwait(false);
+                if (read == 0) break;
 
-        if (!string.IsNullOrWhiteSpace(error))
-            logger.LogDebug("Plugin host {ProcessId} stderr: {Error}", processId, error);
+                if (remainingLogBudget == 0)
+                {
+                    if (!truncationLogged && logger.IsEnabled(LogLevel.Debug))
+                    {
+                        logger.LogDebug(
+                            "Plugin host {ProcessId} {StreamName} logging was truncated after {CharacterLimit} characters; remaining output is still drained.",
+                            processId,
+                            streamName,
+                            MaximumLoggedCharactersPerStream);
+                        truncationLogged = true;
+                    }
+
+                    continue;
+                }
+
+                var loggedCount = Math.Min(read, remainingLogBudget);
+                var output = new string(buffer, 0, loggedCount);
+                if (!string.IsNullOrWhiteSpace(output))
+                    logger.LogDebug(
+                        "Plugin host {ProcessId} {StreamName}: {Output}",
+                        processId,
+                        streamName,
+                        output);
+                remainingLogBudget -= loggedCount;
+                if (loggedCount >= read) continue;
+
+                logger.LogDebug(
+                    "Plugin host {ProcessId} {StreamName} logging was truncated after {CharacterLimit} characters; remaining output is still drained.",
+                    processId,
+                    streamName,
+                    MaximumLoggedCharactersPerStream);
+                truncationLogged = true;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            logger.LogDebug(
+                exception,
+                "Plugin host {ProcessId} {StreamName} drain ended before EOF.",
+                processId,
+                streamName);
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer);
+        }
+    }
+
+    private async Task ObserveCompletionAsync(Task stdoutDrain, Task stderrDrain)
+    {
+        await process.WaitForExitAsync().ConfigureAwait(false);
+        await Task.WhenAll(stdoutDrain, stderrDrain).ConfigureAwait(false);
+        Volatile.Write(ref exitCode, process.ExitCode);
     }
 }

@@ -613,6 +613,50 @@ public sealed class AgentJupyterIntegrationTests
         await host.Completion.WaitAsync(deadline.Token);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ModelDiscoveryRendersExternalIdentifiersAsInertMarkdown()
+    {
+        using var deadline = CreateDeadline();
+        var session = new AgentSession(new ScriptedChatClient());
+        var application = new MaieuticsAgentKernelApplication(
+            session,
+            static () => new MaieuticsAgentKernelOptions(),
+            new AdversarialDiscoveryRuntimeConfiguration());
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: deadline.Token);
+        await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+
+        var available = await client.ExecuteAsync(
+            new JupyterExecuteRequest("%model available"),
+            deadline.Token);
+        var outputs = await ReadOutputsAsync(available, deadline.Token);
+        (await available.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        var markdown = ReadMarkdown(outputs.OfType<JupyterDisplayOutput>().Single())
+                       ?? throw new InvalidOperationException("Expected Markdown output.");
+        markdown.Should().Contain("`[Vendor](https://evil.invalid)\\n# heading`");
+        markdown.Should().Contain("`` `source` ``");
+        markdown.Should().Contain("```model``name\\n![image](https://evil.invalid)```");
+        markdown.Should().Contain("`<img src=x onerror=alert(1)>`");
+        markdown.Should().Contain("The provider could not return available models\\.");
+        markdown.Should().Contain("(`provider_error`)");
+        markdown.Should().NotContain("\n# heading");
+        markdown.Should().NotContain("\n![image]");
+        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+        await client.ShutdownAsync(false, deadline.Token);
+        await host.Completion.WaitAsync(deadline.Token);
+    }
+
+    [Fact]
+    public void MarkdownPlainTextEscapesLinksHtmlAndLineBreaks()
+    {
+        MarkdownText.PlainText("[link](https://evil.invalid)\n<img src=x>!").Should()
+            .Be("\\[link\\]\\(https\\:\\/\\/evil\\.invalid\\)\\\\n\\<img src\\=x\\>\\!");
+    }
+
     private static string? ReadMarkdown(JupyterOutput output)
     {
         return output switch
@@ -1017,6 +1061,71 @@ public sealed class AgentJupyterIntegrationTests
                 false,
                 isSelected,
                 true);
+        }
+    }
+
+    private sealed class AdversarialDiscoveryRuntimeConfiguration : IMaieuticsRuntimeConfiguration
+    {
+        public string ConnectionFile => string.Empty;
+
+        public long Version => 1;
+
+        public MaieuticsModelProfileSelection GetModelProfileSelection()
+        {
+            return new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
+        }
+
+        public IReadOnlyList<MaieuticsModelProfileInfo> GetCachedAutomaticModelProfiles()
+        {
+            return [];
+        }
+
+        public IReadOnlyList<string> GetModelSourceIds()
+        {
+            return ["`source`"];
+        }
+
+        public void SelectModelProfile(string profileId)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void ResetModelProfile()
+        {
+        }
+
+        public IAgentRunProfileLease Acquire()
+        {
+            throw new NotSupportedException();
+        }
+
+        public MaieuticsAgentKernelOptions GetKernelOptions()
+        {
+            return new MaieuticsAgentKernelOptions();
+        }
+
+        public ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
+            string? sourceId = null,
+            bool refresh = false,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new ValueTask<IReadOnlyList<DiscoveredModelGroup>>([
+                new DiscoveredModelGroup(
+                    "`source`",
+                    "[Vendor](https://evil.invalid)\n# heading",
+                    null,
+                    [
+                        new AgentModelDescriptor(
+                            "model``name\n![image](https://evil.invalid)",
+                            "Vendor")
+                    ]),
+                new DiscoveredModelGroup(
+                    "failed\n[source]",
+                    "<img src=x onerror=alert(1)>",
+                    ModelDiscoveryFailureKind.ProviderError,
+                    [])
+            ]);
         }
     }
 

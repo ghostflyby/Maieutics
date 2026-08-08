@@ -318,6 +318,55 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task CallerCancellationIsNotConvertedIntoOrCachedAsDiscoveryFailure()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-cancelled-discovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            deadline.Token);
+
+        var factory = new CoordinatedDiscoveryChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            var cancelledDiscovery = runtime.GetDiscoveredModelsAsync(
+                refresh: true,
+                cancellationToken: cancellation.Token).AsTask();
+            await factory.FirstDiscoveryStarted.Task.WaitAsync(deadline.Token);
+            await cancellation.CancelAsync();
+
+            await runtime.Awaiting(_ => cancelledDiscovery).Should()
+                .ThrowAsync<OperationCanceledException>();
+            factory.DiscoveryCount.Should().Be(1);
+
+            var recovered = await runtime.GetDiscoveredModelsAsync(
+                cancellationToken: deadline.Token);
+            recovered.Should().ContainSingle().Which.Models.Should().ContainSingle()
+                .Which.Id.Should().Be("model-one");
+            factory.DiscoveryCount.Should().Be(2, "the canceled attempt must not populate the discovery cache");
+        }
+        finally
+        {
+            factory.ReleaseFirstDiscovery.TrySetResult();
+            await host.DisposeAsync();
+            Directory.Delete(root, true);
+        }
+    }
+
     [Fact]
     public async Task AutomaticProfileRequiresQualifiedSelectorForDuplicateModelIds()
     {
@@ -1476,7 +1525,7 @@ public sealed class MaieuticsConfigurationTests
             var group = groups.Should().ContainSingle().Subject;
             group.SourceId.Should().Be("discovery-source");
             group.Provider.Should().Be("Fake");
-            group.Error.Should().BeNull();
+            group.Failure.Should().BeNull();
             group.Models.Should().HaveCount(2);
             group.Models[0].Id.Should().Be("model-alpha");
             group.Models[0].Provider.Should().Be("Fake");
@@ -1605,8 +1654,7 @@ public sealed class MaieuticsConfigurationTests
             var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
             var group = groups.Should().ContainSingle().Subject;
-            group.Error.Should().NotBeNull();
-            group.Error.Should().Contain("simulated");
+            group.Failure.Should().Be(ModelDiscoveryFailureKind.ProviderError);
             group.Models.Should().BeEmpty();
         }
         finally
@@ -1831,6 +1879,10 @@ public sealed class MaieuticsConfigurationTests
 
     private sealed class CoordinatedDiscoveryChatClientFactory : IConfiguredChatClientFactory
     {
+        private int discoveryCount;
+
+        public int DiscoveryCount => Volatile.Read(ref discoveryCount);
+
         public TaskCompletionSource FirstDiscoveryStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1851,7 +1903,7 @@ public sealed class MaieuticsConfigurationTests
             string revision,
             CancellationToken cancellationToken)
         {
-            if (string.Equals(revision, "one", StringComparison.Ordinal))
+            if (Interlocked.Increment(ref discoveryCount) == 1)
             {
                 FirstDiscoveryStarted.TrySetResult();
                 await ReleaseFirstDiscovery.Task.WaitAsync(cancellationToken);

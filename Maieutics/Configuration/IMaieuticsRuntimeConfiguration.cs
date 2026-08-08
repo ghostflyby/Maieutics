@@ -76,5 +76,10 @@ internal static class MaieuticsAutomaticProfileSelector
 internal sealed record DiscoveredModelGroup(
     string SourceId,
     string Provider,
-    string? Error,
+    ModelDiscoveryFailureKind? Failure,
     IReadOnlyList<AgentModelDescriptor> Models);
+
+internal enum ModelDiscoveryFailureKind
+{
+    ProviderError
+}

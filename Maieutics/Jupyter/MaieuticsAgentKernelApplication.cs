@@ -293,10 +293,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         return $"""
                 ### Current model
 
-                - Profile: `{EscapeCode(profile.Id)}` ({selectionSource})
-                - Source: `{EscapeCode(profile.SourceId)}`
-                - Provider: `{EscapeCode(profile.Provider)}`
-                - Model: `{EscapeCode(profile.Model)}`
+                - Profile: {MarkdownText.CodeSpan(profile.Id)} ({selectionSource})
+                - Source: {MarkdownText.CodeSpan(profile.SourceId)}
+                - Provider: {MarkdownText.CodeSpan(profile.Provider)}
+                - Model: {MarkdownText.CodeSpan(profile.Model)}
                 """;
     }
 
@@ -306,7 +306,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         return $"""
                 ### Current workspace
 
-                - Root: {RenderInlineCode(selection.RootPath)} ({selectionSource})
+                - Root: {MarkdownText.CodeSpan(selection.RootPath)} ({selectionSource})
                 """;
     }
 
@@ -317,26 +317,23 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         var output = new StringBuilder("### MCP servers\n\n");
         foreach (var server in servers)
         {
-            output.Append("- `")
-                .Append(EscapeCode(server.Id))
-                .Append("` — transport `")
-                .Append(EscapeCode(server.Transport))
-                .Append("`, state `")
-                .Append(server.State)
-                .Append('`');
+            output.Append("- ")
+                .Append(MarkdownText.CodeSpan(server.Id))
+                .Append(" — transport ")
+                .Append(MarkdownText.CodeSpan(server.Transport))
+                .Append(", state ")
+                .Append(MarkdownText.CodeSpan(server.State.ToString()));
             if (server is { State: MaieuticsMcpServerState.Reconnecting, NextReconnectDelay: { } reconnectDelay })
-                output.Append(", next reconnect in `")
-                    .Append(reconnectDelay)
-                    .Append('`');
+                output.Append(", next reconnect in ")
+                    .Append(MarkdownText.CodeSpan(reconnectDelay.ToString()));
 
             output.AppendLine();
             foreach (var tool in server.Tools)
             {
-                output.Append("  - `")
-                    .Append(EscapeCode(tool.RemoteName))
-                    .Append("` → `")
-                    .Append(EscapeCode(tool.ExposedName))
-                    .Append('`');
+                output.Append("  - ")
+                    .Append(MarkdownText.CodeSpan(tool.RemoteName))
+                    .Append(" → ")
+                    .Append(MarkdownText.CodeSpan(tool.ExposedName));
                 if (!tool.Available) output.Append(" (unavailable)");
 
                 output.AppendLine();
@@ -344,23 +341,6 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         }
 
         return output.ToString();
-    }
-
-    private static string RenderInlineCode(string value)
-    {
-        var sanitized = value
-            .Replace("\r", "\\r", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal);
-        var longestRun = 0;
-        var currentRun = 0;
-        foreach (var character in sanitized)
-            if (character == '`')
-                longestRun = Math.Max(longestRun, ++currentRun);
-            else
-                currentRun = 0;
-
-        var delimiter = new string('`', longestRun + 1);
-        return $"{delimiter}{sanitized}{delimiter}";
     }
 
     private static string RenderList(MaieuticsModelProfileSelection selection)
@@ -378,26 +358,19 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             if (profile.IsAutomatic) markers.Add("automatic");
 
             var suffix = markers.Count == 0 ? string.Empty : $" ({string.Join(", ", markers)})";
-            output.Append("- `")
-                .Append(EscapeCode(profile.Id))
-                .Append("`: `")
-                .Append(EscapeCode(profile.Provider))
-                .Append("` / `")
-                .Append(EscapeCode(profile.Model))
-                .Append("`, source `")
-                .Append(EscapeCode(profile.SourceId))
-                .Append('`')
+            output.Append("- ")
+                .Append(MarkdownText.CodeSpan(profile.Id))
+                .Append(": ")
+                .Append(MarkdownText.CodeSpan(profile.Provider))
+                .Append(" / ")
+                .Append(MarkdownText.CodeSpan(profile.Model))
+                .Append(", source ")
+                .Append(MarkdownText.CodeSpan(profile.SourceId))
                 .AppendLine(suffix);
         }
 
         return output.ToString();
     }
-
-    private static string EscapeCode(string value)
-    {
-        return value.Replace("`", "\\`", StringComparison.Ordinal);
-    }
-
 
     private static string RenderAvailable(
         IReadOnlyList<DiscoveredModelGroup> groups,
@@ -419,17 +392,20 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
         foreach (var group in groups)
         {
-            output.Append("**")
-                .Append(EscapeCode(group.Provider))
-                .Append("** (source: `")
-                .Append(EscapeCode(group.SourceId))
-                .Append("`)");
+            output.Append(MarkdownText.CodeSpan(group.Provider))
+                .Append(" (source: ")
+                .Append(MarkdownText.CodeSpan(group.SourceId))
+                .Append(')');
 
-            if (group.Error is not null)
+            if (group.Failure is not null)
             {
                 output.AppendLine()
-                    .Append("  ❌ API request failed: ")
-                    .AppendLine(group.Error);
+                    .Append("  ❌ ")
+                    .Append(MarkdownText.PlainText(
+                        "The provider could not return available models. Check the Maieutics logs for details."))
+                    .Append(" (")
+                    .Append(MarkdownText.CodeSpan(ModelDiscoveryFailureCode(group.Failure.Value)))
+                    .AppendLine(")");
                 continue;
             }
 
@@ -443,7 +419,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             output.AppendLine();
             foreach (var model in group.Models)
             {
-                output.Append("- `").Append(EscapeCode(model.Id)).Append('`');
+                output.Append("- ").Append(MarkdownText.CodeSpan(model.Id));
                 if (model.ContextWindow.HasValue)
                     output.Append(" (").Append(model.ContextWindow.Value).Append(" context)");
 
@@ -452,9 +428,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                 if (!configured)
                 {
                     var selector = MaieuticsAutomaticProfileSelector.Format(group.SourceId, model.Id);
-                    output.Append(" — automatic profile `")
-                        .Append(EscapeCode(selector))
-                        .Append('`');
+                    output.Append(" — automatic profile ")
+                        .Append(MarkdownText.CodeSpan(selector));
                 }
 
                 output.AppendLine();
@@ -465,7 +440,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             .Where(static profile => !profile.IsAutomatic)
             .Where(profile => !groups.Any(g =>
                 string.Equals(g.SourceId, profile.SourceId, StringComparison.OrdinalIgnoreCase) &&
-                g.Error is null &&
+                g.Failure is null &&
                 g.Models.Any(m => string.Equals(m.Id, profile.Model, StringComparison.OrdinalIgnoreCase))))
             .ToArray();
         if (missingFromApi.Length > 0)
@@ -473,12 +448,21 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             output.AppendLine();
             output.AppendLine("> ⚠️ The following configured models were not found in API results:");
             foreach (var profile in missingFromApi)
-                output.Append("- `").Append(EscapeCode(profile.Id))
-                    .Append("`: `").Append(EscapeCode(profile.Model))
-                    .Append("` (source `").Append(EscapeCode(profile.SourceId)).AppendLine("`)");
+                output.Append("- ").Append(MarkdownText.CodeSpan(profile.Id))
+                    .Append(": ").Append(MarkdownText.CodeSpan(profile.Model))
+                    .Append(" (source ").Append(MarkdownText.CodeSpan(profile.SourceId)).AppendLine(")");
         }
 
         return output.ToString();
+    }
+
+    private static string ModelDiscoveryFailureCode(ModelDiscoveryFailureKind failure)
+    {
+        return failure switch
+        {
+            ModelDiscoveryFailureKind.ProviderError => "provider_error",
+            _ => throw new ArgumentOutOfRangeException(nameof(failure), failure, "Unknown discovery failure.")
+        };
     }
 
     private async Task RenderTurnAsync(

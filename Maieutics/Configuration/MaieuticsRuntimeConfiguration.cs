@@ -396,9 +396,18 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
                 results.Add(group);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception exception)
             {
-                results.Add(new DiscoveredModelGroup(sid, provider, exception.Message, []));
+                logger.LogWarning(
+                    exception,
+                    "Model discovery failed for source '{SourceId}' using provider '{Provider}'.",
+                    sid,
+                    provider);
+                results.Add(new DiscoveredModelGroup(sid, provider, ModelDiscoveryFailureKind.ProviderError, []));
             }
         }
 
@@ -507,7 +516,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         {
             if (now - cached.CachedAt >= DiscoveryCacheTtl ||
                 cached.ConfigurationVersion != snapshot.Version ||
-                cached.Result.Error is not null ||
+                cached.Result.Failure is not null ||
                 !snapshot.Sources.TryGetValue(cached.Result.SourceId, out var source) ||
                 !Equals(cached.ClientGenerationKey, source.ClientGenerationKey))
                 continue;

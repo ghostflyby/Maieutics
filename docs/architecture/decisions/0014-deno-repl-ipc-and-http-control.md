@@ -77,6 +77,14 @@ The envelope is versioned and transport-neutral: initialization and capability n
 correlation ids, one-way events, binary buffers, cancellation, typed failure, and unknown-field tolerance. Namespaces
 are `tool.*`, `comm.*`, `extension.*`, and `admin.*`.
 
+Every inbound HTTP control body and complete WebSocket control message has a fixed 1 MiB (1,048,576 byte) aggregate
+limit. The limit counts bytes delivered to the application before UTF-8 decoding; WebSocket compression is not enabled.
+The receive buffer is only a bounded chunk and does not define the message limit. WebSocket readers count across
+fragments and close an oversized message with `MessageTooBig`; HTTP rejects an oversized body with 413 before JSON
+deserialization. Control JSON has a maximum nesting depth of 64. These are protocol safety bounds rather than
+hot-reloadable deployment tuning. Large or binary values must move through the future artifact/streaming boundary
+instead of increasing the control-message limit or expanding base64 envelopes.
+
 Channel mapping:
 
 | Channel | Use |

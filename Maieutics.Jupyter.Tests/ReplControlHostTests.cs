@@ -1,5 +1,7 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -148,6 +150,64 @@ public sealed class ReplControlHostTests
                 """{"version":1,"type":"nonsense.unknown"}""",
                 timeout.Token);
             (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("unknown_message");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task FragmentedWebSocketMessageAtLimitIsAccepted()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
+                timeout.Token);
+            await ReceiveBusAsync(socket, timeout.Token);
+
+            var message = CreateBusMessageOfSize(ReplControlLimits.MaximumInboundMessageBytes);
+            await SendFragmentedBusAsync(socket, message, timeout.Token);
+
+            var pong = await ReceiveBusAsync(socket, timeout.Token);
+            pong.Should().Contain("\"type\":\"control.pong\"");
+            pong.Should().Contain("\"correlationId\":\"limit\"");
+        }
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(1)]
+    [InlineData(1024 * 1024)]
+    public async Task OversizedFragmentedWebSocketMessageClosesWithoutDispatch(int bytesOverLimit)
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
+        await using (application)
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
+                timeout.Token);
+            await ReceiveBusAsync(socket, timeout.Token);
+
+            var message = CreateBusMessageOfSize(
+                ReplControlLimits.MaximumInboundMessageBytes + bytesOverLimit);
+            await SendFragmentedBusAsync(socket, message, timeout.Token, true);
+
+            var (opcode, payload) = await ReceiveFrameAsync(socket, timeout.Token);
+            opcode.Should().Be(0x8, "an oversized message must close before it can be dispatched");
+            BinaryPrimitives.ReadUInt16BigEndian(payload).Should()
+                .Be((ushort)WebSocketCloseStatus.MessageTooBig);
         }
     }
 
@@ -332,6 +392,94 @@ public sealed class ReplControlHostTests
         }
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ToolInvokeAcceptsBodyAtLimitAndRejectsOneByteOver()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var invocations = 0;
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(
+            registry,
+            timeout.Token,
+            [CreatePayloadFunction(() => invocations++)]);
+        await using (application)
+        {
+            var accepted = await PostRawToolInvokeAsync(
+                host.SocketPath,
+                CreateToolInvokeBodyOfSize(ReplControlLimits.MaximumInboundMessageBytes),
+                false,
+                timeout.Token);
+            accepted.Should().StartWith("HTTP/1.1 200");
+            accepted.Should().Contain("\"status\":\"ok\"");
+            invocations.Should().Be(1);
+
+            var rejected = await PostRawToolInvokeAsync(
+                host.SocketPath,
+                CreateToolInvokeBodyOfSize(ReplControlLimits.MaximumInboundMessageBytes + 1),
+                false,
+                timeout.Token);
+            rejected.Should().StartWith("HTTP/1.1 413");
+            invocations.Should().Be(1, "an oversized body must not be deserialized or invoked");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ChunkedToolInvokeOverLimitIsRejectedBeforeInvocation()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var invocations = 0;
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(
+            registry,
+            timeout.Token,
+            [CreatePayloadFunction(() => invocations++)]);
+        await using (application)
+        {
+            var rejected = await PostRawToolInvokeAsync(
+                host.SocketPath,
+                CreateToolInvokeBodyOfSize(ReplControlLimits.MaximumInboundMessageBytes + 1),
+                true,
+                timeout.Token);
+
+            rejected.Should().StartWith("HTTP/1.1 413");
+            invocations.Should().Be(0);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ToolInvokeRejectsJsonBeyondTheDepthLimit()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var invocations = 0;
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "test-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(
+            registry,
+            timeout.Token,
+            [CreatePayloadFunction(() => invocations++)]);
+        await using (application)
+        {
+            var nested = new string('[', ReplControlLimits.MaximumJsonDepth) +
+                         "0" +
+                         new string(']', ReplControlLimits.MaximumJsonDepth);
+            var body =
+                "{\"version\":1,\"tool\":\"payload_test\",\"arguments\":{\"value\":" + nested +
+                "},\"sessionId\":\"test-session\"}";
+            var rejected = await PostRawToolInvokeAsync(host.SocketPath, body, false, timeout.Token);
+
+            rejected.Should().StartWith("HTTP/1.1 400");
+            invocations.Should().Be(0);
+        }
+    }
+
     [Fact(Timeout = 90_000)]
     public async Task RealDenoClientTalksToControlChannelOverUnixSocket()
     {
@@ -411,6 +559,41 @@ public sealed class ReplControlHostTests
         return await ReadUntilEndAsync(socket, ct);
     }
 
+    private static async Task<string> PostRawToolInvokeAsync(
+        string socketPath,
+        string body,
+        bool chunked,
+        CancellationToken cancellationToken)
+    {
+        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), cancellationToken);
+        var bodyBytes = Encoding.UTF8.GetBytes(body);
+        var headers = chunked
+            ? "POST /v1/tool.invoke HTTP/1.1\r\n" +
+              "Host: localhost\r\n" +
+              "Content-Type: application/json\r\n" +
+              "Transfer-Encoding: chunked\r\n" +
+              "Connection: close\r\n\r\n" +
+              $"{bodyBytes.Length:X}\r\n"
+            : "POST /v1/tool.invoke HTTP/1.1\r\n" +
+              "Host: localhost\r\n" +
+              "Content-Type: application/json\r\n" +
+              $"Content-Length: {bodyBytes.Length}\r\n" +
+              "Connection: close\r\n\r\n";
+        await SendAllAsync(socket, Encoding.ASCII.GetBytes(headers), cancellationToken);
+        try
+        {
+            await SendAllAsync(socket, bodyBytes, cancellationToken);
+            if (chunked) await SendAllAsync(socket, "\r\n0\r\n\r\n"u8.ToArray(), cancellationToken);
+        }
+        catch (SocketException)
+        {
+            // The server may finish an early 413 response before the client has flushed the rejected body.
+        }
+
+        return await ReadUntilEndAsync(socket, cancellationToken);
+    }
+
     private static async Task<Socket> ConnectWebSocketAsync(string socketPath, CancellationToken ct)
     {
         var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -430,10 +613,32 @@ public sealed class ReplControlHostTests
 
     private static async Task SendBusAsync(Socket socket, string json, CancellationToken ct)
     {
-        await socket.SendAsync(
-            BuildClientFrame(Encoding.UTF8.GetBytes(json), 0x1),
-            SocketFlags.None,
-            ct);
+        await SendAllAsync(socket, BuildClientFrame(Encoding.UTF8.GetBytes(json), 0x1), ct);
+    }
+
+    private static async Task SendFragmentedBusAsync(
+        Socket socket,
+        string json,
+        CancellationToken cancellationToken,
+        bool allowEarlyClose = false)
+    {
+        var payload = Encoding.UTF8.GetBytes(json);
+        var firstLength = payload.Length / 2;
+        await SendAllAsync(
+            socket,
+            BuildClientFrame(payload.AsSpan(0, firstLength), 0x1, false),
+            cancellationToken);
+        try
+        {
+            await SendAllAsync(
+                socket,
+                BuildClientFrame(payload.AsSpan(firstLength), 0x0),
+                cancellationToken);
+        }
+        catch (SocketException) when (allowEarlyClose)
+        {
+            // A well-over-limit message can be rejected before its final frame has fully flushed.
+        }
     }
 
     private static async Task<string> ReceiveBusAsync(Socket socket, CancellationToken ct)
@@ -463,6 +668,21 @@ public sealed class ReplControlHostTests
             {
                 Name = "progress_test",
                 Description = "Reports progress then returns."
+            });
+    }
+
+    private static AIFunction CreatePayloadFunction(Action invoked)
+    {
+        return AIFunctionFactory.Create(
+            (string value) =>
+            {
+                invoked();
+                return JsonSerializer.SerializeToElement(new { length = value.Length });
+            },
+            new AIFunctionFactoryOptions
+            {
+                Name = "payload_test",
+                Description = "Returns the input length."
             });
     }
 
@@ -516,20 +736,69 @@ public sealed class ReplControlHostTests
         return builder.ToString();
     }
 
-    private static byte[] BuildClientFrame(byte[] payload, int opcode)
+    private static string CreateBusMessageOfSize(int size)
     {
-        if (payload.Length >= 126)
-            throw new ArgumentOutOfRangeException(nameof(payload), "Test frames must be shorter than 126 bytes.");
+        const string prefix = "{\"version\":1,\"type\":\"control.ping\",\"correlationId\":\"limit\",\"padding\":\"";
+        const string suffix = "\"}";
+        var paddingLength = size - Encoding.UTF8.GetByteCount(prefix) - Encoding.UTF8.GetByteCount(suffix);
+        if (paddingLength < 0) throw new ArgumentOutOfRangeException(nameof(size));
 
+        return prefix + new string('x', paddingLength) + suffix;
+    }
+
+    private static string CreateToolInvokeBodyOfSize(int size)
+    {
+        const string prefix = "{\"version\":1,\"tool\":\"payload_test\",\"arguments\":{\"value\":\"";
+        const string suffix = "\"},\"sessionId\":\"test-session\"}";
+        var valueLength = size - Encoding.UTF8.GetByteCount(prefix) - Encoding.UTF8.GetByteCount(suffix);
+        if (valueLength < 0) throw new ArgumentOutOfRangeException(nameof(size));
+
+        return prefix + new string('x', valueLength) + suffix;
+    }
+
+    private static byte[] BuildClientFrame(ReadOnlySpan<byte> payload, int opcode, bool endOfMessage = true)
+    {
         var mask = new byte[4];
         Random.Shared.NextBytes(mask);
         using var stream = new MemoryStream();
-        stream.WriteByte((byte)(0x80 | opcode));
-        stream.WriteByte((byte)(0x80 | payload.Length));
+        stream.WriteByte((byte)((endOfMessage ? 0x80 : 0) | opcode));
+        if (payload.Length < 126)
+        {
+            stream.WriteByte((byte)(0x80 | payload.Length));
+        }
+        else if (payload.Length <= ushort.MaxValue)
+        {
+            stream.WriteByte(0x80 | 126);
+            Span<byte> length = stackalloc byte[sizeof(ushort)];
+            BinaryPrimitives.WriteUInt16BigEndian(length, (ushort)payload.Length);
+            stream.Write(length);
+        }
+        else
+        {
+            stream.WriteByte(0x80 | 127);
+            Span<byte> length = stackalloc byte[sizeof(ulong)];
+            BinaryPrimitives.WriteUInt64BigEndian(length, (ulong)payload.Length);
+            stream.Write(length);
+        }
+
         stream.Write(mask);
         for (var i = 0; i < payload.Length; i++) stream.WriteByte((byte)(payload[i] ^ mask[i % 4]));
 
         return stream.ToArray();
+    }
+
+    private static async Task SendAllAsync(
+        Socket socket,
+        ReadOnlyMemory<byte> bytes,
+        CancellationToken cancellationToken)
+    {
+        while (!bytes.IsEmpty)
+        {
+            var sent = await socket.SendAsync(bytes, SocketFlags.None, cancellationToken);
+            if (sent == 0) throw new EndOfStreamException("The control channel closed while receiving a test request.");
+
+            bytes = bytes[sent..];
+        }
     }
 
     private static async Task<(int Opcode, byte[] Payload)> ReceiveFrameAsync(Socket socket, CancellationToken ct)

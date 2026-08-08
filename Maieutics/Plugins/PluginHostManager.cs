@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.WebSockets;
@@ -49,7 +48,6 @@ internal sealed class PluginHostManager(
     : IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
-    private const int WebSocketBufferSize = 256 * 1024;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
@@ -228,7 +226,9 @@ internal sealed class PluginHostManager(
         {
             while (socket.State == WebSocketState.Open)
             {
-                var text = await ReadTextMessageAsync(socket, cancellationToken).ConfigureAwait(false);
+                var text = await ReplControlMessageReader
+                    .ReadAsync(socket, cancellationToken)
+                    .ConfigureAwait(false);
                 if (text is null) break;
 
                 HandleHostMessage(text);
@@ -502,8 +502,8 @@ internal sealed class PluginHostManager(
         {
             registrations.Clear();
             foreach (var plugin in payload.Plugins)
-            foreach (var extensionPoint in plugin.ExtensionPoints)
-                registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+                foreach (var extensionPoint in plugin.ExtensionPoints)
+                    registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
 
             logger.LogInformation(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
@@ -674,26 +674,4 @@ internal sealed class PluginHostManager(
             .ConfigureAwait(false);
     }
 
-    private static async Task<string?> ReadTextMessageAsync(WebSocket socket, CancellationToken cancellationToken)
-    {
-        using var rented = MemoryPool<byte>.Shared.Rent(WebSocketBufferSize);
-        var buffer = rented.Memory;
-        using var stream = new MemoryStream();
-        while (true)
-        {
-            var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
-            switch (result.MessageType)
-            {
-                case WebSocketMessageType.Close:
-                    return null;
-                case WebSocketMessageType.Binary:
-                    continue;
-            }
-
-            stream.Write(buffer.Span[..result.Count]);
-            if (result.EndOfMessage) break;
-        }
-
-        return Encoding.UTF8.GetString(stream.ToArray());
-    }
 }

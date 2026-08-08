@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -10,6 +9,7 @@ using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -23,7 +23,6 @@ namespace Maieutics.Control;
 /// </summary>
 internal sealed class ReplControlHost : IDisposable
 {
-    private const int WebSocketBufferSize = 256 * 1024;
     private const int EnvelopeVersion = 1;
     private const string CredentialHeader = "X-Maieutics-Credential";
 
@@ -96,6 +95,9 @@ internal sealed class ReplControlHost : IDisposable
     {
         application.Use(async (context, next) =>
         {
+            if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
+                bodySize.MaxRequestBodySize = ReplControlLimits.MaximumInboundMessageBytes;
+
             if (!Authorize(context))
             {
                 logger.LogWarning("Rejected control channel connection with an unexpected peer identity.");
@@ -148,12 +150,13 @@ internal sealed class ReplControlHost : IDisposable
         var identity = await ReceiveHelloAsync(socket, peerProcessId, context.RequestAborted).ConfigureAwait(false);
         if (identity is null)
         {
-            await socket
-                .CloseAsync(
-                    WebSocketCloseStatus.PolicyViolation,
-                    "identity not established",
-                    context.RequestAborted)
-                .ConfigureAwait(false);
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                await socket
+                    .CloseOutputAsync(
+                        WebSocketCloseStatus.PolicyViolation,
+                        "identity not established",
+                        context.RequestAborted)
+                    .ConfigureAwait(false);
             return;
         }
 
@@ -192,7 +195,9 @@ internal sealed class ReplControlHost : IDisposable
                 context.RequestAborted).ConfigureAwait(false);
             while (socket.State == WebSocketState.Open)
             {
-                var text = await ReadTextMessageAsync(socket, context.RequestAborted).ConfigureAwait(false);
+                var text = await ReplControlMessageReader
+                    .ReadAsync(socket, context.RequestAborted)
+                    .ConfigureAwait(false);
                 if (text is null) break;
 
                 await HandleBusMessageAsync(sessionId, text, context.RequestAborted).ConfigureAwait(false);
@@ -237,7 +242,7 @@ internal sealed class ReplControlHost : IDisposable
 
     private async Task<HelloIdentity?> ReceiveHelloAsync(WebSocket socket, int peerProcessId, CancellationToken ct)
     {
-        var text = await ReadTextMessageAsync(socket, ct).ConfigureAwait(false);
+        var text = await ReplControlMessageReader.ReadAsync(socket, ct).ConfigureAwait(false);
         if (text is null) return null;
 
         ReplEnvelope? envelope;
@@ -497,32 +502,15 @@ internal sealed class ReplControlHost : IDisposable
         return JsonSerializer.SerializeToElement(value, JsonTypeInfoFor<T>());
     }
 
-    private static async Task<string?> ReadTextMessageAsync(WebSocket socket, CancellationToken ct)
-    {
-        using var rented = MemoryPool<byte>.Shared.Rent(WebSocketBufferSize);
-        var buffer = rented.Memory;
-        using var stream = new MemoryStream();
-        while (true)
-        {
-            var result = await socket.ReceiveAsync(buffer, ct).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                await socket
-                    .CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", ct)
-                    .ConfigureAwait(false);
-                return null;
-            }
-
-            stream.Write(buffer.Span[..result.Count]);
-            if (result.EndOfMessage) break;
-        }
-
-        return Encoding.UTF8.GetString(stream.ToArray());
-    }
-
     private async Task HandleToolInvokeAsync(HttpContext context)
     {
         var cancellationToken = context.RequestAborted;
+        if (context.Request.ContentLength is > ReplControlLimits.MaximumInboundMessageBytes)
+        {
+            context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
+        }
+
         ToolInvokeRequest? request;
         try
         {
@@ -530,6 +518,12 @@ internal sealed class ReplControlHost : IDisposable
                 context.Request.Body,
                 ReplControlJsonContext.Default.ToolInvokeRequest,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch (BadHttpRequestException exception) when
+            (exception.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
         }
         catch (JsonException)
         {

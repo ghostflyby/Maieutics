@@ -3,7 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace Maieutics.Control;
 
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    MaxDepth = ReplControlLimits.MaximumJsonDepth)]
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ReplEnvelope))]
 [JsonSerializable(typeof(BusCancelPayload))]

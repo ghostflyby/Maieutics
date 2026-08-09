@@ -171,6 +171,7 @@ public static class MaieuticsHost
             .. services.GetRequiredService<DenoReplFunctions>().Functions
         ]);
         builder.Services.AddSingleton(CreateAgentSession);
+        builder.Services.AddSingleton<MaieuticsStatusProvider>();
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
         builder.Services.AddHostedService<JupyterKernelHostedService>();
@@ -230,7 +231,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
             workspace: services.GetRequiredService<Workspace>(),
             replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
-            mcpController: services.GetRequiredService<IMaieuticsMcpController>());
+            mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
+            statusProvider: services.GetRequiredService<MaieuticsStatusProvider>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

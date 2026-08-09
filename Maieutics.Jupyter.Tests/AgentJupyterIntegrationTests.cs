@@ -861,6 +861,17 @@ public sealed class AgentJupyterIntegrationTests
         }
     }
 
+    private static MaieuticsRuntimeStatus CreateRuntimeStatus(IMaieuticsRuntimeConfiguration runtime)
+    {
+        return new MaieuticsRuntimeStatus(
+            runtime.Version,
+            runtime.GetModelProfileSelection(),
+            new MaieuticsConfigurationReloadInfo(
+                0,
+                MaieuticsConfigurationReloadOutcome.NotAttempted,
+                runtime.Version));
+    }
+
     private sealed class TestRuntimeConfiguration : IMaieuticsRuntimeConfiguration
     {
         private readonly MaieuticsModelProfileInfo[] profiles =
@@ -874,6 +885,11 @@ public sealed class AgentJupyterIntegrationTests
         public string ConnectionFile => string.Empty;
 
         public long Version => 1;
+
+        public MaieuticsRuntimeStatus GetStatus()
+        {
+            return CreateRuntimeStatus(this);
+        }
 
         public MaieuticsModelProfileSelection GetModelProfileSelection()
         {
@@ -898,8 +914,11 @@ public sealed class AgentJupyterIntegrationTests
             return [];
         }
 
-        public void SelectModelProfile(string profileId)
+        public ValueTask SelectModelProfileAsync(
+            string profileId,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var profile = profiles.SingleOrDefault(profile =>
                 string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
             profile ??= profiles.SingleOrDefault(profileInfo =>
@@ -908,6 +927,7 @@ public sealed class AgentJupyterIntegrationTests
                 throw new ArgumentException($"The model profile '{profileId}' does not exist.", nameof(profileId));
 
             sessionOverride = profile.Id;
+            return ValueTask.CompletedTask;
         }
 
         public void ResetModelProfile()
@@ -938,6 +958,11 @@ public sealed class AgentJupyterIntegrationTests
 
         public long Version => 1;
 
+        public MaieuticsRuntimeStatus GetStatus()
+        {
+            return CreateRuntimeStatus(this);
+        }
+
         public MaieuticsModelProfileSelection GetModelProfileSelection()
         {
             return new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
@@ -953,8 +978,11 @@ public sealed class AgentJupyterIntegrationTests
             return [];
         }
 
-        public void SelectModelProfile(string profileId)
+        public ValueTask SelectModelProfileAsync(
+            string profileId,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             throw new ArgumentException("No model profiles are configured.", nameof(profileId));
         }
 
@@ -991,6 +1019,11 @@ public sealed class AgentJupyterIntegrationTests
 
         public long Version => 1;
 
+        public MaieuticsRuntimeStatus GetStatus()
+        {
+            return CreateRuntimeStatus(this);
+        }
+
         public MaieuticsModelProfileSelection GetModelProfileSelection()
         {
             return selected
@@ -1012,8 +1045,11 @@ public sealed class AgentJupyterIntegrationTests
             return ["vendor"];
         }
 
-        public void SelectModelProfile(string profileId)
+        public ValueTask SelectModelProfileAsync(
+            string profileId,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!string.Equals(profileId, Selector, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(profileId, "model-alpha", StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException(
@@ -1021,6 +1057,7 @@ public sealed class AgentJupyterIntegrationTests
                     nameof(profileId));
 
             selected = true;
+            return ValueTask.CompletedTask;
         }
 
         public void ResetModelProfile()
@@ -1071,6 +1108,11 @@ public sealed class AgentJupyterIntegrationTests
 
         public long Version => 1;
 
+        public MaieuticsRuntimeStatus GetStatus()
+        {
+            return CreateRuntimeStatus(this);
+        }
+
         public MaieuticsModelProfileSelection GetModelProfileSelection()
         {
             return new MaieuticsModelProfileSelection(string.Empty, string.Empty, false, []);
@@ -1086,8 +1128,11 @@ public sealed class AgentJupyterIntegrationTests
             return ["`source`"];
         }
 
-        public void SelectModelProfile(string profileId)
+        public ValueTask SelectModelProfileAsync(
+            string profileId,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             throw new NotSupportedException();
         }
 

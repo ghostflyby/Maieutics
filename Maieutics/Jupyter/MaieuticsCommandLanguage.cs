@@ -9,10 +9,12 @@ internal static class MaieuticsCommandLanguage
     internal const string LegacyRoot = "%maieutics";
     private const string CanonicalMcpCommand = "%mcp";
     private const string CanonicalModelCommand = "%model";
+    private const string CanonicalStatusCommand = "%status";
     private const string CanonicalWorkspaceCommand = "%workspace";
     private const string SlashLeader = "/";
     internal const string Mcp = "mcp";
     internal const string Model = "model";
+    internal const string Status = "status";
     internal const string Workspace = "workspace";
     internal const string Current = "current";
     internal const string List = "list";
@@ -22,13 +24,13 @@ internal static class MaieuticsCommandLanguage
     internal const string RefreshFlag = "--refresh";
 
     private static readonly string[] CommandPrefixes =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand, LegacyRoot];
 
     private static readonly string[] RootCompletionMatches =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalWorkspaceCommand, LegacyRoot];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand, LegacyRoot];
 
     private static readonly string[] SlashCompletionMatches =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalWorkspaceCommand];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand];
 
     private static readonly string[] RootCommandMatches = [Mcp, Model, Workspace];
     private static readonly string[] McpCommandMatches = [List];
@@ -64,6 +66,9 @@ internal static class MaieuticsCommandLanguage
 
         if (arguments[0].Equals(CanonicalMcpCommand, StringComparison.OrdinalIgnoreCase))
             return [LegacyRoot, Mcp, .. arguments[1..]];
+
+        if (arguments[0].Equals(CanonicalStatusCommand, StringComparison.OrdinalIgnoreCase))
+            return [LegacyRoot, Status, .. arguments[1..]];
 
         if (arguments[0].Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase))
             return [LegacyRoot, Workspace, .. arguments[1..]];

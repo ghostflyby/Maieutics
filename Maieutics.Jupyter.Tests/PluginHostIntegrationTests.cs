@@ -33,18 +33,27 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
+            manager.GetStatus().State.Should().Be(PluginHostState.NotStarted);
             var readiness = manager.WaitUntilReadyAsync(canceledWait.Token);
             canceledWait.Cancel();
             await readiness
                 .Invoking(static task => task)
                 .Should().ThrowAsync<OperationCanceledException>();
+            manager.GetStatus().State.Should().Be(PluginHostState.NotStarted);
 
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
+            manager.GetStatus().Should().BeEquivalentTo(new PluginHostStatus(
+                PluginHostState.Ready,
+                0,
+                0,
+                false,
+                false));
             await Task.WhenAll(
                 manager.StopAsync(deadline.Token),
                 manager.DisposeAsync().AsTask());
             await manager.DisposeAsync();
+            manager.GetStatus().State.Should().Be(PluginHostState.Stopped);
         }
         finally
         {
@@ -79,6 +88,7 @@ public sealed class PluginHostIntegrationTests
                 .Should().ThrowAsync<Exception>()).Which;
 
             readinessFailure.Should().BeSameAs(startupFailure);
+            manager.GetStatus().State.Should().Be(PluginHostState.Failed);
         }
         finally
         {

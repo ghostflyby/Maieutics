@@ -9,6 +9,8 @@ internal interface IMaieuticsRuntimeConfiguration : IAgentRunProfileProvider, IM
 
     long Version { get; }
 
+    MaieuticsRuntimeStatus GetStatus();
+
     MaieuticsAgentKernelOptions GetKernelOptions();
 
     /// <summary>Returns models discovered from each model source's API endpoint.</summary>
@@ -30,7 +32,9 @@ internal interface IMaieuticsModelProfileController
 
     IReadOnlyList<string> GetModelSourceIds();
 
-    void SelectModelProfile(string profileId);
+    ValueTask SelectModelProfileAsync(
+        string profileId,
+        CancellationToken cancellationToken = default);
 
     void ResetModelProfile();
 }
@@ -40,6 +44,24 @@ internal sealed record MaieuticsModelProfileSelection(
     string SelectedProfileId,
     bool HasSessionOverride,
     IReadOnlyList<MaieuticsModelProfileInfo> Profiles);
+
+internal sealed record MaieuticsRuntimeStatus(
+    long Version,
+    MaieuticsModelProfileSelection ModelSelection,
+    MaieuticsConfigurationReloadInfo LastReload);
+
+internal sealed record MaieuticsConfigurationReloadInfo(
+    long Attempt,
+    MaieuticsConfigurationReloadOutcome Outcome,
+    long ActiveVersion);
+
+internal enum MaieuticsConfigurationReloadOutcome
+{
+    NotAttempted,
+    Unchanged,
+    Applied,
+    Rejected
+}
 
 internal sealed record MaieuticsModelProfileInfo(
     string Id,

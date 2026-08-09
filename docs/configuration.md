@@ -208,10 +208,10 @@ Control cells do not call a model and do not enter the Agent transcript. A manua
 lifetime while that profile exists. Configuration default changes affect sessions without an override; removing the
 selected profile clears the override and falls back to the new default. Commands never display credentials or endpoints.
 
-The Kernel provides Jupyter completion for `%model` and `%workspace`, their subcommands, and the currently configured
-profile IDs accepted by `%model use <profile>`. Typing a leading `/` (for example `/model`) offers the same canonical
-`%` commands through completion; accepting a candidate replaces the slash token with the `%` form. Slash-prefixed text
-that is not completed remains ordinary input and never executes as a command.
+The Kernel provides Jupyter completion for `%model`, `%workspace`, `%mcp`, and `%status`, their subcommands, and the
+currently configured profile IDs accepted by `%model use <profile>`. Typing a leading `/` (for example `/model`) offers
+the same canonical `%` commands through completion; accepting a candidate replaces the slash token with the `%` form.
+Slash-prefixed text that is not completed remains ordinary input and never executes as a command.
 
 The legacy `%maieutics model ...` form remains accepted for existing notebooks and is deprecated.
 
@@ -233,6 +233,16 @@ transcript. Shell execution is serialized, so a command affects subsequent turns
 
 Jupyter completion covers the workspace command and its `current`, `use`, and `reset` subcommands; filesystem paths are
 not enumerated for completion. The legacy `%maieutics workspace ...` form remains accepted and is deprecated.
+
+## Notebook runtime status
+
+`%status` renders an immediate read-only snapshot of the current Kernel process. It reports the selected model
+profile/source, active configuration version and last reload outcome, workspace selection, PluginHost lifecycle and
+control-channel state, configured MCP server states, and Deno REPL session generations.
+
+The command does not call a model, enter the Agent transcript, refresh discovery, or wait for a subsystem to become
+ready. It omits credentials, provider endpoints, connection details, Deno working directories, and the absolute
+workspace path. Use the explicit `%workspace current` command when the absolute selected root is needed.
 
 ## Agent limits
 

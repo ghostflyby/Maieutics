@@ -365,7 +365,9 @@ disposal.
 - `IJupyterExecution` is asynchronously disposable. Early disposal cancels only local output/completion routing,
   rejects later stdin replies, and classifies later parented IOPub messages through the existing late-output policy;
   it never sends a kernel interrupt.
-- Focused and repository gates passed with Agent 57/57 and Jupyter/product 229/229 tests, a warning-free
+- A follow-up moved initial runtime snapshot construction and automatic profile selection rollback behind cancellable
+  asynchronous boundaries; rejected generations are retired exactly once and no synchronous wrapper remains.
+- Focused and repository gates passed with Agent 57/57 and Jupyter/product 234/234 tests, a warning-free
   warnings-as-errors build, `osx-arm64` NativeAOT publish (apart from the existing AsyncIO `IL3053` aggregate warning),
   and published-process smoke coverage 4/4.
 
@@ -447,6 +449,15 @@ These features become safer after the remediation phases and should not be mixed
 Recommended order is `%status`, then tool-activity presentation, then artifact work. The first two improve operability of
 the repaired lifecycles; artifacts require a separate architecture decision because they touch storage and durable
 formats.
+
+### `%status` implementation record (2026-08-09)
+
+- `%status` captures immutable, non-waiting snapshots for configuration/model selection, workspace selection,
+  PluginHost lifecycle, configured MCP generations, and the current Agent session's Deno REPL generations.
+- Configuration reload attempts retain a structured `unchanged`, `applied`, or `rejected` outcome and active version;
+  PluginHost snapshots preserve startup failure, cancellation, exit, and disconnect information after readiness.
+- Rendering is a Kernel control operation: it does not invoke a model or enter the transcript, and it redacts absolute
+  workspace and REPL paths together with provider and control connection details.
 
 ## Repository-wide verification gates
 

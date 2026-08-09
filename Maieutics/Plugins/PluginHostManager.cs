@@ -14,6 +14,25 @@ namespace Maieutics.Plugins;
 
 internal sealed record PluginRegistration(string PluginId, string ExportName, string ExtensionPoint);
 
+internal sealed record PluginHostStatus(
+    PluginHostState State,
+    int PluginCount,
+    int RegistrationCount,
+    bool HostProcessRequired,
+    bool ControlConnected);
+
+internal enum PluginHostState
+{
+    NotStarted,
+    Starting,
+    Ready,
+    Stopping,
+    Stopped,
+    Canceled,
+    Failed,
+    Exited
+}
+
 internal readonly record struct ExtensionCallOutcome(
     bool IsError,
     JsonElement? Value,
@@ -110,6 +129,49 @@ internal sealed class PluginHostManager(
     internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
     {
         return readiness.Task.WaitAsync(cancellationToken);
+    }
+
+    internal PluginHostStatus GetStatus()
+    {
+        Task? startup;
+        Task? shutdown;
+        PluginHostProcess? hostProcess;
+        lock (lifecycleGate)
+        {
+            startup = starting;
+            shutdown = stopping;
+            hostProcess = process;
+        }
+
+        int pluginCount;
+        int registrationCount;
+        bool controlConnected;
+        lock (gate)
+        {
+            pluginCount = descriptors.Count;
+            registrationCount = registrations.Count;
+            controlConnected = Socket?.State == WebSocketState.Open;
+        }
+
+        var hostProcessRequired = hostProcess is not null || pluginCount > 0;
+        var state = startup switch
+        {
+            _ when readiness.Task.IsFaulted => PluginHostState.Failed,
+            { IsFaulted: true } => PluginHostState.Failed,
+            { IsCanceled: true } => PluginHostState.Canceled,
+            _ when shutdown is { IsCompleted: true } => PluginHostState.Stopped,
+            _ when shutdown is not null => PluginHostState.Stopping,
+            null => PluginHostState.NotStarted,
+            _ when !readiness.Task.IsCompletedSuccessfully => PluginHostState.Starting,
+            _ when hostProcess?.Completion.IsCompleted == true => PluginHostState.Exited,
+            _ => PluginHostState.Ready
+        };
+        return new PluginHostStatus(
+            state,
+            pluginCount,
+            registrationCount,
+            hostProcessRequired,
+            controlConnected);
     }
 
     private async Task StartCoreAsync(CancellationToken cancellationToken)

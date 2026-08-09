@@ -44,6 +44,7 @@ public sealed class MaieuticsHostIntegrationTests
         var functionNames = host.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
             .Select(static function => function.Name)
             .ToArray();
+        var session = host.Services.GetRequiredService<IAgentSession>();
         functionNames.Should().Contain(
             [
                 "repl_execute",
@@ -65,6 +66,19 @@ public sealed class MaieuticsHostIntegrationTests
             phase = "kernel info";
             var info = await client.GetKernelInfoAsync(deadline.Token);
             info.Implementation.Should().Be("maieutics");
+            var status = await ExecuteAndGetMarkdownAsync(client, "%status", deadline.Token);
+            status.Should()
+                .Contain("### Maieutics status")
+                .And.Contain("Configuration: version")
+                .And.Contain("profile `default`")
+                .And.Contain("Workspace: startup root")
+                .And.Contain("path redacted")
+                .And.Contain("Plugins: `Ready`")
+                .And.Contain("MCP: no servers enabled")
+                .And.Contain("Deno REPLs: no sessions")
+                .And.NotContain(Path.GetFullPath(Directory.GetCurrentDirectory()))
+                .And.NotContain(connectionFile);
+            session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
             phase = "kernel shutdown";
             await client.ShutdownAsync(false, deadline.Token);
             phase = "host shutdown";
@@ -473,6 +487,12 @@ public sealed class MaieuticsHostIntegrationTests
             var info = await client.GetKernelInfoAsync(deadline.Token);
             info.Implementation.Should().Be("maieutics");
             info.ProtocolVersion.Should().Be("5.5");
+
+            (await ExecuteAndGetMarkdownAsync(client, "%status", deadline.Token)).Should()
+                .Contain("### Maieutics status")
+                .And.Contain("profile `default`")
+                .And.Contain("Plugins: `Ready`")
+                .And.Contain("path redacted");
 
             (await ExecuteAndGetMarkdownAsync(
                     client,

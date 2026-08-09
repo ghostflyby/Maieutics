@@ -35,7 +35,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly ILogger<MaieuticsRuntimeConfiguration> logger;
     private readonly ILoggerFactory loggerFactory;
     private readonly McpClientTransportFactory? mcpTransportFactory;
-    private readonly Func<PluginHostManager>? pluginHostsFactory;
+    private PluginHostManager? pluginHosts;
 
     private readonly Channel<byte> reloadSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
     {
@@ -67,8 +67,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
-        McpClientTransportFactory? mcpTransportFactory = null,
-        Func<PluginHostManager>? pluginHostsFactory = null)
+        McpClientTransportFactory? mcpTransportFactory = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -78,7 +77,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.startupDirectory = startupDirectory ?? throw new ArgumentNullException(nameof(startupDirectory));
         this.mcpTransportFactory = mcpTransportFactory;
-        this.pluginHostsFactory = pluginHostsFactory;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
 
@@ -170,29 +168,53 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
     }
 
-    public IAgentRunProfileLease Acquire()
+    public async Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
     {
-        lock (gate)
+        cancellationToken.ThrowIfCancellationRequested();
+        RuntimeProfileSelection? selection = null;
+        ProfileGenerationLease? generationLease = null;
+        var mcpLeases = new List<McpServerGeneration.McpServerLease>();
+        try
         {
-            var snapshot = GetCurrent();
-            if (sessionOverride is AutomaticProfileOverride automatic)
-                return CreateRuntimeProfileLease(
-                    snapshot,
-                    automatic.Generation,
-                    automatic.Identity,
-                    automatic.Capabilities);
+            lock (gate)
+            {
+                var snapshot = GetCurrent();
+                selection = SelectRuntimeProfile(snapshot);
+                generationLease = selection.Generation.Acquire();
+                foreach (var server in snapshot.McpServers.Values
+                             .OrderBy(static value => value.Id, StringComparer.OrdinalIgnoreCase))
+                    if (server.TryAcquire() is { } mcpLease)
+                        mcpLeases.Add(mcpLease);
+            }
 
-            var profileId = sessionOverride is ConfiguredProfileOverride configured
-                ? configured.ProfileId
-                : snapshot.DefaultProfileId;
-            if (string.IsNullOrEmpty(profileId)) throw new InvalidOperationException("No model profile is configured.");
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref pluginHosts) is { } activePluginHosts)
+            {
+                var dynamicLeases = await activePluginHosts
+                    .AcquireDynamicMcpLeasesAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var lease in dynamicLeases) mcpLeases.Add(lease);
+            }
 
-            var entry = snapshot.Profiles[profileId];
-            return CreateRuntimeProfileLease(
-                snapshot,
-                entry.Generation,
-                entry.Identity,
-                entry.Capabilities);
+            cancellationToken.ThrowIfCancellationRequested();
+            var tools = new List<AIFunction>(builtInTools.Count);
+            tools.AddRange(builtInTools);
+            foreach (var lease in mcpLeases) tools.AddRange(lease.Tools);
+
+            return new RuntimeProfileLease(
+                generationLease,
+                mcpLeases,
+                new AgentRunProfile(
+                    selection.Generation.Client,
+                    CreateAgentOptions(selection.Snapshot.Options),
+                    selection.Identity,
+                    selection.Capabilities,
+                    tools));
+        }
+        catch
+        {
+            await RollbackRuntimeProfileAcquisitionAsync(generationLease, mcpLeases).ConfigureAwait(false);
+            throw;
         }
     }
 
@@ -414,12 +436,18 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return results;
     }
 
-    internal Task InitializeAsync(CancellationToken cancellationToken)
+    internal Task InitializeAsync(PluginHostManager activePluginHosts, CancellationToken cancellationToken)
     {
-        pluginHostsFactory?.Invoke().SetReservedToolNames(
-            builtInTools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal));
+        ArgumentNullException.ThrowIfNull(activePluginHosts);
         lock (initializationGate)
         {
+            if (pluginHosts is { } existing && !ReferenceEquals(existing, activePluginHosts))
+                throw new InvalidOperationException(
+                    "The runtime configuration is already bound to a different plugin host manager.");
+
+            Volatile.Write(ref pluginHosts, activePluginHosts);
+            activePluginHosts.SetReservedToolNames(
+                builtInTools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal));
             if (current is not null) return Task.CompletedTask;
 
             return initialization ??= InitializeCoreAsync(cancellationToken);
@@ -1291,62 +1319,52 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return current ?? throw new ObjectDisposedException(nameof(MaieuticsRuntimeConfiguration));
     }
 
-    private RuntimeProfileLease CreateRuntimeProfileLease(
-        RuntimeSnapshot snapshot,
-        ProfileGeneration generation,
-        AgentModelIdentity identity,
-        AgentModelCapabilities capabilities)
+    private RuntimeProfileSelection SelectRuntimeProfile(RuntimeSnapshot snapshot)
     {
-        var generationLease = generation.Acquire();
-        var mcpLeases = new List<McpServerGeneration.McpServerLease>();
+        if (sessionOverride is AutomaticProfileOverride automatic)
+            return new RuntimeProfileSelection(
+                snapshot,
+                automatic.Generation,
+                automatic.Identity,
+                automatic.Capabilities);
+
+        var profileId = sessionOverride is ConfiguredProfileOverride configured
+            ? configured.ProfileId
+            : snapshot.DefaultProfileId;
+        if (string.IsNullOrEmpty(profileId)) throw new InvalidOperationException("No model profile is configured.");
+
+        var entry = snapshot.Profiles[profileId];
+        return new RuntimeProfileSelection(
+            snapshot,
+            entry.Generation,
+            entry.Identity,
+            entry.Capabilities);
+    }
+
+    private async Task RollbackRuntimeProfileAcquisitionAsync(
+        ProfileGenerationLease? generationLease,
+        IReadOnlyList<McpServerGeneration.McpServerLease> mcpLeases)
+    {
+        foreach (var lease in mcpLeases)
+            try
+            {
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception,
+                    "An MCP connection lease failed during run-profile acquisition rollback.");
+            }
+
+        if (generationLease is null) return;
         try
         {
-            var tools = new List<AIFunction>(builtInTools.Count);
-            tools.AddRange(builtInTools);
-            foreach (var server in snapshot.McpServers.Values
-                         .OrderBy(static value => value.Id, StringComparer.OrdinalIgnoreCase))
-            {
-                if (server.TryAcquire() is not { } mcpLease) continue;
-
-                mcpLeases.Add(mcpLease);
-                tools.AddRange(mcpLease.Tools);
-            }
-
-            if (pluginHostsFactory?.Invoke() is { } pluginHosts)
-            {
-                var dynamicLeases = pluginHosts.AcquireDynamicMcpLeases();
-                foreach (var lease in dynamicLeases)
-                {
-                    mcpLeases.Add(lease);
-                    tools.AddRange(lease.Tools);
-                }
-            }
-
-            return new RuntimeProfileLease(
-                generationLease,
-                mcpLeases,
-                new AgentRunProfile(
-                    generation.Client,
-                    CreateAgentOptions(snapshot.Options),
-                    identity,
-                    capabilities,
-                    tools));
+            await generationLease.DisposeAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
-            foreach (var lease in mcpLeases)
-                try
-                {
-                    lease.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception,
-                        "An MCP connection lease failed during run-profile acquisition rollback.");
-                }
-
-            generationLease.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            throw;
+            logger.LogError(exception,
+                "The model provider lease failed during run-profile acquisition rollback.");
         }
     }
 
@@ -1525,6 +1543,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 true);
         }
     }
+
+    private sealed record RuntimeProfileSelection(
+        RuntimeSnapshot Snapshot,
+        ProfileGeneration Generation,
+        AgentModelIdentity Identity,
+        AgentModelCapabilities Capabilities);
 
     private sealed class RuntimeProfileLease(
         ProfileGenerationLease generationLease,

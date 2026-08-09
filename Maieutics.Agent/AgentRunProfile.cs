@@ -53,9 +53,10 @@ public sealed record AgentRunProfile
 /// <summary>Provides an immutable profile for each newly started Agent run.</summary>
 public interface IAgentRunProfileProvider
 {
-    /// <summary>Acquires a profile lease owned by the new run.</summary>
+    /// <summary>Asynchronously acquires a profile lease owned by the new run.</summary>
+    /// <param name="cancellationToken">Cancels waiting for the profile lease.</param>
     /// <returns>A lease whose profile remains valid until the run terminates.</returns>
-    IAgentRunProfileLease Acquire();
+    Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>Keeps an Agent run profile and its resources alive for one run.</summary>

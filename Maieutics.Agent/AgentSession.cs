@@ -62,8 +62,9 @@ public sealed class AgentSession : IAgentSession
         IAgentRunProfileLease? profileLease = null;
         try
         {
-            profileLease = profileProvider.Acquire() ??
+            profileLease = await profileProvider.AcquireAsync(cancellationToken).ConfigureAwait(false) ??
                            throw new InvalidOperationException("The Agent run profile provider returned a null lease.");
+            cancellationToken.ThrowIfCancellationRequested();
             var profile = profileLease.Profile ??
                           throw new InvalidOperationException("The Agent run profile lease returned a null profile.");
             profile.Options.Validate();
@@ -354,9 +355,10 @@ public sealed class AgentSession : IAgentSession
 
     private sealed class FixedAgentRunProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
     {
-        public IAgentRunProfileLease Acquire()
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            return new FixedAgentRunProfileLease(profile);
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IAgentRunProfileLease>(new FixedAgentRunProfileLease(profile));
         }
     }
 

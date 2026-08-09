@@ -4,6 +4,7 @@ using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Jupyter.Shared;
+using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
@@ -189,7 +190,7 @@ public sealed class MaieuticsConfigurationTests
             selection.HasSessionOverride.Should().BeTrue();
             selection.Profiles.Should().ContainSingle().Which.IsAutomatic.Should().BeTrue();
 
-            var lease = runtime.Acquire();
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             client.Model.Should().Be("model-alpha");
             lease.Profile.ModelIdentity.Should().NotBeNull();
@@ -237,7 +238,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             runtime.SelectModelProfile("@vendor/model-alpha");
-            var lease = runtime.Acquire();
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
 
             await WriteAndWaitForReloadAsync(
@@ -256,6 +257,49 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CanceledPluginReadinessWaitRollsBackTheProfileGenerationLease()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-readiness-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateConfiguration(connectionFile, "Fake", "test-model"),
+            deadline.Token);
+
+        var factory = new TrackingChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+        try
+        {
+            var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
+            var pluginHosts = host.Services.GetRequiredService<PluginHostManager>();
+            await runtime.InitializeAsync(pluginHosts, deadline.Token);
+
+            var acquisition = runtime.AcquireAsync(cancellation.Token);
+            acquisition.IsCompleted.Should().BeFalse();
+            cancellation.Cancel();
+
+            await acquisition
+                .Invoking(static task => task)
+                .Should().ThrowAsync<OperationCanceledException>();
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            factory.Clients.Should().ContainSingle().Which.Disposed.Should().BeTrue();
             Directory.Delete(root, true);
         }
     }
@@ -401,7 +445,7 @@ public sealed class MaieuticsConfigurationTests
                 .WithMessage("*'@first/model-alpha'*'@second/model-alpha'*");
 
             runtime.SelectModelProfile("@second/model-alpha");
-            await using var lease = runtime.Acquire();
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
             lease.Profile.ModelIdentity?.Model.Should().Be("model-alpha");
         }
         finally
@@ -677,7 +721,7 @@ public sealed class MaieuticsConfigurationTests
         try
         {
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
-            await using var lease = runtime.Acquire();
+            await using var lease = await runtime.AcquireAsync(TestContext.Current.CancellationToken);
             lease.Profile.Options.MaxHistoryBytes.Should().Be(246_912);
         }
         finally
@@ -747,7 +791,7 @@ public sealed class MaieuticsConfigurationTests
             try
             {
                 var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
-                await using var lease = runtime.Acquire();
+                await using var lease = await runtime.AcquireAsync(deadline.Token);
                 lease.Profile.Options.MaxTurnDuration.Should().Be(TimeSpan.FromSeconds(45));
             }
             finally
@@ -792,7 +836,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
-            await using (var lease = runtime.Acquire())
+            await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 lease.Profile.Options.MaxHistoryBytes.Should().Be(1_000);
             }
@@ -810,7 +854,7 @@ public sealed class MaieuticsConfigurationTests
                 CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryCharacters: 600),
                 deadline.Token);
             runtime.Version.Should().Be(2);
-            await using (var lease = runtime.Acquire())
+            await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 lease.Profile.Options.MaxHistoryBytes.Should().Be(1_200);
             }
@@ -837,7 +881,7 @@ public sealed class MaieuticsConfigurationTests
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion);
 
-            await using (var lease = runtime.Acquire())
+            await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 lease.Profile.Options.MaxHistoryBytes.Should().Be(1_200);
             }
@@ -849,7 +893,7 @@ public sealed class MaieuticsConfigurationTests
                 CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryBytes: 1_400),
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion + 1);
-            await using (var lease = runtime.Acquire())
+            await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 lease.Profile.Options.MaxHistoryBytes.Should().Be(1_400);
             }
@@ -889,7 +933,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
-            var firstLease = runtime.Acquire();
+            var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             firstClient.Model.Should().Be("one");
             firstLease.Profile.Options.SystemPrompt.Should().Be("first");
@@ -902,7 +946,7 @@ public sealed class MaieuticsConfigurationTests
                     flushCharacters: 2048),
                 deadline.Token);
             runtime.Version.Should().Be(2);
-            await using (var secondLease = runtime.Acquire())
+            await using (var secondLease = await runtime.AcquireAsync(deadline.Token))
             {
                 var secondClient = secondLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
                 secondClient.Model.Should().Be("two");
@@ -1004,13 +1048,13 @@ public sealed class MaieuticsConfigurationTests
             initialSelection.SelectedProfileId.Should().Be("one");
             initialSelection.HasSessionOverride.Should().BeFalse();
 
-            var firstLease = runtime.Acquire();
+            var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             firstLease.Profile.ModelIdentity.Should().Be(new AgentModelIdentity(
                 new AgentModelProfileId("one"), "Fake", "model-one"));
 
             runtime.SelectModelProfile("TWO");
-            var secondLease = runtime.Acquire();
+            var secondLease = await runtime.AcquireAsync(deadline.Token);
             var secondClient = secondLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             runtime.GetModelProfileSelection().HasSessionOverride.Should().BeTrue();
 
@@ -1025,7 +1069,7 @@ public sealed class MaieuticsConfigurationTests
                     new NamedProfile("two", "secondary", "model-two", "secondary-v1")),
                 deadline.Token);
 
-            await using (var reusedLease = runtime.Acquire())
+            await using (var reusedLease = await runtime.AcquireAsync(deadline.Token))
             {
                 reusedLease.Profile.ChatClient.Should().BeSameAs(secondClient);
                 reusedLease.Profile.ModelIdentity?.ProfileId.Value.Should().Be("two");
@@ -1261,7 +1305,7 @@ public sealed class MaieuticsConfigurationTests
 
     private static async Task<TrackingChatClient> AcquireClientAsync(MaieuticsRuntimeConfiguration runtime)
     {
-        await using var lease = runtime.Acquire();
+        await using var lease = await runtime.AcquireAsync(TestContext.Current.CancellationToken);
         return lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
     }
 

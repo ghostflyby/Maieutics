@@ -13,6 +13,80 @@ public sealed class PluginHostIntegrationTests
     private static readonly JsonSerializerOptions JsonSerializerOptionsCaseInsensitive =
         new() { PropertyNameCaseInsensitive = true };
 
+    [Fact]
+    public async Task ReadinessWaitCancellationDoesNotCancelTheManagerAndShutdownIsIdempotent()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        using var canceledWait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var pluginsRoot = Path.Combine(Path.GetTempPath(), $"mc-empty-plugins-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(pluginsRoot);
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions(),
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+
+        try
+        {
+            var readiness = manager.WaitUntilReadyAsync(canceledWait.Token);
+            canceledWait.Cancel();
+            await readiness
+                .Invoking(static task => task)
+                .Should().ThrowAsync<OperationCanceledException>();
+
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+            await Task.WhenAll(
+                manager.StopAsync(deadline.Token),
+                manager.DisposeAsync().AsTask());
+            await manager.DisposeAsync();
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Directory.Delete(pluginsRoot, true);
+        }
+    }
+
+    [Fact]
+    public async Task StartupFailureIsPublishedToReadinessAndCleansUp()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var pluginsRoot = CreatePluginsRoot("integration");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = $"missing-deno-{Guid.NewGuid():N}" },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+
+        try
+        {
+            var startupFailure = (await manager.StartAsync(deadline.Token)
+                .Invoking(static task => task)
+                .Should().ThrowAsync<Exception>()).Which;
+            var readinessFailure = (await manager.WaitUntilReadyAsync(deadline.Token)
+                .Invoking(static task => task)
+                .Should().ThrowAsync<Exception>()).Which;
+
+            readinessFailure.Should().BeSameAs(startupFailure);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Directory.Delete(pluginsRoot, true);
+        }
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task DiscoversAndInvokesExtensionPointsInARealDenoHost()
     {
@@ -23,15 +97,7 @@ public sealed class PluginHostIntegrationTests
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
         var pluginsRoot = CreatePluginsRoot("integration");
-        var managerTcs = new TaskCompletionSource<PluginHostManager>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var controlHost = new ReplControlHost(
-            socketPath,
-            registry,
-            NullLogger<ReplControlHost>.Instance,
-            pluginHosts: managerTcs.Task);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
-        var manager = await PluginHostManager.CreateAsync(
+        var manager = new PluginHostManager(
             pluginsRoot,
             socketPath,
             new DenoReplOptions { Executable = "deno" },
@@ -40,7 +106,13 @@ public sealed class PluginHostIntegrationTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System);
-        managerTcs.TrySetResult(manager);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
         await using (application)
         await using (manager)
         {
@@ -82,16 +154,7 @@ public sealed class PluginHostIntegrationTests
         var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-hook-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceRoot);
         var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
-        var managerTcs = new TaskCompletionSource<PluginHostManager>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        var controlHost = new ReplControlHost(
-            socketPath,
-            registry,
-            NullLogger<ReplControlHost>.Instance,
-            functions,
-            managerTcs.Task);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
-        var manager = await PluginHostManager.CreateAsync(
+        var manager = new PluginHostManager(
             pluginsRoot,
             socketPath,
             new DenoReplOptions { Executable = "deno" },
@@ -100,7 +163,14 @@ public sealed class PluginHostIntegrationTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System);
-        managerTcs.TrySetResult(manager);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            functions,
+            manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
         await using (application)
         await using (manager)
         {

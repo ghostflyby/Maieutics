@@ -915,9 +915,9 @@ public sealed class AgentJupyterIntegrationTests
             sessionOverride = null;
         }
 
-        public IAgentRunProfileLease Acquire()
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            return Task.FromException<IAgentRunProfileLease>(new NotSupportedException());
         }
 
         public MaieuticsAgentKernelOptions GetKernelOptions()
@@ -962,9 +962,10 @@ public sealed class AgentJupyterIntegrationTests
         {
         }
 
-        public IAgentRunProfileLease Acquire()
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            throw new InvalidOperationException("No model profile is configured.");
+            return Task.FromException<IAgentRunProfileLease>(
+                new InvalidOperationException("No model profile is configured."));
         }
 
         public MaieuticsAgentKernelOptions GetKernelOptions()
@@ -1027,9 +1028,9 @@ public sealed class AgentJupyterIntegrationTests
             selected = false;
         }
 
-        public IAgentRunProfileLease Acquire()
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            return Task.FromException<IAgentRunProfileLease>(new NotSupportedException());
         }
 
         public MaieuticsAgentKernelOptions GetKernelOptions()
@@ -1094,9 +1095,9 @@ public sealed class AgentJupyterIntegrationTests
         {
         }
 
-        public IAgentRunProfileLease Acquire()
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            return Task.FromException<IAgentRunProfileLease>(new NotSupportedException());
         }
 
         public MaieuticsAgentKernelOptions GetKernelOptions()

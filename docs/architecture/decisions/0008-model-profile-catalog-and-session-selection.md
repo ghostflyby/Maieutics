@@ -17,9 +17,11 @@ Configuration defines case-insensitive named `Sources` and `Profiles`. A source 
 and owns provider-specific connection options. A profile references one source and one model identifier. The catalog has
 one configured default profile and may have one Kernel-lifetime session override.
 
-Each successful `Acquire()` returns a reference-counted generation lease containing an immutable `IChatClient`, model
-identity, capabilities, and Agent options. A run never reacquires or switches this lease during provider or tool
-iterations. Successful transcript turns record the profile, provider, and model used, but history replay sends only
+Each successful `AcquireAsync(CancellationToken)` returns a reference-counted generation lease containing an immutable
+`IChatClient`, model identity, capabilities, Agent options, and the MCP/plugin tool generations available at the
+operation boundary. Acquisition may wait for plugin readiness and rolls back partial leases asynchronously without
+holding configuration locks. A run never reacquires or switches this lease during provider or tool iterations.
+Successful transcript turns record the profile, provider, and model used, but history replay sends only
 provider-neutral messages.
 
 Notebook control cells provide explicit selection:

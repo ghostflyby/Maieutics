@@ -7,6 +7,7 @@ using System.Text.Json.Serialization.Metadata;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Mcp;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Plugins;
@@ -34,7 +35,7 @@ internal readonly record struct ExtensionCallOutcome(
 ///     Owns plugin discovery, the plugin host process, its control-channel WebSocket connection, and
 ///     extension point invocation routing. REPL connections stay in <see cref="ReplControlHost" />;
 ///     host connections are attached here so the kernel can call into plugin workers without a
-///     reverse dependency. Instances are created already started through <see cref="CreateAsync" />.
+///     reverse dependency. The generic host starts and stops this same instance.
 /// </summary>
 internal sealed class PluginHostManager(
     string pluginsRoot,
@@ -45,7 +46,7 @@ internal sealed class PluginHostManager(
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
     TimeProvider timeProvider)
-    : IAsyncDisposable
+    : IHostedService, IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
@@ -55,6 +56,9 @@ internal sealed class PluginHostManager(
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
     private readonly Lock lifecycleGate = new();
+
+    private readonly TaskCompletionSource readiness =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -78,6 +82,7 @@ internal sealed class PluginHostManager(
     private PluginHostProcess? process;
     private Task processExitObservation = Task.CompletedTask;
     private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
+    private Task? starting;
     private Task? stopping;
     private WebSocket? Socket { get; set; }
 
@@ -85,30 +90,65 @@ internal sealed class PluginHostManager(
 
     public ValueTask DisposeAsync()
     {
-        return new ValueTask(StopAsync());
+        return new ValueTask(EnsureStoppedAsync());
     }
 
-    internal static Task<PluginHostManager> CreateAsync(
-        string pluginsRoot,
-        string socketPath,
-        DenoReplOptions denoOptions,
-        PluginHostModule modules,
-        ReplControlSessionRegistry sessionRegistry,
-        ILogger<PluginHostManager> logger,
-        ILoggerFactory loggerFactory,
-        TimeProvider timeProvider)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
-        var manager = new PluginHostManager(
-            pluginsRoot,
-            socketPath,
-            denoOptions,
-            modules,
-            sessionRegistry,
-            logger,
-            loggerFactory,
-            timeProvider);
-        manager.Start();
-        return Task.FromResult(manager);
+        lock (lifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(stopping is not null, this);
+            return starting ??= StartCoreAsync(cancellationToken);
+        }
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        return EnsureStoppedAsync().WaitAsync(cancellationToken);
+    }
+
+    internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
+    {
+        return readiness.Task.WaitAsync(cancellationToken);
+    }
+
+    private async Task StartCoreAsync(CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (lifecycleGate)
+            {
+                ObjectDisposedException.ThrowIf(stopping is not null, this);
+                Start();
+                readiness.TrySetResult();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            readiness.TrySetCanceled(cancellationToken);
+            await CleanupFailedStartupAsync().ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            readiness.TrySetException(exception);
+            await CleanupFailedStartupAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task CleanupFailedStartupAsync()
+    {
+        try
+        {
+            await EnsureStoppedAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Plugin host cleanup failed after startup did not complete.");
+        }
     }
 
     public void SetReservedToolNames(IReadOnlySet<string> names)
@@ -209,14 +249,17 @@ internal sealed class PluginHostManager(
     }
 
     /// <summary>Acquires leases for plugin-discovered MCP servers that are ready.</summary>
-    public IReadOnlyList<McpServerGeneration.McpServerLease> AcquireDynamicMcpLeases()
+    public async Task<IReadOnlyList<McpServerGeneration.McpServerLease>> AcquireDynamicMcpLeasesAsync(
+        CancellationToken cancellationToken)
     {
+        await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         return dynamicMcpCoordinator?.AcquireLeases() ?? [];
     }
 
     /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.</summary>
     public async Task AttachHostAsync(WebSocket socket, CancellationToken cancellationToken)
     {
+        await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         lock (gate)
         {
             Socket = socket;
@@ -245,7 +288,7 @@ internal sealed class PluginHostManager(
         }
     }
 
-    private Task StopAsync()
+    private Task EnsureStoppedAsync()
     {
         lock (lifecycleGate)
         {
@@ -256,6 +299,7 @@ internal sealed class PluginHostManager(
     private async Task StopCoreAsync()
     {
         await Task.Yield();
+        readiness.TrySetCanceled();
         await lifetime.CancelAsync().ConfigureAwait(false);
         FailPending("The plugin host is stopping.");
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);

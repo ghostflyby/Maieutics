@@ -139,7 +139,7 @@ public static class MaieuticsHost
             );
 
         builder.Services.AddSingleton<PluginHostModule>();
-        builder.Services.AddSingleton<Task<PluginHostManager>>(services => PluginHostManager.CreateAsync(
+        builder.Services.AddSingleton(services => new PluginHostManager(
             Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".maieutics", "plugins"),
             controlSocketPath,
             services.GetRequiredService<DenoReplOptions>(),
@@ -148,15 +148,13 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
             services.GetRequiredService<TimeProvider>()));
-        builder.Services.AddSingleton<Func<PluginHostManager>>(services =>
-            () => services.GetRequiredService<Task<PluginHostManager>>().GetAwaiter().GetResult());
-        builder.Services.AddHostedService<PluginHostStartupHostedService>();
+        builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<ReplControlHost>>(),
             services.GetRequiredService<WorkspaceFunctions>().Functions,
-            services.GetRequiredService<Task<PluginHostManager>>(),
+            services.GetRequiredService<PluginHostManager>(),
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()

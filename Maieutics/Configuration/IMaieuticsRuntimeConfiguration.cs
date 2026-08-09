@@ -48,7 +48,17 @@ internal sealed record MaieuticsModelProfileSelection(
 internal sealed record MaieuticsRuntimeStatus(
     long Version,
     MaieuticsModelProfileSelection ModelSelection,
-    MaieuticsConfigurationReloadInfo LastReload);
+    MaieuticsConfigurationReloadInfo LastReload,
+    IReadOnlyList<MaieuticsCapabilityInfo> CapabilityProfiles);
+
+internal sealed record MaieuticsCapabilityInfo(
+    string SourceId,
+    string ModelId,
+    bool Matched,
+    bool KnownVendor,
+    AgentModelCapabilities Capabilities,
+    IReadOnlyList<string> PotentialCapabilities,
+    IReadOnlyList<string> HostedCapabilities);
 
 internal sealed record MaieuticsConfigurationReloadInfo(
     long Attempt,

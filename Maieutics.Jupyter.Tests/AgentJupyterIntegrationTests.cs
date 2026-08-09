@@ -869,7 +869,8 @@ public sealed class AgentJupyterIntegrationTests
             new MaieuticsConfigurationReloadInfo(
                 0,
                 MaieuticsConfigurationReloadOutcome.NotAttempted,
-                runtime.Version));
+                runtime.Version),
+            []);
     }
 
     private sealed class TestRuntimeConfiguration : IMaieuticsRuntimeConfiguration

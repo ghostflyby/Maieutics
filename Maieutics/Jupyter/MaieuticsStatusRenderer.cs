@@ -1,4 +1,5 @@
 using System.Text;
+using Maieutics.Agent;
 using Maieutics.Configuration;
 
 namespace Maieutics.Jupyter;
@@ -50,6 +51,37 @@ internal static class MaieuticsStatusRenderer
                 .Append(", model ")
                 .Append(MarkdownText.CodeSpan(profile.Model))
                 .AppendLine();
+        }
+
+        if (snapshot.Runtime.CapabilityProfiles.Count == 0)
+        {
+            output.AppendLine("- Capabilities: no model profiles");
+        }
+        else
+        {
+            output.AppendLine("- Capabilities:");
+            foreach (var capability in snapshot.Runtime.CapabilityProfiles)
+            {
+                output.Append("  - source ")
+                    .Append(MarkdownText.CodeSpan(capability.SourceId))
+                    .Append(", model ")
+                    .Append(MarkdownText.CodeSpan(capability.ModelId))
+                    .Append(": ")
+                    .Append(MarkdownText.CodeSpan(CapabilityNames(capability.Capabilities)));
+                if (capability.HostedCapabilities.Count > 0)
+                    output.Append("; hosted ")
+                        .Append(MarkdownText.CodeSpan(string.Join(", ", capability.HostedCapabilities)));
+
+                if (capability.PotentialCapabilities.Count > 0)
+                    output.Append("; potential ")
+                        .Append(MarkdownText.CodeSpan(string.Join(", ", capability.PotentialCapabilities)));
+
+                output.AppendLine(capability.Matched
+                    ? " (endpoint profile matched)"
+                    : capability.KnownVendor
+                        ? " (known vendor)"
+                        : " (declared baseline)");
+            }
         }
 
         output.Append("- Workspace: ")
@@ -120,5 +152,15 @@ internal static class MaieuticsStatusRenderer
             MaieuticsConfigurationReloadOutcome.Rejected => "rejected",
             _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "Unknown reload outcome.")
         };
+    }
+
+    private static string CapabilityNames(AgentModelCapabilities capabilities)
+    {
+        return string.Join(
+            ", ",
+            Enum.GetValues<AgentModelCapabilities>()
+                .Where(value => value != AgentModelCapabilities.None &&
+                                (capabilities & value) == value)
+                .Select(static value => value.ToString()));
     }
 }

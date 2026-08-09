@@ -19,5 +19,17 @@ internal interface IConfiguredChatClientSource
 
     AgentModelCapabilities Capabilities { get; }
 
+    /// <summary>Gets the provider API endpoint, when one is configured.</summary>
+    Uri? EndpointUri { get; }
+
+    /// <summary>Gets the vendor identity owning this source, when one is configured.</summary>
+    string? Vendor { get; }
+
+    /// <summary>
+    ///     Gets the provider-neutral capability names the source's API format can express. An
+    ///     unknown or unsupported format returns an empty list.
+    /// </summary>
+    IReadOnlyList<string> FormatCapabilities { get; }
+
     IChatClient Create(string model);
 }

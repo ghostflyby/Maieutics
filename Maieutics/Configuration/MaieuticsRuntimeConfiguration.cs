@@ -168,14 +168,49 @@ internal sealed class MaieuticsRuntimeConfiguration :
         lock (gate)
         {
             var snapshot = GetCurrent();
+            var capabilityInfos = new List<MaieuticsCapabilityInfo>();
+            foreach (var profile in snapshot.Profiles.Values
+                         .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase))
+                if (snapshot.Sources.TryGetValue(profile.SourceId, out var source))
+                    capabilityInfos.Add(CreateCapabilityInfo(
+                        profile.SourceId,
+                        profile.Identity.Model,
+                        source,
+                        snapshot.CapabilityRegistry.Resolve(source, profile.Identity.Model)));
+
+            if (sessionOverride is AutomaticProfileOverride automatic &&
+                snapshot.Sources.TryGetValue(automatic.SourceId, out var automaticSource))
+                capabilityInfos.Add(CreateCapabilityInfo(
+                    automatic.SourceId,
+                    automatic.Model,
+                    automaticSource,
+                    snapshot.CapabilityRegistry.Resolve(automaticSource, automatic.Model)));
+
             return new MaieuticsRuntimeStatus(
                 snapshot.Version,
                 CreateModelProfileSelectionLocked(snapshot),
                 lastReload ?? new MaieuticsConfigurationReloadInfo(
                     0,
                     MaieuticsConfigurationReloadOutcome.NotAttempted,
-                    snapshot.Version));
+                    snapshot.Version),
+                capabilityInfos);
         }
+    }
+
+    private static MaieuticsCapabilityInfo CreateCapabilityInfo(
+        string sourceId,
+        string model,
+        IConfiguredChatClientSource source,
+        CapabilityResolution resolution)
+    {
+        return new MaieuticsCapabilityInfo(
+            sourceId,
+            model,
+            resolution.Matched,
+            resolution.KnownVendor,
+            source.Capabilities,
+            resolution.Potential,
+            resolution.Effective);
     }
 
     public async Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
@@ -219,6 +254,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     CreateAgentOptions(selection.Snapshot.Options),
                     selection.Identity,
                     selection.Capabilities,
+                    selection.HostedCapabilities,
                     tools));
         }
         catch
@@ -314,7 +350,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 if (!snapshot.Sources.TryGetValue(candidate.SourceId, out var source) ||
                     !string.Equals(source.ProviderName, candidate.Provider, StringComparison.OrdinalIgnoreCase) ||
                     !Equals(source.ClientGenerationKey, candidate.ClientGenerationKey) ||
-                    source.Capabilities != candidate.Capabilities)
+                    !AutomaticProfileMatches(
+                        snapshot,
+                        source,
+                        candidate.Model,
+                        candidate.Capabilities,
+                        candidate.HostedCapabilities))
                     throw new ArgumentException(
                         $"The model source '{candidate.SourceId}' changed while the automatic profile was selected. " +
                         "Run model discovery and try again.",
@@ -546,13 +587,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 if (string.IsNullOrWhiteSpace(model.Id)) continue;
 
                 var selector = MaieuticsAutomaticProfileSelector.Format(cached.Result.SourceId, model.Id);
+                var (capabilities, hostedCapabilities) =
+                    ResolveSourceCapabilities(source, model.Id, snapshot.CapabilityRegistry);
                 candidates.TryAdd(selector, new AutomaticProfileCandidate(
                     selector,
                     cached.Result.SourceId,
                     source.ProviderName,
                     model.Id,
                     source.ClientGenerationKey,
-                    source.Capabilities,
+                    capabilities,
+                    hostedCapabilities,
                     source));
             }
         }
@@ -720,7 +764,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
                          !string.Equals(source.ProviderName, automatic.Provider,
                              StringComparison.OrdinalIgnoreCase) ||
                          !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
-                         source.Capabilities != automatic.Capabilities:
+                         !AutomaticProfileMatches(
+                             replacement,
+                             source,
+                             automatic.Model,
+                             automatic.Capabilities,
+                             automatic.HostedCapabilities):
                     removedOverride = automatic.Selector;
                     sessionOverride = null;
                     TrackRetirementLocked(automatic.Generation);
@@ -817,12 +866,15 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     new AgentModelProfileId(profile.Id),
                     profile.Source.ProviderName,
                     profile.Model);
+                var (capabilities, hostedCapabilities) =
+                    ResolveSourceCapabilities(profile.Source, profile.Model, candidate.CapabilityRegistry);
                 entries.Add(profile.Id, new ProfileEntry(
                     profile.Id,
                     profile.SourceId,
                     profile.Key,
                     identity,
-                    profile.Source.Capabilities,
+                    capabilities,
+                    hostedCapabilities,
                     generation));
             }
 
@@ -835,6 +887,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 entries,
                 sourceMap,
                 mcpServers,
+                candidate.CapabilityRegistry,
                 candidate.Key);
         }
         catch
@@ -854,6 +907,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         root.Bind(options);
         NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
+        var capabilityRegistry = CapabilityRegistry.Create(root);
         var mcpServers = CreateMcpServers(GetMcpServersSection());
 
         var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
@@ -866,11 +920,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
             throw new InvalidOperationException(
                 "The named Sources/Profiles configuration cannot be combined with legacy Model configuration.");
 
-        if (!hasNewSchema && !hasLegacySchema) return CreateCandidate(options, string.Empty, [], [], mcpServers);
+        if (!hasNewSchema && !hasLegacySchema)
+            return CreateCandidate(options, string.Empty, [], [], mcpServers, capabilityRegistry);
 
         return hasNewSchema
-            ? CreateNamedCandidate(root, options, mcpServers)
-            : CreateLegacyCandidate(root, options, mcpServers);
+            ? CreateNamedCandidate(root, options, mcpServers, capabilityRegistry)
+            : CreateLegacyCandidate(root, options, mcpServers, capabilityRegistry);
     }
 
     private IConfigurationSection GetMcpServersSection()
@@ -887,7 +942,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private Candidate CreateNamedCandidate(
         IConfigurationSection root,
         MaieuticsOptions options,
-        IReadOnlyList<McpServerDefinition> mcpServers)
+        IReadOnlyList<McpServerDefinition> mcpServers,
+        CapabilityRegistry capabilityRegistry)
     {
         var sources = new Dictionary<string, BoundSource>(StringComparer.OrdinalIgnoreCase);
         foreach (var sourceSection in root.GetSection("Sources").GetChildren())
@@ -944,7 +1000,13 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 throw new InvalidOperationException(
                     $"Default model profile '{options.DefaultProfile}' does not exist.");
 
-            return CreateCandidate(options, string.Empty, profiles, sources.Values.ToArray(), mcpServers);
+            return CreateCandidate(
+                options,
+                string.Empty,
+                profiles,
+                sources.Values.ToArray(),
+                mcpServers,
+                capabilityRegistry);
         }
 
         var defaultProfileId = ValidateIdentifier(options.DefaultProfile, "profile");
@@ -953,13 +1015,20 @@ internal sealed class MaieuticsRuntimeConfiguration :
         if (defaultProfile is null)
             throw new InvalidOperationException($"Default model profile '{defaultProfileId}' does not exist.");
 
-        return CreateCandidate(options, defaultProfile.Id, profiles, sources.Values.ToArray(), mcpServers);
+        return CreateCandidate(
+            options,
+            defaultProfile.Id,
+            profiles,
+            sources.Values.ToArray(),
+            mcpServers,
+            capabilityRegistry);
     }
 
     private Candidate CreateLegacyCandidate(
         IConfigurationSection root,
         MaieuticsOptions options,
-        IReadOnlyList<McpServerDefinition> mcpServers)
+        IReadOnlyList<McpServerDefinition> mcpServers,
+        CapabilityRegistry capabilityRegistry)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model.Name);
         var provider = string.IsNullOrWhiteSpace(options.Model.Provider) ? "OpenAI" : options.Model.Provider;
@@ -989,7 +1058,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             profileId,
             [profile],
             [new BoundSource(sourceId, source)],
-            mcpServers);
+            mcpServers,
+            capabilityRegistry);
     }
 
     private static Candidate CreateCandidate(
@@ -997,7 +1067,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         string defaultProfileId,
         IReadOnlyList<CandidateProfile> profiles,
         IReadOnlyList<BoundSource> sources,
-        IReadOnlyList<McpServerDefinition> mcpServers)
+        IReadOnlyList<McpServerDefinition> mcpServers,
+        CapabilityRegistry capabilityRegistry)
     {
         var key = new RuntimeKey(
             NormalizeIdentifier(defaultProfileId),
@@ -1016,7 +1087,14 @@ internal sealed class MaieuticsRuntimeConfiguration :
             Path.GetFullPath(options.Jupyter.ConnectionFile),
             options.Jupyter.FlushInterval,
             options.Jupyter.FlushCharacters);
-        return new Candidate(options, defaultProfileId, profiles, sources, mcpServers, key);
+        return new Candidate(
+            options,
+            defaultProfileId,
+            profiles,
+            sources,
+            mcpServers,
+            capabilityRegistry,
+            key);
     }
 
     private IReadOnlyList<McpServerDefinition> CreateMcpServers(IConfigurationSection section)
@@ -1203,7 +1281,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         if (snapshot.Key != candidate.Key ||
             snapshot.Profiles.Count != candidate.Profiles.Count ||
             snapshot.Sources.Count != candidate.Sources.Count ||
-            snapshot.McpServers.Count != candidate.McpServers.Count)
+            snapshot.McpServers.Count != candidate.McpServers.Count ||
+            snapshot.CapabilityRegistry != candidate.CapabilityRegistry)
             return false;
 
         foreach (var profile in candidate.Profiles)
@@ -1344,7 +1423,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 snapshot,
                 automatic.Generation,
                 automatic.Identity,
-                automatic.Capabilities);
+                automatic.Capabilities,
+                automatic.HostedCapabilities);
 
         var profileId = sessionOverride is ConfiguredProfileOverride configured
             ? configured.ProfileId
@@ -1356,7 +1436,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             snapshot,
             entry.Generation,
             entry.Identity,
-            entry.Capabilities);
+            entry.Capabilities,
+            entry.HostedCapabilities);
     }
 
     private async Task RollbackRuntimeProfileAcquisitionAsync(
@@ -1412,6 +1493,35 @@ internal sealed class MaieuticsRuntimeConfiguration :
         };
     }
 
+    private static bool AutomaticProfileMatches(
+        RuntimeSnapshot snapshot,
+        IConfiguredChatClientSource source,
+        string model,
+        AgentModelCapabilities capabilities,
+        IReadOnlyList<string> hostedCapabilities)
+    {
+        var (resolvedCapabilities, resolvedHosted) =
+            ResolveSourceCapabilities(source, model, snapshot.CapabilityRegistry);
+        return resolvedCapabilities == capabilities &&
+               HostedCapabilitiesEqual(resolvedHosted, hostedCapabilities);
+    }
+
+    private static (AgentModelCapabilities Capabilities, IReadOnlyList<string> HostedCapabilities)
+        ResolveSourceCapabilities(
+            IConfiguredChatClientSource source,
+            string model,
+            CapabilityRegistry capabilityRegistry)
+    {
+        return (source.Capabilities, capabilityRegistry.Resolve(source, model).Effective);
+    }
+
+    private static bool HostedCapabilitiesEqual(
+        IReadOnlyList<string> left,
+        IReadOnlyList<string> right)
+    {
+        return left.SequenceEqual(right, StringComparer.Ordinal);
+    }
+
     private static IReadOnlyDictionary<string, IConfiguredChatClientFactory> CreateFactoryRegistry(
         IEnumerable<IConfiguredChatClientFactory> source)
     {
@@ -1435,6 +1545,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyList<CandidateProfile> Profiles,
         IReadOnlyList<BoundSource> Sources,
         IReadOnlyList<McpServerDefinition> McpServers,
+        CapabilityRegistry CapabilityRegistry,
         RuntimeKey Key);
 
     private sealed record CandidateProfile(
@@ -1478,6 +1589,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyDictionary<string, ProfileEntry> Profiles,
         IReadOnlyDictionary<string, IConfiguredChatClientSource> Sources,
         IReadOnlyDictionary<string, McpServerGeneration> McpServers,
+        CapabilityRegistry CapabilityRegistry,
         RuntimeKey Key);
 
     private sealed record ProfileEntry(
@@ -1486,6 +1598,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ProfileKey Key,
         AgentModelIdentity Identity,
         AgentModelCapabilities Capabilities,
+        IReadOnlyList<string> HostedCapabilities,
         ProfileGeneration Generation);
 
     private abstract class ProfileOverride;
@@ -1511,6 +1624,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
         internal AgentModelCapabilities Capabilities { get; } = candidate.Capabilities;
 
+        internal IReadOnlyList<string> HostedCapabilities { get; } = candidate.HostedCapabilities;
+
         internal ProfileGeneration Generation { get; } = generation;
 
         internal AgentModelIdentity Identity { get; } = new(
@@ -1524,7 +1639,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                    string.Equals(Model, other.Model, StringComparison.OrdinalIgnoreCase) &&
                    string.Equals(Provider, other.Provider, StringComparison.OrdinalIgnoreCase) &&
                    Equals(ClientGenerationKey, other.ClientGenerationKey) &&
-                   Capabilities == other.Capabilities;
+                   Capabilities == other.Capabilities &&
+                   HostedCapabilitiesEqual(HostedCapabilities, other.HostedCapabilities);
         }
 
         internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected)
@@ -1547,6 +1663,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         string Model,
         object ClientGenerationKey,
         AgentModelCapabilities Capabilities,
+        IReadOnlyList<string> HostedCapabilities,
         IConfiguredChatClientSource Source)
     {
         internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected)
@@ -1566,7 +1683,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         RuntimeSnapshot Snapshot,
         ProfileGeneration Generation,
         AgentModelIdentity Identity,
-        AgentModelCapabilities Capabilities);
+        AgentModelCapabilities Capabilities,
+        IReadOnlyList<string> HostedCapabilities);
 
     private sealed class RuntimeProfileLease(
         ProfileGenerationLease generationLease,

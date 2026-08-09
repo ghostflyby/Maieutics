@@ -34,10 +34,31 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         public object ClientGenerationKey { get; } = new SourceGenerationKey(
             options.ApiFlavor,
             options.ApiKey,
-            options.Endpoint?.AbsoluteUri);
+            options.Endpoint?.AbsoluteUri,
+            options.Vendor);
 
         public AgentModelCapabilities Capabilities =>
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+        public Uri? EndpointUri => options.Endpoint;
+
+        public string? Vendor => options.Vendor;
+
+        public IReadOnlyList<string> FormatCapabilities => options.ApiFlavor switch
+        {
+            OpenAiApiFlavor.Responses =>
+            [
+                "WebSearch",
+                "FileSearch",
+                "CodeInterpreter",
+                "ComputerUse",
+                "ImageGeneration",
+                "ApplyPatch",
+                "Mcp"
+            ],
+            OpenAiApiFlavor.ChatCompletions => [],
+            _ => throw new UnreachableException()
+        };
 
         public IChatClient Create(string model)
         {
@@ -111,18 +132,21 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
     private sealed class SourceGenerationKey(
         OpenAiApiFlavor apiFlavor,
         string apiKey,
-        string? endpoint) : IEquatable<SourceGenerationKey>
+        string? endpoint,
+        string? vendor) : IEquatable<SourceGenerationKey>
     {
         private readonly OpenAiApiFlavor apiFlavor = apiFlavor;
         private readonly string apiKey = apiKey;
         private readonly string? endpoint = endpoint;
+        private readonly string? vendor = vendor;
 
         public bool Equals(SourceGenerationKey? other)
         {
             return other is not null &&
                    apiFlavor == other.apiFlavor &&
                    string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
-                   string.Equals(endpoint, other.endpoint, StringComparison.Ordinal);
+                   string.Equals(endpoint, other.endpoint, StringComparison.Ordinal) &&
+                   string.Equals(vendor, other.vendor, StringComparison.Ordinal);
         }
 
         public override bool Equals(object? obj)
@@ -135,13 +159,14 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
             return HashCode.Combine(
                 apiFlavor,
                 StringComparer.Ordinal.GetHashCode(apiKey),
-                endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint));
+                endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint),
+                vendor is null ? 0 : StringComparer.Ordinal.GetHashCode(vendor));
         }
 
         public override string ToString()
         {
             return
-                $"SourceGenerationKey {{ ApiFlavor = {apiFlavor}, ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"} }}";
+                $"SourceGenerationKey {{ ApiFlavor = {apiFlavor}, ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"}, Vendor = {vendor ?? "<none>"} }}";
         }
     }
 }
@@ -156,6 +181,8 @@ internal sealed class OpenAiSourceOptions
 
     public Uri? Endpoint { get; set; }
 
+    public string? Vendor { get; set; }
+
     internal void Validate()
     {
         if (Provider is not null && !string.Equals(Provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
@@ -169,5 +196,8 @@ internal sealed class OpenAiSourceOptions
             (!Endpoint.IsAbsoluteUri || Endpoint.Scheme is not ("http" or "https")))
             throw new ArgumentException("The OpenAI endpoint must be an absolute HTTP or HTTPS URI.",
                 nameof(Endpoint));
+
+        if (Vendor is not null && string.IsNullOrWhiteSpace(Vendor))
+            throw new ArgumentException("The OpenAI source Vendor must not be empty.", nameof(Vendor));
     }
 }

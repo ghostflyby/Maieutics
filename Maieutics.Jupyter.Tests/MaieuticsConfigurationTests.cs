@@ -388,6 +388,73 @@ public sealed class MaieuticsConfigurationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task AutomaticProfileRetiresWhenHostedCapabilitiesChangeOnReload()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-endpoints-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var webSearch = new JsonArray(new JsonObject
+        {
+            ["Url"] = "https://api.example.com/v1",
+            ["Capabilities"] = new JsonArray("WebSearch")
+        });
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateSourceOnlyConfiguration(
+                connectionFile,
+                webSearch,
+                new NamedSource("vendor", "one", "https://api.example.com/v1")),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
+            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+            lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+
+            var shell = new JsonArray(new JsonObject
+            {
+                ["Url"] = "https://api.example.com/v1",
+                ["Capabilities"] = new JsonArray("Shell")
+            });
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateSourceOnlyConfiguration(
+                    connectionFile,
+                    shell,
+                    new NamedSource("vendor", "one", "https://api.example.com/v1")),
+                deadline.Token);
+
+            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
+            client.Disposed.Should().BeFalse();
+            await lease.DisposeAsync();
+            client.Disposed.Should().BeTrue();
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task AutomaticProfileSelectionFailureRetiresCreatedClientExactlyOnce()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
@@ -1663,29 +1730,504 @@ public sealed class MaieuticsConfigurationTests
         }.ToJsonString();
     }
 
-    private static string CreateSourceOnlyConfiguration(
-        string connectionFile,
-        params NamedSource[] sources)
+    [Fact]
+    public async Task AcquiredProfileMergesConfiguredEndpointCapabilities()
     {
-        var sourceNodes = new JsonObject();
-        foreach (var source in sources)
-            sourceNodes[source.Id] = new JsonObject
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-endpoint-capabilities-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var document = new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
             {
-                ["Provider"] = "Fake",
-                ["Revision"] = source.Revision
-            };
+                ["DefaultProfile"] = "gpt",
+                ["Sources"] = new JsonObject
+                {
+                    ["fake"] = new JsonObject
+                    {
+                        ["Provider"] = "Fake",
+                        ["Endpoint"] = "https://api.example.com/v1"
+                    }
+                },
+                ["Profiles"] = new JsonObject
+                {
+                    ["gpt"] = new JsonObject
+                    {
+                        ["Source"] = "fake",
+                        ["Model"] = "test-model"
+                    }
+                },
+                ["Endpoints"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["Url"] = "https://api.example.com/v1/",
+                        ["Capabilities"] = new JsonArray("WebSearch", "Responses.FileSearch")
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        };
+        await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
 
+        var factory = new EndpointAwareChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        await using var host = builder.Build();
+        var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+
+        var status = runtime.GetStatus();
+        var capabilityInfo = status.CapabilityProfiles.Should().ContainSingle().Subject;
+        capabilityInfo.SourceId.Should().Be("fake");
+        capabilityInfo.ModelId.Should().Be("test-model");
+        capabilityInfo.Matched.Should().BeTrue();
+        capabilityInfo.KnownVendor.Should().BeFalse();
+        capabilityInfo.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
+        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
+        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
+
+        await using var lease = await runtime.AcquireAsync(deadline.Token);
+        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
+        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
+        lease.Profile.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
+    }
+
+    [Fact]
+    public async Task UnmatchedEndpointKeepsOnlyDeclaredSourceCapabilities()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-endpoint-baseline-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var document = new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = "gpt",
+                ["Sources"] = new JsonObject
+                {
+                    ["fake"] = new JsonObject
+                    {
+                        ["Provider"] = "Fake",
+                        ["Endpoint"] = "https://api.example.com/v1?tenant=one"
+                    }
+                },
+                ["Profiles"] = new JsonObject
+                {
+                    ["gpt"] = new JsonObject
+                    {
+                        ["Source"] = "fake",
+                        ["Model"] = "test-model"
+                    }
+                },
+                ["Endpoints"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["Url"] = "https://api.example.com/v1",
+                        ["Capabilities"] = new JsonArray("WebSearch")
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        };
+        await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
+
+        var factory = new EndpointAwareChatClientFactory();
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        await using var host = builder.Build();
+        var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+
+        var status = runtime.GetStatus();
+        var capabilityInfo = status.CapabilityProfiles.Should().ContainSingle().Subject;
+        capabilityInfo.SourceId.Should().Be("fake");
+        capabilityInfo.ModelId.Should().Be("test-model");
+        capabilityInfo.Matched.Should().BeFalse();
+        capabilityInfo.KnownVendor.Should().BeFalse();
+        capabilityInfo.HostedCapabilities.Should().BeEmpty();
+        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
+        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
+
+        await using var lease = await runtime.AcquireAsync(deadline.Token);
+        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
+        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
+        lease.Profile.HostedCapabilities.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task KnownVendorEndpointGrantsAutomaticHostedCapabilities()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-known-vendor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var document = new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = "gpt",
+                ["Sources"] = new JsonObject
+                {
+                    ["fake"] = new JsonObject
+                    {
+                        ["Provider"] = "Fake",
+                        ["Endpoint"] = "https://api.openai.com/v1"
+                    }
+                },
+                ["Profiles"] = new JsonObject
+                {
+                    ["gpt"] = new JsonObject
+                    {
+                        ["Source"] = "fake",
+                        ["Model"] = "test-model"
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        };
+        await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
+
+        var factory = new EndpointAwareChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        await using var host = builder.Build();
+        var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+
+        var status = runtime.GetStatus();
+        var capabilityInfo = status.CapabilityProfiles.Should().ContainSingle().Subject;
+        capabilityInfo.KnownVendor.Should().BeTrue();
+        capabilityInfo.Matched.Should().BeFalse();
+        capabilityInfo.HostedCapabilities.Should().Equal(ResponsesFormatCapabilities);
+
+        await using var lease = await runtime.AcquireAsync(deadline.Token);
+        lease.Profile.HostedCapabilities.Should().Equal(ResponsesFormatCapabilities);
+    }
+
+    [Fact]
+    public async Task VendorsCatalogNarrowsCapabilitiesByModel()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-vendor-model-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var document = new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["DefaultProfile"] = "gpt",
+                ["Sources"] = new JsonObject
+                {
+                    ["fake"] = new JsonObject
+                    {
+                        ["Provider"] = "Fake",
+                        ["Endpoint"] = "https://opencode.ai/v1",
+                        ["Vendor"] = "opencode"
+                    }
+                },
+                ["Profiles"] = new JsonObject
+                {
+                    ["gpt"] = new JsonObject
+                    {
+                        ["Source"] = "fake",
+                        ["Model"] = "gpt-5"
+                    }
+                },
+                ["Vendors"] = new JsonObject
+                {
+                    ["opencode"] = new JsonObject
+                    {
+                        ["Endpoints"] = new JsonArray("https://opencode.ai/v1"),
+                        ["Capabilities"] = new JsonArray("WebSearch", "Shell"),
+                        ["Models"] = new JsonObject
+                        {
+                            ["gpt-5"] = new JsonObject
+                            {
+                                ["Capabilities"] = new JsonArray("WebSearch")
+                            }
+                        }
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        };
+        await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
+
+        var factory = new EndpointAwareChatClientFactory
+        {
+            FormatCapabilities = ["WebSearch", "Shell"]
+        };
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        await using var host = builder.Build();
+        var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+
+        await using var lease = await runtime.AcquireAsync(deadline.Token);
+        lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AutomaticProfileRetiresWhenVendorCatalogChangesOnReload()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-vendor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateVendorCatalogConfiguration(connectionFile, "WebSearch"),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
+            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+            lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+
+            // The active automatic override is reported alongside configured profiles.
+            runtime.GetStatus().CapabilityProfiles.Should().ContainSingle(profile =>
+                profile.SourceId == "vendor" &&
+                profile.ModelId == "model-alpha" &&
+                profile.KnownVendor &&
+                profile.HostedCapabilities.SequenceEqual(new[] { "WebSearch" }));
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateVendorCatalogConfiguration(connectionFile, "Shell"),
+                deadline.Token);
+
+            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
+            client.Disposed.Should().BeFalse();
+            await lease.DisposeAsync();
+            client.Disposed.Should().BeTrue();
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AutomaticProfileRetiresWhenVendorModelCatalogChangesOnReload()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-model-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateVendorModelCatalogConfiguration(connectionFile, "WebSearch"),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
+            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+            lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateVendorModelCatalogConfiguration(connectionFile, "Shell"),
+                deadline.Token);
+
+            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
+            client.Disposed.Should().BeFalse();
+            await lease.DisposeAsync();
+            client.Disposed.Should().BeTrue();
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Directory.Delete(root, true);
+        }
+    }
+
+    private static string CreateVendorModelCatalogConfiguration(string connectionFile, string modelCapability)
+    {
         return new JsonObject
         {
             ["Maieutics"] = new JsonObject
             {
-                ["Sources"] = sourceNodes,
+                ["Sources"] = new JsonObject
+                {
+                    ["vendor"] = new JsonObject
+                    {
+                        ["Provider"] = "Fake",
+                        ["Revision"] = "one",
+                        ["Endpoint"] = "https://opencode.ai/v1",
+                        ["Vendor"] = "opencode"
+                    }
+                },
+                ["Vendors"] = new JsonObject
+                {
+                    ["opencode"] = new JsonObject
+                    {
+                        ["Endpoints"] = new JsonArray("https://opencode.ai/v1"),
+                        ["Models"] = new JsonObject
+                        {
+                            ["model-alpha"] = new JsonObject
+                            {
+                                ["Capabilities"] = new JsonArray(modelCapability)
+                            }
+                        }
+                    }
+                },
                 ["Jupyter"] = new JsonObject
                 {
                     ["ConnectionFile"] = connectionFile
                 }
             }
         }.ToJsonString();
+    }
+
+    private static string CreateVendorCatalogConfiguration(string connectionFile, string vendorCapability)
+    {
+        return new JsonObject
+        {
+            ["Maieutics"] = new JsonObject
+            {
+                ["Sources"] = new JsonObject
+                {
+                    ["vendor"] = new JsonObject
+                    {
+                        ["Provider"] = "Fake",
+                        ["Revision"] = "one",
+                        ["Endpoint"] = "https://opencode.ai/v1",
+                        ["Vendor"] = "opencode"
+                    }
+                },
+                ["Vendors"] = new JsonObject
+                {
+                    ["opencode"] = new JsonObject
+                    {
+                        ["Endpoints"] = new JsonArray("https://opencode.ai/v1"),
+                        ["Capabilities"] = new JsonArray(vendorCapability)
+                    }
+                },
+                ["Jupyter"] = new JsonObject
+                {
+                    ["ConnectionFile"] = connectionFile
+                }
+            }
+        }.ToJsonString();
+    }
+
+    private static readonly string[] ResponsesFormatCapabilities =
+    [
+        "ApplyPatch",
+        "CodeInterpreter",
+        "ComputerUse",
+        "FileSearch",
+        "ImageGeneration",
+        "Mcp",
+        "WebSearch"
+    ];
+
+    private static string CreateSourceOnlyConfiguration(
+        string connectionFile,
+        JsonArray endpoints,
+        params NamedSource[] sources)
+    {
+        return CreateSourceOnlyConfigurationCore(connectionFile, endpoints, sources);
+    }
+
+    private static string CreateSourceOnlyConfiguration(
+        string connectionFile,
+        params NamedSource[] sources)
+    {
+        return CreateSourceOnlyConfigurationCore(connectionFile, null, sources);
+    }
+
+    private static string CreateSourceOnlyConfigurationCore(
+        string connectionFile,
+        JsonArray? endpoints,
+        NamedSource[] sources)
+    {
+        var sourceNodes = new JsonObject();
+        foreach (var source in sources)
+        {
+            var node = new JsonObject
+            {
+                ["Provider"] = "Fake",
+                ["Revision"] = source.Revision
+            };
+            if (source.Endpoint is { } endpoint) node["Endpoint"] = endpoint;
+            sourceNodes[source.Id] = node;
+        }
+
+        var maieutics = new JsonObject
+        {
+            ["Sources"] = sourceNodes,
+            ["Jupyter"] = new JsonObject
+            {
+                ["ConnectionFile"] = connectionFile
+            }
+        };
+        if (endpoints is not null) maieutics["Endpoints"] = endpoints;
+
+        return new JsonObject { ["Maieutics"] = maieutics }.ToJsonString();
     }
 
     private static IConfigurationSection CreateProviderSourceConfiguration(string providerName, string apiKey)
@@ -1940,9 +2482,51 @@ public sealed class MaieuticsConfigurationTests
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
+            public Uri? EndpointUri => null;
+
+            public string? Vendor => null;
+
+            public IReadOnlyList<string> FormatCapabilities => [];
+
             public IChatClient Create(string model)
             {
                 return factory.Create(model);
+            }
+        }
+    }
+
+    private sealed class EndpointAwareChatClientFactory : IConfiguredChatClientFactory
+    {
+        public string ProviderName => "Fake";
+
+        public IReadOnlyList<string> FormatCapabilities { get; set; } = [];
+
+        public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
+        {
+            var endpoint = configuration["Endpoint"] is { } raw ? new Uri(raw) : null;
+            return new EndpointAwareSource(endpoint, FormatCapabilities);
+        }
+
+        private sealed class EndpointAwareSource(
+            Uri? endpoint,
+            IReadOnlyList<string> formatCapabilities) : IConfiguredChatClientSource
+        {
+            public string ProviderName => "Fake";
+
+            public object ClientGenerationKey => "endpoint-aware";
+
+            public AgentModelCapabilities Capabilities =>
+                AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public Uri? EndpointUri => endpoint;
+
+            public string? Vendor => null;
+
+            public IReadOnlyList<string> FormatCapabilities => formatCapabilities;
+
+            public IChatClient Create(string model)
+            {
+                return new TrackingChatClient(model);
             }
         }
     }
@@ -1983,6 +2567,12 @@ public sealed class MaieuticsConfigurationTests
 
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public Uri? EndpointUri => null;
+
+            public string? Vendor => null;
+
+            public IReadOnlyList<string> FormatCapabilities => [];
 
             public IChatClient Create(string model)
             {
@@ -2030,7 +2620,7 @@ public sealed class MaieuticsConfigurationTests
 
     private sealed record NamedProfile(string Id, string SourceId, string Model, string SourceRevision);
 
-    private sealed record NamedSource(string Id, string Revision);
+    private sealed record NamedSource(string Id, string Revision, string? Endpoint = null);
 
     private sealed class DiscoveryChatClientFactory : IConfiguredChatClientFactory
     {
@@ -2039,24 +2629,43 @@ public sealed class MaieuticsConfigurationTests
         public int DiscoveryCount { get; private set; }
 
         public List<TrackingChatClient> Clients { get; } = [];
+
+        public IReadOnlyList<string> FormatCapabilities { get; set; } = [];
+
         public string ProviderName => "Fake";
 
         public IConfiguredChatClientSource BindSource(string sourceId, IConfigurationSection configuration)
         {
-            return new DiscoverySource(this, sourceId, configuration["Revision"] ?? sourceId);
+            var endpoint = configuration["Endpoint"] is { } raw ? new Uri(raw) : null;
+            return new DiscoverySource(
+                this,
+                sourceId,
+                configuration["Revision"] ?? sourceId,
+                endpoint,
+                configuration["Vendor"],
+                FormatCapabilities);
         }
 
         private sealed class DiscoverySource(
             DiscoveryChatClientFactory factory,
             string sourceId,
-            string revision) : IConfiguredChatClientSource, IModelDiscoverySource
+            string revision,
+            Uri? endpoint,
+            string? vendor,
+            IReadOnlyList<string> formatCapabilities) : IConfiguredChatClientSource, IModelDiscoverySource
         {
             public string ProviderName => "Fake";
 
-            public object ClientGenerationKey => (sourceId, revision);
+            public object ClientGenerationKey => (sourceId, revision, endpoint);
 
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public Uri? EndpointUri => endpoint;
+
+            public string? Vendor => vendor;
+
+            public IReadOnlyList<string> FormatCapabilities => formatCapabilities;
 
             public IChatClient Create(string model)
             {
@@ -2123,6 +2732,12 @@ public sealed class MaieuticsConfigurationTests
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
+            public Uri? EndpointUri => null;
+
+            public string? Vendor => null;
+
+            public IReadOnlyList<string> FormatCapabilities => [];
+
             public IChatClient Create(string model)
             {
                 return factory.Create(model);
@@ -2157,6 +2772,12 @@ public sealed class MaieuticsConfigurationTests
 
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public Uri? EndpointUri => null;
+
+            public string? Vendor => null;
+
+            public IReadOnlyList<string> FormatCapabilities => [];
 
             public IChatClient Create(string model)
             {
@@ -2236,6 +2857,12 @@ public sealed class MaieuticsConfigurationTests
 
             public AgentModelCapabilities Capabilities =>
                 AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+            public Uri? EndpointUri => null;
+
+            public string? Vendor => null;
+
+            public IReadOnlyList<string> FormatCapabilities => [];
 
             public IChatClient Create(string model)
             {

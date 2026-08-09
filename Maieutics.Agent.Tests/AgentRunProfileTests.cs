@@ -33,6 +33,28 @@ public sealed class AgentRunProfileTests
         profile.ModelIdentity.Should().BeNull();
         profile.Capabilities.Should().Be(
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling);
+        profile.HostedCapabilities.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void HostedCapabilitiesAreSortedAndDeduplicated()
+    {
+        var profile = new AgentRunProfile(
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedCapabilities: ["WebSearch", "FileSearch", "WebSearch"]);
+
+        profile.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
+    }
+
+    [Fact]
+    public void BlankHostedCapabilitiesAreRejected()
+    {
+        FluentActions.Invoking(() => new AgentRunProfile(
+                new ScriptedChatClient((_, _) => StreamAsync("unused")),
+                new AgentSessionOptions(),
+                hostedCapabilities: ["WebSearch", " "]))
+            .Should().Throw<ArgumentException>();
     }
 
     [Fact]

@@ -167,6 +167,12 @@ Provider-specific tool shapes are normalized at the `IChatClient` adapter bounda
 - provider-hosted search, file-library, computer, or similar tools are explicit model capabilities. A provider without
   an equivalent returns unsupported rather than silently substituting a different Maieutics tool.
 
+Potential hosted capability compatibility is computed per configured source and model as the intersection of the
+source's API format (declared by the provider adapter) with the vendor's served capabilities (built-in catalog or
+`Maieutics:Vendors`, narrowed per model); explicit `Maieutics:Endpoints` profiles add on top for the effective set.
+Known vendors trust the full potential by default; unknown gateways require explicit profiles. Only the
+provider-neutral effective names reach the Agent run profile.
+
 Responses wire items, provider SDK objects, and built-in tool state never enter the public Agent API or canonical
 transcript.
 

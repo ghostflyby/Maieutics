@@ -354,6 +354,21 @@ Execution disposal must not silently send a global interrupt.
 Use three commits: asynchronous profile contract, plugin-host DI/lifecycle simplification, then Jupyter execution
 disposal.
 
+### Implementation record (2026-08-09)
+
+- `IAgentRunProfileProvider` now exposes only `AcquireAsync(CancellationToken)`. The session reservation covers the
+  readiness wait, configuration locks cover only generation selection/lease capture, and cancellation or construction
+  failure asynchronously rolls back every captured lease.
+- `PluginHostManager` is the directly registered hosted owner for startup, readiness, the dynamic MCP coordinator,
+  process observation, and idempotent shutdown. Configuration and control routing receive that same instance; the
+  task-shaped service, blocking factory, and separate startup hosted service were removed.
+- `IJupyterExecution` is asynchronously disposable. Early disposal cancels only local output/completion routing,
+  rejects later stdin replies, and classifies later parented IOPub messages through the existing late-output policy;
+  it never sends a kernel interrupt.
+- Focused and repository gates passed with Agent 57/57 and Jupyter/product 229/229 tests, a warning-free
+  warnings-as-errors build, `osx-arm64` NativeAOT publish (apart from the existing AsyncIO `IL3053` aggregate warning),
+  and published-process smoke coverage 4/4.
+
 ## Phase 5: Narrow APIs and close documentation/CI gaps
 
 ### Goal and invariants

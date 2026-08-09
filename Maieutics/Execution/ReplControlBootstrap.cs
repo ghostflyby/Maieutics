@@ -54,12 +54,12 @@ internal static class ReplControlBootstrap
 
     private static async Task BindAsync(IJupyterClient client, CancellationToken cancellationToken)
     {
-        var bind = await client.ExecuteAsync(
+        await using var bind = await client.ExecuteAsync(
             new JupyterExecuteRequest(BindCell, AllowStdin: true),
             cancellationToken).ConfigureAwait(false);
         await RequireSuccessAsync(bind, cancellationToken).ConfigureAwait(false);
 
-        var probe = await client.ExecuteAsync(
+        await using var probe = await client.ExecuteAsync(
             new JupyterExecuteRequest(ProbeCell, AllowStdin: true),
             cancellationToken).ConfigureAwait(false);
         var outputs = await ReadOutputsAsync(probe, cancellationToken).ConfigureAwait(false);

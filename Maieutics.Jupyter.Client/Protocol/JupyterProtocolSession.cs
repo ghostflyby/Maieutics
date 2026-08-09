@@ -118,7 +118,12 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             throw;
         }
 
-        return new JupyterExecution(message.Header.MessageId, outputs.Reader, completion.Task, ReplyInputAsync);
+        return new JupyterExecution(
+            message.Header.MessageId,
+            outputs.Reader,
+            completion.Task,
+            (request, value, token) => ReplyInputAsync(state, request, value, token),
+            () => AbandonExecutionAsync(state));
     }
 
     public async Task<JupyterCompleteReply> CompleteAsync(
@@ -342,10 +347,17 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     }
 
     private async Task ReplyInputAsync(
+        ExecutionState execution,
         JupyterInputRequest request,
         string value,
         CancellationToken cancellationToken)
     {
+        if (!executions.TryGetValue(execution.RequestHeader.MessageId, out var active) ||
+            !ReferenceEquals(active, execution))
+            throw new ObjectDisposedException(
+                nameof(IJupyterExecution),
+                "The Jupyter execution is no longer active.");
+
         if (request.Header is null)
             throw new ArgumentException("The input request did not originate from this client session.",
                 nameof(request));
@@ -357,6 +369,17 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             session,
             request.Header);
         await transport.SendAsync(JupyterTransportChannel.Stdin, reply, cancellationToken).ConfigureAwait(false);
+    }
+
+    private ValueTask AbandonExecutionAsync(ExecutionState execution)
+    {
+        if (!executions.TryRemove(execution.RequestHeader.MessageId, out _)) return ValueTask.CompletedTask;
+
+        RememberCompletedExecution(execution.RequestHeader.MessageId);
+        execution.Outputs.Writer.TryComplete(
+            new OperationCanceledException("The Jupyter execution was abandoned by its caller."));
+        execution.Completion.TrySetCanceled();
+        return ValueTask.CompletedTask;
     }
 
     private async Task RouteIncomingMessagesAsync()

@@ -111,6 +111,134 @@ public sealed class JupyterProtocolSessionTests
     }
 
     [Fact]
+    public async Task AbandonBeforeReplyCancelsLocalCompletionWithoutSendingInterrupt()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("while (true) {}"),
+            TestContext.Current.CancellationToken);
+        var outputs = ReadOutputsAsync(execution, TestContext.Current.CancellationToken);
+
+        await execution.DisposeAsync();
+        await execution.DisposeAsync();
+
+        execution.Completion.IsCanceled.Should().BeTrue();
+        await execution.Completion
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
+        await outputs
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
+        transport.SentMessages.Should().ContainSingle()
+            .Which.Message.MessageType.Should().Be("execute_request");
+    }
+
+    [Fact]
+    public async Task AbandonAfterReplyPreservesBufferedOutputAndPublishesLaterIopubAsLate()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        await using var events = session.WatchEventsAsync(TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        (await events.MoveNextAsync()).Should().BeTrue();
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("display()"),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        await using var outputs = execution.Outputs
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "stream",
+                new JupyterStream("stdout", "before abandon"),
+                JupyterJsonContext.Default.JupyterStream,
+                request));
+        (await outputs.MoveNextAsync()).Should().BeTrue();
+        outputs.Current.Should().BeOfType<JupyterStdout>().Which.Text.Should().Be("before abandon");
+
+        await execution.DisposeAsync();
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, request));
+
+        await outputs.MoveNextAsync().AsTask()
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
+        execution.Completion.IsCanceled.Should().BeTrue();
+        (await events.MoveNextAsync()).Should().BeTrue();
+        var late = events.Current.Should().BeOfType<JupyterLateOutput>().Subject;
+        late.RequestId.Should().Be(execution.RequestId);
+        late.Output.Should().BeOfType<JupyterExecutionStatusChanged>()
+            .Which.State.Should().Be(JupyterKernelState.Idle);
+    }
+
+    [Fact]
+    public async Task ReplyInputAfterAbandonIsRejectedWithoutSendingAStdinReply()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("prompt()", AllowStdin: true),
+            TestContext.Current.CancellationToken);
+        var executeRequest = transport.SentMessages.Single().Message;
+        transport.Receive(
+            JupyterTransportChannel.Stdin,
+            Reply(
+                "input_request",
+                new JupyterInputRequestContent("Name: ", false),
+                JupyterJsonContext.Default.JupyterInputRequestContent,
+                executeRequest));
+        await using var outputs = execution.Outputs
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        (await outputs.MoveNextAsync()).Should().BeTrue();
+        var input = outputs.Current.Should().BeOfType<JupyterInputRequest>().Subject;
+
+        await execution.DisposeAsync();
+
+        await execution
+            .Awaiting(value => value.ReplyInputAsync(input, "Ada", TestContext.Current.CancellationToken))
+            .Should().ThrowAsync<ObjectDisposedException>();
+        transport.SentMessages.Should().ContainSingle()
+            .Which.Message.MessageType.Should().Be("execute_request");
+    }
+
+    [Fact]
+    public async Task ConcurrentExecutionAndSessionDisposalCompletesExactlyOnce()
+    {
+        var transport = new FakeJupyterTransport();
+        var session = new JupyterProtocolSession(transport);
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("wait"),
+            TestContext.Current.CancellationToken);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var abandon = Task.Run(async () =>
+        {
+            await start.Task;
+            await execution.DisposeAsync();
+        }, TestContext.Current.CancellationToken);
+        var disconnect = Task.Run(async () =>
+        {
+            await start.Task;
+            await session.DisposeAsync();
+        }, TestContext.Current.CancellationToken);
+
+        start.SetResult();
+        await Task.WhenAll(abandon, disconnect).WaitAsync(TestContext.Current.CancellationToken);
+        execution.Completion.IsCompleted.Should().BeTrue();
+        await execution.DisposeAsync();
+    }
+
+    [Fact]
     public async Task ParentedIopubAfterIdleIsLateEvenWhenShellReplyHasNotArrived()
     {
         var transport = new FakeJupyterTransport();

@@ -201,6 +201,8 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     $"Deno REPL session '{SessionId}' could not begin execution: {GetSafeMessage(exception)}");
             }
 
+            await using var executionLifetime = execution.ConfigureAwait(false);
+
             using var timeout = new CancellationTokenSource(options.ExecutionTimeout);
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,

@@ -8,8 +8,10 @@ internal sealed class JupyterExecution(
     JupyterMessageId requestId,
     ChannelReader<JupyterOutput> outputs,
     Task<JupyterExecutionResult> completion,
-    Func<JupyterInputRequest, string, CancellationToken, Task> replyInput) : IJupyterExecution
+    Func<JupyterInputRequest, string, CancellationToken, Task> replyInput,
+    Func<ValueTask> abandon) : IJupyterExecution
 {
+    private int disposed;
     private int outputEnumerationStarted;
 
     public JupyterMessageId RequestId => requestId;
@@ -23,10 +25,18 @@ internal sealed class JupyterExecution(
         string value,
         CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         if (request.RequestId != requestId)
             throw new ArgumentException("The input request belongs to a different execution.", nameof(request));
 
         return replyInput(request, value, cancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return Interlocked.Exchange(ref disposed, 1) == 0
+            ? abandon()
+            : ValueTask.CompletedTask;
     }
 
     private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync(

@@ -335,6 +335,11 @@ public sealed class DenoReplSessionTests
             throw new NotSupportedException();
         }
 
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+
         public void Release()
         {
             release.TrySetResult();

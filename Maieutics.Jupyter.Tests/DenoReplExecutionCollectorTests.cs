@@ -208,6 +208,11 @@ public sealed class DenoReplExecutionCollectorTests
             return Task.CompletedTask;
         }
 
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+
         private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
         {
             await Task.Yield();

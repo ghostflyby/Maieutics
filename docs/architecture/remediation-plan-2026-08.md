@@ -424,6 +424,15 @@ from behavior changes.
 
 Use separate commits for Agent API migration, Deno CI, and documentation corrections.
 
+### Partial implementation record (2026-08-09)
+
+- The structured `AgentTurn` API is intentionally unchanged pending a separate decision about supported user-content
+  kinds and cross-provider persistence. This phase does not claim the Agent input API completion criterion.
+- CI now runs the repository-defined Deno formatting, type-checking, and test gates once on Ubuntu. The existing .NET
+  matrix keeps Deno installed for cross-platform interoperability coverage.
+- The architecture index includes ADR 0014 through ADR 0016, and the script-plugin decision title agrees with its
+  filename and index number. Runtime documentation records the fixed per-message control-channel safety bound.
+
 ## Follow-up product features
 
 These features become safer after the remediation phases and should not be mixed into them:

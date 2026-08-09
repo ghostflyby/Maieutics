@@ -77,6 +77,12 @@ The configuration is captured once when the Maieutics host builder is created:
 | `Maieutics:DenoRepl:MaxPresentationEventsPerExecution` |      `256` |
 | `Maieutics:DenoRepl:MaxPresentationBundleBytes`        | `16777216` |
 
+The local Deno control channel also enforces a fixed 1 MiB (1,048,576 byte) limit on each complete inbound HTTP body
+or WebSocket message, with a maximum JSON nesting depth of 64. This is a protocol safety bound rather than a runtime
+setting. WebSocket fragments count toward the current message only; the count resets after that message completes, so
+a long-lived connection may carry any number of separately bounded messages. Large values belong behind the future
+artifact or streaming boundary rather than a larger control envelope.
+
 `deno jupyter` is privileged local code execution, not an untrusted-code sandbox. The child receives an allowlisted
 operational environment rather than the complete Maieutics environment; provider credentials such as
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited. The first implementation has no worker, target, isolation,

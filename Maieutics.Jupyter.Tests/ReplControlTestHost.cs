@@ -42,6 +42,11 @@ internal static class ReplControlTestHost
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.AddServerHeader = false;
+            // The control channel is loopback-only and payload-bounded; slow-body data-rate
+            // limits can abort a request mid-stream on a starved CI runner before Kestrel
+            // applies its explicit size limit and replies 413.
+            options.Limits.MinRequestBodyDataRate = null;
+            options.Limits.MinResponseDataRate = null;
             options.ListenUnixSocket(socketPath, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
         });
         var application = builder.Build();

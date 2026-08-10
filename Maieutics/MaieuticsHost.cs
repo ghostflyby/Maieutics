@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using Maieutics.Agent;
@@ -127,7 +128,9 @@ public static class MaieuticsHost
         {
             options.AddServerHeader = false;
             if (OperatingSystem.IsWindows())
-                options.ListenLocalhost(0, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
+                // .NET 10 rejects dynamic-port binding on `localhost` (both loopback addresses);
+                // bind IPv4 loopback explicitly so Kestrel can choose an ephemeral port.
+                options.Listen(IPAddress.Loopback, 0, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
             else
                 options.ListenUnixSocket(controlSocketPath,
                     listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });

@@ -580,9 +580,12 @@ public sealed class ReplControlHostTests
               "Content-Type: application/json\r\n" +
               $"Content-Length: {bodyBytes.Length}\r\n" +
               "Connection: close\r\n\r\n";
-        await SendAllAsync(socket, Encoding.ASCII.GetBytes(headers), cancellationToken);
+        // Read concurrently with the send so an early rejection (413) is captured by the pending
+        // read before the server aborts the connection; the reset discards unread buffer data.
+        var response = ReadUntilEndAsync(socket, cancellationToken);
         try
         {
+            await SendAllAsync(socket, Encoding.ASCII.GetBytes(headers), cancellationToken);
             await SendAllAsync(socket, bodyBytes, cancellationToken);
             if (chunked) await SendAllAsync(socket, "\r\n0\r\n\r\n"u8.ToArray(), cancellationToken);
         }
@@ -591,7 +594,7 @@ public sealed class ReplControlHostTests
             // The server may finish an early 413 response before the client has flushed the rejected body.
         }
 
-        return await ReadUntilEndAsync(socket, cancellationToken);
+        return await response;
     }
 
     private static async Task<Socket> ConnectWebSocketAsync(string socketPath, CancellationToken ct)

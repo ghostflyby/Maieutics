@@ -87,10 +87,19 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         }
     }
 
-    public async Task<IJupyterExecution> StartExecutionAsync(
+    public Task<IJupyterExecution> StartExecutionAsync(
         JupyterExecuteRequest request,
         CancellationToken cancellationToken = default)
     {
+        return StartExecutionAsync(request, new JupyterExecutionOptions(), cancellationToken);
+    }
+
+    public async Task<IJupyterExecution> StartExecutionAsync(
+        JupyterExecuteRequest request,
+        JupyterExecutionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
         ThrowIfDisposed();
         var message = JupyterMessage.Create(
             "execute_request",
@@ -105,7 +114,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         });
         var completion =
             new TaskCompletionSource<JupyterExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var state = new ExecutionState(message.Header, outputs, completion);
+        var state = new ExecutionState(message.Header, outputs, completion, options.ObserveOutputs);
 
         if (!executions.TryAdd(message.Header.MessageId, state))
             throw new InvalidOperationException($"Execution '{message.Header.MessageId}' was already registered.");
@@ -464,11 +473,19 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             return;
         }
 
-        if (TryCreateOutput(execution.RequestHeader.MessageId, message, out var output) &&
-            !execution.Outputs.Writer.TryWrite(output))
+        if (TryCreateOutput(execution.RequestHeader.MessageId, message, out var output))
         {
-            FailExecution(execution, new JupyterBackpressureException("The execution output queue is full."));
-            return;
+            if (!execution.Outputs.Writer.TryWrite(output))
+            {
+                FailExecution(execution, new JupyterBackpressureException("The execution output queue is full."));
+                return;
+            }
+
+            if (execution.ObserveOutputs && transportMessage.Channel == JupyterTransportChannel.Iopub)
+                events.Publish(new JupyterExecutionOutputObserved(
+                    execution.RequestHeader.MessageId,
+                    message,
+                    output));
         }
 
         if (message.MessageType != "status" ||
@@ -723,13 +740,16 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private sealed class ExecutionState(
         JupyterMessageHeader requestHeader,
         Channel<JupyterOutput> outputs,
-        TaskCompletionSource<JupyterExecutionResult> completion)
+        TaskCompletionSource<JupyterExecutionResult> completion,
+        bool observeOutputs)
     {
         public JupyterMessageHeader RequestHeader { get; } = requestHeader;
 
         public Channel<JupyterOutput> Outputs { get; } = outputs;
 
         public TaskCompletionSource<JupyterExecutionResult> Completion { get; } = completion;
+
+        public bool ObserveOutputs { get; } = observeOutputs;
 
         public JupyterExecuteReply? Reply { get; set; }
 

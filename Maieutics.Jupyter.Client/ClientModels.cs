@@ -84,6 +84,13 @@ public sealed record JupyterExecutionResult(
     JupyterExecuteReply Reply,
     JupyterMessage RawMessage);
 
+/// <summary>Configures client-local observation behavior for one execution.</summary>
+/// <param name="ObserveOutputs">
+///     Whether parented IOPub outputs retained in the execution stream are also published as
+///     <see cref="JupyterExecutionOutputObserved"/> events.
+/// </param>
+public sealed record JupyterExecutionOptions(bool ObserveOutputs = false);
+
 public abstract record JupyterClientEvent;
 
 public sealed record JupyterClientConnected : JupyterClientEvent;
@@ -91,6 +98,21 @@ public sealed record JupyterClientConnected : JupyterClientEvent;
 public sealed record JupyterClientDisconnected(Exception? Cause) : JupyterClientEvent;
 
 public sealed record JupyterKernelStatusChanged(JupyterKernelState State) : JupyterClientEvent;
+
+/// <summary>
+///     Represents parented IOPub output retained in an active execution's output stream.
+/// </summary>
+/// <param name="RequestId">The execution request that owns the output.</param>
+/// <param name="Message">The original Jupyter message.</param>
+/// <param name="Output">The typed output projection retained by the execution.</param>
+/// <remarks>
+///     These events preserve protocol receive order with <see cref="JupyterLateOutput"/> events. Consumers that also
+///     enumerate the execution output stream must not present the same output twice.
+/// </remarks>
+public sealed record JupyterExecutionOutputObserved(
+    JupyterMessageId RequestId,
+    JupyterMessage Message,
+    JupyterOutput Output) : JupyterClientEvent;
 
 /// <summary>
 ///     Represents parented IOPub output observed after an execution's idle status.

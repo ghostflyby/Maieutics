@@ -186,7 +186,6 @@ public sealed class MaieuticsHostIntegrationTests
             "{ 'text/html': '<b>visible-update</b>', 'text/plain': 'visible-update' }, " +
             "{ raw: true, display_id: displayId, update: true }); " +
             "await Deno.jupyter.display({ 'text/plain': 'invalid-update' }, { raw: true, update: true }); " +
-            "await new Promise((resolve) => setTimeout(resolve, 100)); " +
             "40 + 2";
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,

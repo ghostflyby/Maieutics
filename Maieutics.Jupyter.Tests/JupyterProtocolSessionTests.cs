@@ -332,6 +332,141 @@ public sealed class JupyterProtocolSessionTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task ExecutionOutputObservationPreservesOrderWithEarlierLateOutput()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        await using var events = session.WatchEventsAsync(TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        (await events.MoveNextAsync()).Should().BeTrue();
+
+        var first = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("first"),
+            TestContext.Current.CancellationToken);
+        var firstRequest = transport.SentMessages.Single().Message;
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                firstRequest));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, firstRequest));
+        await first.Completion.WaitAsync(TestContext.Current.CancellationToken);
+
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "stream",
+                new JupyterStream("stdout", "first-late"),
+                JupyterJsonContext.Default.JupyterStream,
+                firstRequest));
+        var barrier = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("barrier"),
+            new JupyterExecutionOptions(true),
+            TestContext.Current.CancellationToken);
+        var barrierRequest = transport.SentMessages.Last().Message;
+        await using var barrierOutputs = barrier.Outputs
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "display_data",
+                DisplayData("barrier"),
+                JupyterJsonContext.Default.JupyterDisplayData,
+                barrierRequest));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "stream",
+                new JupyterStream("stdout", "after barrier"),
+                JupyterJsonContext.Default.JupyterStream,
+                barrierRequest));
+
+        (await events.MoveNextAsync()).Should().BeTrue();
+        events.Current.Should().BeOfType<JupyterLateOutput>()
+            .Which.RequestId.Should().Be(first.RequestId);
+        (await events.MoveNextAsync()).Should().BeTrue();
+        var observedDisplay = events.Current.Should().BeOfType<JupyterExecutionOutputObserved>().Subject;
+        observedDisplay.RequestId.Should().Be(barrier.RequestId);
+        observedDisplay.Output.Should().BeOfType<JupyterDisplayOutput>()
+            .Which.Data.Data["text/plain"].GetString().Should().Be("barrier");
+        (await events.MoveNextAsync()).Should().BeTrue();
+        var observedStdout = events.Current.Should().BeOfType<JupyterExecutionOutputObserved>().Subject;
+        observedStdout.RequestId.Should().Be(barrier.RequestId);
+        observedStdout.Output.Should().BeOfType<JupyterStdout>()
+            .Which.Text.Should().Be("after barrier");
+
+        (await barrierOutputs.MoveNextAsync()).Should().BeTrue();
+        barrierOutputs.Current.Should().BeSameAs(observedDisplay.Output);
+        (await barrierOutputs.MoveNextAsync()).Should().BeTrue();
+        barrierOutputs.Current.Should().BeSameAs(observedStdout.Output);
+
+        await first.DisposeAsync();
+        await barrier.DisposeAsync();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task DefaultExecutionDoesNotPublishObservedEventsForOutputBurst()
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        await using var events = session.WatchEventsAsync(TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        (await events.MoveNextAsync()).Should().BeTrue();
+
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("burst"),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        await using var outputs = execution.Outputs
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        for (var index = 0; index < 300; index++)
+        {
+            transport.Receive(
+                JupyterTransportChannel.Iopub,
+                Reply(
+                    "stream",
+                    new JupyterStream("stdout", index.ToString()),
+                    JupyterJsonContext.Default.JupyterStream,
+                    request));
+            (await outputs.MoveNextAsync()).Should().BeTrue();
+            outputs.Current.Should().BeOfType<JupyterStdout>()
+                .Which.Text.Should().Be(index.ToString());
+        }
+
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, request));
+        (await outputs.MoveNextAsync()).Should().BeTrue();
+        outputs.Current.Should().BeOfType<JupyterExecutionStatusChanged>()
+            .Which.State.Should().Be(JupyterKernelState.Idle);
+        (await execution.Completion.WaitAsync(TestContext.Current.CancellationToken))
+            .Reply.Status.Should().Be("ok");
+
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply(
+                "stream",
+                new JupyterStream("stdout", "late"),
+                JupyterJsonContext.Default.JupyterStream,
+                request));
+        (await events.MoveNextAsync()).Should().BeTrue();
+        events.Current.Should().BeOfType<JupyterLateOutput>()
+            .Which.Output.Should().BeOfType<JupyterStdout>()
+            .Which.Text.Should().Be("late");
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task ExecutionOutputsPreserveNotebookMessageOrderAndDisplayMetadata()
     {
         var transport = new FakeJupyterTransport();

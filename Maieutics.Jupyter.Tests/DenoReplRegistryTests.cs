@@ -393,7 +393,9 @@ public sealed class DenoReplRegistryTests
             JupyterExecuteRequest request,
             CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IJupyterExecution>(new ReadinessExecution(
+                GetReadinessNonce(request.Code)));
         }
 
         public Task<JupyterCompleteReply> CompleteAsync(
@@ -425,6 +427,85 @@ public sealed class DenoReplRegistryTests
         public ValueTask DisposeAsync()
         {
             return ValueTask.CompletedTask;
+        }
+
+        private static string GetReadinessNonce(string code)
+        {
+            if (!code.StartsWith(DenoReplSession.StdinReadinessProbeCodePrefix, StringComparison.Ordinal))
+                throw new NotSupportedException();
+
+            var start = code.IndexOf(DenoReplSession.StdinReadinessNoncePrefix, StringComparison.Ordinal);
+            if (start < 0) throw new InvalidOperationException("The readiness probe did not contain a nonce.");
+
+            var end = start + DenoReplSession.StdinReadinessNoncePrefix.Length;
+            while (end < code.Length && char.IsAsciiHexDigit(code[end])) end++;
+            return code[start..end];
+        }
+    }
+
+    private sealed class ReadinessExecution : IJupyterExecution
+    {
+        private readonly string expectedNonce;
+        private readonly JupyterMessageId inputRequestId = JupyterMessageId.Create();
+
+        private readonly TaskCompletionSource inputReply =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ReadinessExecution(string expectedNonce)
+        {
+            this.expectedNonce = expectedNonce;
+            Completion = CompleteAsync();
+        }
+
+        public JupyterMessageId RequestId { get; } = JupyterMessageId.Create();
+
+        public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
+
+        public Task<JupyterExecutionResult> Completion { get; }
+
+        public Task ReplyInputAsync(
+            JupyterInputRequest request,
+            string value,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request.InputRequestId != inputRequestId)
+                throw new InvalidOperationException("The readiness input request ID did not match.");
+
+            if (!string.Equals(value, expectedNonce, StringComparison.Ordinal))
+                throw new InvalidOperationException("The readiness input reply nonce did not match.");
+
+            inputReply.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            inputReply.TrySetCanceled();
+            return ValueTask.CompletedTask;
+        }
+
+        private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
+        {
+            yield return new JupyterInputRequest(
+                RequestId,
+                inputRequestId,
+                string.Empty,
+                false);
+            await inputReply.Task;
+        }
+
+        private async Task<JupyterExecutionResult> CompleteAsync()
+        {
+            await inputReply.Task;
+            var reply = new JupyterExecuteReply("ok", 0);
+            return new JupyterExecutionResult(
+                reply,
+                JupyterMessage.Create(
+                    "execute_reply",
+                    reply,
+                    JupyterJsonContext.Default.JupyterExecuteReply,
+                    new JupyterSessionIdentity("test", "tester")));
         }
     }
 

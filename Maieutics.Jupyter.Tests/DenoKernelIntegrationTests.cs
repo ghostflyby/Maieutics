@@ -49,11 +49,13 @@ public sealed class DenoKernelIntegrationTests
             cancellationToken);
         inspection.Status.Should().Be("ok");
 
-        var execution = await client.ExecuteAsync(
+        var (executionCompletion, outputs) = await ExecuteAndCollectAsync(
+            client,
             new JupyterExecuteRequest("1 + 2"),
+            static values => values.OfType<JupyterExecuteResultOutput>()
+                .Any(output => output.Data.Data.Values.Any(value => value.ToString().Contains('3'))),
+            null,
             cancellationToken);
-        var outputs = await ReadOutputsAsync(execution, cancellationToken);
-        var executionCompletion = await execution.Completion.WaitAsync(cancellationToken);
 
         executionCompletion.Reply.Status.Should().Be("ok");
         outputs.OfType<JupyterExecuteInputOutput>().Should()
@@ -71,18 +73,20 @@ public sealed class DenoKernelIntegrationTests
             spec,
             cancellationToken: deadline.Token);
 
-        var execution = await manager.Client.ExecuteAsync(
+        var (completion, outputs) = await ExecuteAndCollectAsync(
+            manager.Client,
             new JupyterExecuteRequest("prompt('First prompt: ')", AllowStdin: true),
+            static values => values.OfType<JupyterExecuteResultOutput>().Any(output =>
+                output.Data.Data.Values.Any(value =>
+                    value.ToString().Contains("ready", StringComparison.Ordinal))),
+            static async (execution, output, cancellationToken) =>
+            {
+                if (output is JupyterInputRequest input)
+                    await execution.ReplyInputAsync(input, "ready", cancellationToken);
+            },
             deadline.Token);
-        var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
-        {
-            outputs.Add(output);
-            if (output is JupyterInputRequest input)
-                await execution.ReplyInputAsync(input, "ready", deadline.Token);
-        }
 
-        (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        completion.Reply.Status.Should().Be("ok");
         outputs.OfType<JupyterInputRequest>().Should().ContainSingle()
             .Which.Prompt.Should().Be("First prompt: ");
         outputs.OfType<JupyterExecuteResultOutput>().Should().ContainSingle(output =>
@@ -98,15 +102,24 @@ public sealed class DenoKernelIntegrationTests
             spec,
             cancellationToken: deadline.Token);
 
-        var execution = await manager.Client.ExecuteAsync(
+        var (completion, outputs) = await ExecuteAndCollectAsync(
+            manager.Client,
             new JupyterExecuteRequest(
                 "console.log('stdout-marker'); " +
                 "console.error('stderr-marker'); " +
                 "await Deno.jupyter.display({ 'text/plain': 'display-marker' }, { raw: true }); " +
                 "40 + 2"),
+            static values =>
+                values.OfType<JupyterStdout>().Any(output => output.Text.Contains("stdout-marker")) &&
+                values.OfType<JupyterStderr>().Any(output => output.Text.Contains("stderr-marker")) &&
+                values.OfType<JupyterDisplayOutput>().Any(output =>
+                    output.Data.Data["text/plain"].GetString() == "display-marker") &&
+                values.OfType<JupyterExecuteResultOutput>().Any(output =>
+                    output.Data.Data.Values.Any(value =>
+                        value.ToString().Contains("42", StringComparison.Ordinal))),
+            null,
             deadline.Token);
-        var outputs = await ReadOutputsAsync(execution, deadline.Token);
-        (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        completion.Reply.Status.Should().Be("ok");
 
         outputs.OfType<JupyterStdout>().Should().Contain(output => output.Text.Contains("stdout-marker"));
         outputs.OfType<JupyterStderr>().Should().Contain(output => output.Text.Contains("stderr-marker"));
@@ -115,25 +128,30 @@ public sealed class DenoKernelIntegrationTests
         outputs.OfType<JupyterExecuteResultOutput>().Should().Contain(output =>
             output.Data.Data.Values.Any(value => value.ToString().Contains("42", StringComparison.Ordinal)));
 
-        var errorExecution = await manager.Client.ExecuteAsync(
+        var (errorCompletion, errorOutputs) = await ExecuteAndCollectAsync(
+            manager.Client,
             new JupyterExecuteRequest("throw new TypeError('error-marker')"),
+            static values => values.OfType<JupyterExecutionError>().Any(output =>
+                output.Name == "TypeError" && output.Value.Contains("error-marker", StringComparison.Ordinal)),
+            null,
             deadline.Token);
-        var errorOutputs = await ReadOutputsAsync(errorExecution, deadline.Token);
-        (await errorExecution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("error");
+        errorCompletion.Reply.Status.Should().Be("error");
         errorOutputs.OfType<JupyterExecutionError>().Should().Contain(output =>
             output.Name == "TypeError" && output.Value.Contains("error-marker", StringComparison.Ordinal));
 
-        var inputExecution = await manager.Client.ExecuteAsync(
+        var (inputCompletion, inputOutputs) = await ExecuteAndCollectAsync(
+            manager.Client,
             new JupyterExecuteRequest("prompt('Name: ')", AllowStdin: true),
+            static values => values.OfType<JupyterExecuteResultOutput>().Any(output =>
+                output.Data.Data.Values.Any(value =>
+                    value.ToString().Contains("Ada", StringComparison.Ordinal))),
+            static async (execution, output, cancellationToken) =>
+            {
+                if (output is JupyterInputRequest input)
+                    await execution.ReplyInputAsync(input, "Ada", cancellationToken);
+            },
             deadline.Token);
-        var inputOutputs = new List<JupyterOutput>();
-        await foreach (var output in inputExecution.Outputs.WithCancellation(deadline.Token))
-        {
-            inputOutputs.Add(output);
-            if (output is JupyterInputRequest input) await inputExecution.ReplyInputAsync(input, "Ada", deadline.Token);
-        }
-
-        (await inputExecution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        inputCompletion.Reply.Status.Should().Be("ok");
         inputOutputs.OfType<JupyterInputRequest>().Should().ContainSingle().Which.Prompt.Should().Be("Name: ");
         inputOutputs.OfType<JupyterExecuteResultOutput>().Should().Contain(output =>
             output.Data.Data.Values.Any(value => value.ToString().Contains("Ada", StringComparison.Ordinal)));
@@ -148,7 +166,8 @@ public sealed class DenoKernelIntegrationTests
             spec,
             cancellationToken: deadline.Token);
 
-        var tracked = await manager.Client.ExecuteAsync(
+        var (trackedCompletion, trackedOutputs) = await ExecuteAndCollectAsync(
+            manager.Client,
             new JupyterExecuteRequest(
                 "const displayId = 'tracked-display'; " +
                 "await Deno.jupyter.display(" +
@@ -157,9 +176,14 @@ public sealed class DenoKernelIntegrationTests
                 "await Deno.jupyter.display(" +
                 "{ 'text/html': '<b>updated</b>', 'text/plain': 'updated' }, " +
                 "{ raw: true, display_id: displayId, update: true });"),
+            static values =>
+                values.OfType<JupyterDisplayOutput>().Any(output =>
+                    output.Data.Data["text/plain"].GetString() == "initial") &&
+                values.OfType<JupyterDisplayUpdateOutput>().Any(output =>
+                    output.Data.Data["text/plain"].GetString() == "updated"),
+            null,
             deadline.Token);
-        var trackedOutputs = await ReadOutputsAsync(tracked, deadline.Token);
-        (await tracked.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        trackedCompletion.Reply.Status.Should().Be("ok");
 
         var display = trackedOutputs.OfType<JupyterDisplayOutput>().Single(output =>
             output.Data.Data["text/plain"].GetString() == "initial");
@@ -169,13 +193,16 @@ public sealed class DenoKernelIntegrationTests
         update.Data.Data["text/html"].GetString().Should().Be("<b>updated</b>");
         update.DisplayId.Should().Be(display.DisplayId);
 
-        var malformed = await manager.Client.ExecuteAsync(
+        var (malformedCompletion, _) = await ExecuteAndCollectAsync(
+            manager.Client,
             new JupyterExecuteRequest(
                 "await Deno.jupyter.display(" +
                 "{ 'text/plain': 'orphan update' }, { raw: true, update: true });"),
+            static values => values.OfType<JupyterMalformedOutput>().Any(output =>
+                output.MessageType == "update_display_data"),
+            null,
             deadline.Token);
-        await ReadOutputsAsync(malformed, deadline.Token);
-        await malformed.Completion.WaitAsync(deadline.Token);
+        malformedCompletion.Reply.Status.Should().Be("ok");
 
         (await ExecuteTextResultAsync(manager.Client, "6 * 7", deadline.Token)).Should().Contain("42");
     }
@@ -275,7 +302,11 @@ public sealed class DenoKernelIntegrationTests
                 ["TMPDIR"] = Path.GetTempPath(),
                 ["MAIEUTICS_DENO_ALLOWED"] = "allowed"
             };
-            foreach (var name in new[] { "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA" })
+            foreach (var name in new[]
+                     {
+                         "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+                         "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC", "PATHEXT"
+                     })
                 if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
                     environment[name] = value;
 
@@ -289,14 +320,16 @@ public sealed class DenoKernelIntegrationTests
                     Environment = environment
                 },
                 deadline.Token);
-            var execution = await manager.Client.ExecuteAsync(
+            var (_, outputs) = await ExecuteAndCollectAsync(
+                manager.Client,
                 new JupyterExecuteRequest(
                     "console.log(JSON.stringify({ cwd: Deno.cwd(), " +
                     "allowed: Deno.env.get('MAIEUTICS_DENO_ALLOWED'), " +
                     $"denied: Deno.env.get('{inheritedName}') }}))"),
+                static values => values.OfType<JupyterStdout>().Any(output =>
+                    output.Text.Contains("\"allowed\":\"allowed\"", StringComparison.Ordinal)),
+                null,
                 deadline.Token);
-            var outputs = await ReadOutputsAsync(execution, deadline.Token);
-            await execution.Completion.WaitAsync(deadline.Token);
 
             using var document = JsonDocument.Parse(outputs.OfType<JupyterStdout>().Single().Text);
             var json = document.RootElement;
@@ -405,14 +438,45 @@ public sealed class DenoKernelIntegrationTests
         }
     }
 
-    private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
-        IJupyterExecution execution,
-        CancellationToken cancellationToken)
+    private static async Task<(JupyterExecutionResult Completion, IReadOnlyList<JupyterOutput> Outputs)>
+        ExecuteAndCollectAsync(
+            IJupyterClient client,
+            JupyterExecuteRequest request,
+            Func<IReadOnlyList<JupyterOutput>, bool> expectedOutputsReceived,
+            Func<IJupyterExecution, JupyterOutput, CancellationToken, Task>? outputHandler,
+            CancellationToken cancellationToken)
     {
-        var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
+        await using var events = client.WatchEventsAsync(cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        if (!await events.MoveNextAsync())
+            throw new InvalidOperationException("The Jupyter client event stream ended before execution started.");
 
-        return outputs;
+        await using var execution = await client.ExecuteAsync(request, cancellationToken);
+        var outputs = new List<JupyterOutput>();
+        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken))
+        {
+            outputs.Add(output);
+            if (outputHandler is not null)
+                await outputHandler(execution, output, cancellationToken);
+        }
+
+        var completion = await execution.Completion.WaitAsync(cancellationToken);
+        // Deno can drain REPL IOPub after it has already sent execute_reply and idle.
+        while (!expectedOutputsReceived(outputs))
+        {
+            if (!await events.MoveNextAsync())
+                throw new InvalidOperationException(
+                    "The Jupyter client event stream ended before expected output arrived.");
+
+            if (events.Current is JupyterLateOutput
+                {
+                    IncludedInExecution: false,
+                    Output: { } lateOutput
+                } late && late.RequestId == execution.RequestId)
+                outputs.Add(lateOutput);
+        }
+
+        return (completion, outputs);
     }
 
     private static async Task<string> ExecuteTextResultAsync(
@@ -420,9 +484,13 @@ public sealed class DenoKernelIntegrationTests
         string code,
         CancellationToken cancellationToken)
     {
-        var execution = await client.ExecuteAsync(new JupyterExecuteRequest(code), cancellationToken);
-        var outputs = await ReadOutputsAsync(execution, cancellationToken);
-        (await execution.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("ok");
+        var (completion, outputs) = await ExecuteAndCollectAsync(
+            client,
+            new JupyterExecuteRequest(code),
+            static values => values.OfType<JupyterExecuteResultOutput>().Any(),
+            null,
+            cancellationToken);
+        completion.Reply.Status.Should().Be("ok");
         var result = outputs.OfType<JupyterExecuteResultOutput>().Single();
         return result.Data.Data["text/plain"].GetString() ?? result.Data.Data["text/plain"].GetRawText();
     }

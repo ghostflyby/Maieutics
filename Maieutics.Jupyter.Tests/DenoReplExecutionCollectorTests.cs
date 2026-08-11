@@ -73,6 +73,94 @@ public sealed class DenoReplExecutionCollectorTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task LateOutputsJoinTheOriginalResultAndUseTheSamePresentationProjection()
+    {
+        var requestId = JupyterMessageId.Create();
+        var execution = new TestExecution(requestId, [], new JupyterExecuteReply("ok", 4));
+        var sink = new RecordingPresentationSink();
+        var displayId = new JupyterDisplayId("tracked");
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            static id => id,
+            static id => id);
+
+        var completion = await collector.ConsumeExecutionAsync(
+            execution,
+            TestContext.Current.CancellationToken);
+        await collector.ObserveLateOutputAsync(
+            new JupyterStdout(requestId, "late stdout"),
+            TestContext.Current.CancellationToken);
+        await collector.ObserveLateOutputAsync(new JupyterExecuteResultOutput(
+            requestId,
+            JsonBundle(42),
+            EmptyMetadata,
+            4), TestContext.Current.CancellationToken);
+        await collector.ObserveLateOutputAsync(new JupyterDisplayOutput(
+            requestId,
+            TextBundle("late display"),
+            EmptyMetadata)
+        {
+            DisplayId = displayId
+        }, TestContext.Current.CancellationToken);
+        await collector.ObserveLateOutputAsync(new JupyterDisplayUpdateOutput(
+            requestId,
+            TextBundle("late update"),
+            EmptyMetadata,
+            JupyterDisplayTransient.Create(displayId),
+            displayId), TestContext.Current.CancellationToken);
+        await collector.ObserveLateOutputAsync(
+            new JupyterStderr(requestId, "late stderr"),
+            TestContext.Current.CancellationToken);
+        await collector.ObserveLateOutputAsync(new JupyterExecutionError(
+            requestId,
+            "TypeError",
+            "late error",
+            ["frame"]), TestContext.Current.CancellationToken);
+
+        var result = collector.CreateResult(completion);
+
+        result.Outputs.Select(static output => output.Kind).Should()
+            .Equal("stdout", "result", "stderr", "error");
+        result.Outputs.Single(output => output.Kind == "stdout").Text.Should().Be("late stdout");
+        result.Outputs.Single(output => output.Kind == "result").Value?.GetInt32().Should().Be(42);
+        sink.Displays.Should().Equal("late display");
+        sink.Updates.Should().Equal((displayId, "late update"));
+        sink.Stderr.Should().Equal("late stderr");
+        sink.Errors.Should().Equal(("TypeError", "late error"));
+        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 1, 0, 0));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task LatePresentationObservesOwningCancellation()
+    {
+        var requestId = JupyterMessageId.Create();
+        var sink = new BlockingDisplayPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            static id => id,
+            static id => id);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+
+        var observation = collector.ObserveLateOutputAsync(
+            new JupyterDisplayOutput(requestId, TextBundle("late display"), EmptyMetadata),
+            cancellation.Token).AsTask();
+        await sink.WaitUntilStartedAsync(TestContext.Current.CancellationToken);
+        await cancellation.CancelAsync();
+
+        await observation
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
+        sink.ObservedCancellationToken.Should().Be(cancellation.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task ModelTruncationStillDrainsAndPublishesLaterDisplay()
     {
         var requestId = JupyterMessageId.Create();
@@ -293,6 +381,77 @@ public sealed class DenoReplExecutionCollectorTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult("Ada");
+        }
+    }
+
+    private sealed class BlockingDisplayPresentationSink : IDenoReplPresentationSink
+    {
+        private readonly TaskCompletionSource displayStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource releaseDisplay =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationToken ObservedCancellationToken { get; private set; }
+
+        public ValueTask DisplayAsync(
+            MimeBundle data,
+            IReadOnlyDictionary<string, JsonElement> metadata,
+            CancellationToken cancellationToken)
+        {
+            ObservedCancellationToken = cancellationToken;
+            displayStarted.TrySetResult();
+            return new ValueTask(releaseDisplay.Task.WaitAsync(cancellationToken));
+        }
+
+        public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
+            MimeBundle data,
+            JupyterDisplayId displayId,
+            IReadOnlyDictionary<string, JsonElement> metadata,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask UpdateDisplayAsync(
+            JupyterDisplayId displayId,
+            MimeBundle data,
+            IReadOnlyDictionary<string, JsonElement> metadata,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask PublishErrorAsync(
+            string name,
+            string value,
+            IReadOnlyList<string> traceback,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<string> RequestInputAsync(
+            string prompt,
+            bool password,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task WaitUntilStartedAsync(CancellationToken cancellationToken)
+        {
+            return displayStarted.Task.WaitAsync(cancellationToken);
         }
     }
 }

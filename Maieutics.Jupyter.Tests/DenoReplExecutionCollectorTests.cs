@@ -11,7 +11,7 @@ public sealed class DenoReplExecutionCollectorTests
     private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
         new Dictionary<string, JsonElement>();
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task OutputTypesProduceSeparateModelAndNotebookProjections()
     {
         var requestId = JupyterMessageId.Create();
@@ -72,7 +72,7 @@ public sealed class DenoReplExecutionCollectorTests
         execution.InputReplies.Should().ContainSingle().Which.Should().Be("Ada");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ModelTruncationStillDrainsAndPublishesLaterDisplay()
     {
         var requestId = JupyterMessageId.Create();
@@ -99,7 +99,7 @@ public sealed class DenoReplExecutionCollectorTests
         sink.Displays.Should().Equal("after truncation");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task OversizedJsonResultFallsBackToBoundedTextPlain()
     {
         var requestId = JupyterMessageId.Create();
@@ -131,7 +131,7 @@ public sealed class DenoReplExecutionCollectorTests
         result.Truncated.Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task BinaryOnlyResultReportsMediaTypesWithoutCopyingPayload()
     {
         var requestId = JupyterMessageId.Create();

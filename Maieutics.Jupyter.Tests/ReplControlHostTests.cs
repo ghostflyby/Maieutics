@@ -219,10 +219,11 @@ public sealed class ReplControlHostTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (application, host) = await ReplControlTestHost.StartAsync(
             registry,
             timeout.Token,
-            [CreateBlockingFunction()]);
+            [CreateBlockingFunction(started)]);
         await using (application)
         {
             using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
@@ -242,7 +243,7 @@ public sealed class ReplControlHostTests
                     "cancel-me",
                     token),
                 timeout.Token);
-            await Task.Delay(200, timeout.Token);
+            await started.Task.WaitAsync(timeout.Token);
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"control.cancel","payload":{"correlationId":"cancel-me"}}""",
@@ -651,10 +652,10 @@ public sealed class ReplControlHostTests
         return Encoding.UTF8.GetString(payload);
     }
 
-    private static AIFunction CreateBlockingFunction()
+    private static AIFunction CreateBlockingFunction(TaskCompletionSource? started = null)
     {
         return AIFunctionFactory.Create(
-            (CancellationToken ct) => WaitForCancellationAsync(ct),
+            (CancellationToken ct) => WaitForCancellationAsync(ct, started),
             new AIFunctionFactoryOptions
             {
                 Name = "blocking_test",
@@ -703,8 +704,9 @@ public sealed class ReplControlHostTests
         return JsonSerializer.SerializeToElement(new { done = true });
     }
 
-    private static async Task<object?> WaitForCancellationAsync(CancellationToken ct)
+    private static async Task<object?> WaitForCancellationAsync(CancellationToken ct, TaskCompletionSource? started = null)
     {
+        started?.TrySetResult();
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var registration = ct.Register(() => completion.TrySetResult());
         await completion.Task.WaitAsync(ct);

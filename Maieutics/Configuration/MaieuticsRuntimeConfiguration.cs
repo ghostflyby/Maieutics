@@ -21,6 +21,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     IAsyncDisposable
 {
     private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ReloadDrainTimeout = TimeSpan.FromSeconds(10);
     private readonly IReadOnlyList<AIFunction> builtInTools;
     private readonly IConfiguration configuration;
     private readonly MaieuticsConfigurationFile configurationFile;
@@ -55,6 +56,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private MaieuticsConfigurationReloadInfo? lastReload;
     private long reloadAttempt;
     private Task reloadLoop = Task.CompletedTask;
+    private TaskCompletionSource reloadCompletionSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IDisposable? reloadSubscription;
     private ProfileOverride? sessionOverride;
 
@@ -99,14 +101,14 @@ internal sealed class MaieuticsRuntimeConfiguration :
         if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
             await ObserveInitializationAsync().ConfigureAwait(false);
-            await reloadLoop.ConfigureAwait(false);
+            await WaitForReloadDrainAsync().ConfigureAwait(false);
             return;
         }
 
         reloadSubscription?.Dispose();
         fileErrorSubscription?.Dispose();
         reloadSignals.Writer.TryComplete();
-        await reloadLoop.ConfigureAwait(false);
+        await WaitForReloadDrainAsync().ConfigureAwait(false);
         await ObserveInitializationAsync().ConfigureAwait(false);
 
         ProfileGeneration[] generations = [];
@@ -718,6 +720,63 @@ internal sealed class MaieuticsRuntimeConfiguration :
             }
 
             Interlocked.Exchange(ref completedReloadAttempt, attempt);
+
+            TaskCompletionSource completed;
+            lock (gate)
+            {
+                completed = reloadCompletionSignal;
+                reloadCompletionSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            completed.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    ///     Waits until the configuration reload loop has finished applying an attempt newer than
+    ///     <paramref name="afterAttempt"/>. The wait is signal-driven: each completed reload swaps a
+    ///     fresh completion source, so waiters never busy-spin or rely on polling a counter.
+    /// </summary>
+    internal Task WaitForReloadCompletionAsync(long afterAttempt, CancellationToken cancellationToken)
+    {
+        return WaitForReloadCompletionCoreAsync(afterAttempt, cancellationToken);
+    }
+
+    private async Task WaitForReloadCompletionCoreAsync(long afterAttempt, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Interlocked.Read(ref completedReloadAttempt) > afterAttempt) return;
+
+            TaskCompletionSource signal;
+            lock (gate)
+            {
+                signal = reloadCompletionSignal;
+            }
+
+            // The counter may have advanced between the first read and acquiring the gate, or the
+            // reload that advanced it may already have signalled the captured source. Re-check before
+            // awaiting so a completed attempt is never observed as a stale wait.
+            if (Interlocked.Read(ref completedReloadAttempt) > afterAttempt) return;
+
+            await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task WaitForReloadDrainAsync()
+    {
+        if (reloadLoop.IsCompleted) return;
+        try
+        {
+            await reloadLoop.WaitAsync(ReloadDrainTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            logger.LogWarning(
+                "The configuration reload loop did not drain within {TimeoutSeconds}s; disposal continues " +
+                "with the remaining runtime state.",
+                ReloadDrainTimeout.TotalSeconds);
         }
     }
 
@@ -748,50 +807,64 @@ internal sealed class MaieuticsRuntimeConfiguration :
             checked(previous.Version + 1),
             CancellationToken.None).ConfigureAwait(false);
         string? removedOverride = null;
-        lock (gate)
+        var committed = false;
+        try
         {
-            previous = GetCurrent();
-            current = replacement;
-            switch (sessionOverride)
+            lock (gate)
             {
-                case ConfiguredProfileOverride configured
-                    when !replacement.Profiles.ContainsKey(configured.ProfileId):
-                    removedOverride = configured.ProfileId;
-                    sessionOverride = null;
-                    break;
-                case AutomaticProfileOverride automatic
-                    when !replacement.Sources.TryGetValue(automatic.SourceId, out var source) ||
-                         !string.Equals(source.ProviderName, automatic.Provider,
-                             StringComparison.OrdinalIgnoreCase) ||
-                         !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
-                         !AutomaticProfileMatches(
-                             replacement,
-                             source,
-                             automatic.Model,
-                             automatic.Capabilities,
-                             automatic.HostedCapabilities):
-                    removedOverride = automatic.Selector;
-                    sessionOverride = null;
-                    TrackRetirementLocked(automatic.Generation);
-                    break;
+                previous = GetCurrent();
+                current = replacement;
+                committed = true;
+                switch (sessionOverride)
+                {
+                    case ConfiguredProfileOverride configured
+                        when !replacement.Profiles.ContainsKey(configured.ProfileId):
+                        removedOverride = configured.ProfileId;
+                        sessionOverride = null;
+                        break;
+                    case AutomaticProfileOverride automatic
+                        when !replacement.Sources.TryGetValue(automatic.SourceId, out var source) ||
+                             !string.Equals(source.ProviderName, automatic.Provider,
+                                 StringComparison.OrdinalIgnoreCase) ||
+                             !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
+                             !AutomaticProfileMatches(
+                                 replacement,
+                                 source,
+                                 automatic.Model,
+                                 automatic.Capabilities,
+                                 automatic.HostedCapabilities):
+                        removedOverride = automatic.Selector;
+                        sessionOverride = null;
+                        TrackRetirementLocked(automatic.Generation);
+                        break;
+                }
+
+                var retained = replacement.Profiles.Values
+                    .Select(static profile => profile.Generation)
+                    .ToHashSet<ProfileGeneration>(ReferenceEqualityComparer.Instance);
+                var retired = previous.Profiles.Values
+                    .Select(static profile => profile.Generation)
+                    .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+                    .Where(generation => !retained.Contains(generation))
+                    .ToList();
+                retiredGenerations.AddRange(retired.Select(static generation => generation.Retire()));
+
+                var retainedMcp = replacement.McpServers.Values
+                    .ToHashSet<McpServerGeneration>(ReferenceEqualityComparer.Instance);
+                var retiredMcp = previous.McpServers.Values
+                    .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
+                    .Where(generation => !retainedMcp.Contains(generation));
+                retiredGenerations.AddRange(retiredMcp.Select(static generation => generation.Retire()));
             }
+        }
+        catch
+        {
+            // The runtime was disposed while this reload was in flight and the replacement never
+            // became the active snapshot, so its freshly built generations would otherwise leak.
+            // When the replacement was already committed, disposal owns its retirement instead.
+            if (!committed) await RetireSnapshotAsync(replacement).ConfigureAwait(false);
 
-            var retained = replacement.Profiles.Values
-                .Select(static profile => profile.Generation)
-                .ToHashSet<ProfileGeneration>(ReferenceEqualityComparer.Instance);
-            var retired = previous.Profiles.Values
-                .Select(static profile => profile.Generation)
-                .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
-                .Where(generation => !retained.Contains(generation))
-                .ToList();
-            retiredGenerations.AddRange(retired.Select(static generation => generation.Retire()));
-
-            var retainedMcp = replacement.McpServers.Values
-                .ToHashSet<McpServerGeneration>(ReferenceEqualityComparer.Instance);
-            var retiredMcp = previous.McpServers.Values
-                .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
-                .Where(generation => !retainedMcp.Contains(generation));
-            retiredGenerations.AddRange(retiredMcp.Select(static generation => generation.Retire()));
+            throw;
         }
 
         if (removedOverride is not null)

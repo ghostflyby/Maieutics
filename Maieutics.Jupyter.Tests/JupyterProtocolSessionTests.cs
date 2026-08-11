@@ -12,7 +12,7 @@ public sealed class JupyterProtocolSessionTests
 {
     private static readonly JupyterSessionIdentity KernelSession = new("kernel", "kernel");
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RequestRequiresExpectedReplyTypeAndChannel()
     {
         var transport = new FakeJupyterTransport();
@@ -36,7 +36,7 @@ public sealed class JupyterProtocolSessionTests
         reply.Implementation.Should().Be("test-kernel");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReadinessProbeAcceptsDelayedIdleFromAnEarlierRequest()
     {
         var transport = new FakeJupyterTransport();
@@ -60,7 +60,7 @@ public sealed class JupyterProtocolSessionTests
         reply.Implementation.Should().Be("test-kernel");
     }
 
-    [Theory]
+    [Theory(Timeout = 30_000)]
     [InlineData(true)]
     [InlineData(false)]
     public async Task ExecutionCompletesOnlyAfterReplyAndParentedIdle(bool replyFirst)
@@ -110,7 +110,7 @@ public sealed class JupyterProtocolSessionTests
             .Which.State.Should().Be(JupyterKernelState.Idle);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AbandonBeforeReplyCancelsLocalCompletionWithoutSendingInterrupt()
     {
         var transport = new FakeJupyterTransport();
@@ -134,7 +134,7 @@ public sealed class JupyterProtocolSessionTests
             .Which.Message.MessageType.Should().Be("execute_request");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AbandonAfterReplyPreservesBufferedOutputAndPublishesLaterIopubAsLate()
     {
         var transport = new FakeJupyterTransport();
@@ -182,7 +182,7 @@ public sealed class JupyterProtocolSessionTests
             .Which.State.Should().Be(JupyterKernelState.Idle);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReplyInputAfterAbandonIsRejectedWithoutSendingAStdinReply()
     {
         var transport = new FakeJupyterTransport();
@@ -212,7 +212,7 @@ public sealed class JupyterProtocolSessionTests
             .Which.Message.MessageType.Should().Be("execute_request");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ConcurrentExecutionAndSessionDisposalCompletesExactlyOnce()
     {
         var transport = new FakeJupyterTransport();
@@ -238,7 +238,7 @@ public sealed class JupyterProtocolSessionTests
         await execution.DisposeAsync();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ParentedIopubAfterIdleIsLateEvenWhenShellReplyHasNotArrived()
     {
         var transport = new FakeJupyterTransport();
@@ -285,7 +285,7 @@ public sealed class JupyterProtocolSessionTests
             .Which.Data.Data["text/plain"].GetString().Should().Be("late");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ExecutionOutputsPreserveNotebookMessageOrderAndDisplayMetadata()
     {
         var transport = new FakeJupyterTransport();
@@ -361,7 +361,7 @@ public sealed class JupyterProtocolSessionTests
         outputs.OfType<JupyterClearOutput>().Single().Wait.Should().BeTrue();
     }
 
-    [Theory]
+    [Theory(Timeout = 30_000)]
     [InlineData("null", "missing_display_id")]
     [InlineData("missing", "missing_display_id")]
     [InlineData("empty", "invalid_display_id")]
@@ -434,7 +434,7 @@ public sealed class JupyterProtocolSessionTests
             .OfType<JupyterMalformedOutput>().Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MalformedOptionalDisplayIdFallsBackToUntrackedDisplay()
     {
         var transport = new FakeJupyterTransport();
@@ -476,7 +476,7 @@ public sealed class JupyterProtocolSessionTests
             .WhoseValue.GetInt32().Should().Be(42);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task LateParentedNotebookOutputsBecomeTypedClientEvents()
     {
         var transport = new FakeJupyterTransport();
@@ -544,7 +544,7 @@ public sealed class JupyterProtocolSessionTests
             .Which.Wait.Should().BeTrue();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputReplyUsesInputRequestAsParent()
     {
         var transport = new FakeJupyterTransport();
@@ -571,7 +571,7 @@ public sealed class JupyterProtocolSessionTests
         reply.Message.ParentHeader.Should().Be(inputRequest.Header);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task LanguageServiceRequestsCanCompleteConcurrentlyOutOfOrder()
     {
         var transport = new FakeJupyterTransport();
@@ -610,7 +610,7 @@ public sealed class JupyterProtocolSessionTests
         (await inspectTask.WaitAsync(TestContext.Current.CancellationToken)).Found.Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CompleteErrorBecomesTypedRequestException()
     {
         var transport = new FakeJupyterTransport();
@@ -642,7 +642,7 @@ public sealed class JupyterProtocolSessionTests
         assertion.Which.Traceback.Should().Equal("trace");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task IsCompleteValidatesReplyStatus()
     {
         var transport = new FakeJupyterTransport();
@@ -662,7 +662,7 @@ public sealed class JupyterProtocolSessionTests
         await task.Invoking(static value => value).Should().ThrowAsync<JupyterProtocolException>();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InvalidCursorIsRejectedBeforeSending()
     {
         var transport = new FakeJupyterTransport();
@@ -676,7 +676,7 @@ public sealed class JupyterProtocolSessionTests
         transport.SentMessages.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellingLanguageRequestDoesNotSendInterrupt()
     {
         var transport = new FakeJupyterTransport();
@@ -690,7 +690,7 @@ public sealed class JupyterProtocolSessionTests
         transport.SentMessages.Should().ContainSingle(message => message.Message.MessageType == "complete_request");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DisposeFailsPendingRequest()
     {
         var transport = new FakeJupyterTransport();
@@ -748,10 +748,9 @@ public sealed class JupyterProtocolSessionTests
         int expectedCount,
         CancellationToken cancellationToken)
     {
-        while (transport.SentMessages.Count < expectedCount)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.Yield();
-        }
+        var seen = 0;
+        await foreach (var _ in transport.SentMessageStream.WithCancellation(cancellationToken))
+            if (++seen >= expectedCount)
+                return;
     }
 }

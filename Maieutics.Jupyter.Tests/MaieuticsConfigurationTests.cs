@@ -113,7 +113,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationAllowsNoModelOrProviderConfiguration()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -152,7 +152,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationCancellationRetiresCreatedProfileExactlyOnce()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -192,7 +192,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationFailureRetiresEarlierProfilesExactlyOnce()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -233,7 +233,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationRetainsSourcesWithoutProfilesForDiscovery()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -292,7 +292,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task AutomaticProfileSelectionCancellationRetiresCreatedClientExactlyOnce()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -656,7 +656,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task AutomaticProfileRequiresQualifiedSelectorForDuplicateModelIds()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -742,11 +742,7 @@ public sealed class MaieuticsConfigurationTests
 
             factory.ReleaseCreation.TrySetResult();
             var runtime = await initialization.WaitAsync(deadline.Token);
-            while (runtime.CompletedReloadAttempt == 0)
-            {
-                deadline.Token.ThrowIfCancellationRequested();
-                await Task.Yield();
-            }
+            await runtime.WaitForReloadCompletionAsync(0, deadline.Token);
 
             (await AcquireClientAsync(runtime)).Model.Should().Be("two");
             runtime.Version.Should().Be(2);
@@ -881,7 +877,7 @@ public sealed class MaieuticsConfigurationTests
         rotated.ClientGenerationKey.ToString().Should().NotContain(rotatedApiKey);
     }
 
-    [Theory]
+    [Theory(Timeout = 30_000)]
     [InlineData("OpenAI", "ApiFlavor", "Responses", "UnexpectedAnthropicField")]
     [InlineData("Anthropic", "ApiKey", "test-key", "UnexpectedOpenAiField")]
     public async Task ProviderSourcesRejectUnknownProviderSpecificFields(
@@ -938,7 +934,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task LegacyMaxHistoryCharactersConvertsToMaxHistoryBytes()
     {
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
@@ -978,7 +974,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MaxHistoryBytesCannotBeCombinedWithLegacyMaxHistoryCharacters()
     {
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
@@ -1088,11 +1084,7 @@ public sealed class MaieuticsConfigurationTests
                 lease.Profile.Options.MaxHistoryBytes.Should().Be(1_000);
             }
 
-            while (runtime.CompletedReloadAttempt == 0)
-            {
-                deadline.Token.ThrowIfCancellationRequested();
-                await Task.Yield();
-            }
+            await runtime.WaitForReloadCompletionAsync(0, deadline.Token);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1372,7 +1364,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task NamedAndLegacyModelConfigurationCannotBeCombined()
     {
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
@@ -1415,7 +1407,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task McpFileConfigurationValidatesTransportsHttpsSseKeysAndDefaultEnablement()
     {
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
@@ -1506,7 +1498,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task McpFileChangesTriggerReloadAndInvalidUpdatesRetainLastKnownGood()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
@@ -1588,11 +1580,7 @@ public sealed class MaieuticsConfigurationTests
             changed);
         await File.WriteAllTextAsync(path, contents, cancellationToken);
         await changed.Task.WaitAsync(cancellationToken);
-        while (runtime.CompletedReloadAttempt <= previousAttempt)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.Yield();
-        }
+        await runtime.WaitForReloadCompletionAsync(previousAttempt, cancellationToken);
     }
 
     private static string CreateConfiguration(
@@ -1730,7 +1718,7 @@ public sealed class MaieuticsConfigurationTests
         }.ToJsonString();
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task AcquiredProfileMergesConfiguredEndpointCapabilities()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -1800,7 +1788,7 @@ public sealed class MaieuticsConfigurationTests
         lease.Profile.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task UnmatchedEndpointKeepsOnlyDeclaredSourceCapabilities()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -1870,7 +1858,7 @@ public sealed class MaieuticsConfigurationTests
         lease.Profile.HostedCapabilities.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task KnownVendorEndpointGrantsAutomaticHostedCapabilities()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -1926,7 +1914,7 @@ public sealed class MaieuticsConfigurationTests
         lease.Profile.HostedCapabilities.Should().Equal(ResponsesFormatCapabilities);
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task VendorsCatalogNarrowsCapabilitiesByModel()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -2277,7 +2265,7 @@ public sealed class MaieuticsConfigurationTests
         };
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsReturnsModelsFromDiscoveryEnabledSources()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -2324,7 +2312,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsCacheRespectsRefreshFlag()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -2371,7 +2359,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsSkipsSourcesWithoutDiscoverySupport()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -2408,7 +2396,7 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsCapturesErrorsFromFailingSources()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));

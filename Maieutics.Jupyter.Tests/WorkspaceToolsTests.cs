@@ -15,7 +15,7 @@ namespace Maieutics.Jupyter.Tests;
 [Collection(JupyterSocketIntegrationCollection.Name)]
 public sealed class WorkspaceToolsTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceFunctionsExposeSeparateStrictSchemasAndTypedJsonResults()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -42,7 +42,7 @@ public sealed class WorkspaceToolsTests
                 exception.GetType() == typeof(JsonException));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ListDirectorySortsPagesAndBoundsEntryCount()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -106,7 +106,7 @@ public sealed class WorkspaceToolsTests
             .Which.Code.Should().Be("workspace_invalid_uri");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceUrisDecodeOnceAndRejectGitAndSymbolicLinkTraversal()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -199,7 +199,7 @@ public sealed class WorkspaceToolsTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReadTextUsesLineContinuationAndRejectsInvalidOrUnboundedFiles()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -285,7 +285,7 @@ public sealed class WorkspaceToolsTests
             .Code.Should().Be("workspace_file_too_large");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task SearchTextBoundsFilesSkipsUnsafeContentAndLimitsPreviews()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -331,7 +331,7 @@ public sealed class WorkspaceToolsTests
         regex.Matches.Should().HaveCount(4);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task SearchTextEnforcesFileDirectoryAndCancellationLimits()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -417,7 +417,7 @@ public sealed class WorkspaceToolsTests
             .Code.Should().Be("workspace_not_regular_file");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AgentUsesProductionWorkspaceToolsForDiscoveryAndRead()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -465,7 +465,7 @@ public sealed class WorkspaceToolsTests
         client.Requests.Should().HaveCount(3);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceSwitchesFutureFunctionInvocationsAndInvalidatesCursors()
     {
         using var workspace = TemporaryWorkspace.Create();

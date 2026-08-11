@@ -13,7 +13,7 @@ public sealed class PluginHostIntegrationTests
     private static readonly JsonSerializerOptions JsonSerializerOptionsCaseInsensitive =
         new() { PropertyNameCaseInsensitive = true };
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReadinessWaitCancellationDoesNotCancelTheManagerAndShutdownIsIdempotent()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -62,7 +62,7 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task StartupFailureIsPublishedToReadinessAndCleansUp()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -222,18 +222,24 @@ public sealed class PluginHostIntegrationTests
         Directory.Delete(workspaceRoot, true);
     }
 
+    /// <summary>
+    ///     Waits for a plugin registration to appear. Relies on registry snapshots being additive
+    ///     (the plugin host only publishes registration sets that grow monotonically), so a
+    ///     registration present in a dropped channel snapshot is still present in every later one.
+    /// </summary>
     private static async Task<IReadOnlyList<PluginRegistration>> WaitForRegistrationsAsync(
         PluginHostManager manager,
         string extensionPoint,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(45);
-        while (DateTime.UtcNow < deadline)
-        {
-            var registrations = manager.GetRegistrations(extensionPoint);
-            if (registrations.Count > 0) return registrations;
+        if (manager.GetRegistrations(extensionPoint) is { Count: > 0 } existing) return existing;
 
-            await Task.Delay(250, cancellationToken);
+        await foreach (var registrations in manager.RegistryChanges.Reader.ReadAllAsync(cancellationToken))
+        {
+            var matches = registrations
+                .Where(registration => registration.ExtensionPoint == extensionPoint)
+                .ToArray();
+            if (matches.Length > 0) return matches;
         }
 
         return [];

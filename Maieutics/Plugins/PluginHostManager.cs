@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using System.Threading.Channels;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Mcp;
@@ -90,6 +91,14 @@ internal sealed class PluginHostManager(
         new(StringComparer.Ordinal);
 
     private readonly List<PluginRegistration> registrations = [];
+
+    /// <summary>
+    ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
+    ///     registration without polling. Completed when the manager is disposed. Bounded and
+    ///     drop-oldest so an unconsumed production stream retains only the newest snapshot.
+    /// </summary>
+    internal readonly Channel<PluginRegistration[]> RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
+        new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
 
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
@@ -365,6 +374,7 @@ internal sealed class PluginHostManager(
         await lifetime.CancelAsync().ConfigureAwait(false);
         FailPending("The plugin host is stopping.");
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
+        RegistryChanges.Writer.TryComplete();
 
         if (process is not null)
         {
@@ -604,6 +614,7 @@ internal sealed class PluginHostManager(
         if (payload is null) return;
 
         PluginRegistration[] snapshot;
+        PluginRegistration[] registrySnapshot;
         lock (gate)
         {
             registrations.Clear();
@@ -619,8 +630,10 @@ internal sealed class PluginHostManager(
             snapshot = registrations
                 .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
                 .ToArray();
+            registrySnapshot = registrations.ToArray();
         }
 
+        RegistryChanges.Writer.TryWrite(registrySnapshot);
         dynamicMcpCoordinator?.PublishRegistry(snapshot);
     }
 

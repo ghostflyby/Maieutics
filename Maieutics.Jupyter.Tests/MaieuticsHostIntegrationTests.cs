@@ -875,7 +875,7 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PackagedKernelSpecUsesPortableExecutableCommand()
     {
         var spec = await JupyterKernelSpec.ReadAsync(KernelSpecPath, TestContext.Current.CancellationToken);

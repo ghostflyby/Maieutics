@@ -249,7 +249,7 @@ public sealed class AgentTranscriptCodecTests
 
 public sealed class AgentTranscriptSessionTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReasoningAndProtectedDataStayPrivateAndReplayToTheNextTurn()
     {
         using var deadline = CreateDeadline();
@@ -279,7 +279,7 @@ public sealed class AgentTranscriptSessionTests
         JsonSerializer.Serialize(replayedReasoning.ProtectedData).Should().Contain("opaque-state");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReasoningOnlyAndCustomContentRollBackTranscriptVersion()
     {
         using var deadline = CreateDeadline();
@@ -313,7 +313,7 @@ public sealed class AgentTranscriptSessionTests
         custom.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InlineBinaryResponseRollsBackAndSessionRemainsUsable()
     {
         using var deadline = CreateDeadline();
@@ -345,7 +345,7 @@ public sealed class AgentTranscriptSessionTests
         recovered.Result.Transcript.Turns.Should().ContainSingle();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MutatingPublicMessagesCannotChangeCanonicalReplay()
     {
         using var deadline = CreateDeadline();
@@ -369,7 +369,7 @@ public sealed class AgentTranscriptSessionTests
             .Equal("first question", "first answer");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ProviderCannotMutateCanonicalReplayMessages()
     {
         using var deadline = CreateDeadline();
@@ -393,7 +393,7 @@ public sealed class AgentTranscriptSessionTests
         session.GetTranscriptSnapshot().Turns[0].Messages[1].Text.Should().Be("first answer");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task HistoryByteLimitEvictsCompleteOldestTurnForNonAsciiMessages()
     {
         using var deadline = CreateDeadline();

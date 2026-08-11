@@ -14,7 +14,7 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class DenoReplRegistryTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FunctionsExposeFiveStrictReplSchemas()
     {
         var workspace = Workspace.Create(Directory.GetCurrentDirectory(), Directory.GetCurrentDirectory());
@@ -59,7 +59,7 @@ public sealed class DenoReplRegistryTests
             .And.Contain("text/plain");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ExplicitSessionsAreBoundedAndCaptureWorkspaceAtCreation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-registry-{Guid.NewGuid():N}");
@@ -120,7 +120,7 @@ public sealed class DenoReplRegistryTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FailedStartupRemainsFaultedUntilExplicitRestart()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-fault-{Guid.NewGuid():N}");
@@ -162,7 +162,7 @@ public sealed class DenoReplRegistryTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CloseRetainsRegistryEntryAndConcurrentCallWaitsForTheSameCleanup()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-close-{Guid.NewGuid():N}");
@@ -204,7 +204,7 @@ public sealed class DenoReplRegistryTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ConcurrentRegistryDisposeWaitsForOwnedSessionCleanup()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-dispose-{Guid.NewGuid():N}");

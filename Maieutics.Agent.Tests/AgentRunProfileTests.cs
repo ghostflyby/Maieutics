@@ -57,7 +57,7 @@ public sealed class AgentRunProfileTests
             .Should().Throw<ArgumentException>();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task StaticConstructorKeepsExistingClientOptionsAndTranscriptBehavior()
     {
         using var deadline = CreateDeadline();
@@ -80,7 +80,7 @@ public sealed class AgentRunProfileTests
         result.Transcript.Turns.Should().OnlyContain(static turn => turn.ModelIdentity == null);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DynamicProfileAppliesToNextRunAndReplaysCanonicalTranscript()
     {
         using var deadline = CreateDeadline();
@@ -104,7 +104,7 @@ public sealed class AgentRunProfileTests
         result.Transcript.Turns.Should().HaveCount(2);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PendingProfileAcquisitionKeepsTheSessionReserved()
     {
         using var deadline = CreateDeadline();
@@ -130,7 +130,7 @@ public sealed class AgentRunProfileTests
         lease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CanceledProfileAcquisitionReleasesTheSessionReservation()
     {
         using var deadline = CreateDeadline();
@@ -157,7 +157,7 @@ public sealed class AgentRunProfileTests
         recoveredLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task SuccessfulRunCommitsCapturedModelIdentityToResultAndTranscript()
     {
         using var deadline = CreateDeadline();
@@ -180,7 +180,7 @@ public sealed class AgentRunProfileTests
         session.GetTranscriptSnapshot().Turns[0].ModelIdentity.Should().Be(identity);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MissingStreamingCapabilityFailsBeforeProviderInvocation()
     {
         using var deadline = CreateDeadline();
@@ -206,7 +206,7 @@ public sealed class AgentRunProfileTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MissingFunctionCallingCapabilityFailsBeforeProviderInvocationWhenToolsExist()
     {
         using var deadline = CreateDeadline();
@@ -234,7 +234,7 @@ public sealed class AgentRunProfileTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ActiveRunUsesOneCapturedClientAcrossToolIterations()
     {
         using var deadline = CreateDeadline();
@@ -261,7 +261,7 @@ public sealed class AgentRunProfileTests
         provider.AcquireCount.Should().Be(2);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DynamicProfilesExposeDifferentRunLocalToolRegistries()
     {
         using var deadline = CreateDeadline();
@@ -294,7 +294,7 @@ public sealed class AgentRunProfileTests
         secondLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputLimitIsRunLocalAndRejectedStartReleasesItsLease()
     {
         using var deadline = CreateDeadline();
@@ -319,7 +319,7 @@ public sealed class AgentRunProfileTests
         acceptedLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CompletionRemainsPendingUntilLeaseIsReleased()
     {
         using var deadline = CreateDeadline();
@@ -340,7 +340,7 @@ public sealed class AgentRunProfileTests
         await run.Completion.WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task LeaseReleaseFailureRollsBackSuccessfulTurn()
     {
         using var deadline = CreateDeadline();
@@ -366,7 +366,7 @@ public sealed class AgentRunProfileTests
         recovered.Transcript.Turns.Should().ContainSingle();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ProviderFailureReleasesLeaseAndAllowsNextProfile()
     {
         using var deadline = CreateDeadline();
@@ -392,7 +392,7 @@ public sealed class AgentRunProfileTests
         recoveredLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellationReleasesLeaseAndSessionReservation()
     {
         using var deadline = CreateDeadline();

@@ -92,9 +92,19 @@ public sealed record JupyterClientDisconnected(Exception? Cause) : JupyterClient
 
 public sealed record JupyterKernelStatusChanged(JupyterKernelState State) : JupyterClientEvent;
 
+/// <summary>
+///     Represents parented IOPub output observed after an execution's idle status.
+/// </summary>
 public sealed record JupyterLateOutput(JupyterMessageId RequestId, JupyterMessage Message) : JupyterClientEvent
 {
+    /// <summary>Gets the typed output projection when the message type is supported.</summary>
     public JupyterOutput? Output { get; init; }
+
+    /// <summary>
+    ///     Gets whether the typed output was also retained in the execution output stream because the shell reply had
+    ///     not yet arrived and protocol completion had not occurred.
+    /// </summary>
+    public bool IncludedInExecution { get; init; }
 }
 
 public sealed record JupyterUnhandledMessage(JupyterTransportChannel Channel, JupyterMessage Message)

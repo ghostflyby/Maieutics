@@ -63,6 +63,33 @@ public sealed class DenoKernelIntegrationTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task FreshLocalManagerRoutesFirstDenoPrompt()
+    {
+        using var deadline = CreateDeadline();
+        var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+        await using var manager = await LocalJupyterKernelManager.StartAsync(
+            spec,
+            cancellationToken: deadline.Token);
+
+        var execution = await manager.Client.ExecuteAsync(
+            new JupyterExecuteRequest("prompt('First prompt: ')", AllowStdin: true),
+            deadline.Token);
+        var outputs = new List<JupyterOutput>();
+        await foreach (var output in execution.Outputs.WithCancellation(deadline.Token))
+        {
+            outputs.Add(output);
+            if (output is JupyterInputRequest input)
+                await execution.ReplyInputAsync(input, "ready", deadline.Token);
+        }
+
+        (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+        outputs.OfType<JupyterInputRequest>().Should().ContainSingle()
+            .Which.Prompt.Should().Be("First prompt: ");
+        outputs.OfType<JupyterExecuteResultOutput>().Should().ContainSingle(output =>
+            output.Data.Data.Values.Any(value => value.ToString().Contains("ready", StringComparison.Ordinal)));
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task RealDenoSeparatesStreamsDisplayResultAndError()
     {
         using var deadline = CreateDeadline();
@@ -208,6 +235,30 @@ public sealed class DenoKernelIntegrationTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task LocalManagerReportsBoundedDiagnosticsWhenKernelExitsDuringStartup()
+    {
+        using var deadline = CreateDeadline();
+        var spec = new JupyterKernelSpec(
+            ["deno", "eval", "console.error('startup-marker-' + 'x'.repeat(20000)); Deno.exit(17)"],
+            "Failing Deno",
+            "typescript",
+            "signal",
+            new Dictionary<string, string>());
+
+        var assertion = await (Spec: spec, Token: deadline.Token)
+            .Awaiting(static state => LocalJupyterKernelManager.StartAsync(
+                state.Spec,
+                cancellationToken: state.Token))
+            .Should().ThrowAsync<JupyterKernelStartupException>();
+
+        assertion.Which.DisplayName.Should().Be("Failing Deno");
+        assertion.Which.ExitCode.Should().Be(17);
+        assertion.Which.TimedOut.Should().BeFalse();
+        assertion.Which.StandardError.Should().StartWith("startup-marker-");
+        assertion.Which.StandardError.Length.Should().BeLessThanOrEqualTo(8 * 1024);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task LocalManagerAppliesWorkingDirectoryAndExplicitEnvironment()
     {
         using var deadline = CreateDeadline();
@@ -224,6 +275,10 @@ public sealed class DenoKernelIntegrationTests
                 ["TMPDIR"] = Path.GetTempPath(),
                 ["MAIEUTICS_DENO_ALLOWED"] = "allowed"
             };
+            foreach (var name in new[] { "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA" })
+                if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
+                    environment[name] = value;
+
             var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
             await using var manager = await LocalJupyterKernelManager.StartAsync(
                 spec,

@@ -38,6 +38,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly McpClientTransportFactory? mcpTransportFactory;
     private PluginHostManager? pluginHosts;
 
+    // The bounded channel is only an edge trigger. reloadRequest remains authoritative when duplicate
+    // notifications coalesce while the single reader is already processing an earlier request.
     private readonly Channel<byte> reloadSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
     {
         SingleReader = true,
@@ -49,12 +51,14 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly McpStartupDirectory startupDirectory;
     private readonly TimeProvider timeProvider;
     private long completedReloadAttempt;
+    private long completedReloadRequest;
     private RuntimeSnapshot? current;
     private int disposed;
     private IDisposable? fileErrorSubscription;
     private Task? initialization;
     private MaieuticsConfigurationReloadInfo? lastReload;
     private long reloadAttempt;
+    private long reloadRequest;
     private Task reloadLoop = Task.CompletedTask;
     private TaskCompletionSource reloadCompletionSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IDisposable? reloadSubscription;
@@ -96,6 +100,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     internal long CompletedReloadAttempt => Interlocked.Read(ref completedReloadAttempt);
 
+    internal long ReloadRequest => Interlocked.Read(ref reloadRequest);
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
@@ -107,7 +113,11 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
         reloadSubscription?.Dispose();
         fileErrorSubscription?.Dispose();
-        reloadSignals.Writer.TryComplete();
+        lock (gate)
+        {
+            reloadSignals.Writer.TryComplete();
+        }
+
         await WaitForReloadDrainAsync().ConfigureAwait(false);
         await ObserveInitializationAsync().ConfigureAwait(false);
 
@@ -689,76 +699,87 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     private void SignalReload()
     {
-        reloadSignals.Writer.TryWrite(0);
+        lock (gate)
+        {
+            if (disposed != 0) return;
+
+            Interlocked.Increment(ref reloadRequest);
+            reloadSignals.Writer.TryWrite(0);
+        }
     }
 
     private async Task ProcessReloadsAsync()
     {
         await foreach (var _ in reloadSignals.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            var attempt = Interlocked.Increment(ref reloadAttempt);
-            var loadError = fileErrors.TakeLatest();
-            var outcome = MaieuticsConfigurationReloadOutcome.Rejected;
-            try
+            while (true)
             {
-                outcome = await ReloadAsync().ConfigureAwait(false)
-                    ? MaieuticsConfigurationReloadOutcome.Applied
-                    : MaieuticsConfigurationReloadOutcome.Unchanged;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(loadError ?? exception,
-                    "Rejected an invalid Maieutics configuration update. Version {ConfigurationVersion} remains active.",
-                    Version);
-            }
+                long request;
+                lock (gate)
+                {
+                    request = reloadRequest;
+                    if (completedReloadRequest >= request) break;
+                }
 
-            ObserveCompletedRetirements();
-            lock (gate)
-            {
-                if (current is { } snapshot)
-                    lastReload = new MaieuticsConfigurationReloadInfo(attempt, outcome, snapshot.Version);
+                var attempt = Interlocked.Increment(ref reloadAttempt);
+                var loadError = fileErrors.TakeLatest();
+                var outcome = MaieuticsConfigurationReloadOutcome.Rejected;
+                try
+                {
+                    outcome = await ReloadAsync().ConfigureAwait(false)
+                        ? MaieuticsConfigurationReloadOutcome.Applied
+                        : MaieuticsConfigurationReloadOutcome.Unchanged;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(loadError ?? exception,
+                        "Rejected an invalid Maieutics configuration update. Version {ConfigurationVersion} remains active.",
+                        Version);
+                }
+
+                ObserveCompletedRetirements();
+
+                TaskCompletionSource completed;
+                lock (gate)
+                {
+                    if (current is { } snapshot)
+                        lastReload = new MaieuticsConfigurationReloadInfo(attempt, outcome, snapshot.Version);
+
+                    Interlocked.Exchange(ref completedReloadAttempt, attempt);
+                    completedReloadRequest = request;
+                    completed = reloadCompletionSignal;
+                    reloadCompletionSignal =
+                        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+
+                completed.TrySetResult();
             }
-
-            Interlocked.Exchange(ref completedReloadAttempt, attempt);
-
-            TaskCompletionSource completed;
-            lock (gate)
-            {
-                completed = reloadCompletionSignal;
-                reloadCompletionSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            }
-
-            completed.TrySetResult();
         }
     }
 
     /// <summary>
-    ///     Waits until the configuration reload loop has finished applying an attempt newer than
-    ///     <paramref name="afterAttempt"/>. The wait is signal-driven: each completed reload swaps a
+    ///     Waits until the configuration reload loop has finished applying a request newer than
+    ///     <paramref name="afterRequest"/>. The wait is signal-driven: each completed reload swaps a
     ///     fresh completion source, so waiters never busy-spin or rely on polling a counter.
     /// </summary>
-    internal Task WaitForReloadCompletionAsync(long afterAttempt, CancellationToken cancellationToken)
+    internal Task WaitForReloadCompletionAsync(long afterRequest, CancellationToken cancellationToken)
     {
-        return WaitForReloadCompletionCoreAsync(afterAttempt, cancellationToken);
+        return WaitForReloadCompletionCoreAsync(afterRequest, cancellationToken);
     }
 
-    private async Task WaitForReloadCompletionCoreAsync(long afterAttempt, CancellationToken cancellationToken)
+    private async Task WaitForReloadCompletionCoreAsync(long afterRequest, CancellationToken cancellationToken)
     {
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (Interlocked.Read(ref completedReloadAttempt) > afterAttempt) return;
 
             TaskCompletionSource signal;
             lock (gate)
             {
+                if (completedReloadRequest > afterRequest) return;
+
                 signal = reloadCompletionSignal;
             }
-
-            // The counter may have advanced between the first read and acquiring the gate, or the
-            // reload that advanced it may already have signalled the captured source. Re-check before
-            // awaiting so a completed attempt is never observed as a stale wait.
-            if (Interlocked.Read(ref completedReloadAttempt) > afterAttempt) return;
 
             await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }

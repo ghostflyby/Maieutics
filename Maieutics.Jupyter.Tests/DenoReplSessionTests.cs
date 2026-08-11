@@ -129,6 +129,41 @@ public sealed class DenoReplSessionTests
         manager.RestartCount.Should().Be(1);
     }
 
+    [Fact(Timeout = 15_000)]
+    public async Task LateOutputAlreadyIncludedInExecutionIsNotPresentedTwice()
+    {
+        var manager = new ControlledManager(new ConcurrencyProbe(), true);
+        var presentedStderr = Channel.CreateUnbounded<string>();
+        var presentation = new ImmediatePresentationRouter(new NoopPresentationSink(presentedStderr));
+        await using var session = CreateSession(
+            AgentSessionId.Create(),
+            "late-output",
+            LongRunningOptions(),
+            manager,
+            presentation);
+        await session.StartAsync(TestContext.Current.CancellationToken);
+        var requestId = JupyterMessageId.Create();
+        var message = JupyterMessage.Create(
+            "stream",
+            new JupyterStream("stderr", "wire"),
+            JupyterJsonContext.Default.JupyterStream,
+            new JupyterSessionIdentity("test", "tester"));
+
+        manager.ClientImpl.PublishEvent(new JupyterLateOutput(requestId, message)
+        {
+            Output = new JupyterStderr(requestId, "included"),
+            IncludedInExecution = true
+        });
+        manager.ClientImpl.PublishEvent(new JupyterLateOutput(requestId, message)
+        {
+            Output = new JupyterStderr(requestId, "after-completion")
+        });
+
+        (await presentedStderr.Reader.ReadAsync(TestContext.Current.CancellationToken))
+            .Should().Be("after-completion");
+        presentedStderr.Reader.TryRead(out _).Should().BeFalse();
+    }
+
     private static DenoReplOptions LongRunningOptions(
         TimeSpan? executionTimeout = null,
         TimeSpan? interruptGracePeriod = null)
@@ -144,7 +179,8 @@ public sealed class DenoReplSessionTests
         AgentSessionId owner,
         string id,
         DenoReplOptions options,
-        ControlledManager manager)
+        ControlledManager manager,
+        IDenoReplPresentationRouter? presentationRouter = null)
     {
         return new DenoReplSession(
             owner,
@@ -153,7 +189,7 @@ public sealed class DenoReplSessionTests
             Directory.GetCurrentDirectory(),
             options,
             new SingleManagerFactory(manager),
-            new ImmediatePresentationRouter(),
+            presentationRouter ?? new ImmediatePresentationRouter(),
             new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
     }
@@ -227,6 +263,7 @@ public sealed class DenoReplSessionTests
     private sealed class ControlledClient(ConcurrencyProbe probe) : IJupyterClient
     {
         private readonly List<ControlledExecution> executions = [];
+        private readonly Channel<JupyterClientEvent> events = Channel.CreateUnbounded<JupyterClientEvent>();
         private readonly Lock gate = new();
         private readonly Channel<ControlledExecution> started = Channel.CreateUnbounded<ControlledExecution>();
         private int startedCount;
@@ -237,7 +274,7 @@ public sealed class DenoReplSessionTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             yield return new JupyterClientConnected();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            await foreach (var clientEvent in events.Reader.ReadAllAsync(cancellationToken)) yield return clientEvent;
         }
 
         public Task<IJupyterExecution> ExecuteAsync(
@@ -295,6 +332,11 @@ public sealed class DenoReplSessionTests
         public Task<ControlledExecution> NextExecutionAsync(CancellationToken cancellationToken)
         {
             return started.Reader.ReadAsync(cancellationToken).AsTask();
+        }
+
+        public void PublishEvent(JupyterClientEvent clientEvent)
+        {
+            events.Writer.TryWrite(clientEvent).Should().BeTrue();
         }
 
         public void ReleaseAll()
@@ -398,9 +440,10 @@ public sealed class DenoReplSessionTests
         }
     }
 
-    internal sealed class ImmediatePresentationRouter : IDenoReplPresentationRouter
+    internal sealed class ImmediatePresentationRouter(IDenoReplPresentationSink? currentSink = null)
+        : IDenoReplPresentationRouter
     {
-        private static readonly IDenoReplPresentationSink Sink = new NoopPresentationSink();
+        private static readonly IDenoReplPresentationSink DefaultSink = new NoopPresentationSink();
 
         public ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
             AgentSessionId sessionId,
@@ -408,17 +451,17 @@ public sealed class DenoReplSessionTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(Sink);
+            return ValueTask.FromResult(currentSink ?? DefaultSink);
         }
 
         public bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
         {
-            sink = null;
-            return false;
+            sink = currentSink;
+            return sink is not null;
         }
     }
 
-    private sealed class NoopPresentationSink : IDenoReplPresentationSink
+    private sealed class NoopPresentationSink(Channel<string>? stderr = null) : IDenoReplPresentationSink
     {
         public ValueTask DisplayAsync(
             MimeBundle data,
@@ -453,6 +496,7 @@ public sealed class DenoReplSessionTests
 
         public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
         {
+            stderr?.Writer.TryWrite(text);
             return ValueTask.CompletedTask;
         }
 

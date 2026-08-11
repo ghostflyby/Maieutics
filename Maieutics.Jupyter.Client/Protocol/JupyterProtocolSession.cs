@@ -53,6 +53,9 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
 
     public async Task<JupyterKernelInfo> WaitForReadyAsync(CancellationToken cancellationToken = default)
     {
+        if (transport is IJupyterTransportConnectionReadiness connectionReadiness)
+            await connectionReadiness.WaitForStdinConnectedAsync(cancellationToken).ConfigureAwait(false);
+
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var probeIds = new List<JupyterMessageId>();
         try
@@ -431,7 +434,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         {
             if (transportMessage.Channel == JupyterTransportChannel.Iopub && execution.IdleSeen)
             {
-                PublishLateOutput(executionParent.MessageId, message);
+                PublishLateOutput(execution, message);
                 return;
             }
 
@@ -492,6 +495,24 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     {
         var lateOutput = new JupyterLateOutput(requestId, message);
         if (TryCreateOutput(requestId, message, out var output)) lateOutput = lateOutput with { Output = output };
+
+        events.Publish(lateOutput);
+    }
+
+    private void PublishLateOutput(ExecutionState execution, JupyterMessage message)
+    {
+        var requestId = execution.RequestHeader.MessageId;
+        var lateOutput = new JupyterLateOutput(requestId, message);
+        if (TryCreateOutput(requestId, message, out var output))
+        {
+            if (!execution.Outputs.Writer.TryWrite(output))
+            {
+                FailExecution(execution, new JupyterBackpressureException("The execution output queue is full."));
+                return;
+            }
+
+            lateOutput = lateOutput with { Output = output, IncludedInExecution = true };
+        }
 
         events.Publish(lateOutput);
     }

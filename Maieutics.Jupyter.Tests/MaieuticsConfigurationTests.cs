@@ -271,7 +271,7 @@ public sealed class MaieuticsConfigurationTests
             selection.HasSessionOverride.Should().BeTrue();
             selection.Profiles.Should().ContainSingle().Which.IsAutomatic.Should().BeTrue();
 
-            var lease = await runtime.AcquireAsync(deadline.Token);
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             client.Model.Should().Be("model-alpha");
             lease.Profile.ModelIdentity.Should().NotBeNull();
@@ -364,7 +364,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            var lease = await runtime.AcquireAsync(deadline.Token);
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
 
             await WriteAndWaitForReloadAsync(
@@ -422,7 +422,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            var lease = await runtime.AcquireAsync(deadline.Token);
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
 
@@ -751,6 +751,64 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ReloadPublishedWhilePreviousRequestIsInFlightIsAppliedByLaterAttempt()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-reload-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connectionFile = Path.Combine(root, "connection.json");
+        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateConfiguration(connectionFile, "Fake", "one"),
+            deadline.Token);
+
+        var factory = new BlockingChatClientFactory("two");
+        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+            await runtime.WaitForReloadCompletionAsync(0, deadline.Token);
+
+            await WriteAndWaitForConfigurationSignalAsync(
+                configuration,
+                configurationFile,
+                CreateConfiguration(connectionFile, "Fake", "two"),
+                deadline.Token);
+            await factory.CreateStarted.Task.WaitAsync(deadline.Token);
+
+            var previousRequest = runtime.ReloadRequest;
+            await WriteAndWaitForConfigurationSignalAsync(
+                configuration,
+                configurationFile,
+                CreateConfiguration(connectionFile, "Fake", "three"),
+                deadline.Token);
+
+            factory.ReleaseCreation.TrySetResult();
+            await runtime.WaitForReloadCompletionAsync(previousRequest, deadline.Token);
+
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>()
+                .Which.Model.Should().Be("three");
+            runtime.Version.Should().Be(3);
+        }
+        finally
+        {
+            factory.ReleaseCreation.TrySetResult();
+            await host.DisposeAsync();
+            factory.Clients.Should().OnlyContain(static client => client.Disposed);
             Directory.Delete(root, true);
         }
     }
@@ -1176,7 +1234,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
-            var firstLease = await runtime.AcquireAsync(deadline.Token);
+            await using var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             firstClient.Model.Should().Be("one");
             firstLease.Profile.Options.SystemPrompt.Should().Be("first");
@@ -1294,13 +1352,13 @@ public sealed class MaieuticsConfigurationTests
             initialSelection.SelectedProfileId.Should().Be("one");
             initialSelection.HasSessionOverride.Should().BeFalse();
 
-            var firstLease = await runtime.AcquireAsync(deadline.Token);
+            await using var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             firstLease.Profile.ModelIdentity.Should().Be(new AgentModelIdentity(
                 new AgentModelProfileId("one"), "Fake", "model-one"));
 
             await runtime.SelectModelProfileAsync("TWO", deadline.Token);
-            var secondLease = await runtime.AcquireAsync(deadline.Token);
+            await using var secondLease = await runtime.AcquireAsync(deadline.Token);
             var secondClient = secondLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             runtime.GetModelProfileSelection().HasSessionOverride.Should().BeTrue();
 
@@ -1573,14 +1631,27 @@ public sealed class MaieuticsConfigurationTests
         string contents,
         CancellationToken cancellationToken)
     {
-        var previousAttempt = runtime.ReloadAttempt;
+        var previousRequest = runtime.ReloadRequest;
+        await WriteAndWaitForConfigurationSignalAsync(
+            configuration,
+            path,
+            contents,
+            cancellationToken);
+        await runtime.WaitForReloadCompletionAsync(previousRequest, cancellationToken);
+    }
+
+    private static async Task WriteAndWaitForConfigurationSignalAsync(
+        IConfiguration configuration,
+        string path,
+        string contents,
+        CancellationToken cancellationToken)
+    {
         var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = configuration.GetReloadToken().RegisterChangeCallback(
             static state => (state as TaskCompletionSource)?.TrySetResult(),
             changed);
         await File.WriteAllTextAsync(path, contents, cancellationToken);
         await changed.Task.WaitAsync(cancellationToken);
-        await runtime.WaitForReloadCompletionAsync(previousAttempt, cancellationToken);
     }
 
     private static string CreateConfiguration(
@@ -2010,7 +2081,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            var lease = await runtime.AcquireAsync(deadline.Token);
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
 
@@ -2068,7 +2139,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            var lease = await runtime.AcquireAsync(deadline.Token);
+            await using var lease = await runtime.AcquireAsync(deadline.Token);
             var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
             lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
 
@@ -2519,13 +2590,15 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
-    private sealed class BlockingChatClientFactory : IConfiguredChatClientFactory
+    private sealed class BlockingChatClientFactory(string blockedModel = "one") : IConfiguredChatClientFactory
     {
         public TaskCompletionSource CreateStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource ReleaseCreation { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public List<TrackingChatClient> Clients { get; } = [];
 
         public string ProviderName => "Fake";
 
@@ -2536,13 +2609,15 @@ public sealed class MaieuticsConfigurationTests
 
         private IChatClient Create(string model)
         {
-            if (model == "one")
+            if (model == blockedModel)
             {
                 CreateStarted.TrySetResult();
                 ReleaseCreation.Task.GetAwaiter().GetResult();
             }
 
-            return new TrackingChatClient(model);
+            var client = new TrackingChatClient(model);
+            Clients.Add(client);
+            return client;
         }
 
         private sealed class BlockingSource(

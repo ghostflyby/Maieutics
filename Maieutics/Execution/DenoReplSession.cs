@@ -464,7 +464,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
             await foreach (var clientEvent in client.WatchEventsAsync(cancellationToken).ConfigureAwait(false))
                 switch (clientEvent)
                 {
-                    case JupyterLateOutput { Output: { } output }:
+                    case JupyterLateOutput { IncludedInExecution: false, Output: { } output }:
                         await RouteLateOutputAsync(output, cancellationToken).ConfigureAwait(false);
                         break;
                     case JupyterClientDisconnected disconnected when !cancellationToken.IsCancellationRequested:

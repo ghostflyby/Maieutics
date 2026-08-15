@@ -102,6 +102,9 @@ public static class MaieuticsHost
         var denoReplOptions = new DenoReplOptions();
         builder.Configuration.GetSection(DenoReplOptions.SectionName).Bind(denoReplOptions);
         denoReplOptions.Validate();
+        var terminalOptions = new TerminalOptions();
+        builder.Configuration.GetSection(TerminalOptions.SectionName).Bind(terminalOptions);
+        terminalOptions.Validate();
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
@@ -120,6 +123,10 @@ public static class MaieuticsHost
             builder.Configuration["Maieutics:Workspace:Root"],
             startupCurrentDirectory));
         builder.Services.AddSingleton(denoReplOptions);
+        builder.Services.AddSingleton(terminalOptions);
+        builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();
+        builder.Services.AddSingleton<TerminalRegistry>();
+        builder.Services.AddSingleton<TerminalFunctions>();
         builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
             services.GetRequiredService<JupyterDenoReplPresentationRouter>());

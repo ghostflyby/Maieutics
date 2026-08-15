@@ -88,6 +88,27 @@ operational environment rather than the complete Maieutics environment; provider
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited. The first implementation has no worker, target, isolation,
 pooling, retry, or automatic code-replay setting.
 
+The terminal tools (`terminal_execute`, `terminal_snapshot`, `terminal_paste`, `terminal_list`, `terminal_create`, `terminal_close`,
+`terminal_interrupt`) are registered only when the selected model endpoint resolves the hosted `Shell` capability; see
+[ADR 0017](architecture/decisions/0017-terminal-tool-protocol-and-session-lifecycle.md) for the input protocol and
+session lifecycle. The default terminal session starts lazily on the first `terminal_execute`; each explicitly created
+session starts one independent PTY child running the configured shell. Every child receives an allowlisted environment
+that never inherits provider credentials.
+
+The terminal configuration is captured once when the Maieutics host builder is created:
+
+| Setting                                   |         Default |
+|-------------------------------------------|----------------:|
+| `Maieutics:Terminal:Shell`                | `/bin/sh` (Unix) / `powershell.exe` (Windows) |
+| `Maieutics:Terminal:Arguments`            |        (empty) |
+| `Maieutics:Terminal:MaxSessionsPerAgent`  |            `4` |
+| `Maieutics:Terminal:Columns`              |          `120` |
+| `Maieutics:Terminal:Rows`                 |           `30` |
+| `Maieutics:Terminal:StartupTimeout`       |     `00:00:15` |
+| `Maieutics:Terminal:SettleTimeout`        | `00:00:00.600` |
+| `Maieutics:Terminal:GracefulExitTimeout`  |     `00:00:10` |
+| `Maieutics:Terminal:MaxSnapshotCharacters`|         `16384` |
+
 Jupyter output types define their audience. stdout and the final expression return only to the Agent; display/update/
 clear output goes only to the notebook; stderr and execution errors go to both. Deno input requests are forwarded to the
 notebook user. The model can intentionally publish user-visible output with the standard `Deno.jupyter.display`

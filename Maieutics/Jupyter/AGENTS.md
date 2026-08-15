@@ -17,6 +17,8 @@ It is the only production code allowed to understand both Agent and Jupyter doma
 - `%model` and `%workspace` subcommands are Kernel control cells (the legacy `%maieutics model|workspace` form remains
   accepted): they do not call a model, alter the transcript, reveal credentials/endpoints, or affect an active run.
   Workspace selection is process-local and applies to subsequent workspace-tool invocations.
+- `%status` is a synchronous read-only snapshot command. It must not call a model, mutate the transcript, wait for
+  readiness, refresh discovery, or expose absolute workspace/REPL paths, credentials, endpoints, or control addresses.
 - Completion for control commands and dynamic profile IDs must use protocol code-point cursor offsets and return exact
   replacement ranges.
 - Capture flush options at execution start. Configuration reload must not change batching during an active execution.

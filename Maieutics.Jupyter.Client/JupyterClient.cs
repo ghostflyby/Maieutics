@@ -31,6 +31,15 @@ public sealed class JupyterClient : IJupyterClient
         return protocolSession.StartExecutionAsync(request, cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task<IJupyterExecution> ExecuteAsync(
+        JupyterExecuteRequest request,
+        JupyterExecutionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        return protocolSession.StartExecutionAsync(request, options, cancellationToken);
+    }
+
     public Task<JupyterCompleteReply> CompleteAsync(
         JupyterCompleteRequest request,
         CancellationToken cancellationToken = default)

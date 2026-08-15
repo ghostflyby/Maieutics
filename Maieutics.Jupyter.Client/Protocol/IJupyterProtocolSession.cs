@@ -14,6 +14,11 @@ internal interface IJupyterProtocolSession : IAsyncDisposable
         JupyterExecuteRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<IJupyterExecution> StartExecutionAsync(
+        JupyterExecuteRequest request,
+        JupyterExecutionOptions options,
+        CancellationToken cancellationToken = default);
+
     Task<JupyterCompleteReply> CompleteAsync(
         JupyterCompleteRequest request,
         CancellationToken cancellationToken = default);

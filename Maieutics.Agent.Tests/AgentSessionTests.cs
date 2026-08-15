@@ -8,7 +8,7 @@ namespace Maieutics.Agent.Tests;
 
 public sealed class AgentSessionTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task StartTurnStartsProviderImmediatelyAndReservesSessionBeforeReturning()
     {
         using var deadline = CreateDeadline();
@@ -37,7 +37,7 @@ public sealed class AgentSessionTests
         (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("second");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task SuccessfulRunStreamsStableIdsSequencesAndCommittedTranscript()
     {
         using var deadline = CreateDeadline();
@@ -72,7 +72,7 @@ public sealed class AgentSessionTests
         session.GetTranscriptSnapshot().Should().BeEquivalentTo(result.Transcript);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ProviderFailureRollsBackPartialTurnAndReleasesSession()
     {
         using var deadline = CreateDeadline();
@@ -95,7 +95,7 @@ public sealed class AgentSessionTests
         (await recoveredRun.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("recovered");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellationPreservesPartialEventsAndRollsBackTurn()
     {
         using var deadline = CreateDeadline();
@@ -121,7 +121,7 @@ public sealed class AgentSessionTests
         await next.Completion.WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputAndResponseLimitsRollBackWholeTurn()
     {
         using var deadline = CreateDeadline();
@@ -146,7 +146,7 @@ public sealed class AgentSessionTests
         responseLimited.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EmptyAndUnsupportedResponsesRollBackWholeTurn()
     {
         using var deadline = CreateDeadline();
@@ -173,7 +173,7 @@ public sealed class AgentSessionTests
         unsupportedSession.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task HistoryEvictionAlwaysRemovesCompleteOldestTurns()
     {
         using var deadline = CreateDeadline();
@@ -199,7 +199,7 @@ public sealed class AgentSessionTests
         transcript.Turns[0].Messages.Select(message => message.Text).Should().Equal("c", "three");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EventsAllowOnlyOneConsumer()
     {
         using var deadline = CreateDeadline();
@@ -214,7 +214,7 @@ public sealed class AgentSessionTests
             .WithMessage("*only one consumer*");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellationReleasesAProducerBlockedByEventBackpressure()
     {
         using var deadline = CreateDeadline();
@@ -239,7 +239,7 @@ public sealed class AgentSessionTests
         await next.Completion.WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellationAndDisposalAreIdempotentAndReleaseSession()
     {
         using var deadline = CreateDeadline();
@@ -264,7 +264,7 @@ public sealed class AgentSessionTests
         await next.Completion.WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DirectHistoryRequestsContainSystemPromptAndCommittedTurnsOnly()
     {
         using var deadline = CreateDeadline();
@@ -285,7 +285,7 @@ public sealed class AgentSessionTests
             (ChatRole.User, "Second question"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ProviderConversationIdConflictRollsBackAndAllowsNextRun()
     {
         using var deadline = CreateDeadline();
@@ -338,7 +338,7 @@ public sealed class AgentSessionTests
             .Should().Throw<ArgumentException>().WithMessage("*schema must describe a JSON object*");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EarlyEventDisposalFollowedByRunDisposalCancelsAndRollsBack()
     {
         using var deadline = CreateDeadline();
@@ -365,7 +365,7 @@ public sealed class AgentSessionTests
         await next.Completion.WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolCallPublishesLifecycleCommitsCompleteTurnAndReplaysHistory()
     {
         using var deadline = CreateDeadline();
@@ -448,7 +448,7 @@ public sealed class AgentSessionTests
             .OfType<FunctionResultContent>().Single().CallId.Should().Be("provider-call");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ExpectedToolFailureReturnsStableEnvelopeAndAllowsModelRecovery()
     {
         using var deadline = CreateDeadline();
@@ -482,7 +482,7 @@ public sealed class AgentSessionTests
             .Which.GetProperty("status").GetString().Should().Be("error");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MultipleToolCallsExecuteSeriallyInProviderOrder()
     {
         using var deadline = CreateDeadline();
@@ -524,7 +524,7 @@ public sealed class AgentSessionTests
             .Should().Equal("one", "two");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnexpectedToolExceptionPublishesFailureAndRollsBackWholeTurn()
     {
         using var deadline = CreateDeadline();
@@ -549,7 +549,7 @@ public sealed class AgentSessionTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task NonJsonFunctionResultFailsDeterministicallyAndRollsBackWholeTurn()
     {
         using var deadline = CreateDeadline();
@@ -580,7 +580,7 @@ public sealed class AgentSessionTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolArgumentLimitTerminatesRunBeforeInvocation()
     {
         using var deadline = CreateDeadline();
@@ -608,7 +608,7 @@ public sealed class AgentSessionTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellationStopsActiveToolAndRollsBackTurn()
     {
         using var deadline = CreateDeadline();
@@ -646,7 +646,7 @@ public sealed class AgentSessionTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolResultAndProgressLimitsRollBackWholeTurn()
     {
         using var deadline = CreateDeadline();
@@ -699,7 +699,7 @@ public sealed class AgentSessionTests
         progressLimited.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolCallAndModelIterationLimitsRollBackWholeTurn()
     {
         using var deadline = CreateDeadline();
@@ -779,7 +779,7 @@ public sealed class AgentSessionTests
         iterationClient.Requests[2][^1].Text.Should().Be("Continue");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolUseWithinBudgetCommitsCompleteUntruncatedTurn()
     {
         using var deadline = CreateDeadline();
@@ -804,7 +804,7 @@ public sealed class AgentSessionTests
         session.GetTranscriptSnapshot().Turns.Single().Truncated.Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TurnDurationExpiryFailsTurnRollsBackAndReleasesSession()
     {
         using var deadline = CreateDeadline();
@@ -834,7 +834,7 @@ public sealed class AgentSessionTests
             .Should().Throw<ArgumentOutOfRangeException>();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolBearingHistoryEvictionRemovesWholeOldestTurn()
     {
         using var deadline = CreateDeadline();
@@ -864,7 +864,7 @@ public sealed class AgentSessionTests
             .Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TextBeforeToolCallAndFinalTextUseTheirCompletedMessageIds()
     {
         using var deadline = CreateDeadline();

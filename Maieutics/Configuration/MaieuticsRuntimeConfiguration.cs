@@ -21,6 +21,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     IAsyncDisposable
 {
     private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ReloadDrainTimeout = TimeSpan.FromSeconds(10);
     private readonly IReadOnlyList<AIFunction> builtInTools;
     private readonly IConfiguration configuration;
     private readonly MaieuticsConfigurationFile configurationFile;
@@ -35,8 +36,10 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly ILogger<MaieuticsRuntimeConfiguration> logger;
     private readonly ILoggerFactory loggerFactory;
     private readonly McpClientTransportFactory? mcpTransportFactory;
-    private readonly Func<PluginHostManager>? pluginHostsFactory;
+    private PluginHostManager? pluginHosts;
 
+    // The bounded channel is only an edge trigger. reloadRequest remains authoritative when duplicate
+    // notifications coalesce while the single reader is already processing an earlier request.
     private readonly Channel<byte> reloadSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
     {
         SingleReader = true,
@@ -48,12 +51,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly McpStartupDirectory startupDirectory;
     private readonly TimeProvider timeProvider;
     private long completedReloadAttempt;
+    private long completedReloadRequest;
     private RuntimeSnapshot? current;
     private int disposed;
     private IDisposable? fileErrorSubscription;
     private Task? initialization;
+    private MaieuticsConfigurationReloadInfo? lastReload;
     private long reloadAttempt;
+    private long reloadRequest;
     private Task reloadLoop = Task.CompletedTask;
+    private TaskCompletionSource reloadCompletionSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IDisposable? reloadSubscription;
     private ProfileOverride? sessionOverride;
 
@@ -67,8 +74,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
-        McpClientTransportFactory? mcpTransportFactory = null,
-        Func<PluginHostManager>? pluginHostsFactory = null)
+        McpClientTransportFactory? mcpTransportFactory = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -78,18 +84,11 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.startupDirectory = startupDirectory ?? throw new ArgumentNullException(nameof(startupDirectory));
         this.mcpTransportFactory = mcpTransportFactory;
-        this.pluginHostsFactory = pluginHostsFactory;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
 
         var candidate = CreateCandidate();
         ConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
-        if (candidate.McpServers.Count == 0)
-        {
-            current = BuildSnapshot(candidate, null, 1,
-                new Dictionary<string, McpServerGeneration>());
-            StartReloadLoop();
-        }
 
         logger.LogInformation(
             "Using Maieutics configuration file {ConfigurationPath} selected from {ConfigurationSource}.",
@@ -101,19 +100,25 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     internal long CompletedReloadAttempt => Interlocked.Read(ref completedReloadAttempt);
 
+    internal long ReloadRequest => Interlocked.Read(ref reloadRequest);
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
         {
             await ObserveInitializationAsync().ConfigureAwait(false);
-            await reloadLoop.ConfigureAwait(false);
+            await WaitForReloadDrainAsync().ConfigureAwait(false);
             return;
         }
 
         reloadSubscription?.Dispose();
         fileErrorSubscription?.Dispose();
-        reloadSignals.Writer.TryComplete();
-        await reloadLoop.ConfigureAwait(false);
+        lock (gate)
+        {
+            reloadSignals.Writer.TryComplete();
+        }
+
+        await WaitForReloadDrainAsync().ConfigureAwait(false);
         await ObserveInitializationAsync().ConfigureAwait(false);
 
         ProfileGeneration[] generations = [];
@@ -170,29 +175,104 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
     }
 
-    public IAgentRunProfileLease Acquire()
+    public MaieuticsRuntimeStatus GetStatus()
     {
         lock (gate)
         {
             var snapshot = GetCurrent();
-            if (sessionOverride is AutomaticProfileOverride automatic)
-                return CreateRuntimeProfileLease(
-                    snapshot,
-                    automatic.Generation,
-                    automatic.Identity,
-                    automatic.Capabilities);
+            var capabilityInfos = new List<MaieuticsCapabilityInfo>();
+            foreach (var profile in snapshot.Profiles.Values
+                         .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase))
+                if (snapshot.Sources.TryGetValue(profile.SourceId, out var source))
+                    capabilityInfos.Add(CreateCapabilityInfo(
+                        profile.SourceId,
+                        profile.Identity.Model,
+                        source,
+                        snapshot.CapabilityRegistry.Resolve(source, profile.Identity.Model)));
 
-            var profileId = sessionOverride is ConfiguredProfileOverride configured
-                ? configured.ProfileId
-                : snapshot.DefaultProfileId;
-            if (string.IsNullOrEmpty(profileId)) throw new InvalidOperationException("No model profile is configured.");
+            if (sessionOverride is AutomaticProfileOverride automatic &&
+                snapshot.Sources.TryGetValue(automatic.SourceId, out var automaticSource))
+                capabilityInfos.Add(CreateCapabilityInfo(
+                    automatic.SourceId,
+                    automatic.Model,
+                    automaticSource,
+                    snapshot.CapabilityRegistry.Resolve(automaticSource, automatic.Model)));
 
-            var entry = snapshot.Profiles[profileId];
-            return CreateRuntimeProfileLease(
-                snapshot,
-                entry.Generation,
-                entry.Identity,
-                entry.Capabilities);
+            return new MaieuticsRuntimeStatus(
+                snapshot.Version,
+                CreateModelProfileSelectionLocked(snapshot),
+                lastReload ?? new MaieuticsConfigurationReloadInfo(
+                    0,
+                    MaieuticsConfigurationReloadOutcome.NotAttempted,
+                    snapshot.Version),
+                capabilityInfos);
+        }
+    }
+
+    private static MaieuticsCapabilityInfo CreateCapabilityInfo(
+        string sourceId,
+        string model,
+        IConfiguredChatClientSource source,
+        CapabilityResolution resolution)
+    {
+        return new MaieuticsCapabilityInfo(
+            sourceId,
+            model,
+            resolution.Matched,
+            resolution.KnownVendor,
+            source.Capabilities,
+            resolution.Potential,
+            resolution.Effective);
+    }
+
+    public async Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RuntimeProfileSelection? selection = null;
+        ProfileGenerationLease? generationLease = null;
+        var mcpLeases = new List<McpServerGeneration.McpServerLease>();
+        try
+        {
+            lock (gate)
+            {
+                var snapshot = GetCurrent();
+                selection = SelectRuntimeProfile(snapshot);
+                generationLease = selection.Generation.Acquire();
+                foreach (var server in snapshot.McpServers.Values
+                             .OrderBy(static value => value.Id, StringComparer.OrdinalIgnoreCase))
+                    if (server.TryAcquire() is { } mcpLease)
+                        mcpLeases.Add(mcpLease);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref pluginHosts) is { } activePluginHosts)
+            {
+                var dynamicLeases = await activePluginHosts
+                    .AcquireDynamicMcpLeasesAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var lease in dynamicLeases) mcpLeases.Add(lease);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var tools = new List<AIFunction>(builtInTools.Count);
+            tools.AddRange(builtInTools);
+            foreach (var lease in mcpLeases) tools.AddRange(lease.Tools);
+
+            return new RuntimeProfileLease(
+                generationLease,
+                mcpLeases,
+                new AgentRunProfile(
+                    selection.Generation.Client,
+                    CreateAgentOptions(selection.Snapshot.Options),
+                    selection.Identity,
+                    selection.Capabilities,
+                    selection.HostedCapabilities,
+                    tools));
+        }
+        catch
+        {
+            await RollbackRuntimeProfileAcquisitionAsync(generationLease, mcpLeases).ConfigureAwait(false);
+            throw;
         }
     }
 
@@ -201,27 +281,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         lock (gate)
         {
             var snapshot = GetCurrent();
-            var configuredOverride = sessionOverride as ConfiguredProfileOverride;
-            var automaticOverride = sessionOverride as AutomaticProfileOverride;
-            var selectedConfiguredProfileId = configuredOverride?.ProfileId ??
-                                              (automaticOverride is null ? snapshot.DefaultProfileId : null);
-            var profiles = snapshot.Profiles.Values
-                .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(profile => new MaieuticsModelProfileInfo(
-                    profile.Id,
-                    profile.SourceId,
-                    profile.Identity.Provider,
-                    profile.Identity.Model,
-                    string.Equals(profile.Id, snapshot.DefaultProfileId, StringComparison.OrdinalIgnoreCase),
-                    string.Equals(profile.Id, selectedConfiguredProfileId, StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-            if (automaticOverride is not null) profiles.Add(automaticOverride.ToProfileInfo(true));
-
-            return new MaieuticsModelProfileSelection(
-                snapshot.DefaultProfileId,
-                automaticOverride?.Selector ?? selectedConfiguredProfileId ?? string.Empty,
-                sessionOverride is not null,
-                profiles);
+            return CreateModelProfileSelectionLocked(snapshot);
         }
     }
 
@@ -248,9 +308,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
     }
 
-    public void SelectModelProfile(string profileId)
+    public async ValueTask SelectModelProfileAsync(
+        string profileId,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        cancellationToken.ThrowIfCancellationRequested();
         if (TrySelectConfiguredProfile(profileId))
         {
             ObserveCompletedRetirements();
@@ -292,13 +355,19 @@ internal sealed class MaieuticsRuntimeConfiguration :
         var committed = false;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             lock (gate)
             {
                 var snapshot = GetCurrent();
                 if (!snapshot.Sources.TryGetValue(candidate.SourceId, out var source) ||
                     !string.Equals(source.ProviderName, candidate.Provider, StringComparison.OrdinalIgnoreCase) ||
                     !Equals(source.ClientGenerationKey, candidate.ClientGenerationKey) ||
-                    source.Capabilities != candidate.Capabilities)
+                    !AutomaticProfileMatches(
+                        snapshot,
+                        source,
+                        candidate.Model,
+                        candidate.Capabilities,
+                        candidate.HostedCapabilities))
                     throw new ArgumentException(
                         $"The model source '{candidate.SourceId}' changed while the automatic profile was selected. " +
                         "Run model discovery and try again.",
@@ -312,7 +381,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
         finally
         {
-            if (!committed) generation.Retire().GetAwaiter().GetResult();
+            if (!committed) await generation.Retire().ConfigureAwait(false);
         }
 
         ObserveCompletedRetirements();
@@ -414,14 +483,18 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return results;
     }
 
-    internal Task InitializeAsync(CancellationToken cancellationToken)
+    internal Task InitializeAsync(PluginHostManager activePluginHosts, CancellationToken cancellationToken)
     {
-        pluginHostsFactory?.Invoke().SetReservedToolNames(
-            builtInTools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal));
+        ArgumentNullException.ThrowIfNull(activePluginHosts);
         lock (initializationGate)
         {
-            if (current is not null) return Task.CompletedTask;
+            if (pluginHosts is { } existing && !ReferenceEquals(existing, activePluginHosts))
+                throw new InvalidOperationException(
+                    "The runtime configuration is already bound to a different plugin host manager.");
 
+            Volatile.Write(ref pluginHosts, activePluginHosts);
+            activePluginHosts.SetReservedToolNames(
+                builtInTools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal));
             return initialization ??= InitializeCoreAsync(cancellationToken);
         }
     }
@@ -526,13 +599,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 if (string.IsNullOrWhiteSpace(model.Id)) continue;
 
                 var selector = MaieuticsAutomaticProfileSelector.Format(cached.Result.SourceId, model.Id);
+                var (capabilities, hostedCapabilities) =
+                    ResolveSourceCapabilities(source, model.Id, snapshot.CapabilityRegistry);
                 candidates.TryAdd(selector, new AutomaticProfileCandidate(
                     selector,
                     cached.Result.SourceId,
                     source.ProviderName,
                     model.Id,
                     source.ClientGenerationKey,
-                    source.Capabilities,
+                    capabilities,
+                    hostedCapabilities,
                     source));
             }
         }
@@ -623,32 +699,109 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     private void SignalReload()
     {
-        reloadSignals.Writer.TryWrite(0);
+        lock (gate)
+        {
+            if (disposed != 0) return;
+
+            Interlocked.Increment(ref reloadRequest);
+            reloadSignals.Writer.TryWrite(0);
+        }
     }
 
     private async Task ProcessReloadsAsync()
     {
         await foreach (var _ in reloadSignals.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            var attempt = Interlocked.Increment(ref reloadAttempt);
-            var loadError = fileErrors.TakeLatest();
-            try
+            while (true)
             {
-                await ReloadAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(loadError ?? exception,
-                    "Rejected an invalid Maieutics configuration update. Version {ConfigurationVersion} remains active.",
-                    Version);
-            }
+                long request;
+                lock (gate)
+                {
+                    request = reloadRequest;
+                    if (completedReloadRequest >= request) break;
+                }
 
-            ObserveCompletedRetirements();
-            Interlocked.Exchange(ref completedReloadAttempt, attempt);
+                var attempt = Interlocked.Increment(ref reloadAttempt);
+                var loadError = fileErrors.TakeLatest();
+                var outcome = MaieuticsConfigurationReloadOutcome.Rejected;
+                try
+                {
+                    outcome = await ReloadAsync().ConfigureAwait(false)
+                        ? MaieuticsConfigurationReloadOutcome.Applied
+                        : MaieuticsConfigurationReloadOutcome.Unchanged;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(loadError ?? exception,
+                        "Rejected an invalid Maieutics configuration update. Version {ConfigurationVersion} remains active.",
+                        Version);
+                }
+
+                ObserveCompletedRetirements();
+
+                TaskCompletionSource completed;
+                lock (gate)
+                {
+                    if (current is { } snapshot)
+                        lastReload = new MaieuticsConfigurationReloadInfo(attempt, outcome, snapshot.Version);
+
+                    Interlocked.Exchange(ref completedReloadAttempt, attempt);
+                    completedReloadRequest = request;
+                    completed = reloadCompletionSignal;
+                    reloadCompletionSignal =
+                        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+
+                completed.TrySetResult();
+            }
         }
     }
 
-    private async Task ReloadAsync()
+    /// <summary>
+    ///     Waits until the configuration reload loop has finished applying a request newer than
+    ///     <paramref name="afterRequest"/>. The wait is signal-driven: each completed reload swaps a
+    ///     fresh completion source, so waiters never busy-spin or rely on polling a counter.
+    /// </summary>
+    internal Task WaitForReloadCompletionAsync(long afterRequest, CancellationToken cancellationToken)
+    {
+        return WaitForReloadCompletionCoreAsync(afterRequest, cancellationToken);
+    }
+
+    private async Task WaitForReloadCompletionCoreAsync(long afterRequest, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            TaskCompletionSource signal;
+            lock (gate)
+            {
+                if (completedReloadRequest > afterRequest) return;
+
+                signal = reloadCompletionSignal;
+            }
+
+            await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task WaitForReloadDrainAsync()
+    {
+        if (reloadLoop.IsCompleted) return;
+        try
+        {
+            await reloadLoop.WaitAsync(ReloadDrainTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            logger.LogWarning(
+                "The configuration reload loop did not drain within {TimeoutSeconds}s; disposal continues " +
+                "with the remaining runtime state.",
+                ReloadDrainTimeout.TotalSeconds);
+        }
+    }
+
+    private async Task<bool> ReloadAsync()
     {
         if (configurationFile is { Required: true, Path: { } requiredPath } &&
             !File.Exists(requiredPath))
@@ -666,7 +819,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         lock (gate)
         {
             previous = GetCurrent();
-            if (HasSameConfiguration(previous, candidate)) return;
+            if (HasSameConfiguration(previous, candidate)) return false;
         }
 
         var replacement = await BuildSnapshotAsync(
@@ -675,45 +828,64 @@ internal sealed class MaieuticsRuntimeConfiguration :
             checked(previous.Version + 1),
             CancellationToken.None).ConfigureAwait(false);
         string? removedOverride = null;
-        lock (gate)
+        var committed = false;
+        try
         {
-            previous = GetCurrent();
-            current = replacement;
-            switch (sessionOverride)
+            lock (gate)
             {
-                case ConfiguredProfileOverride configured
-                    when !replacement.Profiles.ContainsKey(configured.ProfileId):
-                    removedOverride = configured.ProfileId;
-                    sessionOverride = null;
-                    break;
-                case AutomaticProfileOverride automatic
-                    when !replacement.Sources.TryGetValue(automatic.SourceId, out var source) ||
-                         !string.Equals(source.ProviderName, automatic.Provider,
-                             StringComparison.OrdinalIgnoreCase) ||
-                         !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
-                         source.Capabilities != automatic.Capabilities:
-                    removedOverride = automatic.Selector;
-                    sessionOverride = null;
-                    TrackRetirementLocked(automatic.Generation);
-                    break;
+                previous = GetCurrent();
+                current = replacement;
+                committed = true;
+                switch (sessionOverride)
+                {
+                    case ConfiguredProfileOverride configured
+                        when !replacement.Profiles.ContainsKey(configured.ProfileId):
+                        removedOverride = configured.ProfileId;
+                        sessionOverride = null;
+                        break;
+                    case AutomaticProfileOverride automatic
+                        when !replacement.Sources.TryGetValue(automatic.SourceId, out var source) ||
+                             !string.Equals(source.ProviderName, automatic.Provider,
+                                 StringComparison.OrdinalIgnoreCase) ||
+                             !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
+                             !AutomaticProfileMatches(
+                                 replacement,
+                                 source,
+                                 automatic.Model,
+                                 automatic.Capabilities,
+                                 automatic.HostedCapabilities):
+                        removedOverride = automatic.Selector;
+                        sessionOverride = null;
+                        TrackRetirementLocked(automatic.Generation);
+                        break;
+                }
+
+                var retained = replacement.Profiles.Values
+                    .Select(static profile => profile.Generation)
+                    .ToHashSet<ProfileGeneration>(ReferenceEqualityComparer.Instance);
+                var retired = previous.Profiles.Values
+                    .Select(static profile => profile.Generation)
+                    .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+                    .Where(generation => !retained.Contains(generation))
+                    .ToList();
+                retiredGenerations.AddRange(retired.Select(static generation => generation.Retire()));
+
+                var retainedMcp = replacement.McpServers.Values
+                    .ToHashSet<McpServerGeneration>(ReferenceEqualityComparer.Instance);
+                var retiredMcp = previous.McpServers.Values
+                    .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
+                    .Where(generation => !retainedMcp.Contains(generation));
+                retiredGenerations.AddRange(retiredMcp.Select(static generation => generation.Retire()));
             }
+        }
+        catch
+        {
+            // The runtime was disposed while this reload was in flight and the replacement never
+            // became the active snapshot, so its freshly built generations would otherwise leak.
+            // When the replacement was already committed, disposal owns its retirement instead.
+            if (!committed) await RetireSnapshotAsync(replacement).ConfigureAwait(false);
 
-            var retained = replacement.Profiles.Values
-                .Select(static profile => profile.Generation)
-                .ToHashSet<ProfileGeneration>(ReferenceEqualityComparer.Instance);
-            var retired = previous.Profiles.Values
-                .Select(static profile => profile.Generation)
-                .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
-                .Where(generation => !retained.Contains(generation))
-                .ToList();
-            retiredGenerations.AddRange(retired.Select(static generation => generation.Retire()));
-
-            var retainedMcp = replacement.McpServers.Values
-                .ToHashSet<McpServerGeneration>(ReferenceEqualityComparer.Instance);
-            var retiredMcp = previous.McpServers.Values
-                .Distinct<McpServerGeneration>(ReferenceEqualityComparer.Instance)
-                .Where(generation => !retainedMcp.Contains(generation));
-            retiredGenerations.AddRange(retiredMcp.Select(static generation => generation.Retire()));
+            throw;
         }
 
         if (removedOverride is not null)
@@ -723,6 +895,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 replacement.DefaultProfileId);
 
         logger.LogInformation("Applied Maieutics configuration version {ConfigurationVersion}.", replacement.Version);
+        return true;
     }
 
     private async Task<RuntimeSnapshot> BuildSnapshotAsync(
@@ -731,8 +904,10 @@ internal sealed class MaieuticsRuntimeConfiguration :
         long version,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var mcpServers = new Dictionary<string, McpServerGeneration>(StringComparer.OrdinalIgnoreCase);
-        var created = new List<McpServerGeneration>();
+        var createdMcp = new List<McpServerGeneration>();
+        var createdProfiles = new List<ProfileGeneration>();
         var reservedToolNames = builtInTools
             .Select(static function => function.Name)
             .ToHashSet(StringComparer.Ordinal);
@@ -755,34 +930,18 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     cancellationToken,
                     mcpTransportFactory,
                     reservedToolNames).ConfigureAwait(false);
-                created.Add(generation);
+                createdMcp.Add(generation);
                 mcpServers.Add(server.Id, generation);
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
-            return BuildSnapshot(candidate, previous, version, mcpServers);
-        }
-        catch
-        {
-            await Task.WhenAll(created.Select(static generation => generation.Retire())).ConfigureAwait(false);
-            throw;
-        }
-    }
-
-    private RuntimeSnapshot BuildSnapshot(
-        Candidate candidate,
-        RuntimeSnapshot? previous,
-        long version,
-        IReadOnlyDictionary<string, McpServerGeneration> mcpServers)
-    {
-        var entries = new Dictionary<string, ProfileEntry>(StringComparer.OrdinalIgnoreCase);
-        var sourceMap = new Dictionary<string, IConfiguredChatClientSource>(StringComparer.OrdinalIgnoreCase);
-        var created = new List<ProfileGeneration>();
-        try
-        {
+            var entries = new Dictionary<string, ProfileEntry>(StringComparer.OrdinalIgnoreCase);
+            var sourceMap = new Dictionary<string, IConfiguredChatClientSource>(StringComparer.OrdinalIgnoreCase);
             foreach (var source in candidate.Sources) sourceMap.Add(source.Id, source.Source);
 
             foreach (var profile in candidate.Profiles)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 ProfileGeneration generation;
                 if (previous is not null &&
                     previous.Profiles.TryGetValue(profile.Id, out var previousProfile) &&
@@ -793,21 +952,27 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 else
                 {
                     generation = new ProfileGeneration(profile.Source.Create(profile.Model), logger);
-                    created.Add(generation);
+                    createdProfiles.Add(generation);
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
 
                 var identity = new AgentModelIdentity(
                     new AgentModelProfileId(profile.Id),
                     profile.Source.ProviderName,
                     profile.Model);
+                var (capabilities, hostedCapabilities) =
+                    ResolveSourceCapabilities(profile.Source, profile.Model, candidate.CapabilityRegistry);
                 entries.Add(profile.Id, new ProfileEntry(
                     profile.Id,
                     profile.SourceId,
                     profile.Key,
                     identity,
-                    profile.Source.Capabilities,
+                    capabilities,
+                    hostedCapabilities,
                     generation));
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             return new RuntimeSnapshot(
                 version,
@@ -816,12 +981,15 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 entries,
                 sourceMap,
                 mcpServers,
+                candidate.CapabilityRegistry,
                 candidate.Key);
         }
         catch
         {
-            foreach (var generation in created) generation.Retire().GetAwaiter().GetResult();
-
+            var retirements = createdProfiles
+                .Select(static generation => generation.Retire())
+                .Concat(createdMcp.Select(static generation => generation.Retire()));
+            await Task.WhenAll(retirements).ConfigureAwait(false);
             throw;
         }
     }
@@ -833,6 +1001,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         root.Bind(options);
         NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
+        var capabilityRegistry = CapabilityRegistry.Create(root);
         var mcpServers = CreateMcpServers(GetMcpServersSection());
 
         var hasNewSchema = !string.IsNullOrWhiteSpace(root["DefaultProfile"]) ||
@@ -845,11 +1014,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
             throw new InvalidOperationException(
                 "The named Sources/Profiles configuration cannot be combined with legacy Model configuration.");
 
-        if (!hasNewSchema && !hasLegacySchema) return CreateCandidate(options, string.Empty, [], [], mcpServers);
+        if (!hasNewSchema && !hasLegacySchema)
+            return CreateCandidate(options, string.Empty, [], [], mcpServers, capabilityRegistry);
 
         return hasNewSchema
-            ? CreateNamedCandidate(root, options, mcpServers)
-            : CreateLegacyCandidate(root, options, mcpServers);
+            ? CreateNamedCandidate(root, options, mcpServers, capabilityRegistry)
+            : CreateLegacyCandidate(root, options, mcpServers, capabilityRegistry);
     }
 
     private IConfigurationSection GetMcpServersSection()
@@ -866,7 +1036,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private Candidate CreateNamedCandidate(
         IConfigurationSection root,
         MaieuticsOptions options,
-        IReadOnlyList<McpServerDefinition> mcpServers)
+        IReadOnlyList<McpServerDefinition> mcpServers,
+        CapabilityRegistry capabilityRegistry)
     {
         var sources = new Dictionary<string, BoundSource>(StringComparer.OrdinalIgnoreCase);
         foreach (var sourceSection in root.GetSection("Sources").GetChildren())
@@ -923,7 +1094,13 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 throw new InvalidOperationException(
                     $"Default model profile '{options.DefaultProfile}' does not exist.");
 
-            return CreateCandidate(options, string.Empty, profiles, sources.Values.ToArray(), mcpServers);
+            return CreateCandidate(
+                options,
+                string.Empty,
+                profiles,
+                sources.Values.ToArray(),
+                mcpServers,
+                capabilityRegistry);
         }
 
         var defaultProfileId = ValidateIdentifier(options.DefaultProfile, "profile");
@@ -932,13 +1109,20 @@ internal sealed class MaieuticsRuntimeConfiguration :
         if (defaultProfile is null)
             throw new InvalidOperationException($"Default model profile '{defaultProfileId}' does not exist.");
 
-        return CreateCandidate(options, defaultProfile.Id, profiles, sources.Values.ToArray(), mcpServers);
+        return CreateCandidate(
+            options,
+            defaultProfile.Id,
+            profiles,
+            sources.Values.ToArray(),
+            mcpServers,
+            capabilityRegistry);
     }
 
     private Candidate CreateLegacyCandidate(
         IConfigurationSection root,
         MaieuticsOptions options,
-        IReadOnlyList<McpServerDefinition> mcpServers)
+        IReadOnlyList<McpServerDefinition> mcpServers,
+        CapabilityRegistry capabilityRegistry)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model.Name);
         var provider = string.IsNullOrWhiteSpace(options.Model.Provider) ? "OpenAI" : options.Model.Provider;
@@ -968,7 +1152,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             profileId,
             [profile],
             [new BoundSource(sourceId, source)],
-            mcpServers);
+            mcpServers,
+            capabilityRegistry);
     }
 
     private static Candidate CreateCandidate(
@@ -976,7 +1161,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         string defaultProfileId,
         IReadOnlyList<CandidateProfile> profiles,
         IReadOnlyList<BoundSource> sources,
-        IReadOnlyList<McpServerDefinition> mcpServers)
+        IReadOnlyList<McpServerDefinition> mcpServers,
+        CapabilityRegistry capabilityRegistry)
     {
         var key = new RuntimeKey(
             NormalizeIdentifier(defaultProfileId),
@@ -995,7 +1181,14 @@ internal sealed class MaieuticsRuntimeConfiguration :
             Path.GetFullPath(options.Jupyter.ConnectionFile),
             options.Jupyter.FlushInterval,
             options.Jupyter.FlushCharacters);
-        return new Candidate(options, defaultProfileId, profiles, sources, mcpServers, key);
+        return new Candidate(
+            options,
+            defaultProfileId,
+            profiles,
+            sources,
+            mcpServers,
+            capabilityRegistry,
+            key);
     }
 
     private IReadOnlyList<McpServerDefinition> CreateMcpServers(IConfigurationSection section)
@@ -1182,7 +1375,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         if (snapshot.Key != candidate.Key ||
             snapshot.Profiles.Count != candidate.Profiles.Count ||
             snapshot.Sources.Count != candidate.Sources.Count ||
-            snapshot.McpServers.Count != candidate.McpServers.Count)
+            snapshot.McpServers.Count != candidate.McpServers.Count ||
+            snapshot.CapabilityRegistry != candidate.CapabilityRegistry)
             return false;
 
         foreach (var profile in candidate.Profiles)
@@ -1291,62 +1485,79 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return current ?? throw new ObjectDisposedException(nameof(MaieuticsRuntimeConfiguration));
     }
 
-    private RuntimeProfileLease CreateRuntimeProfileLease(
-        RuntimeSnapshot snapshot,
-        ProfileGeneration generation,
-        AgentModelIdentity identity,
-        AgentModelCapabilities capabilities)
+    private MaieuticsModelProfileSelection CreateModelProfileSelectionLocked(RuntimeSnapshot snapshot)
     {
-        var generationLease = generation.Acquire();
-        var mcpLeases = new List<McpServerGeneration.McpServerLease>();
+        var configuredOverride = sessionOverride as ConfiguredProfileOverride;
+        var automaticOverride = sessionOverride as AutomaticProfileOverride;
+        var selectedConfiguredProfileId = configuredOverride?.ProfileId ??
+                                          (automaticOverride is null ? snapshot.DefaultProfileId : null);
+        var profiles = snapshot.Profiles.Values
+            .OrderBy(static profile => profile.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(profile => new MaieuticsModelProfileInfo(
+                profile.Id,
+                profile.SourceId,
+                profile.Identity.Provider,
+                profile.Identity.Model,
+                string.Equals(profile.Id, snapshot.DefaultProfileId, StringComparison.OrdinalIgnoreCase),
+                string.Equals(profile.Id, selectedConfiguredProfileId, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (automaticOverride is not null) profiles.Add(automaticOverride.ToProfileInfo(true));
+
+        return new MaieuticsModelProfileSelection(
+            snapshot.DefaultProfileId,
+            automaticOverride?.Selector ?? selectedConfiguredProfileId ?? string.Empty,
+            sessionOverride is not null,
+            profiles);
+    }
+
+    private RuntimeProfileSelection SelectRuntimeProfile(RuntimeSnapshot snapshot)
+    {
+        if (sessionOverride is AutomaticProfileOverride automatic)
+            return new RuntimeProfileSelection(
+                snapshot,
+                automatic.Generation,
+                automatic.Identity,
+                automatic.Capabilities,
+                automatic.HostedCapabilities);
+
+        var profileId = sessionOverride is ConfiguredProfileOverride configured
+            ? configured.ProfileId
+            : snapshot.DefaultProfileId;
+        if (string.IsNullOrEmpty(profileId)) throw new InvalidOperationException("No model profile is configured.");
+
+        var entry = snapshot.Profiles[profileId];
+        return new RuntimeProfileSelection(
+            snapshot,
+            entry.Generation,
+            entry.Identity,
+            entry.Capabilities,
+            entry.HostedCapabilities);
+    }
+
+    private async Task RollbackRuntimeProfileAcquisitionAsync(
+        ProfileGenerationLease? generationLease,
+        IReadOnlyList<McpServerGeneration.McpServerLease> mcpLeases)
+    {
+        foreach (var lease in mcpLeases)
+            try
+            {
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception,
+                    "An MCP connection lease failed during run-profile acquisition rollback.");
+            }
+
+        if (generationLease is null) return;
         try
         {
-            var tools = new List<AIFunction>(builtInTools.Count);
-            tools.AddRange(builtInTools);
-            foreach (var server in snapshot.McpServers.Values
-                         .OrderBy(static value => value.Id, StringComparer.OrdinalIgnoreCase))
-            {
-                if (server.TryAcquire() is not { } mcpLease) continue;
-
-                mcpLeases.Add(mcpLease);
-                tools.AddRange(mcpLease.Tools);
-            }
-
-            if (pluginHostsFactory?.Invoke() is { } pluginHosts)
-            {
-                var dynamicLeases = pluginHosts.AcquireDynamicMcpLeases();
-                foreach (var lease in dynamicLeases)
-                {
-                    mcpLeases.Add(lease);
-                    tools.AddRange(lease.Tools);
-                }
-            }
-
-            return new RuntimeProfileLease(
-                generationLease,
-                mcpLeases,
-                new AgentRunProfile(
-                    generation.Client,
-                    CreateAgentOptions(snapshot.Options),
-                    identity,
-                    capabilities,
-                    tools));
+            await generationLease.DisposeAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
-            foreach (var lease in mcpLeases)
-                try
-                {
-                    lease.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception,
-                        "An MCP connection lease failed during run-profile acquisition rollback.");
-                }
-
-            generationLease.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            throw;
+            logger.LogError(exception,
+                "The model provider lease failed during run-profile acquisition rollback.");
         }
     }
 
@@ -1376,6 +1587,35 @@ internal sealed class MaieuticsRuntimeConfiguration :
         };
     }
 
+    private static bool AutomaticProfileMatches(
+        RuntimeSnapshot snapshot,
+        IConfiguredChatClientSource source,
+        string model,
+        AgentModelCapabilities capabilities,
+        IReadOnlyList<string> hostedCapabilities)
+    {
+        var (resolvedCapabilities, resolvedHosted) =
+            ResolveSourceCapabilities(source, model, snapshot.CapabilityRegistry);
+        return resolvedCapabilities == capabilities &&
+               HostedCapabilitiesEqual(resolvedHosted, hostedCapabilities);
+    }
+
+    private static (AgentModelCapabilities Capabilities, IReadOnlyList<string> HostedCapabilities)
+        ResolveSourceCapabilities(
+            IConfiguredChatClientSource source,
+            string model,
+            CapabilityRegistry capabilityRegistry)
+    {
+        return (source.Capabilities, capabilityRegistry.Resolve(source, model).Effective);
+    }
+
+    private static bool HostedCapabilitiesEqual(
+        IReadOnlyList<string> left,
+        IReadOnlyList<string> right)
+    {
+        return left.SequenceEqual(right, StringComparer.Ordinal);
+    }
+
     private static IReadOnlyDictionary<string, IConfiguredChatClientFactory> CreateFactoryRegistry(
         IEnumerable<IConfiguredChatClientFactory> source)
     {
@@ -1399,6 +1639,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyList<CandidateProfile> Profiles,
         IReadOnlyList<BoundSource> Sources,
         IReadOnlyList<McpServerDefinition> McpServers,
+        CapabilityRegistry CapabilityRegistry,
         RuntimeKey Key);
 
     private sealed record CandidateProfile(
@@ -1442,6 +1683,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyDictionary<string, ProfileEntry> Profiles,
         IReadOnlyDictionary<string, IConfiguredChatClientSource> Sources,
         IReadOnlyDictionary<string, McpServerGeneration> McpServers,
+        CapabilityRegistry CapabilityRegistry,
         RuntimeKey Key);
 
     private sealed record ProfileEntry(
@@ -1450,6 +1692,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ProfileKey Key,
         AgentModelIdentity Identity,
         AgentModelCapabilities Capabilities,
+        IReadOnlyList<string> HostedCapabilities,
         ProfileGeneration Generation);
 
     private abstract class ProfileOverride;
@@ -1475,6 +1718,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
         internal AgentModelCapabilities Capabilities { get; } = candidate.Capabilities;
 
+        internal IReadOnlyList<string> HostedCapabilities { get; } = candidate.HostedCapabilities;
+
         internal ProfileGeneration Generation { get; } = generation;
 
         internal AgentModelIdentity Identity { get; } = new(
@@ -1488,7 +1733,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                    string.Equals(Model, other.Model, StringComparison.OrdinalIgnoreCase) &&
                    string.Equals(Provider, other.Provider, StringComparison.OrdinalIgnoreCase) &&
                    Equals(ClientGenerationKey, other.ClientGenerationKey) &&
-                   Capabilities == other.Capabilities;
+                   Capabilities == other.Capabilities &&
+                   HostedCapabilitiesEqual(HostedCapabilities, other.HostedCapabilities);
         }
 
         internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected)
@@ -1511,6 +1757,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         string Model,
         object ClientGenerationKey,
         AgentModelCapabilities Capabilities,
+        IReadOnlyList<string> HostedCapabilities,
         IConfiguredChatClientSource Source)
     {
         internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected)
@@ -1525,6 +1772,13 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 true);
         }
     }
+
+    private sealed record RuntimeProfileSelection(
+        RuntimeSnapshot Snapshot,
+        ProfileGeneration Generation,
+        AgentModelIdentity Identity,
+        AgentModelCapabilities Capabilities,
+        IReadOnlyList<string> HostedCapabilities);
 
     private sealed class RuntimeProfileLease(
         ProfileGenerationLease generationLease,

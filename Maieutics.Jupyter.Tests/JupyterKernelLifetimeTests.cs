@@ -38,7 +38,7 @@ public sealed class JupyterKernelLifetimeTests
         application.StoppingCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WaitForStartAsyncRegistersAndStopAsyncUnregistersSignals()
     {
         var application = new FakeApplicationLifetime();

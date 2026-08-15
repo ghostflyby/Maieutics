@@ -66,4 +66,19 @@ public sealed class JupyterTransportLifecycleTests
 
         await ping.Invoking(static task => task).Should().ThrowAsync<ObjectDisposedException>();
     }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DisposeFailsPendingStdinConnectionReadiness()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var transport = await NetMqJupyterTransport.ConnectAsync(connection, cancellationToken: deadline.Token);
+        var readiness = ((IJupyterTransportConnectionReadiness)transport)
+            .WaitForStdinConnectedAsync(deadline.Token);
+
+        await transport.DisposeAsync();
+
+        await readiness.Invoking(static task => task).Should().ThrowAsync<ObjectDisposedException>();
+    }
 }

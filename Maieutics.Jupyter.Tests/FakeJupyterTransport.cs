@@ -9,7 +9,10 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
     private readonly Channel<JupyterTransportMessage> incomingMessages =
         Channel.CreateUnbounded<JupyterTransportMessage>();
 
-    private readonly List<JupyterTransportMessage> sentMessages = [];
+    private readonly Channel<JupyterTransportMessage> sentMessages =
+        Channel.CreateUnbounded<JupyterTransportMessage>();
+
+    private readonly List<JupyterTransportMessage> sentMessagesHistory = [];
     private readonly Lock sentMessagesGate = new();
 
     public IReadOnlyList<JupyterTransportMessage> SentMessages
@@ -18,10 +21,12 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         {
             lock (sentMessagesGate)
             {
-                return sentMessages.ToArray();
+                return sentMessagesHistory.ToArray();
             }
         }
     }
+
+    public IAsyncEnumerable<JupyterTransportMessage> SentMessageStream => sentMessages.Reader.ReadAllAsync();
 
     public IAsyncEnumerable<JupyterTransportMessage> IncomingMessages => incomingMessages.Reader.ReadAllAsync();
 
@@ -31,9 +36,11 @@ internal sealed class FakeJupyterTransport : IJupyterTransport
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var transportMessage = new JupyterTransportMessage(channel, JupyterWireMessage.Create(message));
+        sentMessages.Writer.TryWrite(transportMessage);
         lock (sentMessagesGate)
         {
-            sentMessages.Add(new JupyterTransportMessage(channel, JupyterWireMessage.Create(message)));
+            sentMessagesHistory.Add(transportMessage);
         }
 
         return ValueTask.CompletedTask;

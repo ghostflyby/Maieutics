@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Jupyter.Client;
@@ -11,6 +12,11 @@ namespace Maieutics.Execution;
 
 internal sealed class DenoReplSession : IAsyncDisposable
 {
+    internal const string IopubBarrierMarkerPrefix = "maieutics-repl-iopub-barrier-";
+    internal const string IopubBarrierMediaType = "application/vnd.maieutics.repl-barrier+json";
+    internal const string StdinReadinessProbeCodePrefix = "if (prompt('') !== ";
+    internal const string StdinReadinessNoncePrefix = "maieutics-repl-stdin-readiness-";
+    private const int LateOutputBufferCapacity = 256;
     private readonly ReplControlSessionRegistry controlRegistry;
     private readonly Dictionary<string, JupyterDisplayId> displayIds = new(StringComparer.Ordinal);
 
@@ -25,12 +31,11 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
     private readonly Lock stateGate = new();
+    private LateOutputCapture? activeLateOutputCapture;
     private int disposeState;
     private int generation = 1;
     private CancellationTokenSource? generationLifetime;
     private Task? generationLoop;
-    private int latePresentationEventsRemaining;
-    private int latePresentationTextBytesRemaining;
     private IJupyterKernelManager? manager;
     private int? registeredControlPid;
     private DenoReplSessionState state = DenoReplSessionState.Created;
@@ -55,8 +60,6 @@ internal sealed class DenoReplSession : IAsyncDisposable
         this.presentationRouter = presentationRouter;
         this.controlRegistry = controlRegistry;
         this.logger = logger;
-        latePresentationEventsRemaining = options.MaxPresentationEventsPerExecution;
-        latePresentationTextBytesRemaining = options.MaxPresentationTextBytes;
     }
 
     internal AgentSessionId OwnerSessionId { get; }
@@ -124,13 +127,20 @@ internal sealed class DenoReplSession : IAsyncDisposable
             if (current == DenoReplSessionState.Faulted) throw CreateFaultedException();
 
             SetState(DenoReplSessionState.Starting);
+            using var startup = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                lifetime.Token);
+            startup.CancelAfter(options.StartupTimeout);
             try
             {
                 manager = await factory.StartAsync(
                     WorkingDirectory,
                     SessionId,
-                    cancellationToken).ConfigureAwait(false);
-                await StartControlChannelAsync(cancellationToken).ConfigureAwait(false);
+                    startup.Token).ConfigureAwait(false);
+                await StartControlChannelAsync(startup.Token).ConfigureAwait(false);
+                await EnsureStdinReadyAsync(
+                    manager.Client,
+                    startup.Token).ConfigureAwait(false);
                 StartGenerationLoop(manager.Client);
                 SetState(DenoReplSessionState.Idle);
             }
@@ -138,6 +148,19 @@ internal sealed class DenoReplSession : IAsyncDisposable
             {
                 SetState(DenoReplSessionState.Faulted);
                 throw;
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                SetState(DenoReplSessionState.Faulted);
+                throw new OperationCanceledException(lifetime.Token);
+            }
+            catch (OperationCanceledException exception) when (startup.IsCancellationRequested)
+            {
+                SetState(DenoReplSessionState.Faulted);
+                logger.LogWarning(exception, "Deno REPL session {SessionId} startup timed out.", SessionId);
+                throw new AgentToolException(
+                    "repl_start_failed",
+                    $"Deno REPL session '{SessionId}' could not be started before its startup timeout.");
             }
             catch (Exception exception)
             {
@@ -170,82 +193,96 @@ internal sealed class DenoReplSession : IAsyncDisposable
             var currentManager = manager ?? throw CreateFaultedException();
             var currentGeneration = GetGeneration();
             SetState(DenoReplSessionState.Busy);
-            Interlocked.Exchange(
-                ref latePresentationEventsRemaining,
-                options.MaxPresentationEventsPerExecution);
-            Interlocked.Exchange(
-                ref latePresentationTextBytesRemaining,
-                options.MaxPresentationTextBytes);
 
             var sink = await presentationRouter.WaitForCallAsync(
                 OwnerSessionId,
                 callId,
                 cancellationToken).ConfigureAwait(false);
-            IJupyterExecution execution;
+            var capture = new LateOutputCapture(
+                IopubBarrierMarkerPrefix + Guid.NewGuid().ToString("N"),
+                LateOutputBufferCapacity);
+            SetActiveLateOutputCapture(capture);
             try
             {
-                execution = await currentManager.Client.ExecuteAsync(
-                    new JupyterExecuteRequest(code, AllowStdin: true),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                MarkFaulted();
-                logger.LogWarning(exception, "Could not begin Deno execution for session {SessionId}.", SessionId);
-                throw new AgentToolException(
-                    "repl_faulted",
-                    $"Deno REPL session '{SessionId}' could not begin execution: {GetSafeMessage(exception)}");
-            }
-
-            using var timeout = new CancellationTokenSource(options.ExecutionTimeout);
-            using var wait = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                lifetime.Token,
-                timeout.Token);
-            var collector = new DenoReplExecutionCollector(
-                SessionId,
-                currentGeneration,
-                options,
-                sink,
-                GetOrCreateDisplayId,
-                GetDisplayId);
-            var completion = collector.ConsumeAsync(execution, wait.Token);
-            try
-            {
-                return await completion.WaitAsync(wait.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (wait.IsCancellationRequested)
-            {
-                var escalated = await InterruptAndDrainAsync(currentManager, completion).ConfigureAwait(false);
-                if (escalated) MarkFaulted();
-
-                if (cancellationToken.IsCancellationRequested || lifetime.IsCancellationRequested)
-                    throw new OperationCanceledException(cancellationToken.IsCancellationRequested
-                        ? cancellationToken
-                        : lifetime.Token);
-
-                if (timeout.IsCancellationRequested)
+                IJupyterExecution execution;
+                try
+                {
+                    execution = await currentManager.Client.ExecuteAsync(
+                        new JupyterExecuteRequest(code, AllowStdin: true),
+                        cancellationToken).ConfigureAwait(false);
+                    capture.SetPrimaryRequestId(execution.RequestId);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    MarkFaulted();
+                    logger.LogWarning(exception, "Could not begin Deno execution for session {SessionId}.", SessionId);
                     throw new AgentToolException(
-                        "repl_timeout",
-                        $"Deno REPL session '{SessionId}' exceeded its execution timeout.");
+                        "repl_faulted",
+                        $"Deno REPL session '{SessionId}' could not begin execution: {GetSafeMessage(exception)}");
+                }
 
-                throw;
+                await using var executionLifetime = execution.ConfigureAwait(false);
+
+                using var timeout = new CancellationTokenSource(options.ExecutionTimeout);
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    lifetime.Token,
+                    timeout.Token);
+                var collector = new DenoReplExecutionCollector(
+                    SessionId,
+                    currentGeneration,
+                    options,
+                    sink,
+                    GetOrCreateDisplayId,
+                    GetDisplayId);
+                var completion = CollectExecutionWithLateOutputsAsync(
+                    currentManager.Client,
+                    execution,
+                    collector,
+                    capture,
+                    wait.Token);
+                try
+                {
+                    return await completion.WaitAsync(wait.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (wait.IsCancellationRequested)
+                {
+                    var escalated = await InterruptAndDrainAsync(currentManager, completion).ConfigureAwait(false);
+                    if (escalated) MarkFaulted();
+
+                    if (cancellationToken.IsCancellationRequested || lifetime.IsCancellationRequested)
+                        throw new OperationCanceledException(cancellationToken.IsCancellationRequested
+                            ? cancellationToken
+                            : lifetime.Token);
+
+                    if (timeout.IsCancellationRequested)
+                        throw new AgentToolException(
+                            "repl_timeout",
+                            $"Deno REPL session '{SessionId}' exceeded its execution timeout.");
+
+                    throw;
+                }
+                catch (AgentToolException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    MarkFaulted();
+                    logger.LogWarning(exception, "Deno execution failed for session {SessionId}.", SessionId);
+                    throw new AgentToolException(
+                        "repl_faulted",
+                        $"Deno REPL session '{SessionId}' failed during execution: {GetSafeMessage(exception)}");
+                }
             }
-            catch (AgentToolException)
+            finally
             {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                MarkFaulted();
-                logger.LogWarning(exception, "Deno execution failed for session {SessionId}.", SessionId);
-                throw new AgentToolException(
-                    "repl_faulted",
-                    $"Deno REPL session '{SessionId}' failed during execution: {GetSafeMessage(exception)}");
+                capture.Complete();
+                ClearActiveLateOutputCapture(capture);
             }
         }
         finally
@@ -276,17 +313,24 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     generation = checked(generation + 1);
                 }
 
+                using var startup = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    lifetime.Token);
+                startup.CancelAfter(options.StartupTimeout);
                 try
                 {
                     if (manager is null)
                         manager = await factory.StartAsync(
                             WorkingDirectory,
                             SessionId,
-                            cancellationToken).ConfigureAwait(false);
+                            startup.Token).ConfigureAwait(false);
                     else
-                        await manager.RestartAsync(cancellationToken).ConfigureAwait(false);
+                        await manager.RestartAsync(startup.Token).ConfigureAwait(false);
 
-                    await StartControlChannelAsync(cancellationToken).ConfigureAwait(false);
+                    await StartControlChannelAsync(startup.Token).ConfigureAwait(false);
+                    await EnsureStdinReadyAsync(
+                        manager.Client,
+                        startup.Token).ConfigureAwait(false);
                     StartGenerationLoop(manager.Client);
                     SetState(DenoReplSessionState.Idle);
                     return GetSnapshot();
@@ -295,6 +339,19 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 {
                     SetState(DenoReplSessionState.Faulted);
                     throw;
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                {
+                    SetState(DenoReplSessionState.Faulted);
+                    throw new OperationCanceledException(lifetime.Token);
+                }
+                catch (OperationCanceledException exception) when (startup.IsCancellationRequested)
+                {
+                    SetState(DenoReplSessionState.Faulted);
+                    logger.LogWarning(exception, "Deno REPL session {SessionId} restart timed out.", SessionId);
+                    throw new AgentToolException(
+                        "repl_restart_failed",
+                        $"Deno REPL session '{SessionId}' could not be restarted before its startup timeout.");
                 }
                 catch (Exception exception)
                 {
@@ -354,6 +411,94 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             executionGate.Release();
         }
+    }
+
+    private async Task<DenoReplExecutionResult> CollectExecutionWithLateOutputsAsync(
+        IJupyterClient client,
+        IJupyterExecution execution,
+        DenoReplExecutionCollector collector,
+        LateOutputCapture capture,
+        CancellationToken cancellationToken)
+    {
+        var primaryCompletion = await collector
+            .ConsumeExecutionAsync(execution, cancellationToken)
+            .ConfigureAwait(false);
+        var lateOutputDrain = DrainLateOutputsAsync(collector, capture, cancellationToken);
+        Exception? failure = null;
+        try
+        {
+            await RunIopubBarrierAsync(
+                client,
+                capture,
+                primaryCompletion.Reply.ExecutionCount,
+                cancellationToken).ConfigureAwait(false);
+            await lateOutputDrain.ConfigureAwait(false);
+            return collector.CreateResult(primaryCompletion);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            throw;
+        }
+        finally
+        {
+            capture.Complete();
+            if (failure is not null)
+                try
+                {
+                    await lateOutputDrain.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The primary failure owns this operation; the capture drain is still observed.
+                }
+        }
+    }
+
+    private static async Task DrainLateOutputsAsync(
+        DenoReplExecutionCollector collector,
+        LateOutputCapture capture,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var output in capture.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            if (capture.IsPrimaryRequest(output.RequestId))
+                await collector.ObserveLateOutputAsync(output, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task RunIopubBarrierAsync(
+        IJupyterClient client,
+        LateOutputCapture capture,
+        int? primaryExecutionCount,
+        CancellationToken cancellationToken)
+    {
+        var data = $"{{{JsonSerializer.Serialize(
+            IopubBarrierMediaType,
+            DenoReplJsonSerializerContext.Default.String)}:{JsonSerializer.Serialize(
+            capture.Marker,
+            DenoReplJsonSerializerContext.Default.String)}}}";
+        var code = $"await Deno.jupyter.display({data}, {{ raw: true }});";
+        await using var barrier = await client.ExecuteAsync(
+            new JupyterExecuteRequest(
+                code,
+                true,
+                false,
+                AllowStdin: false),
+            new JupyterExecutionOptions(true),
+            cancellationToken).ConfigureAwait(false);
+        capture.SetBarrierRequestId(barrier.RequestId);
+
+        // The marker may also be retained in this execution stream, but only the matching
+        // WatchEventsAsync observation can close the capture after earlier event-hub items drain.
+        await foreach (var _ in barrier.Outputs.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+        }
+
+        var completion = await barrier.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(completion.Reply.Status, "ok", StringComparison.Ordinal))
+            throw new InvalidOperationException("The Deno IOPub barrier execution failed.");
+
+        if (completion.Reply.ExecutionCount != primaryExecutionCount)
+            throw new InvalidOperationException("The Deno IOPub barrier changed the user execution count.");
     }
 
     private async Task<bool> InterruptAndDrainAsync(
@@ -424,6 +569,40 @@ internal sealed class DenoReplSession : IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task EnsureStdinReadyAsync(
+        IJupyterClient client,
+        CancellationToken cancellationToken)
+    {
+        // Deno 2.9.x can complete prompt() with null before its stdin peer is ready. Each standard
+        // execute/input/reply round trip drives this product-scoped readiness negotiation without delay polling.
+        while (true)
+        {
+            var nonce = StdinReadinessNoncePrefix + Guid.NewGuid().ToString("N");
+            var serializedNonce = JsonSerializer.Serialize(
+                nonce,
+                DenoReplJsonSerializerContext.Default.String);
+            var code = StdinReadinessProbeCodePrefix + serializedNonce +
+                       ") throw new Error('Deno stdin readiness nonce mismatch');";
+            await using var probe = await client.ExecuteAsync(
+                new JupyterExecuteRequest(
+                    code,
+                    true,
+                    false,
+                    AllowStdin: true),
+                cancellationToken).ConfigureAwait(false);
+            var inputSeen = false;
+            await foreach (var output in probe.Outputs.WithCancellation(cancellationToken).ConfigureAwait(false))
+                if (output is JupyterInputRequest input)
+                {
+                    inputSeen = true;
+                    await probe.ReplyInputAsync(input, nonce, cancellationToken).ConfigureAwait(false);
+                }
+
+            var completion = await probe.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (inputSeen && string.Equals(completion.Reply.Status, "ok", StringComparison.Ordinal)) return;
+        }
+    }
+
     private void UnregisterControlSession()
     {
         if (registeredControlPid is { } processId)
@@ -462,8 +641,23 @@ internal sealed class DenoReplSession : IAsyncDisposable
             await foreach (var clientEvent in client.WatchEventsAsync(cancellationToken).ConfigureAwait(false))
                 switch (clientEvent)
                 {
-                    case JupyterLateOutput { Output: { } output }:
-                        await RouteLateOutputAsync(output, cancellationToken).ConfigureAwait(false);
+                    case JupyterExecutionOutputObserved observed:
+                        GetActiveLateOutputCapture()?.ObserveBarrierEvent(
+                            observed.RequestId,
+                            observed.Output);
+                        break;
+                    case JupyterLateOutput lateOutput:
+                        var capture = GetActiveLateOutputCapture();
+                        if (capture is not null &&
+                            await capture.TryRouteAsync(lateOutput, cancellationToken).ConfigureAwait(false))
+                            break;
+
+                        if (!lateOutput.IncludedInExecution)
+                            logger.LogDebug(
+                                "Discarded late Deno output for request {RequestId} in session {SessionId} because no matching execution capture is active.",
+                                lateOutput.RequestId.Value,
+                                SessionId);
+
                         break;
                     case JupyterClientDisconnected disconnected when !cancellationToken.IsCancellationRequested:
                         MarkFaulted();
@@ -492,122 +686,30 @@ internal sealed class DenoReplSession : IAsyncDisposable
         }
     }
 
-    private async ValueTask RouteLateOutputAsync(JupyterOutput output, CancellationToken cancellationToken)
+    private void SetActiveLateOutputCapture(LateOutputCapture capture)
     {
-        if (!presentationRouter.TryGetCurrentSink(OwnerSessionId, out var sink))
+        lock (stateGate)
         {
-            logger.LogDebug(
-                "Discarded late Deno output {OutputType} for session {SessionId} because no Agent run sink is active.",
-                output.GetType().Name,
-                SessionId);
-            return;
-        }
+            if (activeLateOutputCapture is not null)
+                throw new InvalidOperationException("A Deno late-output capture is already active.");
 
-        switch (output)
-        {
-            case JupyterDisplayOutput display when CanPresentLateBundle(display.Data, display.Metadata):
-                if (display.DisplayId is { } innerDisplayId)
-                    await sink.DisplayTrackedAsync(
-                        display.Data,
-                        GetOrCreateDisplayId(innerDisplayId),
-                        display.Metadata,
-                        cancellationToken).ConfigureAwait(false);
-                else
-                    await sink.DisplayAsync(display.Data, display.Metadata, cancellationToken).ConfigureAwait(false);
-
-                break;
-            case JupyterDisplayUpdateOutput update when CanPresentLateBundle(update.Data, update.Metadata):
-                if (GetDisplayId(update.DisplayId) is { } updateDisplayId)
-                    await sink.UpdateDisplayAsync(
-                        updateDisplayId,
-                        update.Data,
-                        update.Metadata,
-                        cancellationToken).ConfigureAwait(false);
-
-                break;
-            case JupyterClearOutput clear when TryReserveLatePresentationEvent():
-                await sink.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
-                break;
-            case JupyterStderr stderr when TryReserveLatePresentationEvent():
-                var text = TakeLatePresentationText(stderr.Text);
-                if (text.Length > 0) await sink.WriteStderrAsync(text, cancellationToken).ConfigureAwait(false);
-
-                break;
-            case JupyterExecutionError error when TryReserveLatePresentationEvent():
-                var value = TakeLatePresentationText(error.Value);
-                var traceback = error.Traceback
-                    .Select(TakeLatePresentationText)
-                    .Where(static line => line.Length > 0)
-                    .ToArray();
-                await sink.PublishErrorAsync(
-                    error.Name,
-                    value,
-                    traceback,
-                    cancellationToken).ConfigureAwait(false);
-                break;
-            case JupyterMalformedOutput malformed:
-                logger.LogDebug(
-                    "Discarded malformed late Deno output {MessageType} ({ErrorCode}) for session {SessionId}.",
-                    malformed.MessageType,
-                    malformed.ErrorCode,
-                    SessionId);
-                break;
-            default:
-                logger.LogDebug(
-                    "Discarded model-only late Deno output {OutputType} for session {SessionId}.",
-                    output.GetType().Name,
-                    SessionId);
-                break;
+            activeLateOutputCapture = capture;
         }
     }
 
-    private bool CanPresentLateBundle(
-        MimeBundle bundle,
-        IReadOnlyDictionary<string, JsonElement> metadata)
+    private LateOutputCapture? GetActiveLateOutputCapture()
     {
-        return TryReserveLatePresentationEvent() &&
-               DenoReplExecutionCollector.CountJsonBytes(bundle.Data) +
-               DenoReplExecutionCollector.CountJsonBytes(metadata) <= options.MaxPresentationBundleBytes;
-    }
-
-    private bool TryReserveLatePresentationEvent()
-    {
-        return Interlocked.Decrement(ref latePresentationEventsRemaining) >= 0;
-    }
-
-    private string TakeLatePresentationText(string text)
-    {
-        while (true)
+        lock (stateGate)
         {
-            var remaining = Volatile.Read(ref latePresentationTextBytesRemaining);
-            if (remaining <= 0) return string.Empty;
+            return activeLateOutputCapture;
+        }
+    }
 
-            var bytes = Encoding.UTF8.GetByteCount(text);
-            if (bytes <= remaining)
-            {
-                if (Interlocked.CompareExchange(
-                        ref latePresentationTextBytesRemaining,
-                        remaining - bytes,
-                        remaining) == remaining)
-                    return text;
-
-                continue;
-            }
-
-            if (Interlocked.CompareExchange(ref latePresentationTextBytesRemaining, 0, remaining) == remaining)
-            {
-                var selected = new StringBuilder();
-                var selectedBytes = 0;
-                foreach (var rune in text.EnumerateRunes())
-                {
-                    if (selectedBytes + rune.Utf8SequenceLength > remaining) break;
-
-                    selected.Append(rune.ToString());
-                    selectedBytes += rune.Utf8SequenceLength;
-                }
-
-                return selected.ToString();
-            }
+    private void ClearActiveLateOutputCapture(LateOutputCapture capture)
+    {
+        lock (stateGate)
+        {
+            if (ReferenceEquals(activeLateOutputCapture, capture)) activeLateOutputCapture = null;
         }
     }
 
@@ -693,6 +795,165 @@ internal sealed class DenoReplSession : IAsyncDisposable
             DenoReplSessionState.Closed => "closed",
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
         };
+    }
+
+    private sealed class LateOutputCapture(string marker, int capacity)
+    {
+        private readonly Lock gate = new();
+
+        private readonly Channel<JupyterOutput> outputs = Channel.CreateBounded<JupyterOutput>(
+            new BoundedChannelOptions(capacity)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.Wait
+            });
+
+        private JupyterMessageId? barrierRequestId;
+        private JupyterMessageId? observedBarrierRequestId;
+        private JupyterMessageId? primaryRequestId;
+
+        internal string Marker { get; } = marker;
+
+        internal void SetPrimaryRequestId(JupyterMessageId requestId)
+        {
+            lock (gate)
+            {
+                if (primaryRequestId is not null)
+                    throw new InvalidOperationException("The Deno execution request ID was already assigned.");
+
+                primaryRequestId = requestId;
+            }
+        }
+
+        internal void SetBarrierRequestId(JupyterMessageId requestId)
+        {
+            Exception? failure = null;
+            var completed = false;
+            lock (gate)
+            {
+                if (barrierRequestId is not null)
+                    throw new InvalidOperationException("The Deno IOPub barrier request ID was already assigned.");
+
+                barrierRequestId = requestId;
+                if (observedBarrierRequestId is { } observed)
+                {
+                    completed = observed.Equals(requestId);
+                    if (!completed)
+                        failure = new InvalidOperationException(
+                            "The Deno IOPub barrier marker had an unexpected parent request ID.");
+                }
+            }
+
+            if (failure is not null)
+                outputs.Writer.TryComplete(failure);
+            else if (completed)
+                outputs.Writer.TryComplete();
+        }
+
+        internal bool IsPrimaryRequest(JupyterMessageId requestId)
+        {
+            lock (gate)
+            {
+                return primaryRequestId is { } primary && primary.Equals(requestId);
+            }
+        }
+
+        internal IAsyncEnumerable<JupyterOutput> ReadAllAsync(CancellationToken cancellationToken)
+        {
+            return outputs.Reader.ReadAllAsync(cancellationToken);
+        }
+
+        internal void ObserveBarrierEvent(JupyterMessageId requestId, JupyterOutput output)
+        {
+            if (output is not JupyterDisplayOutput display || !IsBarrierMarker(display)) return;
+
+            RecordBarrier(requestId);
+        }
+
+        internal async ValueTask<bool> TryRouteAsync(
+            JupyterLateOutput lateOutput,
+            CancellationToken cancellationToken)
+        {
+            var output = lateOutput.Output;
+            var marker = output is JupyterDisplayOutput display && IsBarrierMarker(display);
+            var write = false;
+            bool handled;
+            lock (gate)
+            {
+                var primaryMatch = primaryRequestId is { } primary && primary.Equals(lateOutput.RequestId);
+                var barrierMatch = barrierRequestId is { } barrier && barrier.Equals(lateOutput.RequestId);
+                if (marker)
+                {
+                    handled = true;
+                }
+                else if (lateOutput.IncludedInExecution)
+                {
+                    handled = primaryRequestId is null || primaryMatch || barrierMatch;
+                }
+                else if (output is not null && (primaryRequestId is null || primaryMatch))
+                {
+                    handled = true;
+                    write = true;
+                }
+                else
+                {
+                    handled = barrierMatch;
+                }
+            }
+
+            if (marker)
+            {
+                RecordBarrier(lateOutput.RequestId);
+                return true;
+            }
+
+            if (!write || output is null) return handled;
+
+            try
+            {
+                await outputs.Writer.WriteAsync(output, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ChannelClosedException)
+            {
+            }
+
+            return true;
+        }
+
+        internal void Complete()
+        {
+            outputs.Writer.TryComplete();
+        }
+
+        private void RecordBarrier(JupyterMessageId requestId)
+        {
+            Exception? failure = null;
+            var complete = false;
+            lock (gate)
+            {
+                observedBarrierRequestId = requestId;
+                if (barrierRequestId is { } expected)
+                {
+                    complete = expected.Equals(requestId);
+                    if (!complete)
+                        failure = new InvalidOperationException(
+                            "The Deno IOPub barrier marker had an unexpected parent request ID.");
+                }
+            }
+
+            if (failure is not null)
+                outputs.Writer.TryComplete(failure);
+            else if (complete)
+                outputs.Writer.TryComplete();
+        }
+
+        private bool IsBarrierMarker(JupyterDisplayOutput display)
+        {
+            return display.Data.Data.TryGetValue(IopubBarrierMediaType, out var value) &&
+                   value.ValueKind == JsonValueKind.String &&
+                   string.Equals(value.GetString(), Marker, StringComparison.Ordinal);
+        }
     }
 
     private static string GetSafeMessage(Exception exception)

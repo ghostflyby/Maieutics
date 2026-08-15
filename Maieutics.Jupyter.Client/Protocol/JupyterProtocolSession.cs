@@ -53,6 +53,9 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
 
     public async Task<JupyterKernelInfo> WaitForReadyAsync(CancellationToken cancellationToken = default)
     {
+        if (transport is IJupyterTransportConnectionReadiness connectionReadiness)
+            await connectionReadiness.WaitForStdinConnectedAsync(cancellationToken).ConfigureAwait(false);
+
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var probeIds = new List<JupyterMessageId>();
         try
@@ -84,10 +87,19 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         }
     }
 
-    public async Task<IJupyterExecution> StartExecutionAsync(
+    public Task<IJupyterExecution> StartExecutionAsync(
         JupyterExecuteRequest request,
         CancellationToken cancellationToken = default)
     {
+        return StartExecutionAsync(request, new JupyterExecutionOptions(), cancellationToken);
+    }
+
+    public async Task<IJupyterExecution> StartExecutionAsync(
+        JupyterExecuteRequest request,
+        JupyterExecutionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
         ThrowIfDisposed();
         var message = JupyterMessage.Create(
             "execute_request",
@@ -102,7 +114,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         });
         var completion =
             new TaskCompletionSource<JupyterExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var state = new ExecutionState(message.Header, outputs, completion);
+        var state = new ExecutionState(message.Header, outputs, completion, options.ObserveOutputs);
 
         if (!executions.TryAdd(message.Header.MessageId, state))
             throw new InvalidOperationException($"Execution '{message.Header.MessageId}' was already registered.");
@@ -118,7 +130,12 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             throw;
         }
 
-        return new JupyterExecution(message.Header.MessageId, outputs.Reader, completion.Task, ReplyInputAsync);
+        return new JupyterExecution(
+            message.Header.MessageId,
+            outputs.Reader,
+            completion.Task,
+            (request, value, token) => ReplyInputAsync(state, request, value, token),
+            () => AbandonExecutionAsync(state));
     }
 
     public async Task<JupyterCompleteReply> CompleteAsync(
@@ -342,10 +359,17 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     }
 
     private async Task ReplyInputAsync(
+        ExecutionState execution,
         JupyterInputRequest request,
         string value,
         CancellationToken cancellationToken)
     {
+        if (!executions.TryGetValue(execution.RequestHeader.MessageId, out var active) ||
+            !ReferenceEquals(active, execution))
+            throw new ObjectDisposedException(
+                nameof(IJupyterExecution),
+                "The Jupyter execution is no longer active.");
+
         if (request.Header is null)
             throw new ArgumentException("The input request did not originate from this client session.",
                 nameof(request));
@@ -357,6 +381,17 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             session,
             request.Header);
         await transport.SendAsync(JupyterTransportChannel.Stdin, reply, cancellationToken).ConfigureAwait(false);
+    }
+
+    private ValueTask AbandonExecutionAsync(ExecutionState execution)
+    {
+        if (!executions.TryRemove(execution.RequestHeader.MessageId, out _)) return ValueTask.CompletedTask;
+
+        RememberCompletedExecution(execution.RequestHeader.MessageId);
+        execution.Outputs.Writer.TryComplete(
+            new OperationCanceledException("The Jupyter execution was abandoned by its caller."));
+        execution.Completion.TrySetCanceled();
+        return ValueTask.CompletedTask;
     }
 
     private async Task RouteIncomingMessagesAsync()
@@ -408,7 +443,7 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         {
             if (transportMessage.Channel == JupyterTransportChannel.Iopub && execution.IdleSeen)
             {
-                PublishLateOutput(executionParent.MessageId, message);
+                PublishLateOutput(execution, message);
                 return;
             }
 
@@ -438,11 +473,19 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
             return;
         }
 
-        if (TryCreateOutput(execution.RequestHeader.MessageId, message, out var output) &&
-            !execution.Outputs.Writer.TryWrite(output))
+        if (TryCreateOutput(execution.RequestHeader.MessageId, message, out var output))
         {
-            FailExecution(execution, new JupyterBackpressureException("The execution output queue is full."));
-            return;
+            if (!execution.Outputs.Writer.TryWrite(output))
+            {
+                FailExecution(execution, new JupyterBackpressureException("The execution output queue is full."));
+                return;
+            }
+
+            if (execution.ObserveOutputs && transportMessage.Channel == JupyterTransportChannel.Iopub)
+                events.Publish(new JupyterExecutionOutputObserved(
+                    execution.RequestHeader.MessageId,
+                    message,
+                    output));
         }
 
         if (message.MessageType != "status" ||
@@ -469,6 +512,24 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     {
         var lateOutput = new JupyterLateOutput(requestId, message);
         if (TryCreateOutput(requestId, message, out var output)) lateOutput = lateOutput with { Output = output };
+
+        events.Publish(lateOutput);
+    }
+
+    private void PublishLateOutput(ExecutionState execution, JupyterMessage message)
+    {
+        var requestId = execution.RequestHeader.MessageId;
+        var lateOutput = new JupyterLateOutput(requestId, message);
+        if (TryCreateOutput(requestId, message, out var output))
+        {
+            if (!execution.Outputs.Writer.TryWrite(output))
+            {
+                FailExecution(execution, new JupyterBackpressureException("The execution output queue is full."));
+                return;
+            }
+
+            lateOutput = lateOutput with { Output = output, IncludedInExecution = true };
+        }
 
         events.Publish(lateOutput);
     }
@@ -679,13 +740,16 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private sealed class ExecutionState(
         JupyterMessageHeader requestHeader,
         Channel<JupyterOutput> outputs,
-        TaskCompletionSource<JupyterExecutionResult> completion)
+        TaskCompletionSource<JupyterExecutionResult> completion,
+        bool observeOutputs)
     {
         public JupyterMessageHeader RequestHeader { get; } = requestHeader;
 
         public Channel<JupyterOutput> Outputs { get; } = outputs;
 
         public TaskCompletionSource<JupyterExecutionResult> Completion { get; } = completion;
+
+        public bool ObserveOutputs { get; } = observeOutputs;
 
         public JupyterExecuteReply? Reply { get; set; }
 

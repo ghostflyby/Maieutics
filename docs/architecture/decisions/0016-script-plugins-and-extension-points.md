@@ -1,4 +1,4 @@
-# ADR 0015: Out-of-Process Script Plugins and Symbol-Identified Extension Points
+# ADR 0016: Out-of-Process Script Plugins and Symbol-Identified Extension Points
 
 Status: Accepted
 

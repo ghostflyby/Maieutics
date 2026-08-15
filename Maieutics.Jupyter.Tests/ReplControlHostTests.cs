@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
@@ -219,10 +220,11 @@ public sealed class ReplControlHostTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (application, host) = await ReplControlTestHost.StartAsync(
             registry,
             timeout.Token,
-            [CreateBlockingFunction()]);
+            [CreateBlockingFunction(started)]);
         await using (application)
         {
             using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
@@ -242,7 +244,7 @@ public sealed class ReplControlHostTests
                     "cancel-me",
                     token),
                 timeout.Token);
-            await Task.Delay(200, timeout.Token);
+            await started.Task.WaitAsync(timeout.Token);
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"control.cancel","payload":{"correlationId":"cancel-me"}}""",
@@ -452,6 +454,18 @@ public sealed class ReplControlHostTests
         }
     }
 
+    [Theory]
+    [InlineData("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n", true)]
+    [InlineData("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 3\r\n\r\nerr", true)]
+    [InlineData("HTTP/1.1 413 Payload Too Large\r\nContent-Length: 3\r\n\r\ner", false)]
+    [InlineData("HTTP/1.1 413 Payload Too Large\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nerr\r\n0\r\n\r\n", true)]
+    [InlineData("HTTP/1.1 413 Payload Too Large\r\nTransfer-Encoding: chunked\r\n\r\n3\r\ner", false)]
+    [InlineData("HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n", false)]
+    public void PayloadTooLargeResetRequiresCompleteResponseFraming(string response, bool expected)
+    {
+        IsCompletePayloadTooLargeResponse(new StringBuilder(response)).Should().Be(expected);
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task ToolInvokeRejectsJsonBeyondTheDepthLimit()
     {
@@ -580,9 +594,12 @@ public sealed class ReplControlHostTests
               "Content-Type: application/json\r\n" +
               $"Content-Length: {bodyBytes.Length}\r\n" +
               "Connection: close\r\n\r\n";
-        await SendAllAsync(socket, Encoding.ASCII.GetBytes(headers), cancellationToken);
+        // Read concurrently with the send so an early rejection is captured before Kestrel aborts
+        // the unread request body and resets the connection.
+        var response = ReadUntilEndAsync(socket, cancellationToken, true);
         try
         {
+            await SendAllAsync(socket, Encoding.ASCII.GetBytes(headers), cancellationToken);
             await SendAllAsync(socket, bodyBytes, cancellationToken);
             if (chunked) await SendAllAsync(socket, "\r\n0\r\n\r\n"u8.ToArray(), cancellationToken);
         }
@@ -591,7 +608,7 @@ public sealed class ReplControlHostTests
             // The server may finish an early 413 response before the client has flushed the rejected body.
         }
 
-        return await ReadUntilEndAsync(socket, cancellationToken);
+        return await response;
     }
 
     private static async Task<Socket> ConnectWebSocketAsync(string socketPath, CancellationToken ct)
@@ -648,10 +665,10 @@ public sealed class ReplControlHostTests
         return Encoding.UTF8.GetString(payload);
     }
 
-    private static AIFunction CreateBlockingFunction()
+    private static AIFunction CreateBlockingFunction(TaskCompletionSource? started = null)
     {
         return AIFunctionFactory.Create(
-            (CancellationToken ct) => WaitForCancellationAsync(ct),
+            (CancellationToken ct) => WaitForCancellationAsync(ct, started),
             new AIFunctionFactoryOptions
             {
                 Name = "blocking_test",
@@ -700,24 +717,125 @@ public sealed class ReplControlHostTests
         return JsonSerializer.SerializeToElement(new { done = true });
     }
 
-    private static async Task<object?> WaitForCancellationAsync(CancellationToken ct)
+    private static async Task<object?> WaitForCancellationAsync(CancellationToken ct, TaskCompletionSource? started = null)
     {
+        started?.TrySetResult();
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var registration = ct.Register(() => completion.TrySetResult());
         await completion.Task.WaitAsync(ct);
         return JsonSerializer.SerializeToElement(new { cancelled = true });
     }
 
-    private static async Task<string> ReadUntilEndAsync(Socket socket, CancellationToken ct)
+    private static async Task<string> ReadUntilEndAsync(
+        Socket socket,
+        CancellationToken ct,
+        bool acceptResetAfterPayloadTooLarge = false)
     {
         var builder = new StringBuilder();
         var buffer = new byte[4096];
         while (true)
         {
-            var read = await socket.ReceiveAsync(buffer.AsMemory(), SocketFlags.None, ct);
+            int read;
+            try
+            {
+                read = await socket.ReceiveAsync(buffer.AsMemory(), SocketFlags.None, ct);
+            }
+            catch (SocketException exception) when
+                (acceptResetAfterPayloadTooLarge &&
+                 exception.SocketErrorCode == SocketError.ConnectionReset &&
+                 IsCompletePayloadTooLargeResponse(builder))
+            {
+                return builder.ToString();
+            }
+
             if (read == 0) return builder.ToString();
 
             builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
+        }
+    }
+
+    private static bool IsCompletePayloadTooLargeResponse(StringBuilder builder)
+    {
+        var response = builder.ToString();
+        var headerEnd = response.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+        if (headerEnd < 0) return false;
+
+        var headerLines = response[..headerEnd].Split("\r\n", StringSplitOptions.None);
+        if (headerLines.Length == 0 ||
+            !headerLines[0].StartsWith("HTTP/1.1 413 ", StringComparison.Ordinal))
+            return false;
+
+        int? contentLength = null;
+        var chunked = false;
+        foreach (var line in headerLines.AsSpan(1))
+        {
+            var separator = line.IndexOf(':');
+            if (separator <= 0) return false;
+
+            var name = line[..separator].Trim();
+            var value = line[(separator + 1)..].Trim();
+            if (name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase))
+            {
+                chunked |= value
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Any(static token => token.Equals("chunked", StringComparison.OrdinalIgnoreCase));
+            }
+            else if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedLength) ||
+                    parsedLength < 0 ||
+                    contentLength is { } existingLength && existingLength != parsedLength)
+                    return false;
+
+                contentLength = parsedLength;
+            }
+        }
+
+        var bodyStart = headerEnd + 4;
+        if (chunked) return HasCompleteChunkedBody(response.AsSpan(bodyStart));
+        return contentLength is { } bodyLength && response.Length - bodyStart >= bodyLength;
+    }
+
+    private static bool HasCompleteChunkedBody(ReadOnlySpan<char> body)
+    {
+        var offset = 0;
+        while (true)
+        {
+            var sizeLineEndOffset = body[offset..].IndexOf("\r\n", StringComparison.Ordinal);
+            if (sizeLineEndOffset < 0) return false;
+
+            var sizeText = body.Slice(offset, sizeLineEndOffset);
+            var extensionSeparator = sizeText.IndexOf(';');
+            if (extensionSeparator >= 0) sizeText = sizeText[..extensionSeparator];
+            if (!int.TryParse(
+                    sizeText.Trim(),
+                    NumberStyles.AllowHexSpecifier,
+                    CultureInfo.InvariantCulture,
+                    out var chunkSize) ||
+                chunkSize < 0)
+                return false;
+
+            offset += sizeLineEndOffset + 2;
+            if (chunkSize == 0)
+            {
+                while (true)
+                {
+                    var trailerLineEndOffset = body[offset..].IndexOf("\r\n", StringComparison.Ordinal);
+                    if (trailerLineEndOffset < 0) return false;
+                    if (trailerLineEndOffset == 0) return true;
+
+                    offset += trailerLineEndOffset + 2;
+                }
+            }
+
+            if (chunkSize > body.Length - offset) return false;
+
+            var chunkEnd = offset + chunkSize;
+            if (body.Length - chunkEnd < 2 ||
+                !body.Slice(chunkEnd, 2).SequenceEqual("\r\n"))
+                return false;
+
+            offset = chunkEnd + 2;
         }
     }
 

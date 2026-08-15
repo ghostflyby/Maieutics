@@ -218,7 +218,7 @@ public sealed class MaieuticsCompletionTests
     public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
     {
         var all = Complete("/");
-        all.Matches.Should().Equal("%mcp", "%model", "%workspace");
+        all.Matches.Should().Equal("%mcp", "%model", "%status", "%workspace");
         all.CursorStart.Should().Be(0);
         all.CursorEnd.Should().Be(1);
 
@@ -250,7 +250,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
     {
         var all = Complete("%");
-        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%workspace");
+        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%status", "%workspace");
 
         var sharedPrefix = Complete("%m");
         sharedPrefix.Matches.Should().Equal("%maieutics", "%mcp", "%model");
@@ -278,6 +278,11 @@ public sealed class MaieuticsCompletionTests
         workspace.Matches.Should().Equal("current", "reset", "use");
         workspace.CursorStart.Should().Be(11);
         workspace.CursorEnd.Should().Be(11);
+
+        var status = Complete("%status ");
+        status.Matches.Should().BeEmpty();
+        status.CursorStart.Should().Be(8);
+        status.CursorEnd.Should().Be(8);
     }
 
     [Fact]

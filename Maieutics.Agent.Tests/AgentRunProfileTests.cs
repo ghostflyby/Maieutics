@@ -33,9 +33,31 @@ public sealed class AgentRunProfileTests
         profile.ModelIdentity.Should().BeNull();
         profile.Capabilities.Should().Be(
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling);
+        profile.HostedCapabilities.Should().BeEmpty();
     }
 
     [Fact]
+    public void HostedCapabilitiesAreSortedAndDeduplicated()
+    {
+        var profile = new AgentRunProfile(
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedCapabilities: ["WebSearch", "FileSearch", "WebSearch"]);
+
+        profile.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
+    }
+
+    [Fact]
+    public void BlankHostedCapabilitiesAreRejected()
+    {
+        FluentActions.Invoking(() => new AgentRunProfile(
+                new ScriptedChatClient((_, _) => StreamAsync("unused")),
+                new AgentSessionOptions(),
+                hostedCapabilities: ["WebSearch", " "]))
+            .Should().Throw<ArgumentException>();
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task StaticConstructorKeepsExistingClientOptionsAndTranscriptBehavior()
     {
         using var deadline = CreateDeadline();
@@ -58,7 +80,7 @@ public sealed class AgentRunProfileTests
         result.Transcript.Turns.Should().OnlyContain(static turn => turn.ModelIdentity == null);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DynamicProfileAppliesToNextRunAndReplaysCanonicalTranscript()
     {
         using var deadline = CreateDeadline();
@@ -82,7 +104,60 @@ public sealed class AgentRunProfileTests
         result.Transcript.Turns.Should().HaveCount(2);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
+    public async Task PendingProfileAcquisitionKeepsTheSessionReserved()
+    {
+        using var deadline = CreateDeadline();
+        var acquisition = new TaskCompletionSource<IAgentRunProfileLease>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lease = new TrackingProfileLease(
+            CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("answer")), "instructions"));
+        var provider = new AsyncQueueProfileProvider(acquisition.Task);
+        var session = new AgentSession(provider);
+
+        var pending = session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token);
+        pending.IsCompleted.Should().BeFalse();
+        await (Session: session, deadline.Token)
+            .Awaiting(static state => state.Session.StartTurnAsync(AgentTurn.FromText("second"), state.Token))
+            .Should().ThrowAsync<AgentTurnInProgressException>();
+
+        acquisition.SetResult(lease);
+        await using var run = await pending.WaitAsync(deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        provider.AcquireCount.Should().Be(1);
+        lease.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CanceledProfileAcquisitionReleasesTheSessionReservation()
+    {
+        using var deadline = CreateDeadline();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var pendingAcquisition = new TaskCompletionSource<IAgentRunProfileLease>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveredLease = new TrackingProfileLease(
+            CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("recovered")), "instructions"));
+        var provider = new AsyncQueueProfileProvider(
+            pendingAcquisition.Task,
+            Task.FromResult<IAgentRunProfileLease>(recoveredLease));
+        var session = new AgentSession(provider);
+
+        var pending = session.StartTurnAsync(AgentTurn.FromText("cancel"), cancellation.Token);
+        cancellation.Cancel();
+
+        await pending
+            .Invoking(static task => task)
+            .Should().ThrowAsync<OperationCanceledException>();
+        var result = await CompleteTurnAsync(session, "next", deadline.Token);
+
+        result.AssistantMessage.Text.Should().Be("recovered");
+        provider.AcquireCount.Should().Be(2);
+        recoveredLease.DisposeCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task SuccessfulRunCommitsCapturedModelIdentityToResultAndTranscript()
     {
         using var deadline = CreateDeadline();
@@ -105,7 +180,7 @@ public sealed class AgentRunProfileTests
         session.GetTranscriptSnapshot().Turns[0].ModelIdentity.Should().Be(identity);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MissingStreamingCapabilityFailsBeforeProviderInvocation()
     {
         using var deadline = CreateDeadline();
@@ -131,7 +206,7 @@ public sealed class AgentRunProfileTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MissingFunctionCallingCapabilityFailsBeforeProviderInvocationWhenToolsExist()
     {
         using var deadline = CreateDeadline();
@@ -159,7 +234,7 @@ public sealed class AgentRunProfileTests
         session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ActiveRunUsesOneCapturedClientAcrossToolIterations()
     {
         using var deadline = CreateDeadline();
@@ -186,7 +261,7 @@ public sealed class AgentRunProfileTests
         provider.AcquireCount.Should().Be(2);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DynamicProfilesExposeDifferentRunLocalToolRegistries()
     {
         using var deadline = CreateDeadline();
@@ -219,7 +294,7 @@ public sealed class AgentRunProfileTests
         secondLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputLimitIsRunLocalAndRejectedStartReleasesItsLease()
     {
         using var deadline = CreateDeadline();
@@ -244,7 +319,7 @@ public sealed class AgentRunProfileTests
         acceptedLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CompletionRemainsPendingUntilLeaseIsReleased()
     {
         using var deadline = CreateDeadline();
@@ -265,7 +340,7 @@ public sealed class AgentRunProfileTests
         await run.Completion.WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task LeaseReleaseFailureRollsBackSuccessfulTurn()
     {
         using var deadline = CreateDeadline();
@@ -291,7 +366,7 @@ public sealed class AgentRunProfileTests
         recovered.Transcript.Turns.Should().ContainSingle();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ProviderFailureReleasesLeaseAndAllowsNextProfile()
     {
         using var deadline = CreateDeadline();
@@ -317,7 +392,7 @@ public sealed class AgentRunProfileTests
         recoveredLease.DisposeCount.Should().Be(1);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellationReleasesLeaseAndSessionReservation()
     {
         using var deadline = CreateDeadline();
@@ -418,10 +493,25 @@ public sealed class AgentRunProfileTests
 
         public int AcquireCount { get; private set; }
 
-        public IAgentRunProfileLease Acquire()
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AcquireCount++;
+            return Task.FromResult<IAgentRunProfileLease>(leases.Dequeue());
+        }
+    }
+
+    private sealed class AsyncQueueProfileProvider(params Task<IAgentRunProfileLease>[] acquisitions)
+        : IAgentRunProfileProvider
+    {
+        private readonly Queue<Task<IAgentRunProfileLease>> acquisitions = new(acquisitions);
+
+        public int AcquireCount { get; private set; }
+
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
             AcquireCount++;
-            return leases.Dequeue();
+            return acquisitions.Dequeue().WaitAsync(cancellationToken);
         }
     }
 

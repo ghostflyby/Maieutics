@@ -33,6 +33,8 @@
         "Model": "anthropic-model-id"
       }
     },
+    "Endpoints": [],
+    "Vendors": {},
     "Agent": {
       "MaxRetainedTurns": 50,
       "MaxHistoryBytes": 400000,

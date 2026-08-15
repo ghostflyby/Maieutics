@@ -40,6 +40,12 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         public AgentModelCapabilities Capabilities =>
             AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
 
+        public Uri? EndpointUri => options.Endpoint;
+
+        public string? Vendor => options.Vendor;
+
+        public IReadOnlyList<string> FormatCapabilities => [];
+
         public IChatClient Create(string model)
         {
             return AnthropicChatClientFactory.Create(model, options);

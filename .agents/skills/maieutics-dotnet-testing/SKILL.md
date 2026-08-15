@@ -14,7 +14,8 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 ## xUnit And Assertions
 
 - Use xUnit v3 and flow `TestContext.Current.CancellationToken` into cancellable APIs.
-- Every asynchronous or process test must have a cancellation deadline or xUnit timeout.
+- **Every asynchronous test must carry a declarative xUnit `Timeout`** (`[Fact(Timeout = 30_000)]` / `[Theory(Timeout = ...)]`). Do not rely on an internal deadline alone; the attribute is the outer safety net.
+- **The internal deadline must be strictly smaller than the declared xUnit `Timeout`.** Default pairing: 20s internal deadline under 30s Timeout; heavier integration 50s under 60s; process-level 90s under 120s. When raising an internal deadline, raise the Timeout to match.
 - For asynchronous exception assertions, invoke through FluentAssertions `Awaiting(...)`.
 - Do not create a temporary `async` delegate solely for `delegate.Should().ThrowAsync(...)`.
 - When `Awaiting` overloads are ambiguous, return an explicit `Task`/`ValueTask`, or use a named helper with a concrete return type.
@@ -22,10 +23,17 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 
 ## Determinism
 
-- Do not use fixed sleeps for synchronization.
+- **Never synchronize by polling or by relying on incidental timing.** This is a hard rule:
+  - No busy-wait loops (`while (condition) { await Task.Yield(); }`), no `Thread.Sleep`, no `SpinWait`, no wall-clock polling (`while (DateTime.UtcNow < deadline) { ... await Task.Delay(...); }`).
+  - No fixed sleeps used as synchronization (`await Task.Delay(200, ...)` to "give it time to start"). A `Task.Delay` is only acceptable as a genuine timeout with an explicit purpose, never to wait for an event.
+- **Every wait must be signal-driven and awaitable:**
+  - `TaskCompletionSource` (always `TaskCreationOptions.RunContinuationsAsynchronously`) awaited via `.WaitAsync(deadlineToken)`.
+  - Bounded/unbounded `Channel<T>` readers (`await foreach (... .WithCancellation(token))`) for streaming or event sequences.
+  - `task.WaitAsync(deadline)` for terminal conditions; `Task.WhenAll`/`WhenAny` for concurrency.
+  - If the production code offers no signal for an event a test must await (e.g. a configuration reload, a plugin registry update), expose an `internal` seam (channel, TCS, or completion task) visible to the test assembly via `InternalsVisibleTo` rather than polling a counter.
 - Do not use fixed TCP ports. Allocate loopback ports dynamically.
 - Put tests sharing NetMQ process state in the non-parallel socket collection.
-- Use task completion signals, protocol messages, readiness probes, or bounded polling with a deadline.
+- Use task completion signals, protocol messages, readiness probes, or bounded awaiting with a deadline.
 - Integration failures should identify the failed stage: process start, readiness, heartbeat, send, reply, output, shutdown, or cleanup.
 
 ## Coverage By Boundary

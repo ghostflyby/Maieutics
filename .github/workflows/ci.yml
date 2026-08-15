@@ -20,6 +20,29 @@ env:
   NUGET_XMLDOC_MODE: skip
 
 jobs:
+  deno:
+    name: Deno
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.5
+
+      - name: Check formatting
+        run: deno fmt --check deno
+
+      - name: Check types
+        run: deno task --config deno/deno.json check
+
+      - name: Test
+        run: deno task --config deno/deno.json test
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -44,7 +67,7 @@ jobs:
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: 2.x
+          deno-version: 2.9.5
 
       - name: Restore
         run: dotnet restore Maieutics.slnx

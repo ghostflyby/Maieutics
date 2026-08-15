@@ -52,7 +52,9 @@ values never modify a completed tool result.
 
 Agent cancellation and execution timeout request an explicit Jupyter interrupt. If the execution does not finish within
 the interrupt grace period, Maieutics shuts down and ultimately terminates the process tree and marks the session
-faulted. Recovery is explicit; code is never retried or replayed automatically.
+faulted. The REPL owner then disposes its execution handle on every exit path. That disposal only abandons local Client
+routing and cannot replace or implicitly issue the kernel-wide interrupt. Recovery is explicit; code is never retried
+or replayed automatically.
 
 Non-critical malformed presentation messages do not terminate the Jupyter Client or fault the REPL. In particular, a
 display update without a usable `transient.display_id` remains ordered with its parent execution, is counted as skipped,

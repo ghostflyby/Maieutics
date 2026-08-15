@@ -24,6 +24,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
 
     private readonly IAgentSession session;
+    private readonly MaieuticsStatusProvider? statusProvider;
     private readonly TimeProvider timeProvider;
     private readonly Workspace? workspace;
 
@@ -44,7 +45,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         TimeProvider? timeProvider = null,
         Workspace? workspace = null,
         JupyterDenoReplPresentationRouter? replPresentationRouter = null,
-        IMaieuticsMcpController? mcpController = null)
+        IMaieuticsMcpController? mcpController = null,
+        MaieuticsStatusProvider? statusProvider = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
@@ -52,6 +54,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         this.mcpController = mcpController;
         this.workspace = workspace;
         this.replPresentationRouter = replPresentationRouter;
+        this.statusProvider = statusProvider;
         if (runtimeConfiguration is null) this.getOptions().Validate();
 
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
@@ -148,6 +151,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             {
                 output = ExecuteMcpCommand(arguments);
             }
+            else if (string.Equals(arguments[1], MaieuticsCommandLanguage.Status, StringComparison.OrdinalIgnoreCase))
+            {
+                output = ExecuteStatusCommand(arguments);
+            }
             else
             {
                 throw new ArgumentException("Unknown Maieutics command.");
@@ -200,7 +207,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         if (arguments.Length == 4 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
         {
-            runtimeConfiguration.SelectModelProfile(arguments[3]);
+            await runtimeConfiguration.SelectModelProfileAsync(arguments[3], cancellationToken).ConfigureAwait(false);
             return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
         }
 
@@ -258,6 +265,16 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         }
 
         return RenderWorkspace(selection);
+    }
+
+    private string ExecuteStatusCommand(string[] arguments)
+    {
+        if (arguments.Length != 2) throw new ArgumentException("The status command does not accept arguments.");
+
+        if (statusProvider is null)
+            throw new ArgumentException("Status is not available in this host.");
+
+        return MaieuticsStatusRenderer.Render(statusProvider.Capture());
     }
 
     private static string GetRemainderAfterTokens(string code, int tokenCount)

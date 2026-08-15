@@ -46,10 +46,33 @@ internal sealed class DenoReplExecutionCollector
         IJupyterExecution execution,
         CancellationToken inputCancellationToken)
     {
-        await foreach (var output in execution.Outputs.ConfigureAwait(false).WithCancellation(inputCancellationToken))
-            await ObserveAsync(execution, output, inputCancellationToken).ConfigureAwait(false);
+        var completion = await ConsumeExecutionAsync(execution, inputCancellationToken).ConfigureAwait(false);
+        return CreateResult(completion);
+    }
 
-        var completion = await execution.Completion.ConfigureAwait(false);
+    internal async Task<JupyterExecutionResult> ConsumeExecutionAsync(
+        IJupyterExecution execution,
+        CancellationToken inputCancellationToken)
+    {
+        await foreach (var output in execution.Outputs.ConfigureAwait(false).WithCancellation(inputCancellationToken))
+            await ObserveAsync(
+                execution,
+                output,
+                inputCancellationToken,
+                CancellationToken.None).ConfigureAwait(false);
+
+        return await execution.Completion.ConfigureAwait(false);
+    }
+
+    internal ValueTask ObserveLateOutputAsync(
+        JupyterOutput output,
+        CancellationToken cancellationToken)
+    {
+        return ObserveAsync(null, output, CancellationToken.None, cancellationToken);
+    }
+
+    internal DenoReplExecutionResult CreateResult(JupyterExecutionResult completion)
+    {
         if (string.Equals(completion.Reply.Status, "error", StringComparison.Ordinal) &&
             outputs.All(static output => output.Kind != "error"))
             AddError(
@@ -69,9 +92,10 @@ internal sealed class DenoReplExecutionCollector
     }
 
     private async ValueTask ObserveAsync(
-        IJupyterExecution execution,
+        IJupyterExecution? execution,
         JupyterOutput output,
-        CancellationToken inputCancellationToken)
+        CancellationToken inputCancellationToken,
+        CancellationToken presentationCancellationToken)
     {
         switch (output)
         {
@@ -80,21 +104,21 @@ internal sealed class DenoReplExecutionCollector
                 break;
             case JupyterStderr stderr:
                 AddText("stderr", stderr.Text);
-                await PresentStderrAsync(stderr.Text, CancellationToken.None).ConfigureAwait(false);
+                await PresentStderrAsync(stderr.Text, presentationCancellationToken).ConfigureAwait(false);
                 break;
             case JupyterExecuteResultOutput result:
                 AddResult(result.Data);
                 break;
             case JupyterExecutionError error:
                 AddError(error.Name, error.Value, error.Traceback);
-                await PresentErrorAsync(error, CancellationToken.None).ConfigureAwait(false);
+                await PresentErrorAsync(error, presentationCancellationToken).ConfigureAwait(false);
 
                 break;
             case JupyterDisplayOutput display:
-                await PresentDisplayAsync(display, CancellationToken.None).ConfigureAwait(false);
+                await PresentDisplayAsync(display, presentationCancellationToken).ConfigureAwait(false);
                 break;
             case JupyterDisplayUpdateOutput update:
-                await PresentUpdateAsync(update, CancellationToken.None).ConfigureAwait(false);
+                await PresentUpdateAsync(update, presentationCancellationToken).ConfigureAwait(false);
                 break;
             case JupyterMalformedOutput { MessageType: "update_display_data" }:
                 skippedCount++;
@@ -102,19 +126,21 @@ internal sealed class DenoReplExecutionCollector
             case JupyterClearOutput clear:
                 if (TryReservePresentationEvent())
                 {
-                    await presentation.ClearOutputAsync(clear.Wait, CancellationToken.None).ConfigureAwait(false);
+                    await presentation.ClearOutputAsync(
+                        clear.Wait,
+                        presentationCancellationToken).ConfigureAwait(false);
                     clearCount++;
                 }
 
                 break;
-            case JupyterInputRequest input:
+            case JupyterInputRequest input when execution is { } activeExecution:
                 try
                 {
                     var value = await presentation.RequestInputAsync(
                         input.Prompt,
                         input.Password,
                         inputCancellationToken).ConfigureAwait(false);
-                    await execution.ReplyInputAsync(input, value, inputCancellationToken).ConfigureAwait(false);
+                    await activeExecution.ReplyInputAsync(input, value, inputCancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (inputCancellationToken.IsCancellationRequested)
                 {

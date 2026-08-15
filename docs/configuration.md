@@ -77,6 +77,12 @@ The configuration is captured once when the Maieutics host builder is created:
 | `Maieutics:DenoRepl:MaxPresentationEventsPerExecution` |      `256` |
 | `Maieutics:DenoRepl:MaxPresentationBundleBytes`        | `16777216` |
 
+The local Deno control channel also enforces a fixed 1 MiB (1,048,576 byte) limit on each complete inbound HTTP body
+or WebSocket message, with a maximum JSON nesting depth of 64. This is a protocol safety bound rather than a runtime
+setting. WebSocket fragments count toward the current message only; the count resets after that message completes, so
+a long-lived connection may carry any number of separately bounded messages. Large values belong behind the future
+artifact or streaming boundary rather than a larger control envelope.
+
 `deno jupyter` is privileged local code execution, not an untrusted-code sandbox. The child receives an allowlisted
 operational environment rather than the complete Maieutics environment; provider credentials such as
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited. The first implementation has no worker, target, isolation,
@@ -202,10 +208,10 @@ Control cells do not call a model and do not enter the Agent transcript. A manua
 lifetime while that profile exists. Configuration default changes affect sessions without an override; removing the
 selected profile clears the override and falls back to the new default. Commands never display credentials or endpoints.
 
-The Kernel provides Jupyter completion for `%model` and `%workspace`, their subcommands, and the currently configured
-profile IDs accepted by `%model use <profile>`. Typing a leading `/` (for example `/model`) offers the same canonical
-`%` commands through completion; accepting a candidate replaces the slash token with the `%` form. Slash-prefixed text
-that is not completed remains ordinary input and never executes as a command.
+The Kernel provides Jupyter completion for `%model`, `%workspace`, `%mcp`, and `%status`, their subcommands, and the
+currently configured profile IDs accepted by `%model use <profile>`. Typing a leading `/` (for example `/model`) offers
+the same canonical `%` commands through completion; accepting a candidate replaces the slash token with the `%` form.
+Slash-prefixed text that is not completed remains ordinary input and never executes as a command.
 
 The legacy `%maieutics model ...` form remains accepted for existing notebooks and is deprecated.
 
@@ -227,6 +233,16 @@ transcript. Shell execution is serialized, so a command affects subsequent turns
 
 Jupyter completion covers the workspace command and its `current`, `use`, and `reset` subcommands; filesystem paths are
 not enumerated for completion. The legacy `%maieutics workspace ...` form remains accepted and is deprecated.
+
+## Notebook runtime status
+
+`%status` renders an immediate read-only snapshot of the current Kernel process. It reports the selected model
+profile/source, active configuration version and last reload outcome, workspace selection, PluginHost lifecycle and
+control-channel state, configured MCP server states, and Deno REPL session generations.
+
+The command does not call a model, enter the Agent transcript, refresh discovery, or wait for a subsystem to become
+ready. It omits credentials, provider endpoints, connection details, Deno working directories, and the absolute
+workspace path. Use the explicit `%workspace current` command when the absolute selected root is needed.
 
 ## Agent limits
 
@@ -267,3 +283,98 @@ maieutics \
   --connection-file /path/to/connection.json \
   --profile gpt
 ```
+
+## Capability compatibility
+
+Hosted tool capabilities are computed for each configured model source, not configured per endpoint alone. The
+potential compatibility of a source and model is what the source's API format and its vendor's served capabilities
+allow:
+
+1. **API format** — the ceiling of what the source's API format can express (declared by the provider adapter; for
+   example the OpenAI Responses format hosts `WebSearch`, `FileSearch`, `CodeInterpreter`, `ComputerUse`,
+   `ImageGeneration`, `ApplyPatch`, and `Mcp`, while Chat Completions hosts none).
+2. **Vendor** — what the owning vendor serves for the selected model, intersected with the API format. Vendors are
+   declared in `Maieutics:Vendors`; the built-in catalog recognizes `api.openai.com` (OpenAI) and `api.anthropic.com`
+   (Anthropic) endpoints. Without vendor knowledge the API format alone is the potential.
+
+The **default** compatibility is the full potential for a vendor with known capability knowledge and nothing for an
+unknown gateway. The **effective** compatibility (carried into each run as `AgentRunProfile.HostedCapabilities`) is
+the default plus any explicit `Maieutics:Endpoints` profile capabilities, always additive. Only provider-neutral
+capability names reach the Agent run profile; API-specific wire details stay inside the executable.
+
+### Vendors
+
+`Maieutics:Vendors` declares vendor identities, their endpoints, aggregate capabilities, and per-model capability
+narrowing. A source joins a vendor through its `Vendor` field, or through endpoint host inference against the catalog
+when no explicit vendor is configured. When the source's endpoint is unset, the provider's default host is assumed
+(OpenAI → `api.openai.com`, Anthropic → `api.anthropic.com`).
+
+A `Vendor` naming a vendor that is neither configured nor built-in carries no capability knowledge: the source is
+treated as an unknown gateway, keeps the API format as its potential, and its default remains empty.
+
+```json
+{
+  "Maieutics": {
+    "Sources": {
+      "oc": {
+        "Provider": "OpenAI",
+        "Vendor": "opencode",
+        "Endpoint": "https://opencode.ai/v1",
+        "ApiFlavor": "Responses",
+        "ApiKey": "..."
+      }
+    },
+    "Vendors": {
+      "opencode": {
+        "Endpoints": ["https://opencode.ai/v1"],
+        "Capabilities": ["WebSearch"],
+        "Models": {
+          "gpt-5": { "Capabilities": ["WebSearch", "Shell"] }
+        }
+      }
+    }
+  }
+}
+```
+
+Per-model declarations narrow the vendor aggregate: a model with a declaration uses exactly its declared capabilities
+(intersected with the source's API format), while a model without one falls back to the vendor aggregate. The API
+format is a hard constraint: a capability the format cannot express never appears even if the vendor or model declares
+it (an Anthropic-format endpoint serving opencode therefore hosts nothing).
+
+### Endpoints
+
+`Maieutics:Endpoints` is an optional list of explicit capability profiles keyed by API endpoint URL. An endpoint that
+appears in the table is matched exactly (after normalization) and its capabilities are always added to the effective
+set for every run that uses it:
+
+```json
+{
+  "Maieutics": {
+    "Endpoints": [
+      {
+        "Url": "https://selfhost.example.com/v1",
+        "Capabilities": ["WebSearch", "Responses.FileSearch"],
+        "Limits": {
+          "MaxBuiltinToolCalls": 20
+        }
+      }
+    ]
+  }
+}
+```
+
+Capability names are case-insensitive identifiers, either a universal name or a single `Format.Name` prefixed name.
+Names with known canonical spelling are normalized; unknown names are kept as opaque capability identifiers with their
+configured spelling, so novel vendor capabilities need no code change. Grammatically invalid names (spaces, leading
+digits, empty segments, more than one dot) reject the configuration and keep the last-known-good snapshot.
+
+URL matching is exact after normalization: scheme and host are case-insensitive, default ports are ignored, and a
+trailing slash is insignificant. URLs must be absolute HTTP or HTTPS URIs without user information, query strings, or
+fragments, and each normalized URL may appear only once. A provider source endpoint that cannot be normalized (for
+example one that carries a query string) is treated as unmatched. The `Limits` section is parsed and validated now and
+becomes an input for hosted built-in tool mapping in a later step.
+
+`%status` reports each configured model profile's resolved capabilities, hosted capability names, potential
+capabilities, and whether the source matched an explicit endpoint profile, is a known vendor, or is a declared baseline
+— without printing endpoint URLs. An active automatic session override is reported alongside the configured profiles.

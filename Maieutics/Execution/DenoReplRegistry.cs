@@ -77,17 +77,19 @@ internal sealed class DenoReplRegistry(
 
     internal DenoReplListResult List(AgentSessionId ownerSessionId)
     {
+        DenoReplSession[] snapshot;
         lock (gate)
         {
             ThrowIfDisposed();
             if (!sessions.TryGetValue(ownerSessionId, out var owned)) return new DenoReplListResult([]);
-
-            return new DenoReplListResult(owned.Values
-                .Select(static session => session.GetSnapshot())
-                .OrderByDescending(static session => session.IsDefault)
-                .ThenBy(static session => session.SessionId, StringComparer.Ordinal)
-                .ToArray());
+            snapshot = owned.Values.ToArray();
         }
+
+        return new DenoReplListResult(snapshot
+            .Select(static session => session.GetSnapshot())
+            .OrderByDescending(static session => session.IsDefault)
+            .ThenBy(static session => session.SessionId, StringComparer.Ordinal)
+            .ToArray());
     }
 
     internal async Task<DenoReplSessionResult> RestartAsync(

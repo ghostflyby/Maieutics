@@ -14,6 +14,11 @@ public interface IJupyterTransport : IAsyncDisposable
     Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default);
 }
 
+internal interface IJupyterTransportConnectionReadiness
+{
+    Task WaitForStdinConnectedAsync(CancellationToken cancellationToken = default);
+}
+
 public sealed record JupyterTransportOptions
 {
     public int IncomingCapacity { get; init; } = 1024;

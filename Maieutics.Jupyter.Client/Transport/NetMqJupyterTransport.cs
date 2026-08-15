@@ -2,11 +2,12 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Shared;
 using NetMQ;
+using NetMQ.Monitoring;
 using NetMQ.Sockets;
 
 namespace Maieutics.Jupyter.Client.Transport;
 
-public sealed class NetMqJupyterTransport : IJupyterTransport
+public sealed class NetMqJupyterTransport : IJupyterTransport, IJupyterTransportConnectionReadiness
 {
     private readonly JupyterConnectionInfo connectionInfo;
     private readonly Channel<JupyterTransportMessage> incomingMessages;
@@ -14,6 +15,7 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
     private readonly JupyterTransportOptions options;
     private readonly Channel<ClientCommand> outgoingCommands;
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource stdinConnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int disposeState;
     private ClientIoLoop? ioLoop;
@@ -63,6 +65,11 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
         var completion = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
         await EnqueueAsync(new PingCommand(completion), cancellationToken).ConfigureAwait(false);
         return await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    Task IJupyterTransportConnectionReadiness.WaitForStdinConnectedAsync(CancellationToken cancellationToken)
+    {
+        return stdinConnected.Task.WaitAsync(cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
@@ -154,6 +161,7 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
 
             var completionError = terminalError ?? failure;
             var pendingError = completionError ?? new ObjectDisposedException(nameof(NetMqJupyterTransport));
+            stdinConnected.TrySetException(pendingError);
             while (outgoingCommands.Reader.TryRead(out var command)) command.Fail(pendingError);
 
             loop?.FailPending(pendingError);
@@ -185,11 +193,10 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
         socket.SendMultipartMessage(netMqMessage);
     }
 
-    private static DealerSocket CreateDealerSocket(string endpoint, byte[] identity)
+    private static DealerSocket CreateDealerSocket(byte[] identity)
     {
         var socket = new DealerSocket();
         socket.Options.Identity = identity;
-        socket.Connect(endpoint);
         return socket;
     }
 
@@ -253,8 +260,10 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
         private readonly DealerSocket shell;
         private readonly NetMQQueue<IoSignal> signals;
         private readonly DealerSocket stdin;
+        private readonly NetMQMonitor stdinMonitor;
         private ActivePing? activePing;
         private bool disposed;
+        private bool stdinMonitorAttached;
         private int stopRequested;
 
         private ClientIoLoop(NetMqJupyterTransport owner)
@@ -263,23 +272,19 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
             try
             {
                 serialization = new SerializationContext(owner.connectionInfo);
-                shell = CreateDealerSocket(
-                    owner.connectionInfo.Endpoint(JupyterChannel.Shell),
-                    serialization.ClientIdentity);
-                control = CreateDealerSocket(
-                    owner.connectionInfo.Endpoint(JupyterChannel.Control),
-                    Guid.NewGuid().ToByteArray());
-                stdin = CreateDealerSocket(
-                    owner.connectionInfo.Endpoint(JupyterChannel.Stdin),
-                    serialization.ClientIdentity);
+                shell = CreateDealerSocket(serialization.ClientIdentity);
+                control = CreateDealerSocket(Guid.NewGuid().ToByteArray());
+                stdin = CreateDealerSocket(serialization.ClientIdentity);
                 iopub = new SubscriberSocket();
                 heartbeat = new RequestSocket();
                 signals = new NetMQQueue<IoSignal>();
                 poller = new NetMQPoller();
+                stdinMonitor = new NetMQMonitor(
+                    stdin,
+                    $"inproc://maieutics-jupyter-stdin-{Guid.NewGuid():N}",
+                    SocketEvents.Connected);
 
-                iopub.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Iopub));
                 iopub.SubscribeToAnyTopic();
-                heartbeat.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Heartbeat));
 
                 shell.ReceiveReady += OnShellReceiveReady;
                 control.ReceiveReady += OnControlReceiveReady;
@@ -287,6 +292,7 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
                 iopub.ReceiveReady += OnIopubReceiveReady;
                 heartbeat.ReceiveReady += OnHeartbeatReceiveReady;
                 signals.ReceiveReady += OnSignalReady;
+                stdinMonitor.Connected += OnStdinConnected;
 
                 poller.Add(shell);
                 poller.Add(control);
@@ -294,6 +300,14 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
                 poller.Add(iopub);
                 poller.Add(heartbeat);
                 poller.Add(signals);
+                stdinMonitor.AttachToPoller(poller);
+                stdinMonitorAttached = true;
+
+                shell.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Shell));
+                control.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Control));
+                stdin.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Stdin));
+                iopub.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Iopub));
+                heartbeat.Connect(owner.connectionInfo.Endpoint(JupyterChannel.Heartbeat));
             }
             catch
             {
@@ -323,7 +337,15 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
 
             signals.ReceiveReady -= OnSignalReady;
 
+            stdinMonitor.Connected -= OnStdinConnected;
+            if (stdinMonitorAttached)
+            {
+                stdinMonitor.DetachFromPoller();
+                stdinMonitorAttached = false;
+            }
+
             poller.Dispose();
+            stdinMonitor.Dispose();
             signals.Dispose();
             heartbeat.Dispose();
             iopub.Dispose();
@@ -383,6 +405,11 @@ public sealed class NetMqJupyterTransport : IJupyterTransport
         private void OnStdinReceiveReady(object? sender, NetMQSocketEventArgs args)
         {
             ReceiveAvailable(JupyterTransportChannel.Stdin, args.Socket);
+        }
+
+        private void OnStdinConnected(object? sender, NetMQMonitorSocketEventArgs args)
+        {
+            owner.stdinConnected.TrySetResult();
         }
 
         private void OnIopubReceiveReady(object? sender, NetMQSocketEventArgs args)

@@ -167,6 +167,12 @@ Provider-specific tool shapes are normalized at the `IChatClient` adapter bounda
 - provider-hosted search, file-library, computer, or similar tools are explicit model capabilities. A provider without
   an equivalent returns unsupported rather than silently substituting a different Maieutics tool.
 
+Potential hosted capability compatibility is computed per configured source and model as the intersection of the
+source's API format (declared by the provider adapter) with the vendor's served capabilities (built-in catalog or
+`Maieutics:Vendors`, narrowed per model); explicit `Maieutics:Endpoints` profiles add on top for the effective set.
+Known vendors trust the full potential by default; unknown gateways require explicit profiles. Only the
+provider-neutral effective names reach the Agent run profile.
+
 Responses wire items, provider SDK objects, and built-in tool state never enter the public Agent API or canonical
 transcript.
 
@@ -190,6 +196,10 @@ transcript.
 - [ADR 0012](decisions/0012-flat-notebook-command-syntax-and-slash-completion.md): Flat notebook command syntax and
   slash completion
 - [ADR 0013](decisions/0013-mcp-configuration-file.md): Separate MCP configuration file
+- [ADR 0014](decisions/0014-deno-repl-ipc-and-http-control.md): Deno REPL sideband IPC and HTTP control channel
+- [ADR 0015](decisions/0015-turn-budget-and-truncation.md): Turn budgets and truncated turn commits
+- [ADR 0016](decisions/0016-script-plugins-and-extension-points.md): Out-of-process script plugins and
+  symbol-identified extension points
 
 ## Explicitly deferred
 

@@ -11,7 +11,7 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class AnthropicProviderTests
 {
-    [Fact]
+    [Fact(Timeout = 15_000)]
     public async Task StreamsTextUsingConfiguredEndpointApiKeyAndModel()
     {
         await using var server = new FakeAnthropicServer(CreateTextStream("Hello from Claude"));
@@ -37,7 +37,7 @@ public sealed class AnthropicProviderTests
             .Should().Be("Hello from Claude");
     }
 
-    [Fact]
+    [Fact(Timeout = 15_000)]
     public async Task MapsStreamingToolUseToFunctionCallContent()
     {
         await using var server = new FakeAnthropicServer(CreateToolStream());
@@ -60,7 +60,7 @@ public sealed class AnthropicProviderTests
         JsonSerializer.Serialize(call.Arguments).Should().Contain("hello");
     }
 
-    [Fact]
+    [Fact(Timeout = 15_000)]
     public async Task StreamingErrorEventFailsTheProviderStream()
     {
         await using var server = new FakeAnthropicServer("""

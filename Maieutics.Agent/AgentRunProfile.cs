@@ -6,23 +6,33 @@ namespace Maieutics.Agent;
 /// <summary>Defines the immutable model client and runtime options captured by one Agent run.</summary>
 public sealed record AgentRunProfile
 {
-    private const AgentModelCapabilities CompatibilityCapabilities =
+    private const AgentModelCapabilities DefaultCapabilities =
         AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling;
+
+    private static readonly AgentModelCapabilities KnownCapabilities =
+        Enum.GetValues<AgentModelCapabilities>()
+            .Aggregate(
+                AgentModelCapabilities.None,
+                static (combined, value) => combined | value);
 
     /// <summary>Initializes a run profile with provider-neutral model metadata.</summary>
     /// <param name="chatClient">The model client used for every model invocation in the run.</param>
     /// <param name="options">The instructions and limits applied to the run.</param>
     /// <param name="modelIdentity">The configured provider and model identity, when known.</param>
     /// <param name="capabilities">The model behaviors available to the run.</param>
+    /// <param name="hostedCapabilities">
+    ///     The provider-neutral capability names hosted by the model endpoint, when known.
+    /// </param>
     /// <param name="tools">The immutable tools available for the complete run.</param>
     public AgentRunProfile(
         IChatClient chatClient,
         AgentSessionOptions options,
         AgentModelIdentity? modelIdentity = null,
-        AgentModelCapabilities capabilities = CompatibilityCapabilities,
+        AgentModelCapabilities capabilities = DefaultCapabilities,
+        IEnumerable<string>? hostedCapabilities = null,
         IEnumerable<AIFunction>? tools = null)
     {
-        if ((capabilities & ~CompatibilityCapabilities) != 0)
+        if ((capabilities & ~KnownCapabilities) != 0)
             throw new ArgumentOutOfRangeException(nameof(capabilities), capabilities,
                 "The Agent run profile contains unknown model capabilities.");
 
@@ -31,7 +41,22 @@ public sealed record AgentRunProfile
         Options.Validate();
         ModelIdentity = modelIdentity;
         Capabilities = capabilities;
+        HostedCapabilities = NormalizeHostedCapabilities(hostedCapabilities);
         Tools = tools?.ToImmutableArray() ?? [];
+    }
+
+    private static IReadOnlyList<string> NormalizeHostedCapabilities(IEnumerable<string>? hostedCapabilities)
+    {
+        if (hostedCapabilities is null) return [];
+
+        var names = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var name in hostedCapabilities)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            names.Add(name);
+        }
+
+        return [.. names];
     }
 
     /// <summary>Gets the model client used for every model invocation in the run.</summary>
@@ -46,6 +71,9 @@ public sealed record AgentRunProfile
     /// <summary>Gets the model behaviors available to the run.</summary>
     public AgentModelCapabilities Capabilities { get; }
 
+    /// <summary>Gets the provider-neutral capability names hosted by the model endpoint.</summary>
+    public IReadOnlyList<string> HostedCapabilities { get; }
+
     /// <summary>Gets the immutable tools available for the complete run.</summary>
     public IReadOnlyList<AIFunction> Tools { get; }
 }
@@ -53,9 +81,10 @@ public sealed record AgentRunProfile
 /// <summary>Provides an immutable profile for each newly started Agent run.</summary>
 public interface IAgentRunProfileProvider
 {
-    /// <summary>Acquires a profile lease owned by the new run.</summary>
+    /// <summary>Asynchronously acquires a profile lease owned by the new run.</summary>
+    /// <param name="cancellationToken">Cancels waiting for the profile lease.</param>
     /// <returns>A lease whose profile remains valid until the run terminates.</returns>
-    IAgentRunProfileLease Acquire();
+    Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>Keeps an Agent run profile and its resources alive for one run.</summary>

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using Maieutics.Agent;
@@ -127,7 +128,9 @@ public static class MaieuticsHost
         {
             options.AddServerHeader = false;
             if (OperatingSystem.IsWindows())
-                options.ListenLocalhost(0, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
+                // .NET 10 rejects dynamic-port binding on `localhost` (both loopback addresses);
+                // bind IPv4 loopback explicitly so Kestrel can choose an ephemeral port.
+                options.Listen(IPAddress.Loopback, 0, listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
             else
                 options.ListenUnixSocket(controlSocketPath,
                     listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
@@ -139,7 +142,7 @@ public static class MaieuticsHost
             );
 
         builder.Services.AddSingleton<PluginHostModule>();
-        builder.Services.AddSingleton<Task<PluginHostManager>>(services => PluginHostManager.CreateAsync(
+        builder.Services.AddSingleton(services => new PluginHostManager(
             Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".maieutics", "plugins"),
             controlSocketPath,
             services.GetRequiredService<DenoReplOptions>(),
@@ -148,15 +151,13 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
             services.GetRequiredService<TimeProvider>()));
-        builder.Services.AddSingleton<Func<PluginHostManager>>(services =>
-            () => services.GetRequiredService<Task<PluginHostManager>>().GetAwaiter().GetResult());
-        builder.Services.AddHostedService<PluginHostStartupHostedService>();
+        builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<ReplControlHost>>(),
             services.GetRequiredService<WorkspaceFunctions>().Functions,
-            services.GetRequiredService<Task<PluginHostManager>>(),
+            services.GetRequiredService<PluginHostManager>(),
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
@@ -173,6 +174,7 @@ public static class MaieuticsHost
             .. services.GetRequiredService<DenoReplFunctions>().Functions
         ]);
         builder.Services.AddSingleton(CreateAgentSession);
+        builder.Services.AddSingleton<MaieuticsStatusProvider>();
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
         builder.Services.AddHostedService<JupyterKernelHostedService>();
@@ -232,7 +234,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
             workspace: services.GetRequiredService<Workspace>(),
             replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
-            mcpController: services.GetRequiredService<IMaieuticsMcpController>());
+            mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
+            statusProvider: services.GetRequiredService<MaieuticsStatusProvider>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

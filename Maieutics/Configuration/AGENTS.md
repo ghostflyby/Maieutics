@@ -31,7 +31,11 @@ session-level profile selection, and reference-counted provider generation lifet
 - Construct every changed profile generation before atomic publication. If any construction fails, dispose new clients
   and keep the previous catalog unchanged.
 - Reuse unchanged generations. Replaced or removed generations retire only after their last run lease ends.
-- `Acquire()` returns one immutable run-local client/options/identity/capability lease.
+- `AcquireAsync(CancellationToken)` returns one immutable run-local client/options/identity/capability lease without
+  holding configuration locks while it waits for plugin readiness or rollback.
+- Initial snapshot construction and automatic profile selection are asynchronous ownership boundaries. Await failed
+  generation cleanup and do not reintroduce synchronous selection or startup wrappers.
+- Record reload outcomes as immutable status data without retaining exception text, configuration values, or secrets.
 - A manual session override affects the next run, survives default changes while its profile exists, and resets to the
   new default if that profile is removed. It is not persisted.
 - Connection-file changes are restart-required. Agent and Jupyter presentation settings apply at the next run or

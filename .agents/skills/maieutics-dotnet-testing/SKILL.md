@@ -1,6 +1,6 @@
 ---
 name: maieutics-dotnet-testing
-description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, NetMQ sockets, Jupyter Client/Kernel integration, fake model providers, real Deno kernels, external processes, configuration reload, or NativeAOT publishing.
+description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, ZmqSharp sockets, Jupyter Client/Kernel integration, fake model providers, real Deno kernels, external processes, configuration reload, or NativeAOT publishing.
 ---
 
 # Maieutics .NET Testing
@@ -32,7 +32,7 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
   - `task.WaitAsync(deadline)` for terminal conditions; `Task.WhenAll`/`WhenAny` for concurrency.
   - If the production code offers no signal for an event a test must await (e.g. a configuration reload, a plugin registry update), expose an `internal` seam (channel, TCS, or completion task) visible to the test assembly via `InternalsVisibleTo` rather than polling a counter.
 - Do not use fixed TCP ports. Allocate loopback ports dynamically.
-- Put tests sharing NetMQ process state in the non-parallel socket collection.
+- Keep real socket integration tests isolated when they share process-level state.
 - Use task completion signals, protocol messages, readiness probes, or bounded awaiting with a deadline.
 - Integration failures should identify the failed stage: process start, readiness, heartbeat, send, reply, output, shutdown, or cleanup.
 

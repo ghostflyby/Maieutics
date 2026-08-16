@@ -115,7 +115,7 @@ public sealed record JupyterConnectionInfo(
             throw new NotSupportedException($"Jupyter signature scheme '{SignatureScheme}' is not supported.");
 
         if (PublicKey is not null || PrivateKey is not null || ServerKey is not null || Keychain is not null)
-            throw new NotSupportedException("CurveZMQ Jupyter connections are not supported by the NetMQ transport.");
+            throw new NotSupportedException("CurveZMQ Jupyter connections are not supported.");
     }
 
     private static JupyterConnectionInfo FromConnectionFile(JupyterConnectionFile file)

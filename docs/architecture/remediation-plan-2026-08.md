@@ -131,7 +131,7 @@ relative to IOPub remains unconstrained; order within IOPub remains authoritativ
 
 - `Maieutics.Jupyter.Client/Protocol/JupyterProtocolSession.cs`
 - `Maieutics.Jupyter.Client/Transport/IJupyterTransport.cs`
-- `Maieutics.Jupyter.Client/Transport/NetMqJupyterTransport.cs`
+- `Maieutics.Jupyter.Client/Transport/ZmqSharpJupyterTransport.cs`
 - `Maieutics.Jupyter.Kernel/JupyterKernelHost.cs` only if characterization finds that the owned kernel emits output
   after its parented `idle`
 - `Maieutics.Jupyter.Tests/JupyterProtocolSessionTests.cs`

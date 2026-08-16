@@ -7,7 +7,7 @@ Use `.agents/skills/maieutics-jupyter-protocol/SKILL.md` and
 
 This project is a reusable client for arbitrary Jupyter kernels. It contains three internal layers:
 
-- `Transport`: NetMQ sockets, wire serialization, bounded queues, thread affinity, terminal state, and disposal.
+- `Transport`: ZmqSharp sockets, wire serialization, bounded queues, asynchronous ownership, terminal state, and disposal.
 - `Protocol`: request correlation, pending operations, execution aggregation, stdin, late output, and event fan-out.
 - public facade and local manager: stable .NET APIs, kernelspec parsing, child-process startup, interrupt, restart, and
   cleanup.
@@ -18,19 +18,20 @@ It must remain usable without `Maieutics.Agent`, the product executable, or `Mai
 
 - Reference only `Maieutics.Jupyter.Shared` for Jupyter contracts.
 - Never reference `Maieutics.Jupyter.Kernel` or Agent/product concepts.
-- NetMQ types and raw frames must not escape `Transport`.
+- ZmqSharp types and raw frames must not escape `Transport`.
 - Transport must not own request/reply semantics, execution aggregation, or notebook UI reduction.
 
 ## Transport lifecycle
 
-- The dedicated I/O thread creates, polls, uses, and disposes shell, control, stdin, IOPub, and heartbeat sockets.
+- One transport owner creates and disposes shell, control, stdin, IOPub, and heartbeat sockets and observes every
+  long-lived asynchronous pump.
 - Shell and stdin share an identity; control has its own identity.
 - External producers communicate through bounded command queues. Queue saturation terminates the connection with a typed
   backpressure failure; never drop protocol messages.
 - Startup cancellation, owner-thread failure, disconnect, backpressure, and concurrent disposal converge on one terminal
   cause and promptly fail pending sends and pings.
-- Use an explicit I/O-loop owner object to dispose related NetMQ resources together. Do not scatter closure-captured
-  `using` locals across `RunIoThread`.
+- Dispose related ZmqSharp resources together only after owned pumps have stopped. Received `ZMessage` values are owned
+  by the receiver and must be disposed after their frames have been copied across the transport boundary.
 
 ## Protocol and API constraints
 

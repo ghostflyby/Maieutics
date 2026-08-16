@@ -1,6 +1,6 @@
 ---
 name: maieutics-jupyter-protocol
-description: Use when changing Maieutics Jupyter wire DTOs, connection files, serialization, Client transport/protocol behavior, Kernel hosting, output ordering, completion cursors, NetMQ channels, or real Deno kernel interoperability across Maieutics.Jupyter.Shared, Client, Kernel, and their integration tests.
+description: Use when changing Maieutics Jupyter wire DTOs, connection files, serialization, Client transport/protocol behavior, Kernel hosting, output ordering, completion cursors, ZeroMQ channels, or real Deno kernel interoperability across Maieutics.Jupyter.Shared, Client, Kernel, and their integration tests.
 ---
 
 # Maieutics Jupyter Protocol
@@ -31,7 +31,8 @@ Never solve a boundary problem by adding a Client-to-Kernel or Kernel-to-Client 
 - Use source-generated `System.Text.Json` metadata for protocol DTOs.
 - Validate delimiters, frame counts, signatures, HMAC, required fields, and supported schemes at the boundary.
 - Fail explicitly for unsupported CurveZMQ or signature schemes.
-- All NetMQ sockets are created, used, polled, and disposed by their owning I/O thread. NetMQ types do not escape transport.
+- ZmqSharp sockets and their asynchronous pumps have one explicit transport owner. Received messages are disposed after
+  their frames are copied, and ZmqSharp types do not escape transport.
 - Use bounded queues. Queue overflow terminates the affected connection with a typed backpressure error; never drop protocol messages.
 - Unknown message types must not crash long-running receive loops.
 

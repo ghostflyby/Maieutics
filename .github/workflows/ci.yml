@@ -92,11 +92,9 @@ jobs:
           - os: macos-15
             rid: osx-arm64
             executable: Maieutics/bin/Release/net10.0/osx-arm64/publish/maieutics
-
-    # win-x64 NativeAOT is intentionally excluded: AsyncIO 0.1.69 (used by NetMQ) performs
-    # runtime delegate marshalling on its Windows socket path that NativeAOT cannot support,
-    # and the upstream managed-socket workaround hangs kernel shutdown. Track upstream
-    # https://github.com/zeromq/netmq/issues/1117 before re-enabling it.
+          - os: windows-2022
+            rid: win-x64
+            executable: Maieutics/bin/Release/net10.0/win-x64/publish/maieutics.exe
 
     steps:
       - name: Check out repository

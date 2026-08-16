@@ -17,7 +17,7 @@ public sealed class JupyterTransportLifecycleTests
         var connection = JupyterConnectionInfo.CreateLocalTcp();
 
         await (Connection: connection, cancellation.Token)
-            .Awaiting(static state => NetMqJupyterTransport.ConnectAsync(
+            .Awaiting(static state => ZmqSharpJupyterTransport.ConnectAsync(
                 state.Connection,
                 cancellationToken: state.Token))
             .Should().ThrowAsync<OperationCanceledException>();
@@ -32,7 +32,7 @@ public sealed class JupyterTransportLifecycleTests
         var connection = JupyterConnectionInfo.CreateLocalTcp();
 
         await (Connection: connection, cancellation.Token)
-            .Awaiting(static state => NetMqJupyterKernelTransport.BindAsync(
+            .Awaiting(static state => ZmqSharpJupyterKernelTransport.BindAsync(
                 state.Connection,
                 cancellationToken: state.Token))
             .Should().ThrowAsync<OperationCanceledException>();
@@ -44,7 +44,7 @@ public sealed class JupyterTransportLifecycleTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
-        var transport = await NetMqJupyterKernelTransport.BindAsync(
+        var transport = await ZmqSharpJupyterKernelTransport.BindAsync(
             connection,
             cancellationToken: deadline.Token);
 
@@ -58,7 +58,7 @@ public sealed class JupyterTransportLifecycleTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
-        var transport = await NetMqJupyterTransport.ConnectAsync(connection, cancellationToken: deadline.Token);
+        var transport = await ZmqSharpJupyterTransport.ConnectAsync(connection, cancellationToken: deadline.Token);
         var ping = transport.PingAsync(deadline.Token);
 
         await Task.WhenAll(transport.DisposeAsync().AsTask(), transport.DisposeAsync().AsTask())
@@ -73,7 +73,7 @@ public sealed class JupyterTransportLifecycleTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
-        var transport = await NetMqJupyterTransport.ConnectAsync(connection, cancellationToken: deadline.Token);
+        var transport = await ZmqSharpJupyterTransport.ConnectAsync(connection, cancellationToken: deadline.Token);
         var readiness = ((IJupyterTransportConnectionReadiness)transport)
             .WaitForStdinConnectedAsync(deadline.Token);
 

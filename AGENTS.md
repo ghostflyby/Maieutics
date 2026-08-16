@@ -20,8 +20,8 @@ above the protocol and kernel-host layers.
 | Path | Role |
 |---|---|
 | `Maieutics.Jupyter.Shared` | Reusable, transport-independent Jupyter wire models and serialization |
-| `Maieutics.Jupyter.Client` | Reusable Jupyter client, protocol session, NetMQ transport, and local kernel manager |
-| `Maieutics.Jupyter.Kernel` | Reusable server-side Jupyter host and NetMQ transport |
+| `Maieutics.Jupyter.Client` | Reusable Jupyter client, protocol session, ZmqSharp transport, and local kernel manager |
+| `Maieutics.Jupyter.Kernel` | Reusable server-side Jupyter host and ZmqSharp transport |
 | `Maieutics.Jupyter.Tests` | Jupyter unit, transport, interoperability, and product integration tests |
 | `Maieutics.Agent` | Jupyter-independent Agent facade, run lifecycle, transcript, and tool runtime |
 | `Maieutics.Agent.Tests` | Agent runtime unit tests |
@@ -89,7 +89,7 @@ Every change must preserve these invariants:
 7. Busy precedes parented output; reply precedes idle; idle is emitted from a `finally` path.
 8. Completion follows protocol state, never fixed delays or guessed ordering.
 9. Cancellation is cooperative through all layers and may escalate to owned child-process termination.
-10. Raw NetMQ frames do not cross transport boundaries.
+10. Raw ZeroMQ frames do not cross transport boundaries.
 11. Provider SDK objects do not cross provider adapters.
 12. Tool results remain structured until an output adapter renders them.
 13. Notebook snapshot creation does not mutate the active session.
@@ -183,7 +183,7 @@ When a scoped file references a skill, follow both. Do not duplicate a skill ver
 
 | Skill | Use for |
 |---|---|
-| `.agents/skills/maieutics-jupyter-protocol/SKILL.md` | Wire DTOs, Client/Kernel protocol behavior, NetMQ channels, output ordering, cursors, and Deno interoperability |
+| `.agents/skills/maieutics-jupyter-protocol/SKILL.md` | Wire DTOs, Client/Kernel protocol behavior, ZeroMQ channels, output ordering, cursors, and Deno interoperability |
 | `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and Agent-to-Jupyter semantics |
 | `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, disposal, processes, and shutdown |
 | `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3, FluentAssertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |

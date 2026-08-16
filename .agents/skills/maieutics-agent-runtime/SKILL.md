@@ -43,7 +43,7 @@ description: Use when changing Maieutics Agent sessions, runs, events, transcrip
 
 ## Agent-To-Jupyter Mapping
 
-- Map semantic Agent events to ordered Jupyter messages without exposing NetMQ or wire envelopes to Agent code.
+- Map semantic Agent events to ordered Jupyter messages without exposing ZeroMQ implementation types or wire envelopes to Agent code.
 - Preserve partial display output after cancellation or failure, but do not commit the failed turn.
 - `%maieutics` control cells do not call a model or enter the transcript.
 - Never emit private chain-of-thought. Only explicitly permitted provider reasoning summaries may be exposed.

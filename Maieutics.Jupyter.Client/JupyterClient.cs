@@ -77,7 +77,7 @@ public sealed class JupyterClient : IJupyterClient
         JupyterTransportOptions? transportOptions = null,
         CancellationToken cancellationToken = default)
     {
-        var transport = await NetMqJupyterTransport.ConnectAsync(
+        var transport = await ZmqSharpJupyterTransport.ConnectAsync(
             connectionInfo,
             transportOptions,
             cancellationToken).ConfigureAwait(false);

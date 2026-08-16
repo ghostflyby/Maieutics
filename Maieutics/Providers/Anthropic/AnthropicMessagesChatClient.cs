@@ -113,53 +113,53 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         switch (eventType)
         {
             case "error":
-            {
-                var error = root.GetProperty("error");
-                var errorType = error.TryGetProperty("type", out var type)
-                    ? type.GetString()
-                    : null;
-                throw new InvalidDataException(string.IsNullOrWhiteSpace(errorType)
-                    ? "Anthropic reported a streaming error."
-                    : $"Anthropic reported the streaming error '{errorType}'.");
-            }
+                {
+                    var error = root.GetProperty("error");
+                    var errorType = error.TryGetProperty("type", out var type)
+                        ? type.GetString()
+                        : null;
+                    throw new InvalidDataException(string.IsNullOrWhiteSpace(errorType)
+                        ? "Anthropic reported a streaming error."
+                        : $"Anthropic reported the streaming error '{errorType}'.");
+                }
             case "content_block_start":
                 StartContentBlock(root, toolCalls);
                 return null;
             case "content_block_delta":
-            {
-                var delta = root.GetProperty("delta");
-                switch (delta.GetProperty("type").GetString())
                 {
-                    case "text_delta":
+                    var delta = root.GetProperty("delta");
+                    switch (delta.GetProperty("type").GetString())
                     {
-                        var text = delta.GetProperty("text").GetString();
-                        return string.IsNullOrEmpty(text)
-                            ? null
-                            : new ChatResponseUpdate(ChatRole.Assistant, text);
-                    }
-                    case "input_json_delta":
-                    {
-                        var index = root.GetProperty("index").GetInt32();
-                        if (!toolCalls.TryGetValue(index, out var call))
-                            throw new InvalidDataException(
-                                $"Anthropic streamed tool arguments for unknown content block {index}.");
+                        case "text_delta":
+                            {
+                                var text = delta.GetProperty("text").GetString();
+                                return string.IsNullOrEmpty(text)
+                                    ? null
+                                    : new ChatResponseUpdate(ChatRole.Assistant, text);
+                            }
+                        case "input_json_delta":
+                            {
+                                var index = root.GetProperty("index").GetInt32();
+                                if (!toolCalls.TryGetValue(index, out var call))
+                                    throw new InvalidDataException(
+                                        $"Anthropic streamed tool arguments for unknown content block {index}.");
 
-                        call.Arguments.Append(delta.GetProperty("partial_json").GetString());
-                        return null;
+                                call.Arguments.Append(delta.GetProperty("partial_json").GetString());
+                                return null;
+                            }
+                        default:
+                            return null;
                     }
-                    default:
-                        return null;
                 }
-            }
             case "content_block_stop":
-            {
-                var index = root.GetProperty("index").GetInt32();
-                if (!toolCalls.Remove(index, out var call)) return null;
+                {
+                    var index = root.GetProperty("index").GetInt32();
+                    if (!toolCalls.Remove(index, out var call)) return null;
 
-                return new ChatResponseUpdate(
-                    ChatRole.Assistant,
-                    [new FunctionCallContent(call.CallId, call.Name, ParseArguments(call.Arguments.ToString()))]);
-            }
+                    return new ChatResponseUpdate(
+                        ChatRole.Assistant,
+                        [new FunctionCallContent(call.CallId, call.Name, ParseArguments(call.Arguments.ToString()))]);
+                }
             default:
                 return null;
         }

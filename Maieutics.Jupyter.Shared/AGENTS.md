@@ -14,7 +14,7 @@ All Jupyter wire-format types belong here. Routing identities stay in `JupyterWi
 
 ## Forbidden dependencies
 
-- Do not reference NetMQ or create sockets.
+- Do not reference a ZeroMQ implementation or create sockets.
 - Do not orchestrate client requests or kernel dispatch.
 - Do not launch processes.
 - Do not introduce Agent, provider, tool, persistence, or notebook UI-state concepts.

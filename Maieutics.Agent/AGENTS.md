@@ -14,7 +14,7 @@ contract. `FunctionInvokingChatClient` and the recording decorator are internal 
 
 ## Forbidden dependencies
 
-- Do not reference any Jupyter project, NetMQ, the executable, or provider SDK.
+- Do not reference any Jupyter project, ZeroMQ implementation, the executable, or provider SDK.
 - Do not reference Microsoft Agent Framework or expose provider response, authentication, or SDK types from Maieutics
   contracts.
 - Do not introduce a parallel model abstraction that duplicates `IChatClient`.

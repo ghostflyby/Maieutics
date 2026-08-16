@@ -397,10 +397,10 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var fifo = Path.Combine(workspace.Path, "input.fifo");
         using (var process = Process.Start(new ProcessStartInfo("mkfifo")
-               {
-                   UseShellExecute = false,
-                   ArgumentList = { fifo }
-               }) ?? throw new InvalidOperationException("mkfifo did not start."))
+        {
+            UseShellExecute = false,
+            ArgumentList = { fifo }
+        }) ?? throw new InvalidOperationException("mkfifo did not start."))
         {
             await process.WaitForExitAsync(TestContext.Current.CancellationToken);
             process.ExitCode.Should().Be(0);
@@ -522,11 +522,11 @@ public sealed class WorkspaceToolsTests
         WriteWorkspaceConfiguration(configurationFile, jsonRoot);
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
-               {
-                   ["MAIEUTICS_CONFIG"] = null,
-                   ["MAIEUTICS_WORKSPACE"] = aliasRoot,
-                   ["Maieutics__Workspace__Root"] = standardRoot
-               }))
+        {
+            ["MAIEUTICS_CONFIG"] = null,
+            ["MAIEUTICS_WORKSPACE"] = aliasRoot,
+            ["Maieutics__Workspace__Root"] = standardRoot
+        }))
         {
             var standardBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var standardHost = standardBuilder.Build();
@@ -550,11 +550,11 @@ public sealed class WorkspaceToolsTests
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
-               {
-                   ["MAIEUTICS_CONFIG"] = null,
-                   ["MAIEUTICS_WORKSPACE"] = aliasRoot,
-                   ["Maieutics__Workspace__Root"] = null
-               }))
+        {
+            ["MAIEUTICS_CONFIG"] = null,
+            ["MAIEUTICS_WORKSPACE"] = aliasRoot,
+            ["Maieutics__Workspace__Root"] = null
+        }))
         {
             var aliasBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var aliasHost = aliasBuilder.Build();
@@ -562,11 +562,11 @@ public sealed class WorkspaceToolsTests
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
-               {
-                   ["MAIEUTICS_CONFIG"] = null,
-                   ["MAIEUTICS_WORKSPACE"] = null,
-                   ["Maieutics__Workspace__Root"] = null
-               }))
+        {
+            ["MAIEUTICS_CONFIG"] = null,
+            ["MAIEUTICS_WORKSPACE"] = null,
+            ["Maieutics__Workspace__Root"] = null
+        }))
         {
             var frozenBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             WriteWorkspaceConfiguration(configurationFile, reloadRoot);

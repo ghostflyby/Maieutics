@@ -653,11 +653,11 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         switch (message.MessageType)
         {
             case "status":
-            {
-                var status = message.GetContent(JupyterJsonContext.Default.JupyterStatus);
-                events.Publish(new JupyterKernelStatusChanged(ParseKernelState(status.ExecutionState)));
-                return;
-            }
+                {
+                    var status = message.GetContent(JupyterJsonContext.Default.JupyterStatus);
+                    events.Publish(new JupyterKernelStatusChanged(ParseKernelState(status.ExecutionState)));
+                    return;
+                }
             case "iopub_welcome":
                 return;
             default:

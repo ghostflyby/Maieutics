@@ -124,19 +124,19 @@ internal static class AgentTranscriptCodec
         Exception innerException)
     {
         foreach (var message in messages)
-        foreach (var content in message.Contents)
-            try
-            {
-                _ = JsonSerializer.SerializeToUtf8Bytes(
-                    [new ChatMessage(message.Role, [content])],
-                    ChatMessageArrayTypeInfo);
-            }
-            catch (Exception exception) when (exception is JsonException or NotSupportedException)
-            {
-                return new AgentContentCompatibilityException(
-                    content.GetType().FullName ?? content.GetType().Name,
-                    innerException);
-            }
+            foreach (var content in message.Contents)
+                try
+                {
+                    _ = JsonSerializer.SerializeToUtf8Bytes(
+                        [new ChatMessage(message.Role, [content])],
+                        ChatMessageArrayTypeInfo);
+                }
+                catch (Exception exception) when (exception is JsonException or NotSupportedException)
+                {
+                    return new AgentContentCompatibilityException(
+                        content.GetType().FullName ?? content.GetType().Name,
+                        innerException);
+                }
 
         return new AgentContentCompatibilityException(
             typeof(ChatMessage).FullName ?? typeof(ChatMessage).Name,

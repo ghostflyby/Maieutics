@@ -1,10 +1,10 @@
+using System.Buffers;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
-using NetMQ;
-using NetMQ.Sockets;
+using ZmqSharp;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -315,13 +315,13 @@ public sealed class SelfHostedJupyterIntegrationTests
             connection,
             new ExecuteOnlyKernelApplication(),
             cancellationToken: deadline.Token);
-        using var subscriber = new SubscriberSocket();
-        subscriber.Connect(connection.Endpoint(JupyterChannel.Iopub));
-        subscriber.SubscribeToAnyTopic();
+        await using var subscriber = new ZSubSocket();
+        subscriber.Subscribe([]);
+        await subscriber.ConnectAsync(connection.Endpoint(JupyterChannel.Iopub), deadline.Token);
         var serializer = new JupyterMessageSerializer(connection.Key, connection.SignatureScheme);
 
-        var welcome = ReceiveWireMessage(subscriber, serializer);
-        var starting = ReceiveWireMessage(subscriber, serializer);
+        var welcome = await ReceiveWireMessageAsync(subscriber, serializer, deadline.Token);
+        var starting = await ReceiveWireMessageAsync(subscriber, serializer, deadline.Token);
 
         welcome.Message.MessageType.Should().Be("iopub_welcome");
         welcome.Message.ParentHeader.Should().BeNull();
@@ -329,18 +329,18 @@ public sealed class SelfHostedJupyterIntegrationTests
         starting.Message.ParentHeader.Should().BeNull();
         starting.Message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState.Should().Be("starting");
 
-        using var shell = new DealerSocket();
-        shell.Connect(connection.Endpoint(JupyterChannel.Shell));
+        await using var shell = new ZDealerSocket();
+        await shell.ConnectAsync(connection.Endpoint(JupyterChannel.Shell), deadline.Token);
         var request = JupyterMessage.Create(
             "kernel_info_request",
             new JupyterEmptyContent(),
             JupyterJsonContext.Default.JupyterEmptyContent,
             new JupyterSessionIdentity("raw-session", "tester"));
-        SendWireMessage(shell, serializer, JupyterWireMessage.Create(request));
+        await SendWireMessageAsync(shell, serializer, JupyterWireMessage.Create(request), deadline.Token);
 
-        var busy = ReceiveWireMessage(subscriber, serializer);
-        var reply = ReceiveWireMessage(shell, serializer);
-        var idle = ReceiveWireMessage(subscriber, serializer);
+        var busy = await ReceiveWireMessageAsync(subscriber, serializer, deadline.Token);
+        var reply = await ReceiveWireMessageAsync(shell, serializer, deadline.Token);
+        var idle = await ReceiveWireMessageAsync(subscriber, serializer, deadline.Token);
         busy.Message.MessageType.Should().Be("status");
         busy.Message.ParentHeader?.MessageId.Should().Be(request.Header.MessageId);
         busy.Message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState.Should().Be("busy");
@@ -374,37 +374,22 @@ public sealed class SelfHostedJupyterIntegrationTests
         return deadline;
     }
 
-    private static JupyterWireMessage ReceiveWireMessage(
-        SubscriberSocket subscriber,
-        JupyterMessageSerializer serializer)
-    {
-        var message = new NetMQMessage();
-        if (!subscriber.TryReceiveMultipartMessage(TimeSpan.FromSeconds(5), ref message))
-            throw new TimeoutException("Timed out while waiting for the Kernel IOPub initialization messages.");
-
-        return serializer.Deserialize(message.Select(frame => frame.ToByteArray()).ToArray());
-    }
-
-    private static JupyterWireMessage ReceiveWireMessage(
-        DealerSocket dealer,
-        JupyterMessageSerializer serializer)
-    {
-        var message = new NetMQMessage();
-        if (!dealer.TryReceiveMultipartMessage(TimeSpan.FromSeconds(5), ref message))
-            throw new TimeoutException("Timed out while waiting for the Kernel shell reply.");
-
-        return serializer.Deserialize(message.Select(frame => frame.ToByteArray()).ToArray());
-    }
-
-    private static void SendWireMessage(
-        DealerSocket dealer,
+    private static async Task<JupyterWireMessage> ReceiveWireMessageAsync(
+        ZQueueSocketBase socket,
         JupyterMessageSerializer serializer,
-        JupyterWireMessage wireMessage)
+        CancellationToken cancellationToken)
     {
-        var message = new NetMQMessage();
-        foreach (var frame in serializer.Serialize(wireMessage)) message.Append(frame);
+        using var message = await socket.Messages.ReadAsync(cancellationToken);
+        return serializer.Deserialize(message.Select(frame => frame.ToSequence().ToArray()).ToArray());
+    }
 
-        dealer.SendMultipartMessage(message);
+    private static ValueTask SendWireMessageAsync(
+        ZDealerSocket dealer,
+        JupyterMessageSerializer serializer,
+        JupyterWireMessage wireMessage,
+        CancellationToken cancellationToken)
+    {
+        return dealer.SendAsync(ZMessage.FromOwned(serializer.Serialize(wireMessage).ToArray()), cancellationToken);
     }
 
     private sealed class TestKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider,

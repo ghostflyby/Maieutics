@@ -64,7 +64,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
         JupyterSessionIdentity? session = null,
         CancellationToken cancellationToken = default)
     {
-        var transport = await NetMqJupyterKernelTransport.BindAsync(
+        var transport = await ZmqSharpJupyterKernelTransport.BindAsync(
             connectionInfo,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return new JupyterKernelHost(application, transport, session ?? JupyterSessionIdentity.Create("kernel"));

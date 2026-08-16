@@ -12,11 +12,6 @@
         <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     </PropertyGroup>
 
-    <PropertyGroup Condition="'$(PublishAot)' == 'true' And $([System.Text.RegularExpressions.Regex]::IsMatch('$(RuntimeIdentifier)', '^(osx|linux)-'))">
-        <!-- AsyncIO 0.1.69 contains a Windows-only dynamic delegate path that NativeAOT cannot prove unreachable. -->
-        <WarningsNotAsErrors>$(WarningsNotAsErrors);IL3053</WarningsNotAsErrors>
-    </PropertyGroup>
-
     <ItemGroup>
         <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
         <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj"/>

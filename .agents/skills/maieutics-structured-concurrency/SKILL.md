@@ -1,6 +1,6 @@
 ---
 name: maieutics-structured-concurrency
-description: Use when changing Maieutics background loops, channels, NetMQ owner threads, cancellation, backpressure, run lifetimes, provider generations, process supervision, interrupt, shutdown, concurrent disposal, or timeout behavior in any project.
+description: Use when changing Maieutics background loops, channels, ZeroMQ transport ownership, cancellation, backpressure, run lifetimes, provider generations, process supervision, interrupt, shutdown, concurrent disposal, or timeout behavior in any project.
 ---
 
 # Maieutics Structured Concurrency
@@ -27,7 +27,7 @@ Do not create fire-and-forget tasks. Constructors remain side-effect free when s
 
 ## Resource Lifetimes
 
-- Group thread-affine NetMQ resources in one I/O-loop owner object and dispose them on the owner thread.
+- Group asynchronous socket resources under one owner, stop and observe their pumps, then dispose them deterministically.
 - Do not null constructor-initialized disposable fields merely to signal disposal; the owner object's lifetime is the boundary.
 - Reference-count provider generations. Publish a replacement only after successful construction; retire the old generation after its last lease.
 - `CancelAsync` requests cancellation idempotently and observes termination. A caller token cancels waiting, not the already-issued cancellation request.

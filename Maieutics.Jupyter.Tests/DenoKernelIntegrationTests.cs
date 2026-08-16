@@ -94,6 +94,58 @@ public sealed class DenoKernelIntegrationTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task RealDenoRoutesPromptAfterReadinessProbe()
+    {
+        using var deadline = CreateDeadline();
+        var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
+        await using var manager = await LocalJupyterKernelManager.StartAsync(
+            spec,
+            cancellationToken: deadline.Token);
+
+        const string readinessReply = "maieutics-repl-stdin-readiness-diagnostic";
+        var (readinessCompletion, readinessOutputs) = await ExecuteAndCollectAsync(
+            manager.Client,
+            new JupyterExecuteRequest(
+                $"if (prompt('') !== '{readinessReply}') throw new Error('stdin readiness mismatch');",
+                true,
+                false,
+                AllowStdin: true),
+            static values => values.OfType<JupyterInputRequest>().Any(),
+            static async (execution, output, cancellationToken) =>
+            {
+                if (output is JupyterInputRequest input)
+                    await execution.ReplyInputAsync(input, readinessReply, cancellationToken);
+            },
+            deadline.Token);
+
+        readinessCompletion.Reply.Status.Should().Be("ok");
+        readinessOutputs.OfType<JupyterInputRequest>().Should().ContainSingle()
+            .Which.Prompt.Should().BeEmpty();
+
+        const string promptReply = "second-prompt-reply";
+        var (promptCompletion, promptOutputs) = await ExecuteAndCollectAsync(
+            manager.Client,
+            new JupyterExecuteRequest(
+                "const diagnosticPromptValue = prompt('Second prompt: '); " +
+                "diagnosticPromptValue ?? 'prompt-returned-null'",
+                AllowStdin: true),
+            static values => values.OfType<JupyterExecuteResultOutput>().Any(),
+            static async (execution, output, cancellationToken) =>
+            {
+                if (output is JupyterInputRequest input)
+                    await execution.ReplyInputAsync(input, promptReply, cancellationToken);
+            },
+            deadline.Token);
+
+        promptCompletion.Reply.Status.Should().Be("ok");
+        promptOutputs.OfType<JupyterInputRequest>().Should().ContainSingle(
+                "the Deno stdin peer should remain registered after the readiness probe")
+            .Which.Prompt.Should().Be("Second prompt: ");
+        promptOutputs.OfType<JupyterExecuteResultOutput>().Should().ContainSingle(output =>
+            output.Data.Data.Values.Any(value => value.ToString().Contains(promptReply, StringComparison.Ordinal)));
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task RealDenoSeparatesStreamsDisplayResultAndError()
     {
         using var deadline = CreateDeadline();

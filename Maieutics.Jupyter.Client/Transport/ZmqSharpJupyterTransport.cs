@@ -296,7 +296,16 @@ public sealed class ZmqSharpJupyterTransport : IJupyterTransport, IJupyterTransp
     {
         if (lifetime.IsCancellationRequested) return;
 
-        Terminate(failure ?? new IOException($"The Jupyter {channel} connection ended."));
+        // A peer closing the connection cleanly (failure == null) is a normal
+        // shutdown signal, not an error: the kernel closes its sockets after
+        // the shutdown exchange, and EOF arrival order across the five TCP
+        // connections is not guaranteed - terminating the session on any
+        // clean EOF would race the in-flight shutdown_reply (and fail pending
+        // requests). Only an abnormal peer end (protocol/IO failure) is
+        // terminal for the transport.
+        if (failure is null) return;
+
+        Terminate(failure);
     }
 
     private void Terminate(Exception exception)

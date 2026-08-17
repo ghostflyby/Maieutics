@@ -8,6 +8,7 @@ internal static class ReplControlLimits
 {
     internal const int MaximumInboundMessageBytes = 1024 * 1024;
     internal const int MaximumJsonDepth = 64;
+    internal const int QueueCapacity = 64;
 }
 
 internal static class ReplControlMessageReader

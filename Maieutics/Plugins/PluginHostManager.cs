@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Control;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Mcp;
 using Microsoft.Extensions.Hosting;

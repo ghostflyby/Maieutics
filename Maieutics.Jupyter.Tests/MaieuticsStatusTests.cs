@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Mcp;

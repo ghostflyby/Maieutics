@@ -24,8 +24,14 @@ export function bootstrapWindowsCredential(
     );
   }
 
+  const systemRoot = Deno.env.get("SystemRoot");
+  if (systemRoot === undefined || systemRoot.length === 0) {
+    throw new Error("SystemRoot is required to resolve kernel32.dll.");
+  }
+  const kernel32Path = `${systemRoot}\\System32\\kernel32.dll`;
+
   const kernel32 = Deno.dlopen(
-    "kernel32.dll",
+    kernel32Path,
     {
       CreateFileW: {
         parameters: [

@@ -105,6 +105,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.5
+
       - name: Restore solution
         run: dotnet restore Maieutics.slnx
 
@@ -117,4 +122,4 @@ jobs:
       - name: Smoke test published executable
         env:
           MAIEUTICS_TEST_HOST_EXECUTABLE: ${{ github.workspace }}/${{ matrix.executable }}
-        run: dotnet test Maieutics.Jupyter.Tests/Maieutics.Jupyter.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~GenericHostStartsRealKernelAndStopsAfterShutdown|FullyQualifiedName~ExternalHostCompletesWorkspaceFunctionLoop"
+        run: dotnet test Maieutics.Jupyter.Tests/Maieutics.Jupyter.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~GenericHostStartsRealKernelAndStopsAfterShutdown|FullyQualifiedName~ExternalHostCompletesWorkspaceFunctionLoop|FullyQualifiedName~ExternalHostCompletesDenoReplEvalBridge"

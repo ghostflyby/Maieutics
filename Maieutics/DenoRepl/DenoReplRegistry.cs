@@ -1,15 +1,14 @@
 using Maieutics.Agent;
-using Maieutics.Control;
+using Maieutics.Execution;
 using Microsoft.Extensions.Logging;
 
-namespace Maieutics.Execution;
+namespace Maieutics.DenoRepl;
 
 internal sealed class DenoReplRegistry(
     Workspace workspace,
     DenoReplOptions options,
     IDenoReplSessionFactory factory,
     IDenoReplPresentationRouter presentationRouter,
-    ReplControlSessionRegistry controlRegistry,
     ILogger<DenoReplSession> logger)
     : IAsyncDisposable
 {
@@ -175,7 +174,6 @@ internal sealed class DenoReplRegistry(
                 options,
                 factory,
                 presentationRouter,
-                controlRegistry,
                 logger);
             owned.Add(sessionId, created);
             return created;

@@ -1,334 +1,234 @@
 using System.Text.Json;
 using FluentAssertions;
-using Maieutics.Execution;
-using Maieutics.Jupyter.Client;
+using Maieutics.DenoRepl;
 using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Jupyter.Tests;
 
 public sealed class DenoReplExecutionCollectorTests
 {
-    private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
-        new Dictionary<string, JsonElement>();
-
-    [Fact(Timeout = 30_000)]
-    public async Task OutputTypesProduceSeparateModelAndNotebookProjections()
+    [Fact(Timeout = 15_000)]
+    public async Task OrderedEvalEventsProduceSeparateModelAndNotebookProjections()
     {
-        var requestId = JupyterMessageId.Create();
-        var innerDisplayId = new JupyterDisplayId("inner");
-        var outputs = new JupyterOutput[]
-        {
-            new JupyterExecuteInputOutput(requestId, "code", 7),
-            new JupyterExecutionStatusChanged(requestId, JupyterKernelState.Busy),
-            new JupyterStdout(requestId, "private stdout"),
-            new JupyterDisplayOutput(requestId, TextBundle("visible display"), EmptyMetadata)
-            {
-                DisplayId = innerDisplayId
-            },
-            new JupyterDisplayUpdateOutput(
-                requestId,
-                TextBundle("visible update"),
-                EmptyMetadata,
-                JupyterDisplayTransient.Create(innerDisplayId),
-                innerDisplayId),
-            new JupyterMalformedOutput(requestId, "update_display_data", "missing_display_id"),
-            new JupyterClearOutput(requestId, true),
-            new JupyterStderr(requestId, "shared stderr"),
-            new JupyterExecuteResultOutput(requestId, JsonBundle(42), EmptyMetadata, 7),
-            new JupyterInputRequest(requestId, JupyterMessageId.Create(), "Name: ", false),
-            new JupyterExecutionError(requestId, "TypeError", "shared error", ["frame"])
-        };
-        var execution = new TestExecution(
-            requestId,
-            outputs,
-            new JupyterExecuteReply("error", 7, ErrorName: "TypeError", ErrorValue: "shared error"));
-        var sink = new RecordingPresentationSink();
-        var outerDisplayId = new JupyterDisplayId("outer");
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var sink = new RecordingPresentationSink { InputReply = "Ada" };
         var collector = new DenoReplExecutionCollector(
             "default",
-            1,
+            3,
             new DenoReplOptions(),
             sink,
-            _ => outerDisplayId,
-            _ => outerDisplayId);
+            []);
+        var display = JsonSerializer.SerializeToElement(new Dictionary<string, string>
+        {
+            ["text/plain"] = "visible display"
+        });
+        var update = JsonSerializer.SerializeToElement(new Dictionary<string, string>
+        {
+            ["text/plain"] = "visible update"
+        });
 
-        var result = await collector.ConsumeAsync(execution, TestContext.Current.CancellationToken);
+        execution.Publish(new ReplEvalConsoleEvent("execution-1", 1, "stdout", "private stdout"));
+        execution.Publish(new ReplEvalDisplayEvent(
+            "execution-1", 2, false, "inner", display, null));
+        execution.Publish(new ReplEvalDisplayEvent(
+            "execution-1", 3, true, "inner", update, null));
+        execution.Publish(new ReplEvalDisplayEvent(
+            "execution-1", 4, true, "missing", update, null));
+        execution.Publish(new ReplEvalClearOutputEvent("execution-1", 5, true));
+        execution.Publish(new ReplEvalConsoleEvent("execution-1", 6, "stderr", "shared stderr"));
+        var input = new ReplEvalInputRequestEvent(
+            "execution-1", 7, "input-1", "Name: ", false);
+        execution.Publish(input);
+        execution.CompleteResult(42);
 
-        result.ExecutionStatus.Should().Be("error");
-        result.Outputs.Select(static output => output.Kind).Should()
-            .Equal("stdout", "stderr", "result", "error");
-        result.Outputs.Single(output => output.Kind == "stdout").Text.Should().Be("private stdout");
-        var resultValue = result.Outputs.Single(output => output.Kind == "result").Value
-                          ?? throw new InvalidOperationException("The result execution has no value.");
-        resultValue.GetInt32().Should().Be(42);
-        JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
-            .Should().NotContain("visible display").And.NotContain("visible update");
-        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 1, 1, 1));
-        sink.Displays.Should().ContainSingle().Which.Should().Be("visible display");
-        sink.Updates.Should().ContainSingle().Which.Should().Be((outerDisplayId, "visible update"));
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            TestContext.Current.CancellationToken);
+
+        result.Should().BeEquivalentTo(new
+        {
+            SessionId = "default",
+            Generation = 3,
+            ExecutionStatus = "ok",
+            Presentation = new DenoReplPresentationResult(1, 1, 1, 1),
+            Truncated = false,
+            OmittedBytes = 0
+        });
+        result.Outputs.Select(static output => output.Kind).Should().Equal("stdout", "stderr", "result");
+        result.Outputs[0].Text.Should().Be("private stdout");
+        result.Outputs[1].Text.Should().Be("shared stderr");
+        result.Outputs[2].Value?.GetInt32().Should().Be(42);
+        sink.Displays.Should().Equal("visible display");
+        sink.Updates.Should().ContainSingle().Which.Text.Should().Be("visible update");
         sink.Clears.Should().Equal(true);
         sink.Stderr.Should().Equal("shared stderr");
-        sink.Errors.Should().ContainSingle().Which.Should().Be(("TypeError", "shared error"));
-        execution.InputReplies.Should().ContainSingle().Which.Should().Be("Ada");
+        connection.InputReplies.Should().ContainSingle().Which.Should().Be((input, "Ada"));
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task LateOutputsJoinTheOriginalResultAndUseTheSamePresentationProjection()
+    [Theory(Timeout = 15_000)]
+    [InlineData(false, "error")]
+    [InlineData(true, "abort")]
+    public async Task ErrorAndCancelledTerminalsProduceTypedStatus(bool cancelled, string expectedStatus)
     {
-        var requestId = JupyterMessageId.Create();
-        var execution = new TestExecution(requestId, [], new JupyterExecuteReply("ok", 4));
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
         var sink = new RecordingPresentationSink();
-        var displayId = new JupyterDisplayId("tracked");
         var collector = new DenoReplExecutionCollector(
-            "default",
+            "session",
             1,
             new DenoReplOptions(),
             sink,
-            static id => id,
-            static id => id);
+            []);
 
-        var completion = await collector.ConsumeExecutionAsync(
-            execution,
+        if (cancelled)
+            execution.CompleteCancelled();
+        else
+            execution.CompleteError("TypeError", "bad value");
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
             TestContext.Current.CancellationToken);
-        await collector.ObserveLateOutputAsync(
-            new JupyterStdout(requestId, "late stdout"),
-            TestContext.Current.CancellationToken);
-        await collector.ObserveLateOutputAsync(new JupyterExecuteResultOutput(
-            requestId,
-            JsonBundle(42),
-            EmptyMetadata,
-            4), TestContext.Current.CancellationToken);
-        await collector.ObserveLateOutputAsync(new JupyterDisplayOutput(
-            requestId,
-            TextBundle("late display"),
-            EmptyMetadata)
+
+        result.ExecutionStatus.Should().Be(expectedStatus);
+        if (cancelled)
         {
-            DisplayId = displayId
-        }, TestContext.Current.CancellationToken);
-        await collector.ObserveLateOutputAsync(new JupyterDisplayUpdateOutput(
-            requestId,
-            TextBundle("late update"),
-            EmptyMetadata,
-            JupyterDisplayTransient.Create(displayId),
-            displayId), TestContext.Current.CancellationToken);
-        await collector.ObserveLateOutputAsync(
-            new JupyterStderr(requestId, "late stderr"),
-            TestContext.Current.CancellationToken);
-        await collector.ObserveLateOutputAsync(new JupyterExecutionError(
-            requestId,
-            "TypeError",
-            "late error",
-            ["frame"]), TestContext.Current.CancellationToken);
-
-        var result = collector.CreateResult(completion);
-
-        result.Outputs.Select(static output => output.Kind).Should()
-            .Equal("stdout", "result", "stderr", "error");
-        result.Outputs.Single(output => output.Kind == "stdout").Text.Should().Be("late stdout");
-        result.Outputs.Single(output => output.Kind == "result").Value?.GetInt32().Should().Be(42);
-        sink.Displays.Should().Equal("late display");
-        sink.Updates.Should().Equal((displayId, "late update"));
-        sink.Stderr.Should().Equal("late stderr");
-        sink.Errors.Should().Equal(("TypeError", "late error"));
-        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 1, 0, 0));
+            result.Outputs.Should().BeEmpty();
+            sink.Errors.Should().BeEmpty();
+        }
+        else
+        {
+            result.Outputs.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            {
+                Kind = "error",
+                Text = "bad value",
+                Name = "TypeError"
+            });
+            sink.Errors.Should().Equal(("TypeError", "bad value"));
+        }
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task LatePresentationObservesOwningCancellation()
+    [Fact(Timeout = 15_000)]
+    public async Task ModelTruncationStillDrainsAndPresentsLaterDisplay()
     {
-        var requestId = JupyterMessageId.Create();
-        var sink = new BlockingDisplayPresentationSink();
-        var collector = new DenoReplExecutionCollector(
-            "default",
-            1,
-            new DenoReplOptions(),
-            sink,
-            static id => id,
-            static id => id);
-        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            TestContext.Current.CancellationToken);
-
-        var observation = collector.ObserveLateOutputAsync(
-            new JupyterDisplayOutput(requestId, TextBundle("late display"), EmptyMetadata),
-            cancellation.Token).AsTask();
-        await sink.WaitUntilStartedAsync(TestContext.Current.CancellationToken);
-        await cancellation.CancelAsync();
-
-        await observation
-            .Invoking(static task => task)
-            .Should().ThrowAsync<OperationCanceledException>();
-        sink.ObservedCancellationToken.Should().Be(cancellation.Token);
-    }
-
-    [Fact(Timeout = 30_000)]
-    public async Task ModelTruncationStillDrainsAndPublishesLaterDisplay()
-    {
-        var requestId = JupyterMessageId.Create();
-        var outputs = Enumerable.Range(0, 20)
-            .Select(_ => (JupyterOutput)new JupyterStdout(requestId, new string('x', 128)))
-            .Append(new JupyterDisplayOutput(requestId, TextBundle("after truncation"), EmptyMetadata))
-            .ToArray();
-        var execution = new TestExecution(requestId, outputs, new JupyterExecuteReply("ok", 1));
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
         var sink = new RecordingPresentationSink();
-        var options = new DenoReplOptions { MaxModelOutputBytes = 256 };
-        var collector = new DenoReplExecutionCollector(
-            "default",
-            1,
-            options,
-            sink,
-            static id => id,
-            static id => id);
-
-        var result = await collector.ConsumeAsync(execution, TestContext.Current.CancellationToken);
-
-        result.Truncated.Should().BeTrue();
-        result.OmittedBytes.Should().BeGreaterThan(0);
-        execution.ObservedOutputCount.Should().Be(outputs.Length);
-        sink.Displays.Should().Equal("after truncation");
-    }
-
-    [Fact(Timeout = 30_000)]
-    public async Task OversizedJsonResultFallsBackToBoundedTextPlain()
-    {
-        var requestId = JupyterMessageId.Create();
-        var bundle = new MimeBundle(new Dictionary<string, JsonElement>
-        {
-            ["application/json"] = JsonSerializer.SerializeToElement(new string('x', 1024)),
-            ["text/plain"] = JsonSerializer.SerializeToElement("fallback")
-        });
-        var execution = new TestExecution(
-            requestId,
-            [new JupyterExecuteResultOutput(requestId, bundle, EmptyMetadata, 1)],
-            new JupyterExecuteReply("ok", 1));
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions { MaxModelOutputBytes = 256 },
-            new RecordingPresentationSink(),
-            static id => id,
-            static id => id);
+            sink,
+            []);
 
-        var result = await collector.ConsumeAsync(execution, TestContext.Current.CancellationToken);
+        for (var sequence = 1; sequence <= 20; sequence++)
+            execution.Publish(new ReplEvalConsoleEvent(
+                "execution-1", sequence, "stdout", new string('x', 128)));
+        execution.Publish(new ReplEvalDisplayEvent(
+            "execution-1",
+            21,
+            false,
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = "after truncation"
+            }),
+            null));
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            TestContext.Current.CancellationToken);
+
+        result.Truncated.Should().BeTrue();
+        result.OmittedBytes.Should().BeGreaterThan(0);
+        sink.Displays.Should().Equal("after truncation");
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task OversizedJsonResultFallsBackToBoundedTextPlain()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions { MaxModelOutputBytes = 128 },
+            new RecordingPresentationSink(),
+            []);
+        execution.CompleteResult(JsonSerializer.SerializeToElement(new string('x', 1024)));
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            TestContext.Current.CancellationToken);
 
         result.Outputs.Should().ContainSingle().Which.Should().BeEquivalentTo(new
         {
             Kind = "result",
-            Text = "fallback",
             MediaType = "text/plain"
         });
-        result.Truncated.Should().BeFalse();
+        result.Outputs[0].Text.Should().HaveLength(64);
+        result.Truncated.Should().BeTrue();
+        result.OmittedBytes.Should().BeGreaterThan(0);
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task BinaryOnlyResultReportsMediaTypesWithoutCopyingPayload()
+    [Fact(Timeout = 15_000)]
+    public async Task PresentationEventLimitSkipsExcessEventsButContinuesDraining()
     {
-        var requestId = JupyterMessageId.Create();
-        const string payload = "aGVsbG8=";
-        var bundle = new MimeBundle(new Dictionary<string, JsonElement>
-        {
-            ["image/png"] = JsonSerializer.SerializeToElement(payload),
-            ["application/octet-stream"] = JsonSerializer.SerializeToElement(payload)
-        });
-        var execution = new TestExecution(
-            requestId,
-            [new JupyterExecuteResultOutput(requestId, bundle, EmptyMetadata, 1)],
-            new JupyterExecuteReply("ok", 1));
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var sink = new RecordingPresentationSink();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
-            new DenoReplOptions(),
-            new RecordingPresentationSink(),
-            static id => id,
-            static id => id);
-
-        var result = await collector.ConsumeAsync(execution, TestContext.Current.CancellationToken);
-
-        result.Outputs.Should().ContainSingle().Which.MediaTypes.Should()
-            .Equal("application/octet-stream", "image/png");
-        JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
-            .Should().NotContain(payload);
-    }
-
-    private static MimeBundle TextBundle(string text)
-    {
-        return new MimeBundle(new Dictionary<string, JsonElement>
+            new DenoReplOptions { MaxPresentationEventsPerExecution = 1 },
+            sink,
+            []);
+        var data = JsonSerializer.SerializeToElement(new Dictionary<string, string>
         {
-            ["text/plain"] = JsonSerializer.SerializeToElement(text)
+            ["text/plain"] = "display"
         });
-    }
+        execution.Publish(new ReplEvalDisplayEvent("execution-1", 1, false, null, data, null));
+        execution.Publish(new ReplEvalClearOutputEvent("execution-1", 2, false));
+        execution.Publish(new ReplEvalConsoleEvent("execution-1", 3, "stderr", "still modeled"));
+        execution.CompleteResult();
 
-    private static MimeBundle JsonBundle(int value)
-    {
-        return new MimeBundle(new Dictionary<string, JsonElement>
-        {
-            ["application/json"] = JsonSerializer.SerializeToElement(value)
-        });
-    }
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            TestContext.Current.CancellationToken);
 
-    private sealed class TestExecution(
-        JupyterMessageId requestId,
-        IReadOnlyList<JupyterOutput> outputs,
-        JupyterExecuteReply reply) : IJupyterExecution
-    {
-        public List<string> InputReplies { get; } = [];
-
-        public int ObservedOutputCount { get; private set; }
-        public JupyterMessageId RequestId { get; } = requestId;
-
-        public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
-
-        public Task<JupyterExecutionResult> Completion { get; } = Task.FromResult(
-            new JupyterExecutionResult(
-                reply,
-                JupyterMessage.Create(
-                    "execute_reply",
-                    reply,
-                    JupyterJsonContext.Default.JupyterExecuteReply,
-                    new JupyterSessionIdentity("test", "tester"))));
-
-        public Task ReplyInputAsync(
-            JupyterInputRequest request,
-            string value,
-            CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            InputReplies.Add(value);
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
-        {
-            await Task.Yield();
-            foreach (var output in outputs)
-            {
-                ObservedOutputCount++;
-                yield return output;
-            }
-        }
+        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 0, 0, 2));
+        result.Outputs.Should().ContainSingle().Which.Text.Should().Be("still modeled");
+        sink.Displays.Should().ContainSingle();
+        sink.Clears.Should().BeEmpty();
+        sink.Stderr.Should().BeEmpty();
     }
 
     private sealed class RecordingPresentationSink : IDenoReplPresentationSink
     {
-        public List<string> Displays { get; } = [];
+        internal string InputReply { get; init; } = string.Empty;
 
-        public List<(JupyterDisplayId Id, string Text)> Updates { get; } = [];
+        internal List<string> Displays { get; } = [];
 
-        public List<bool> Clears { get; } = [];
+        internal List<(JupyterDisplayId Id, string Text)> Updates { get; } = [];
 
-        public List<string> Stderr { get; } = [];
+        internal List<bool> Clears { get; } = [];
 
-        public List<(string Name, string Value)> Errors { get; } = [];
+        internal List<string> Stderr { get; } = [];
+
+        internal List<(string Name, string Value)> Errors { get; } = [];
 
         public ValueTask DisplayAsync(
             MimeBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
             return ValueTask.CompletedTask;
         }
@@ -339,6 +239,7 @@ public sealed class DenoReplExecutionCollectorTests
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
             return ValueTask.FromResult(displayId);
         }
@@ -349,18 +250,21 @@ public sealed class DenoReplExecutionCollectorTests
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Updates.Add((displayId, data.Data["text/plain"].GetString() ?? string.Empty));
             return ValueTask.CompletedTask;
         }
 
         public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Clears.Add(wait);
             return ValueTask.CompletedTask;
         }
 
         public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Stderr.Add(text);
             return ValueTask.CompletedTask;
         }
@@ -371,6 +275,7 @@ public sealed class DenoReplExecutionCollectorTests
             IReadOnlyList<string> traceback,
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Errors.Add((name, value));
             return ValueTask.CompletedTask;
         }
@@ -380,78 +285,8 @@ public sealed class DenoReplExecutionCollectorTests
             bool password,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult("Ada");
-        }
-    }
-
-    private sealed class BlockingDisplayPresentationSink : IDenoReplPresentationSink
-    {
-        private readonly TaskCompletionSource displayStarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly TaskCompletionSource releaseDisplay =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public CancellationToken ObservedCancellationToken { get; private set; }
-
-        public ValueTask DisplayAsync(
-            MimeBundle data,
-            IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken)
-        {
-            ObservedCancellationToken = cancellationToken;
-            displayStarted.TrySetResult();
-            return new ValueTask(releaseDisplay.Task.WaitAsync(cancellationToken));
-        }
-
-        public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-            MimeBundle data,
-            JupyterDisplayId displayId,
-            IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ValueTask UpdateDisplayAsync(
-            JupyterDisplayId displayId,
-            MimeBundle data,
-            IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ValueTask PublishErrorAsync(
-            string name,
-            string value,
-            IReadOnlyList<string> traceback,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<string> RequestInputAsync(
-            string prompt,
-            bool password,
-            CancellationToken cancellationToken)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task WaitUntilStartedAsync(CancellationToken cancellationToken)
-        {
-            return displayStarted.Task.WaitAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(InputReply);
         }
     }
 }

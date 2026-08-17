@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Agent;
-using Maieutics.Execution;
+using Maieutics.DenoRepl;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
 

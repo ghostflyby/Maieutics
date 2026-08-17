@@ -15,6 +15,3 @@ export interface ReplEnvelope {
   payload?: unknown;
   buffers?: string[];
 }
-
-/** HttpClient created by `Deno.createHttpClient` for unix socket proxying. */
-export type HttpClient = ReturnType<typeof Deno.createHttpClient>;

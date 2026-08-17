@@ -1,9 +1,12 @@
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
-using Maieutics.Jupyter.Client;
-using Maieutics.Jupyter.Shared;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
@@ -37,27 +40,34 @@ public sealed class ReplControlChannelIntegrationTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
+        var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
-            NullLogger<ReplControlHost>.Instance);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+            NullLogger<ReplControlHost>.Instance,
+            credentials: credentials);
+        await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
         await using (application)
         {
+            var options = new DenoReplOptions();
             var factory = new LocalDenoReplSessionFactory(
-                new DenoReplOptions(),
+                options,
                 controlHost,
-                new ReplClientModule());
+                new DenoReplModule(),
+                evalHost,
+                registry,
+                credentials,
+                NullLogger<DenoReplProcess>.Instance);
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "verify",
                 false,
                 Directory.GetCurrentDirectory(),
-                new DenoReplOptions(),
+                options,
                 factory,
                 new DenoReplSessionTests.ImmediatePresentationRouter(),
-                registry,
                 NullLogger<DenoReplSession>.Instance);
             await using (session)
             {
@@ -68,9 +78,9 @@ public sealed class ReplControlChannelIntegrationTests
                     timeout.Token);
                 result.ExecutionStatus.Should().Be("ok");
                 result.Outputs
-                    .Where(item => item.Kind == "result" && item.Text is not null)
-                    .Select(item => item.Text)
-                    .Should().Contain(value => value != null && value.Contains("ok"));
+                    .Where(static item => item is { Kind: "result", Value: not null })
+                    .Select(static item => item.Value?.GetString())
+                    .Should().Contain("ok");
             }
         }
     }
@@ -84,6 +94,7 @@ public sealed class ReplControlChannelIntegrationTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
+        var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
         var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-tools-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceRoot);
@@ -92,45 +103,130 @@ public sealed class ReplControlChannelIntegrationTests
             socketPath,
             registry,
             NullLogger<ReplControlHost>.Instance,
-            functions);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+            functions,
+            credentials: credentials);
+        await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
         await using (application)
         {
+            var options = new DenoReplOptions();
             var factory = new LocalDenoReplSessionFactory(
-                new DenoReplOptions(),
+                options,
                 controlHost,
-                new ReplClientModule());
-            var manager = await factory.StartAsync(
+                new DenoReplModule(),
+                evalHost,
+                registry,
+                credentials,
+                NullLogger<DenoReplProcess>.Instance);
+            var generation = await factory.StartAsync(
                 Directory.GetCurrentDirectory(),
                 "integration-session",
+                1,
                 timeout.Token);
-            await using (manager)
+            await using (generation)
             {
-                var processId = manager.ProcessId;
-                processId.Should().NotBeNull();
-                registry.Register(processId.Value, "integration-session");
-
-                var execution = await manager.Client.ExecuteAsync(
-                    new JupyterExecuteRequest(ReplChildProbeScript),
-                    timeout.Token);
-                var outputs = await ReadOutputsAsync(execution, timeout.Token);
-                (await execution.Completion.WaitAsync(timeout.Token)).Reply.Status.Should().Be("ok");
-                outputs.OfType<JupyterExecuteResultOutput>()
-                    .Select(output => output.Data.Data["text/plain"].GetString())
-                    .Should().Contain(value => value != null && value.Contains("control-ok"));
+                var execution = await generation.Connection.ExecuteAsync(ReplChildProbeScript, timeout.Token);
+                await foreach (var _ in execution.Events.WithCancellation(timeout.Token))
+                {
+                }
+                var terminal = await execution.Completion.WaitAsync(timeout.Token);
+                terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetString()
+                    .Should().Contain("control-ok");
             }
         }
 
         Directory.Delete(workspaceRoot, true);
     }
 
-    private static async Task<IReadOnlyList<JupyterOutput>> ReadOutputsAsync(
-        IJupyterExecution execution,
+    [Fact(Timeout = 120_000)]
+    public async Task RealDenoChildPromptInputRoundTrips()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var credentials = new ReplControlCredentialRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-tools-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspaceRoot);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            credentials: credentials);
+        await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
+        await using (application)
+        {
+            var options = new DenoReplOptions();
+            var factory = new LocalDenoReplSessionFactory(
+                options,
+                controlHost,
+                new DenoReplModule(),
+                evalHost,
+                registry,
+                credentials,
+                NullLogger<DenoReplProcess>.Instance);
+            var generation = await factory.StartAsync(
+                Directory.GetCurrentDirectory(),
+                "input-session",
+                1,
+                timeout.Token);
+            await using (generation)
+            {
+                var execution = await generation.Connection.ExecuteAsync(
+                    "const name = prompt('Name: '); console.error('shared-stderr'); name;",
+                    timeout.Token);
+                var received = new List<string>();
+                await foreach (var item in execution.Events.WithCancellation(timeout.Token))
+                {
+                    received.Add(item.GetType().Name);
+                    if (item is ReplEvalInputRequestEvent input)
+                    {
+                        input.Prompt.Should().Be("Name: ");
+                        await generation.Connection.ReplyInputAsync(input, "Ada", timeout.Token);
+                    }
+                }
+
+                received.Should().Equal(
+                    nameof(ReplEvalInputRequestEvent),
+                    nameof(ReplEvalConsoleEvent));
+                var terminal = await execution.Completion.WaitAsync(timeout.Token);
+                terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetString()
+                    .Should().Be("Ada");
+            }
+        }
+
+        Directory.Delete(workspaceRoot, true);
+    }
+
+    private static async Task<WebApplication> StartHostAsync(
+        string socketPath,
+        ReplControlHost controlHost,
+        ReplEvalWebSocketHost evalHost,
         CancellationToken cancellationToken)
     {
-        var outputs = new List<JupyterOutput>();
-        await foreach (var output in execution.Outputs.WithCancellation(cancellationToken)) outputs.Add(output);
-
-        return outputs;
+        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+        {
+            ApplicationName = "maieutics-repl-integration-test"
+        });
+        builder.Configuration.Sources.Clear();
+        builder.Logging.ClearProviders();
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.AddServerHeader = false;
+            options.Limits.MinRequestBodyDataRate = null;
+            options.Limits.MinResponseDataRate = null;
+            options.ListenUnixSocket(socketPath, listenOptions =>
+            {
+                listenOptions.Protocols = HttpProtocols.Http1;
+            });
+        });
+        var application = builder.Build();
+        evalHost.MapEndpoint(application);
+        controlHost.MapEndpoints(application);
+        await application.StartAsync(cancellationToken);
+        return application;
     }
 }

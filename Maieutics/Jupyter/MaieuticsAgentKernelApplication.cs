@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;

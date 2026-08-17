@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Maieutics.Control;
 
 namespace Maieutics.Plugins;
 
@@ -18,6 +17,7 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
+        ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts"),
         ("Maieutics.Deno.PluginSdkConfig.json", "maieutics-plugin-sdk/deno.json")
     ];
 
@@ -26,7 +26,7 @@ internal sealed class PluginHostModule
         ModuleDirectory = Path.Combine(Path.GetTempPath(), $"mc-modules-{Guid.NewGuid():N}");
         Directory.CreateDirectory(ModuleDirectory);
         foreach (var (resource, relativePath) in Entries)
-            ReplClientModule.WriteEmbedded(resource, Path.Combine(ModuleDirectory, relativePath));
+            WriteEmbedded(resource, Path.Combine(ModuleDirectory, relativePath));
 
         SdkUrl = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-sdk/mod.ts")).AbsoluteUri;
         HostUrl = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-host/mod.ts")).AbsoluteUri;
@@ -48,6 +48,19 @@ internal sealed class PluginHostModule
 
     /// <summary>Root deno.json whose `links` override the JSR-resolved SDK with the local copy.</summary>
     public string ConfigFile { get; }
+
+    private static void WriteEmbedded(string resourceName, string path)
+    {
+        using var stream = typeof(PluginHostModule).Assembly.GetManifestResourceStream(resourceName)
+                           ?? throw new InvalidOperationException(
+                               $"Missing embedded Deno module '{resourceName}'.");
+        using var reader = new StreamReader(stream);
+        var source = reader.ReadToEnd();
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(path) ??
+            throw new InvalidOperationException($"Cannot resolve the directory for '{path}'."));
+        File.WriteAllText(path, source);
+    }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

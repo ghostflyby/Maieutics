@@ -2,8 +2,13 @@ using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Plugins;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
@@ -158,6 +163,7 @@ public sealed class PluginHostIntegrationTests
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
+        var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
         var pluginsRoot = CreatePluginsRoot("rejecting");
@@ -179,7 +185,8 @@ public sealed class PluginHostIntegrationTests
             NullLogger<ReplControlHost>.Instance,
             functions,
             manager);
-        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
         await manager.StartAsync(timeout.Token);
         await using (application)
         await using (manager)
@@ -190,19 +197,23 @@ public sealed class PluginHostIntegrationTests
                 timeout.Token);
             registrations.Should().NotBeEmpty();
 
+            var options = new DenoReplOptions();
             var factory = new LocalDenoReplSessionFactory(
-                new DenoReplOptions(),
+                options,
                 controlHost,
-                new ReplClientModule());
+                new DenoReplModule(),
+                evalHost,
+                registry,
+                credentials,
+                NullLogger<DenoReplProcess>.Instance);
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "hook-session",
                 false,
                 Directory.GetCurrentDirectory(),
-                new DenoReplOptions(),
+                options,
                 factory,
                 new DenoReplSessionTests.ImmediatePresentationRouter(),
-                registry,
                 NullLogger<DenoReplSession>.Instance);
             await using (session)
             {
@@ -213,13 +224,43 @@ public sealed class PluginHostIntegrationTests
                     timeout.Token);
                 result.ExecutionStatus.Should().Be("ok");
                 result.Outputs
-                    .Where(item => item is { Kind: "result", Text: not null })
-                    .Select(item => item.Text)
+                    .Where(static item => item is { Kind: "result", Value: not null })
+                    .Select(static item => item.Value?.GetRawText())
                     .Should().Contain(value => value != null && value.Contains("denied_by_hook"));
             }
         }
 
         Directory.Delete(workspaceRoot, true);
+    }
+
+    private static async Task<WebApplication> StartHostAsync(
+        string socketPath,
+        ReplControlHost controlHost,
+        ReplEvalWebSocketHost evalHost,
+        CancellationToken cancellationToken)
+    {
+        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+        {
+            ApplicationName = "maieutics-plugin-repl-integration-test"
+        });
+        builder.Configuration.Sources.Clear();
+        builder.Logging.ClearProviders();
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.AddServerHeader = false;
+            options.Limits.MinRequestBodyDataRate = null;
+            options.Limits.MinResponseDataRate = null;
+            options.ListenUnixSocket(socketPath, listenOptions =>
+            {
+                listenOptions.Protocols = HttpProtocols.Http1;
+            });
+        });
+        var application = builder.Build();
+        evalHost.MapEndpoint(application);
+        controlHost.MapEndpoints(application);
+        await application.StartAsync(cancellationToken);
+        return application;
     }
 
     /// <summary>

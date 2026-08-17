@@ -7,6 +7,7 @@ namespace Maieutics.Control;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     MaxDepth = ReplControlLimits.MaximumJsonDepth)]
 [JsonSerializable(typeof(ToolInvokeRequest))]
+[JsonSerializable(typeof(ToolInvokePayload))]
 [JsonSerializable(typeof(ReplEnvelope))]
 [JsonSerializable(typeof(BusCancelPayload))]
 [JsonSerializable(typeof(BusCommPayload))]
@@ -24,6 +25,17 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(DiscoverContextPayload))]
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
+internal static class ReplControlJson
+{
+    internal static byte[] Serialize(ReplEnvelope envelope)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, ReplControlJsonContext.Default.ReplEnvelope);
+        if (bytes.Length > ReplControlLimits.MaximumInboundMessageBytes)
+            throw new InvalidOperationException("The control message exceeds the maximum message size.");
+        return bytes;
+    }
+}
+
 /// <summary>Versioned script tool invocation request carried by the control channel.</summary>
 internal sealed record ToolInvokeRequest(
     int Version,
@@ -31,6 +43,9 @@ internal sealed record ToolInvokeRequest(
     JsonElement Arguments,
     string? CorrelationId = null,
     string? SessionId = null);
+
+/// <summary>Script tool invocation carried inside a control WebSocket envelope.</summary>
+internal sealed record ToolInvokePayload(string Tool, JsonElement Arguments);
 
 /// <summary>
 ///     Versioned message envelope shared by every control channel bus message. Payloads are
@@ -55,7 +70,9 @@ internal static class ReplMessageType
     public const string CommMsg = "comm.msg";
     public const string CommClose = "comm.close";
     public const string CommAck = "comm.ack";
+    public const string ToolInvoke = "tool.invoke";
     public const string ToolProgress = "tool.progress";
+    public const string ToolResult = "tool.result";
     public const string ExtensionInvoke = "extension.invoke";
     public const string ExtensionResult = "extension.result";
     public const string ExtensionError = "extension.error";

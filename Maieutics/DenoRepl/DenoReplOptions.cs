@@ -1,4 +1,4 @@
-namespace Maieutics.Execution;
+namespace Maieutics.DenoRepl;
 
 internal sealed class DenoReplOptions
 {

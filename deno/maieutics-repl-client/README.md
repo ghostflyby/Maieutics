@@ -23,13 +23,17 @@ Validation: `deno task check` and `deno task test`.
 
 ## Deno permissions
 
-Inside the `deno jupyter` kernel every permission is granted. When the module is used standalone or
-in tests, it requires:
+Use explicit allowlists when the module runs standalone:
 
-- `--allow-env` — reads `MAIEUTICS_REPL_IPC`, `MAIEUTICS_REPL_CLIENT`, and `MAIEUTICS_REPL_SESSION`.
-- `--allow-net` — HTTP (`fetch`) and WebSocket connections through the unix socket proxy.
-- `--allow-read` and `--allow-write` — `Deno.createHttpClient` checks both read and write access to
-  the unix socket path (verified empirically; without `--allow-write` the proxy fails at creation).
+- Unix: `--allow-env=MAIEUTICS_REPL_IPC,MAIEUTICS_REPL_CLIENT,MAIEUTICS_REPL_SESSION`,
+  `--allow-net=unix:<absolute-socket-path>,localhost:80`, and the same socket path in both
+  `--allow-read` and `--allow-write`. The read/write pair is required by `Deno.createHttpClient`
+  (verified empirically); `localhost:80` is the synthetic URL authority the native `WebSocket`
+  resolves even though the connection travels over the UDS proxy. No other TCP host is granted.
+- Windows:
+  `--allow-env=MAIEUTICS_REPL_IPC,MAIEUTICS_REPL_CLIENT,MAIEUTICS_REPL_SESSION,MAIEUTICS_REPL_PIPE,SystemRoot`,
+  `--allow-net=127.0.0.1:<kestrel-port>`, and `--allow-ffi=<SystemRoot>\\System32\\kernel32.dll`.
+  The bootstrap does not load any other native library and reuses the existing Kestrel listener.
 
 Any change that alters environment, network, or filesystem behavior must update this list in the
 same change, so the future permission system can derive the required grant set instead of guessing.

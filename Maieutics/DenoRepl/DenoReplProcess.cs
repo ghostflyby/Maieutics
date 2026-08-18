@@ -121,12 +121,15 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                                "The Windows named-pipe bootstrap is not configured.");
             var systemRoot = Environment.GetEnvironmentVariable("SystemRoot")
                              ?? throw new InvalidOperationException("SystemRoot is not configured.");
-            var kernel32 = Path.Combine(systemRoot, "System32", "kernel32.dll");
             environmentNames.Add(DenoReplEnvironment.PipeName);
             environmentNames.Add(DenoReplEnvironment.Credential);
             environmentNames.Add("SystemRoot");
             startInfo.ArgumentList.Add($"--allow-net={RequireWindowsLoopbackAddress(options.IpcAddress)}");
-            startInfo.ArgumentList.Add($"--allow-ffi={kernel32}");
+            // Deno 2.9.5 ignores the path argument of --allow-ffi (verified: an exact file or
+            // directory grant still rejects Deno.dlopen), so the Windows named-pipe credential
+            // bootstrap requires the unsuffixed form. The grant is Windows-only and the child
+            // launch arguments remain fully controlled by the kernel.
+            startInfo.ArgumentList.Add("--allow-ffi");
             startInfo.Environment[DenoReplEnvironment.PipeName] = pipeName;
             startInfo.Environment["SystemRoot"] = systemRoot;
         }

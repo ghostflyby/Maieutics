@@ -12,8 +12,9 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const PENDING_MESSAGE_CAPACITY = 64;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-const GENERIC_READ = 0x80000000;
-const GENERIC_WRITE = 0x40000000;
+// Written as one literal: JS bitwise OR coerces both operands to int32, so
+// 0x80000000 | 0x40000000 would be -1073741824, which Deno rejects for u32.
+const GENERIC_READ_WRITE = 0xC0000000;
 const OPEN_EXISTING = 3;
 const ERROR_BROKEN_PIPE = 109;
 const ERROR_PIPE_BUSY = 231;
@@ -634,7 +635,7 @@ async function openNamedPipe(kernel32: Kernel32, pipeName: string): Promise<Deno
   for (let attempt = 0; attempt < 2; attempt++) {
     const handle = kernel32.symbols.CreateFileW(
       path,
-      GENERIC_READ | GENERIC_WRITE,
+      GENERIC_READ_WRITE,
       0,
       null,
       OPEN_EXISTING,

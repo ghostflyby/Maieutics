@@ -10,8 +10,9 @@ export interface BootstrapCredential {
   credential: string;
 }
 
-const GENERIC_READ = 0x80000000;
-const GENERIC_WRITE = 0x40000000;
+// Written as one literal: JS bitwise OR coerces both operands to int32, so
+// 0x80000000 | 0x40000000 would be -1073741824, which Deno rejects for u32.
+const GENERIC_READ_WRITE = 0xC0000000;
 const OPEN_EXISTING = 3;
 const MAX_PAYLOAD_BYTES = 4096;
 
@@ -64,7 +65,7 @@ export function bootstrapWindowsCredential(
 
   const handle = kernel32.symbols.CreateFileW(
     Deno.UnsafePointer.of(pathBytes),
-    GENERIC_READ | GENERIC_WRITE,
+    GENERIC_READ_WRITE,
     0,
     null,
     OPEN_EXISTING,

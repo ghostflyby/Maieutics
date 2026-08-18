@@ -69,6 +69,9 @@ jobs:
         with:
           deno-version: 2.9.5
 
+      - name: Warm Deno REPL module cache
+        run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
+
       - name: Restore
         run: dotnet restore Maieutics.slnx
 
@@ -109,6 +112,9 @@ jobs:
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.5
+
+      - name: Warm Deno REPL module cache
+        run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
 
       - name: Restore solution
         run: dotnet restore Maieutics.slnx

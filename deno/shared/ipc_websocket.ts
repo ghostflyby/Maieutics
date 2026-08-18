@@ -277,9 +277,8 @@ class NativeUnixWebSocket implements IpcWebSocket {
     const socket = new WebSocket(`ws://localhost${path}`, { client: http });
     const owner = new NativeUnixWebSocket(http, socket);
     try {
-        await waitForNativeOpen(socket);
-        return owner;
-
+      await waitForNativeOpen(socket);
+      return owner;
     } catch (error) {
       owner.#closeTransport();
       throw error;
@@ -435,7 +434,10 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
     for (const line of lines.slice(1)) {
       const separator = line.indexOf(":");
       if (separator > 0) {
-        headers.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+        headers.set(
+          line.slice(0, separator).trim().toLowerCase(),
+          line.slice(separator + 1).trim(),
+        );
       }
     }
     const expectedAccept = new Uint8Array(
@@ -463,7 +465,10 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
       if (length === 126) {
         length = new DataView((await this.#reader.readExact(2)).buffer).getUint16(0, false);
       } else if (length === 127) {
-        const extended = new DataView((await this.#reader.readExact(8)).buffer).getBigUint64(0, false);
+        const extended = new DataView((await this.#reader.readExact(8)).buffer).getBigUint64(
+          0,
+          false,
+        );
         if (extended > BigInt(MAX_MESSAGE_BYTES)) {
           throw new RangeError(`The IPC WebSocket message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
         }
@@ -474,7 +479,9 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
       }
       const payload = await this.#reader.readExact(length);
       if (opcode >= 0x8) {
-        if (!final || payload.length > 125) throw new Error("The WebSocket control frame is invalid.");
+        if (!final || payload.length > 125) {
+          throw new Error("The WebSocket control frame is invalid.");
+        }
         if (opcode === 0x8) {
           await this.#handleRemoteClose(payload);
           return;
@@ -487,7 +494,9 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
         continue;
       }
       if (opcode === 0x1 || opcode === 0x2) {
-        if (fragmentOpcode !== undefined) throw new Error("A fragmented WebSocket message is already active.");
+        if (fragmentOpcode !== undefined) {
+          throw new Error("A fragmented WebSocket message is already active.");
+        }
         fragmentOpcode = opcode;
       } else if (opcode !== 0x0 || fragmentOpcode === undefined) {
         throw new Error(`Unexpected WebSocket data opcode ${opcode}.`);

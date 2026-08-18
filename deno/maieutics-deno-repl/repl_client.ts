@@ -108,9 +108,7 @@ export class ReplClient {
       payload: {
         sessionId: this.#options.sessionId,
         generation: this.#options.generation,
-        ...(this.#options.credential === undefined
-          ? {}
-          : { credential: this.#options.credential }),
+        ...(this.#options.credential === undefined ? {} : { credential: this.#options.credential }),
       },
     });
     await withTimeout(

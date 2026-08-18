@@ -370,18 +370,16 @@ function createJupyterApi(): typeof Deno.jupyter {
 
   const tagged =
     (mime: string) =>
-    (strings: TemplateStringsArray, ...values: unknown[]): Deno.jupyter.Displayable =>
-      ({
-        [DISPLAY]: () => ({ [mime]: String.raw({ raw: strings }, ...values.map(String)) }),
-      } as unknown as Deno.jupyter.Displayable);
-
-  const image = (source: string | Uint8Array): Deno.jupyter.Displayable =>
-    ({
-      [DISPLAY]: async () => {
-        const data = typeof source === "string" ? await Deno.readFile(source) : source;
-        return { [imageMime(source, data)]: encodeBase64(data) };
-      },
+    (strings: TemplateStringsArray, ...values: unknown[]): Deno.jupyter.Displayable => ({
+      [DISPLAY]: () => ({ [mime]: String.raw({ raw: strings }, ...values.map(String)) }),
     } as unknown as Deno.jupyter.Displayable);
+
+  const image = (source: string | Uint8Array): Deno.jupyter.Displayable => ({
+    [DISPLAY]: async () => {
+      const data = typeof source === "string" ? await Deno.readFile(source) : source;
+      return { [imageMime(source, data)]: encodeBase64(data) };
+    },
+  } as unknown as Deno.jupyter.Displayable);
 
   return {
     $display: DISPLAY as unknown as typeof Deno.jupyter.$display,

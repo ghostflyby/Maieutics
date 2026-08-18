@@ -211,9 +211,7 @@ class ReplBus {
     this.address = address;
     this.events = events;
     this.sessionId = Deno.env.get(SESSION_ENV) ?? "";
-    this.credential = Deno.build.os === "windows"
-      ? Deno.env.get(CREDENTIAL_ENV)
-      : undefined;
+    this.credential = Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined;
     const terminal = deferred<Error>();
     this.terminal = terminal.promise;
     this.resolveTerminal = terminal.resolve;
@@ -327,11 +325,13 @@ class ReplBus {
     if (this.terminalError !== undefined) return;
     this.terminalError = error;
     this.resolveTerminal(error);
-    for (const waiter of this.waiters.values()) waiter({
-      version: 1,
-      type: "error",
-      payload: { code: "control_closed", message: error.message },
-    });
+    for (const waiter of this.waiters.values()) {
+      waiter({
+        version: 1,
+        type: "error",
+        payload: { code: "control_closed", message: error.message },
+      });
+    }
     this.waiters.clear();
   }
 

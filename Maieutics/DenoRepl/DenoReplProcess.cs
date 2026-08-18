@@ -17,7 +17,8 @@ internal sealed record DenoReplProcessOptions(
     string SessionId,
     int Generation,
     string ClientUrl,
-    string? WindowsPipeName);
+    string? WindowsPipeName,
+    bool AutoInstallModuleGraph = true);
 
 internal sealed class DenoReplProcess : IAsyncDisposable
 {
@@ -61,22 +62,23 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         return new ValueTask(StopAsync());
     }
 
-    internal static DenoReplProcess Start(DenoReplProcessOptions options, ILogger logger)
+    internal static async Task<DenoReplProcess> StartAsync(
+        DenoReplProcessOptions options,
+        ILogger logger,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         var denoDirectory = ResolveDenoDirectory();
-        var esbuildWasm = Path.Combine(
-            denoDirectory,
-            "npm",
-            "registry.npmjs.org",
-            "esbuild-wasm",
-            EsbuildWasmVersion,
-            "esbuild.wasm");
+        var esbuildWasm = ResolveEsbuildWasm(denoDirectory);
         if (!File.Exists(esbuildWasm))
-            throw new InvalidOperationException(
-                $"The cached esbuild-wasm {EsbuildWasmVersion} payload is missing. " +
-                "Install the Deno REPL module graph before starting Maieutics.");
+        {
+            if (!options.AutoInstallModuleGraph)
+                throw CreateMissingModuleGraphException(esbuildWasm);
+            await InstallModuleGraphAsync(options, denoDirectory, cancellationToken).ConfigureAwait(false);
+            if (!File.Exists(esbuildWasm))
+                throw CreateMissingModuleGraphException(esbuildWasm);
+        }
 
         var startInfo = new ProcessStartInfo
         {
@@ -196,6 +198,104 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         }
 
         process.Dispose();
+    }
+
+    private static string ResolveEsbuildWasm(string denoDirectory)
+    {
+        return ResolveRealPath(Path.Combine(
+            denoDirectory,
+            "npm",
+            "registry.npmjs.org",
+            "esbuild-wasm",
+            EsbuildWasmVersion,
+            "esbuild.wasm"));
+    }
+
+    private static string ResolveRealPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(full);
+        return directory is null
+            ? full
+            : Path.Combine(ResolveRealDirectory(directory), Path.GetFileName(full));
+    }
+
+    private static string ResolveRealDirectory(string path)
+    {
+        // Resolve symlinks only along the existing ancestor chain; the non-existent tail
+        // (the module graph is installed on first use) is appended verbatim.
+        var tail = new List<string>();
+        var current = new DirectoryInfo(path);
+        while (current is not null && !current.Exists)
+        {
+            tail.Insert(0, current.Name);
+            current = current.Parent;
+        }
+
+        if (current is null) return path;
+
+        var parts = new List<string>();
+        while (current is not null)
+        {
+            parts.Insert(0, current.Name);
+            current = current.Parent;
+        }
+
+        // Deno checks file permissions against the canonicalized path (realpath), so every
+        // symlinked ancestor must be resolved in the grant too; /tmp on macOS is /private/tmp.
+        var resolved = parts[0];
+        for (var index = 1; index < parts.Count; index++)
+        {
+            var candidate = Path.Combine(resolved, parts[index]);
+            var info = new DirectoryInfo(candidate);
+            if (info.Exists && info.ResolveLinkTarget(true) is { } link)
+                resolved = link.FullName;
+            else
+                resolved = candidate;
+        }
+
+        return tail.Count == 0 ? resolved : Path.Combine([resolved, .. tail]);
+    }
+
+    private static InvalidOperationException CreateMissingModuleGraphException(string esbuildWasm)
+    {
+        return new InvalidOperationException(
+            $"The cached esbuild-wasm {EsbuildWasmVersion} payload is missing. " +
+            "Install the Deno REPL module graph before starting Maieutics.");
+    }
+
+    private static async Task InstallModuleGraphAsync(
+        DenoReplProcessOptions options,
+        string denoDirectory,
+        CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = options.Executable,
+            WorkingDirectory = options.ModuleDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("cache");
+        startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
+        startInfo.ArgumentList.Add($"--lock={options.LockFile}");
+        startInfo.ArgumentList.Add(options.MainUrl);
+        startInfo.Environment["DENO_DIR"] = denoDirectory;
+
+        using var process = Process.Start(startInfo)
+                            ?? throw new InvalidOperationException(
+                                $"Could not start '{options.Executable}' to install the Deno REPL module graph.");
+        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        var error = await standardError.ConfigureAwait(false);
+        _ = await standardOutput.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Installing the Deno REPL module graph failed with exit code {process.ExitCode}. " +
+                $"stderr: {error.Trim()}");
     }
 
     private static string ResolveDenoDirectory()

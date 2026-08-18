@@ -24,6 +24,8 @@ internal sealed class DenoReplOptions
 
     public int MaxPresentationBundleBytes { get; set; } = 16 * 1024 * 1024;
 
+    public bool AutoInstallModuleGraph { get; set; } = true;
+
     internal void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Executable);

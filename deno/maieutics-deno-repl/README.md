@@ -28,8 +28,8 @@ hooks inside evaluated cells.
 ## Permissions
 
 Resolve `<esbuild-wasm-file>` during installation to the cached `esbuild-wasm@0.25.12/esbuild.wasm`
-file and verify it exists before launch. The lockfile pins the module graph, so a warm cache needs no
-runtime downloads; the child does not run with `--cached-only` because Aves resolves its
+file and verify it exists before launch. The lockfile pins the module graph, so a warm cache needs
+no runtime downloads; the child does not run with `--cached-only` because Aves resolves its
 `esbuild-wasm` npm subpath from registry metadata that the offline cache does not retain.
 
 Each read entry has one purpose:

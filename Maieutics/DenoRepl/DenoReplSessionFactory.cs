@@ -69,7 +69,7 @@ internal sealed class LocalDenoReplSessionFactory(
         DenoReplProcess? process = null;
         try
         {
-            process = DenoReplProcess.Start(
+            process = await DenoReplProcess.StartAsync(
                 new DenoReplProcessOptions(
                     options.Executable,
                     modules.MainUrl,
@@ -81,8 +81,10 @@ internal sealed class LocalDenoReplSessionFactory(
                     sessionId,
                     generation,
                     modules.ClientUrl,
-                    controlHost.WindowsPipeName),
-                logger);
+                    controlHost.WindowsPipeName,
+                    options.AutoInstallModuleGraph),
+                logger,
+                startup.Token).ConfigureAwait(false);
             sessionRegistry.Register(process.ProcessId, sessionId);
 
             var connected = connection;

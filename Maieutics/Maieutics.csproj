@@ -17,10 +17,10 @@
         <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj" />
         <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj" />
         <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj" />
-        <ProjectReference Include="..\..\dotnet-pty\Pty.Net\Pty.Net.csproj" />
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="Ghostflyby.Pty" Version="0.2.2" />
         <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
         <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.3" />
         <PackageReference Include="ModelContextProtocol.Core" Version="2.0.0" />

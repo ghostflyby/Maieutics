@@ -24,8 +24,7 @@ write call (`terminal_execute` or `terminal_paste`); reads and control calls nev
 `terminal_session_not_found` when none exists. Explicitly created sessions start immediately. Sessions are scoped to
 one Agent session, capture the workspace root as their working directory at creation, and never share one PTY child.
 
-The terminal is composed of three deterministic parts: a PTY child (`Ghostflyby.Pty`, project reference; the NuGet
-package is vendor-prefixed and the env-allowlist option is not yet published), a headless VT emulator
+The terminal is composed of three deterministic parts: a PTY child (`Ghostflyby.Pty`, NuGet), a headless VT emulator
 (`XTerm.NET` `Terminal`), and an exclusive output pump that decodes the PTY byte stream into the emulator. The pump
 owns the emulator; the emulator is the only writer of the screen buffer and is not thread-safe.
 
@@ -104,9 +103,8 @@ Sessions are bounded per Agent session and frames are size-bounded.
 
 ## Consequences
 
-- The executable becomes a consumer of two third-party libraries: `Ghostflyby.Pty` (project-referenced from the local
-  repository until the env-allowlist release is published) and `XTerm.NET` (MIT). Both are pure managed code plus
-  P/Invoke on the PTY side; the PTY declares AOT compatibility.
+- The executable becomes a consumer of two third-party libraries: `Ghostflyby.Pty` (Apache-2.0) and `XTerm.NET`
+  (MIT). Both are pure managed code plus P/Invoke on the PTY side; the PTY declares AOT compatibility.
 - `terminal_*` tools are hidden unless the selected endpoint resolves the hosted `Shell` capability, so adding the tools
   does not change existing behavior for endpoints that do not claim them.
 - The terminal screen is model-visible and never pushed to the notebook; a future presentation path may render a

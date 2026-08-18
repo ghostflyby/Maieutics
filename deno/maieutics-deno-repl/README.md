@@ -27,16 +27,19 @@ hooks inside evaluated cells.
 
 ## Permissions
 
-Resolve `<esbuild-wasm-file>` during installation to the cached `esbuild-wasm@0.25.12/esbuild.wasm`
-file and verify it exists before launch. The lockfile pins the module graph, so a warm cache needs
-no runtime downloads; the child does not run with `--cached-only` because Aves resolves its
-`esbuild-wasm` npm subpath from registry metadata that the offline cache does not retain.
+The kernel lazily installs the module graph (`deno cache` with the pinned lockfile, no `--allow-*`
+flags needed: Deno loads and downloads the initial module graph without consulting the permission
+system) on the first REPL start that finds it missing, then locates `<esbuild-wasm-file>` with
+`deno eval "import.meta.resolve('npm:esbuild-wasm/esbuild.wasm')"` — the same resolution Aves uses
+at runtime. A warm cache needs no runtime downloads; the child does not run with `--cached-only`
+because Aves resolves its `esbuild-wasm` npm subpath from registry metadata that the offline cache
+does not retain.
 
 Each read entry has one purpose:
 
 - `<module-root>` contains `maieutics-deno-repl` and the materialized `MAIEUTICS_REPL_CLIENT`.
 - `<esbuild-wasm-file>` is the single cached `esbuild-wasm@0.25.12/esbuild.wasm` file that Aves
-  reads with `Deno.readFile` during REPL initialization; the rest of DENO_DIR is not granted.
+  reads with `Deno.readFile` during REPL initialization; the rest of the cache is not granted.
 - `<workspace>` is the only user-file root available to evaluated cells and
   `Deno.jupyter.image(path)`.
 - `<absolute-socket-path>` is Unix-only and is granted because `Deno.createHttpClient` checks both

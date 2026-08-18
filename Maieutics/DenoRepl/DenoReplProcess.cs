@@ -70,16 +70,14 @@ internal sealed class DenoReplProcess : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
-        var denoDirectory = await ResolveDenoCacheDirectoryAsync(options.Executable, cancellationToken)
-            .ConfigureAwait(false);
-        var esbuildWasm = ResolveEsbuildWasm(denoDirectory);
-        if (!File.Exists(esbuildWasm))
+        var esbuildWasm = await ResolveEsbuildWasmAsync(options, logger, cancellationToken).ConfigureAwait(false);
+        if (esbuildWasm is null)
         {
             if (!options.AutoInstallModuleGraph)
-                throw CreateMissingModuleGraphException(esbuildWasm);
+                throw CreateMissingModuleGraphException();
             await InstallModuleGraphAsync(options, cancellationToken).ConfigureAwait(false);
-            if (!File.Exists(esbuildWasm))
-                throw CreateMissingModuleGraphException(esbuildWasm);
+            esbuildWasm = await ResolveEsbuildWasmAsync(options, logger, cancellationToken).ConfigureAwait(false)
+                          ?? throw CreateMissingModuleGraphException();
         }
 
         var startInfo = new ProcessStartInfo
@@ -202,64 +200,49 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         process.Dispose();
     }
 
-    private static string ResolveEsbuildWasm(string denoDirectory)
+    private static async Task<string?> ResolveEsbuildWasmAsync(
+        DenoReplProcessOptions options,
+        ILogger logger,
+        CancellationToken cancellationToken)
     {
-        return ResolveRealPath(Path.Combine(
-            denoDirectory,
-            "npm",
-            "registry.npmjs.org",
-            "esbuild-wasm",
-            EsbuildWasmVersion,
-            "esbuild.wasm"));
-    }
-
-    private static string ResolveRealPath(string path)
-    {
-        var full = Path.GetFullPath(path);
-        var directory = Path.GetDirectoryName(full);
-        return directory is null
-            ? full
-            : Path.Combine(ResolveRealDirectory(directory), Path.GetFileName(full));
-    }
-
-    private static string ResolveRealDirectory(string path)
-    {
-        // Resolve symlinks only along the existing ancestor chain; the non-existent tail
-        // (the module graph is installed on first use) is appended verbatim.
-        var tail = new List<string>();
-        var current = new DirectoryInfo(path);
-        while (current is not null && !current.Exists)
+        // Mirror Aves' own resolution (eval-engine.ts): import.meta.resolve yields the exact
+        // cached esbuild.wasm URL. No DENO_DIR probing and no cache-layout assumptions; when
+        // the module graph is absent the eval fails and a warm install populates it.
+        var startInfo = new ProcessStartInfo
         {
-            tail.Insert(0, current.Name);
-            current = current.Parent;
+            FileName = options.Executable,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("eval");
+        startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
+        startInfo.ArgumentList.Add($"--lock={options.LockFile}");
+        startInfo.ArgumentList.Add("console.log(import.meta.resolve('npm:esbuild-wasm/esbuild.wasm'))");
+        using var process = Process.Start(startInfo)
+                            ?? throw new InvalidOperationException(
+                                $"Could not start '{options.Executable}' to locate esbuild-wasm.");
+        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        var error = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            logger.LogDebug("esbuild-wasm resolution failed ({ExitCode}): {Error}", process.ExitCode, error.Trim());
+            return null;
         }
 
-        if (current is null) return path;
+        if (!Uri.TryCreate(output.Trim(), UriKind.Absolute, out var wasmUrl) ||
+            !string.Equals(wasmUrl.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"esbuild-wasm resolved to an unexpected location: {output.Trim()}");
 
-        var parts = new List<string>();
-        while (current is not null)
-        {
-            parts.Insert(0, current.Name);
-            current = current.Parent;
-        }
-
-        // Deno checks file permissions against the canonicalized path (realpath), so every
-        // symlinked ancestor must be resolved in the grant too; /tmp on macOS is /private/tmp.
-        var resolved = parts[0];
-        for (var index = 1; index < parts.Count; index++)
-        {
-            var candidate = Path.Combine(resolved, parts[index]);
-            var info = new DirectoryInfo(candidate);
-            if (info.Exists && info.ResolveLinkTarget(true) is { } link)
-                resolved = link.FullName;
-            else
-                resolved = candidate;
-        }
-
-        return tail.Count == 0 ? resolved : Path.Combine([resolved, .. tail]);
+        // This is exactly the URL Aves reads inside the REPL child, so the --allow-read grant
+        // uses its local path verbatim; no canonicalization is performed here.
+        return File.Exists(wasmUrl.LocalPath) ? wasmUrl.LocalPath : null;
     }
 
-    private static InvalidOperationException CreateMissingModuleGraphException(string esbuildWasm)
+    private static InvalidOperationException CreateMissingModuleGraphException()
     {
         return new InvalidOperationException(
             $"The cached esbuild-wasm {EsbuildWasmVersion} payload is missing. " +
@@ -270,8 +253,9 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         DenoReplProcessOptions options,
         CancellationToken cancellationToken)
     {
-        // Do not force DENO_DIR here either: Deno inherits the current environment and
-        // decides its own cache location, matching where the REPL child will look.
+        // No --allow-* flags are needed: Deno loads and downloads the initial module graph
+        // without consulting the permission system. The child inherits the environment and
+        // Deno decides its own cache location, matching where Aves reads esbuild-wasm.
         var startInfo = new ProcessStartInfo
         {
             FileName = options.Executable,
@@ -298,44 +282,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             throw new InvalidOperationException(
                 $"Installing the Deno REPL module graph failed with exit code {process.ExitCode}. " +
                 $"stderr: {error.Trim()}");
-    }
-
-    private static async Task<string> ResolveDenoCacheDirectoryAsync(
-        string executable,
-        CancellationToken cancellationToken)
-    {
-        // An externally configured DENO_DIR is authoritative. Otherwise ask Deno where its
-        // cache lives instead of reimplementing platform defaults, so the REPL child, the
-        // lazy module-graph install, and this esbuild-wasm check all agree on the location.
-        if (Environment.GetEnvironmentVariable("DENO_DIR") is { Length: > 0 } configured)
-            return Path.GetFullPath(configured);
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executable,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        startInfo.ArgumentList.Add("info");
-        startInfo.ArgumentList.Add("--json");
-        using var process = Process.Start(startInfo)
-                            ?? throw new InvalidOperationException(
-                                $"Could not start '{executable}' to locate the Deno cache.");
-        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        var error = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"Could not locate the Deno cache: {error.Trim()}");
-
-        using var document = JsonDocument.Parse(output);
-        if (document.RootElement.TryGetProperty("denoDir", out var directory) &&
-            directory.ValueKind == JsonValueKind.String &&
-            directory.GetString() is { Length: > 0 } value)
-            return Path.GetFullPath(value);
-
-        throw new InvalidOperationException("The Deno cache directory could not be determined.");
     }
 
     private static string RequireWindowsLoopbackAddress(string address)

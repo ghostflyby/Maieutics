@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoRepl;
@@ -69,13 +70,14 @@ internal sealed class DenoReplProcess : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
-        var denoDirectory = ResolveDenoDirectory();
+        var denoDirectory = await ResolveDenoCacheDirectoryAsync(options.Executable, cancellationToken)
+            .ConfigureAwait(false);
         var esbuildWasm = ResolveEsbuildWasm(denoDirectory);
         if (!File.Exists(esbuildWasm))
         {
             if (!options.AutoInstallModuleGraph)
                 throw CreateMissingModuleGraphException(esbuildWasm);
-            await InstallModuleGraphAsync(options, denoDirectory, cancellationToken).ConfigureAwait(false);
+            await InstallModuleGraphAsync(options, cancellationToken).ConfigureAwait(false);
             if (!File.Exists(esbuildWasm))
                 throw CreateMissingModuleGraphException(esbuildWasm);
         }
@@ -148,7 +150,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.Environment[DenoReplEnvironment.Generation] = options.Generation.ToString(
             System.Globalization.CultureInfo.InvariantCulture);
         startInfo.Environment[DenoReplEnvironment.ClientModule] = options.ClientUrl;
-        startInfo.Environment["DENO_DIR"] = denoDirectory;
+        CopyEnvironment(startInfo, "DENO_DIR");
         CopyEnvironment(startInfo, "TMPDIR");
         CopyEnvironment(startInfo, "TMP");
         CopyEnvironment(startInfo, "TEMP");
@@ -266,9 +268,10 @@ internal sealed class DenoReplProcess : IAsyncDisposable
 
     private static async Task InstallModuleGraphAsync(
         DenoReplProcessOptions options,
-        string denoDirectory,
         CancellationToken cancellationToken)
     {
+        // Do not force DENO_DIR here either: Deno inherits the current environment and
+        // decides its own cache location, matching where the REPL child will look.
         var startInfo = new ProcessStartInfo
         {
             FileName = options.Executable,
@@ -282,7 +285,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
         startInfo.ArgumentList.Add($"--lock={options.LockFile}");
         startInfo.ArgumentList.Add(options.MainUrl);
-        startInfo.Environment["DENO_DIR"] = denoDirectory;
 
         using var process = Process.Start(startInfo)
                             ?? throw new InvalidOperationException(
@@ -298,20 +300,42 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                 $"stderr: {error.Trim()}");
     }
 
-    private static string ResolveDenoDirectory()
+    private static async Task<string> ResolveDenoCacheDirectoryAsync(
+        string executable,
+        CancellationToken cancellationToken)
     {
+        // An externally configured DENO_DIR is authoritative. Otherwise ask Deno where its
+        // cache lives instead of reimplementing platform defaults, so the REPL child, the
+        // lazy module-graph install, and this esbuild-wasm check all agree on the location.
         if (Environment.GetEnvironmentVariable("DENO_DIR") is { Length: > 0 } configured)
             return Path.GetFullPath(configured);
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (OperatingSystem.IsWindows())
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "deno");
-        if (OperatingSystem.IsMacOS()) return Path.Combine(home, "Library", "Caches", "deno");
-        if (Environment.GetEnvironmentVariable("XDG_CACHE_HOME") is { Length: > 0 } cache)
-            return Path.Combine(cache, "deno");
-        return Path.Combine(home, ".cache", "deno");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("info");
+        startInfo.ArgumentList.Add("--json");
+        using var process = Process.Start(startInfo)
+                            ?? throw new InvalidOperationException(
+                                $"Could not start '{executable}' to locate the Deno cache.");
+        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        var error = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"Could not locate the Deno cache: {error.Trim()}");
+
+        using var document = JsonDocument.Parse(output);
+        if (document.RootElement.TryGetProperty("denoDir", out var directory) &&
+            directory.ValueKind == JsonValueKind.String &&
+            directory.GetString() is { Length: > 0 } value)
+            return Path.GetFullPath(value);
+
+        throw new InvalidOperationException("The Deno cache directory could not be determined.");
     }
 
     private static string RequireWindowsLoopbackAddress(string address)

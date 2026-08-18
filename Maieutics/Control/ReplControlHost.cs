@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -24,20 +23,20 @@ namespace Maieutics.Control;
 internal sealed class ReplControlHost : IDisposable
 {
     private const int EnvelopeVersion = 1;
-    private const string CredentialHeader = "X-Maieutics-Credential";
-
+    private const string AuthorizedIdentityItem = "Maieutics.Control.AuthorizedIdentity";
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> comms =
         new(StringComparer.Ordinal);
 
-    private readonly ConcurrentDictionary<string, WebSocket> connections = new(StringComparer.Ordinal);
-    private readonly ReplControlCredentialRegistry? credentials;
+    private readonly ConcurrentDictionary<string, SessionBusConnection> connections = new(StringComparer.Ordinal);
     private readonly ILogger<ReplControlHost> logger;
+    private readonly ReplControlCredentialRegistry? credentialRegistry;
+    private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
 
     private readonly ReplOperationRegistry operations = new();
     private readonly PluginHostManager? pluginHosts;
     private readonly ReplControlSessionRegistry registry;
     private readonly IReadOnlyList<AIFunction> scriptTools;
-    private readonly IWindowsPipeBootstrap? windowsBootstrap;
+    private string? controlAddress;
 
     public ReplControlHost(
         string socketPath,
@@ -46,7 +45,7 @@ internal sealed class ReplControlHost : IDisposable
         IReadOnlyList<AIFunction>? scriptTools = null,
         PluginHostManager? pluginHosts = null,
         ReplControlCredentialRegistry? credentials = null,
-        IWindowsPipeBootstrap? windowsBootstrap = null)
+        IWindowsPipeBootstrap? windowsPipeBootstrap = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
@@ -54,25 +53,30 @@ internal sealed class ReplControlHost : IDisposable
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.scriptTools = scriptTools ?? [];
         this.pluginHosts = pluginHosts;
-        this.credentials = credentials;
-        this.windowsBootstrap = windowsBootstrap;
+        this.credentialRegistry = credentials;
+        this.windowsPipeBootstrap = windowsPipeBootstrap;
     }
 
-    /// <summary>Gets the unix domain socket path the channel listens on.</summary>
+    /// <summary>Gets the Unix socket path used by the process-wide channel on Unix.</summary>
     public string SocketPath { get; }
 
-    /// <summary>Loopback TCP address on Windows, resolved after the host starts.</summary>
-    public string? WindowsControlAddress { get; set; }
+    /// <summary>Address REPL and plugin-host children use for the process-wide control channel.</summary>
+    public string ControlAddress => controlAddress ?? SocketPath;
 
-    /// <summary>Address REPL children connect to: unix socket path, or TCP host:port on Windows.</summary>
-    public string ControlAddress =>
-        OperatingSystem.IsWindows() ? WindowsControlAddress ?? string.Empty : SocketPath;
+    /// <summary>Gets the Windows named pipe used only for credential bootstrap.</summary>
+    public string? WindowsPipeName => windowsPipeBootstrap?.PipeName;
 
-    /// <summary>Named pipe REPL children bootstrap through on Windows.</summary>
-    public string? WindowsPipeName => windowsBootstrap?.PipeName;
+    /// <summary>Updates the concrete loopback address after Kestrel binds its Windows endpoint.</summary>
+    internal void SetControlAddress(string address)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(address);
+        controlAddress = address;
+    }
 
     public void Dispose()
     {
+        if (OperatingSystem.IsWindows()) return;
+
         try
         {
             File.Delete(SocketPath);
@@ -90,6 +94,12 @@ internal sealed class ReplControlHost : IDisposable
         return Path.Combine(Path.GetTempPath(), name);
     }
 
+    /// <summary>Creates the platform-specific process-wide control-channel address.</summary>
+    internal static string CreateControlAddress()
+    {
+        return OperatingSystem.IsWindows() ? $"maieutics-{Guid.NewGuid():N}" : CreateSocketPath();
+    }
+
     /// <summary>Maps the control channel middleware and endpoints onto the application.</summary>
     internal void MapEndpoints(WebApplication application)
     {
@@ -98,13 +108,15 @@ internal sealed class ReplControlHost : IDisposable
             if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
                 bodySize.MaxRequestBodySize = ReplControlLimits.MaximumInboundMessageBytes;
 
-            if (!Authorize(context))
+            var identity = await AuthorizeAsync(context).ConfigureAwait(false);
+            if (identity is null)
             {
                 logger.LogWarning("Rejected control channel connection with an unexpected peer identity.");
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return;
             }
 
+            context.Items[AuthorizedIdentityItem] = identity;
             await next(context).ConfigureAwait(false);
         });
         application.UseWebSockets();
@@ -113,28 +125,60 @@ internal sealed class ReplControlHost : IDisposable
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
     }
 
-    private bool Authorize(HttpContext context)
+    private async Task<string?> AuthorizeAsync(HttpContext context)
     {
         if (OperatingSystem.IsWindows())
-            // Windows cannot resolve peer credentials on loopback TCP; the named-pipe bootstrap
-            // issued a session-bound credential that each request carries in a header.
-            return ResolveCredentialIdentity(context) is not null;
+            return TryGetCredentialIdentity(context, out var windowsIdentity)
+                ? windowsIdentity
+                : null;
 
-        var peerSocket = GetPeerSocket(context);
-        if (peerSocket is null ||
-            !PeerProcessCredentials.TryGetPeerIdentity(peerSocket, out var peerProcessId, out var peerUserId))
-            return false;
+        if (!ReplControlPeerProcess.TryGetIdentity(context, out var peerProcessId, out var peerUserId))
+            return null;
 
         if (peerProcessId > 0)
-            return registry.TryGetSession(peerProcessId, out _) ||
-                   registry.TryGetPluginHost(peerProcessId, out _);
+        {
+            try
+            {
+                using var identityWait = CancellationTokenSource.CreateLinkedTokenSource(
+                    context.RequestAborted);
+                identityWait.CancelAfter(ReplControlLimits.PeerRegistrationWait);
+                await registry.WaitForIdentityAsync(peerProcessId, identityWait.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested)
+            {
+                // The peer never registered; treat it as unowned instead of holding the request open.
+                return null;
+            }
 
-        return peerUserId > 0 && peerUserId == PeerProcessCredentials.GetCurrentUserId();
+            if (registry.TryGetSession(peerProcessId, out var sessionId))
+                return sessionId;
+
+            if (registry.TryGetPluginHost(peerProcessId, out var hostId))
+                return hostId;
+
+            return null;
+        }
+
+        return peerUserId > 0 &&
+               peerUserId == PeerProcessCredentials.GetCurrentUserId()
+            ? string.Empty
+            : null;
     }
 
-    private static Socket? GetPeerSocket(HttpContext context)
+    private bool TryGetCredentialIdentity(HttpContext context, out string identity)
     {
-        return context.Features.Get<IConnectionSocketFeature>()?.Socket;
+        identity = string.Empty;
+        if (credentialRegistry is null ||
+            !context.Request.Headers.TryGetValue("Authorization", out var authorization))
+            return false;
+
+        var value = authorization.ToString();
+        const string prefix = "Bearer ";
+        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+        var credential = value[prefix.Length..].Trim();
+        return !string.IsNullOrWhiteSpace(credential) &&
+               credentialRegistry.TryResolve(credential, out identity);
     }
 
     private async Task HandleWebSocketAsync(HttpContext context)
@@ -145,9 +189,19 @@ internal sealed class ReplControlHost : IDisposable
             return;
         }
 
-        var peerProcessId = ResolvePeerProcessId(context);
+        var peerProcessId = ReplControlPeerProcess.GetProcessId(context);
+        var authorizedIdentity = context.Items.TryGetValue(AuthorizedIdentityItem, out var value) &&
+                                 value is string identityValue
+            ? identityValue
+            : null;
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-        var identity = await ReceiveHelloAsync(socket, peerProcessId, context.RequestAborted).ConfigureAwait(false);
+        var identity = await ReceiveHelloAsync(
+                socket,
+                peerProcessId,
+                authorizedIdentity,
+                context.RequestAborted)
+            .ConfigureAwait(false);
+        logger.LogDebug("Control identity {Identity} peer {PeerProcessId}.", identity?.Id, peerProcessId);
         if (identity is null)
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -180,16 +234,18 @@ internal sealed class ReplControlHost : IDisposable
         }
 
         var sessionId = identity.Id;
+        var connection = new SessionBusConnection(socket);
         if (connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
             await previous
                 .CloseAsync(WebSocketCloseStatus.NormalClosure, "replaced", CancellationToken.None)
                 .ConfigureAwait(false);
 
-        connections[sessionId] = socket;
+        connections[sessionId] = connection;
+        using var owner = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+        var toolInvocations = new List<Task>();
         try
         {
-            await PushAsync(
-                sessionId,
+            await connection.SendAsync(
                 new ReplEnvelope(EnvelopeVersion, ReplMessageType.ControlReady),
                 context.RequestAborted).ConfigureAwait(false);
             while (socket.State == WebSocketState.Open)
@@ -199,26 +255,34 @@ internal sealed class ReplControlHost : IDisposable
                     .ConfigureAwait(false);
                 if (text is null) break;
 
-                await HandleBusMessageAsync(sessionId, text, context.RequestAborted).ConfigureAwait(false);
+                ObserveCompleted(toolInvocations);
+                logger.LogDebug("Control message received: {Message}.", text);
+                await HandleBusMessageAsync(
+                    sessionId,
+                    connection,
+                    text,
+                    toolInvocations,
+                    owner.Token).ConfigureAwait(false);
             }
         }
         finally
         {
-            if (connections.TryGetValue(sessionId, out var current) && ReferenceEquals(current, socket))
-                connections.TryRemove(sessionId, out _);
+            await owner.CancelAsync().ConfigureAwait(false);
+            await Task.WhenAll(toolInvocations).ConfigureAwait(false);
+            connections.TryRemove(KeyValuePair.Create(sessionId, connection));
 
             comms.TryRemove(sessionId, out _);
         }
     }
 
-    private static int ResolvePeerProcessId(HttpContext context)
+    private static void ObserveCompleted(List<Task> tasks)
     {
-        var peerSocket = GetPeerSocket(context);
-        if (peerSocket is not null &&
-            PeerProcessCredentials.TryGetPeerIdentity(peerSocket, out var processId, out _))
-            return processId;
-
-        return 0;
+        for (var index = tasks.Count - 1; index >= 0; index--)
+            if (tasks[index].IsCompleted)
+            {
+                tasks[index].GetAwaiter().GetResult();
+                tasks.RemoveAt(index);
+            }
     }
 
     private string? ResolveRequestSessionId(HttpContext context, string? sessionId)
@@ -226,20 +290,28 @@ internal sealed class ReplControlHost : IDisposable
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
 
         if (OperatingSystem.IsWindows())
-            return string.Equals(
-                ResolveCredentialIdentity(context),
-                sessionId,
-                StringComparison.Ordinal)
+        {
+            var authorizedIdentity = context.Items.TryGetValue(AuthorizedIdentityItem, out var value) &&
+                                     value is string identity
+                ? identity
+                : null;
+            return string.Equals(authorizedIdentity, sessionId, StringComparison.Ordinal) &&
+                   registry.ContainsSession(sessionId)
                 ? sessionId
                 : null;
+        }
 
-        var processId = ResolvePeerProcessId(context);
+        var processId = ReplControlPeerProcess.GetProcessId(context);
         if (processId > 0) return registry.IsOwnedBy(processId, sessionId) ? sessionId : null;
 
         return registry.ContainsSession(sessionId) ? sessionId : null;
     }
 
-    private async Task<HelloIdentity?> ReceiveHelloAsync(WebSocket socket, int peerProcessId, CancellationToken ct)
+    private async Task<HelloIdentity?> ReceiveHelloAsync(
+        WebSocket socket,
+        int peerProcessId,
+        string? authorizedIdentity,
+        CancellationToken ct)
     {
         var text = await ReplControlMessageReader.ReadAsync(socket, ct).ConfigureAwait(false);
         if (text is null) return null;
@@ -262,12 +334,8 @@ internal sealed class ReplControlHost : IDisposable
         if (payload.TryGetProperty("hostId", out var host) &&
             host.GetString() is { } hostId && !hostId.IsWhiteSpace())
         {
-            if (OperatingSystem.IsWindows())
-                return string.Equals(ResolveCredentialIdentity(payload), hostId, StringComparison.Ordinal)
-                    ? new HelloIdentity("host", hostId)
-                    : null;
-
-            if (peerProcessId > 0 && registry.IsPluginHostOwnedBy(peerProcessId, hostId))
+            if ((peerProcessId > 0 && registry.IsPluginHostOwnedBy(peerProcessId, hostId)) ||
+                string.Equals(authorizedIdentity, hostId, StringComparison.Ordinal))
                 return new HelloIdentity("host", hostId);
 
             return null;
@@ -277,40 +345,23 @@ internal sealed class ReplControlHost : IDisposable
             session.GetString() is not { } sessionId || sessionId.IsWhiteSpace())
             return null;
 
-        if (OperatingSystem.IsWindows())
-            return string.Equals(ResolveCredentialIdentity(payload), sessionId, StringComparison.Ordinal)
-                ? new HelloIdentity("session", sessionId)
-                : null;
+        if ((peerProcessId > 0 && registry.IsOwnedBy(peerProcessId, sessionId)) ||
+            string.Equals(authorizedIdentity, sessionId, StringComparison.Ordinal))
+            return new HelloIdentity("session", sessionId);
 
-        if (peerProcessId > 0)
-            return registry.IsOwnedBy(peerProcessId, sessionId) ? new HelloIdentity("session", sessionId) : null;
-
-        return registry.ContainsSession(sessionId) ? new HelloIdentity("session", sessionId) : null;
-    }
-
-    private string? ResolveCredentialIdentity(JsonElement payload)
-    {
-        if (credentials is null ||
-            !payload.TryGetProperty("credential", out var credential) ||
-            credential.ValueKind != JsonValueKind.String ||
-            credential.GetString() is not { } s || s.IsWhiteSpace())
-            return null;
-
-        return credentials.TryResolve(s, out var identity) ? identity : null;
-    }
-
-    private string? ResolveCredentialIdentity(HttpContext context)
-    {
-        if (credentials is null) return null;
-
-        var credential = context.Request.Headers[CredentialHeader].ToString();
-        return !string.IsNullOrWhiteSpace(credential) &&
-               credentials.TryResolve(credential, out var identity)
-            ? identity
+        return peerProcessId <= 0 &&
+               authorizedIdentity is null &&
+               registry.ContainsSession(sessionId)
+            ? new HelloIdentity("session", sessionId)
             : null;
     }
 
-    private async Task HandleBusMessageAsync(string sessionId, string text, CancellationToken ct)
+    private async Task HandleBusMessageAsync(
+        string sessionId,
+        SessionBusConnection connection,
+        string text,
+        ICollection<Task> toolInvocations,
+        CancellationToken ct)
     {
         ReplEnvelope envelope;
         try
@@ -320,7 +371,7 @@ internal sealed class ReplControlHost : IDisposable
         catch (JsonException)
         {
             await PushErrorAsync(
-                sessionId,
+                connection,
                 "invalid_envelope",
                 "The message is not a valid envelope.",
                 null,
@@ -331,8 +382,9 @@ internal sealed class ReplControlHost : IDisposable
         switch (envelope.Type)
         {
             case ReplMessageType.ControlPing:
+                logger.LogDebug("Control ping {CorrelationId}.", envelope.CorrelationId);
                 await PushAsync(
-                    sessionId,
+                    connection,
                     new ReplEnvelope(EnvelopeVersion, ReplMessageType.ControlPong, envelope.CorrelationId),
                     ct).ConfigureAwait(false);
                 break;
@@ -341,7 +393,7 @@ internal sealed class ReplControlHost : IDisposable
                 if (cancel is null || string.IsNullOrWhiteSpace(cancel.CorrelationId))
                 {
                     await PushErrorAsync(
-                        sessionId,
+                        connection,
                         "invalid_cancel",
                         "The cancel message requires a correlationId.",
                         envelope.CorrelationId,
@@ -351,7 +403,7 @@ internal sealed class ReplControlHost : IDisposable
 
                 var cancelled = operations.TryCancel(cancel.CorrelationId);
                 await PushAsync(
-                    sessionId,
+                    connection,
                     new ReplEnvelope(
                         EnvelopeVersion,
                         cancelled ? ReplMessageType.ControlCancelled : ReplMessageType.Error,
@@ -367,7 +419,7 @@ internal sealed class ReplControlHost : IDisposable
                 if (open is null || string.IsNullOrWhiteSpace(open.CommId))
                 {
                     await PushErrorAsync(
-                        sessionId,
+                        connection,
                         "invalid_comm",
                         "The comm.open message requires a commId.",
                         envelope.CorrelationId,
@@ -376,14 +428,14 @@ internal sealed class ReplControlHost : IDisposable
                 }
 
                 GetComms(sessionId).TryAdd(open.CommId, 0);
-                await PushAckAsync(sessionId, open.CommId, true, envelope.CorrelationId, ct).ConfigureAwait(false);
+                await PushAckAsync(connection, open.CommId, true, envelope.CorrelationId, ct).ConfigureAwait(false);
                 break;
             case ReplMessageType.CommMsg:
                 var message = ParsePayload<BusCommPayload>(envelope);
                 if (message is null || !GetComms(sessionId).ContainsKey(message.CommId))
                 {
                     await PushErrorAsync(
-                        sessionId,
+                        connection,
                         "comm_not_open",
                         "The comm channel must be opened before sending messages.",
                         envelope.CorrelationId,
@@ -391,7 +443,7 @@ internal sealed class ReplControlHost : IDisposable
                     break;
                 }
 
-                await PushAckAsync(sessionId, message.CommId, true, envelope.CorrelationId, ct)
+                await PushAckAsync(connection, message.CommId, true, envelope.CorrelationId, ct)
                     .ConfigureAwait(false);
                 break;
             case ReplMessageType.CommClose:
@@ -399,15 +451,29 @@ internal sealed class ReplControlHost : IDisposable
                 if (close is not null) GetComms(sessionId).TryRemove(close.CommId, out _);
 
                 await PushAckAsync(
-                    sessionId,
+                    connection,
                     close?.CommId ?? string.Empty,
                     true,
                     envelope.CorrelationId,
                     ct).ConfigureAwait(false);
                 break;
+            case ReplMessageType.ToolInvoke:
+                if (string.IsNullOrWhiteSpace(envelope.CorrelationId))
+                {
+                    await PushErrorAsync(
+                        connection,
+                        "invalid_tool_invoke",
+                        "The tool.invoke message requires a correlationId.",
+                        envelope.CorrelationId,
+                        ct).ConfigureAwait(false);
+                    break;
+                }
+
+                toolInvocations.Add(HandleBusToolInvokeAsync(sessionId, connection, envelope, ct));
+                break;
             default:
                 await PushErrorAsync(
-                    sessionId,
+                    connection,
                     "unknown_message",
                     $"Unknown message type '{envelope.Type}'.",
                     envelope.CorrelationId,
@@ -422,14 +488,14 @@ internal sealed class ReplControlHost : IDisposable
     }
 
     private async Task PushAckAsync(
-        string sessionId,
+        SessionBusConnection connection,
         string commId,
         bool ok,
         string? correlationId,
         CancellationToken ct)
     {
         await PushAsync(
-            sessionId,
+            connection,
             new ReplEnvelope(
                 EnvelopeVersion,
                 ReplMessageType.CommAck,
@@ -439,14 +505,14 @@ internal sealed class ReplControlHost : IDisposable
     }
 
     private async Task PushErrorAsync(
-        string sessionId,
+        SessionBusConnection connection,
         string code,
         string message,
         string? correlationId,
         CancellationToken ct)
     {
         await PushAsync(
-            sessionId,
+            connection,
             new ReplEnvelope(
                 EnvelopeVersion,
                 ReplMessageType.Error,
@@ -457,16 +523,17 @@ internal sealed class ReplControlHost : IDisposable
 
     private async Task PushAsync(string sessionId, ReplEnvelope envelope, CancellationToken ct)
     {
-        if (!connections.TryGetValue(sessionId, out var socket) || socket.State != WebSocketState.Open) return;
+        if (!connections.TryGetValue(sessionId, out var connection)) return;
+        await PushAsync(connection, envelope, ct).ConfigureAwait(false);
+    }
 
+    private static async Task PushAsync(
+        SessionBusConnection connection,
+        ReplEnvelope envelope,
+        CancellationToken ct)
+    {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
-        await socket
-            .SendAsync(
-                Encoding.UTF8.GetBytes(json),
-                WebSocketMessageType.Text,
-                true,
-                ct)
-            .ConfigureAwait(false);
+        await connection.SendAsync(Encoding.UTF8.GetBytes(json), ct).ConfigureAwait(false);
     }
 
     private static ReplEnvelope ParseEnvelope(string text)
@@ -491,6 +558,7 @@ internal sealed class ReplControlHost : IDisposable
             _ when typeof(T) == typeof(BusCommPayload) => ReplControlJsonContext.Default.BusCommPayload,
             _ when typeof(T) == typeof(BusErrorPayload) => ReplControlJsonContext.Default.BusErrorPayload,
             _ when typeof(T) == typeof(BusAckPayload) => ReplControlJsonContext.Default.BusAckPayload,
+            _ when typeof(T) == typeof(ToolInvokePayload) => ReplControlJsonContext.Default.ToolInvokePayload,
             _ when typeof(T) == typeof(ToolProgressPayload) => ReplControlJsonContext.Default.ToolProgressPayload,
             _ => throw new InvalidOperationException($"Unsupported bus payload type '{typeof(T).Name}'.")
         };
@@ -530,61 +598,139 @@ internal sealed class ReplControlHost : IDisposable
             return;
         }
 
-        if (request is null || request.Version != 1 || string.IsNullOrWhiteSpace(request.Tool))
+        if (request is null ||
+            request.Version != EnvelopeVersion ||
+            string.IsNullOrWhiteSpace(request.Tool) ||
+            request.Arguments.ValueKind != JsonValueKind.Object)
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
 
-        var function = scriptTools.FirstOrDefault(candidate => candidate.Name == request.Tool);
-        if (function is null)
-        {
-            await WriteEnvelopeAsync(
-                context,
-                ToolJson.CreateFailureEnvelope(
-                    "tool_not_found",
-                    $"Tool '{request.Tool}' is not available to scripts."),
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
+        connections.TryGetValue(
+            ResolveRequestSessionId(context, request.SessionId) ?? string.Empty,
+            out var progressConnection);
+        var envelope = await InvokeToolAsync(
+            request.Tool,
+            request.Arguments,
+            request.CorrelationId,
+            progressConnection,
+            cancellationToken).ConfigureAwait(false);
+        await WriteEnvelopeAsync(context, envelope, cancellationToken).ConfigureAwait(false);
+    }
 
-        var correlationId = request.CorrelationId;
-        var sessionId = ResolveRequestSessionId(context, request.SessionId);
-        var argumentValues = request.Arguments.EnumerateObject().ToDictionary(
-            static property => property.Name,
-            static property => (object?)property.Value.Clone());
-
-        using var operation = new CancellationTokenSource();
-        var invokeToken = cancellationToken;
-        if (!string.IsNullOrWhiteSpace(correlationId))
+    private async Task HandleBusToolInvokeAsync(
+        string sessionId,
+        SessionBusConnection connection,
+        ReplEnvelope envelope,
+        CancellationToken cancellationToken)
+    {
+        try
         {
-            if (!operations.TryRegister(correlationId, operation))
+            var request = ParsePayload<ToolInvokePayload>(envelope);
+            if (request is null ||
+                string.IsNullOrWhiteSpace(request.Tool) ||
+                request.Arguments.ValueKind != JsonValueKind.Object)
             {
-                await WriteEnvelopeAsync(
-                    context,
-                    ToolJson.CreateFailureEnvelope(
-                        "duplicate_correlation",
-                        "The correlationId is already in use."),
+                await PushErrorAsync(
+                    connection,
+                    "invalid_tool_invoke",
+                    "The tool.invoke payload requires a tool name and object arguments.",
+                    envelope.CorrelationId,
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
 
-            invokeToken = CancellationTokenSource
-                .CreateLinkedTokenSource(cancellationToken, operation.Token).Token;
+            var result = await InvokeToolAsync(
+                request.Tool,
+                request.Arguments,
+                envelope.CorrelationId,
+                connection,
+                cancellationToken).ConfigureAwait(false);
+            await PushAsync(
+                connection,
+                new ReplEnvelope(
+                    EnvelopeVersion,
+                    ReplMessageType.ToolResult,
+                    envelope.CorrelationId,
+                    result),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            await PushErrorAsync(
+                connection,
+                "invalid_tool_invoke",
+                "The tool.invoke payload is not valid.",
+                envelope.CorrelationId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Control WebSocket tool invocation failed for session {SessionId}.",
+                sessionId);
+            try
+            {
+                await PushErrorAsync(
+                    connection,
+                    "tool_invoke_failed",
+                    "The tool invocation could not be completed.",
+                    envelope.CorrelationId,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+    }
+
+    private async Task<JsonElement> InvokeToolAsync(
+        string tool,
+        JsonElement requestArguments,
+        string? correlationId,
+        SessionBusConnection? progressConnection,
+        CancellationToken cancellationToken)
+    {
+        var function = scriptTools.FirstOrDefault(candidate => candidate.Name == tool);
+        if (function is null)
+            return ToolJson.CreateFailureEnvelope(
+                "tool_not_found",
+                $"Tool '{tool}' is not available to scripts.");
+
+        var argumentValues = requestArguments.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone());
+
+        using var operation = new CancellationTokenSource();
+        using var invoke = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operation.Token);
+        var invokeToken = cancellationToken;
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            if (!operations.TryRegister(correlationId, operation))
+                return ToolJson.CreateFailureEnvelope(
+                    "duplicate_correlation",
+                    "The correlationId is already in use.");
+
+            invokeToken = invoke.Token;
         }
 
         JsonElement envelope;
         try
         {
-            argumentValues = await RunPreHooksAsync(request.Tool, argumentValues, correlationId, invokeToken)
+            argumentValues = await RunPreHooksAsync(tool, argumentValues, correlationId, invokeToken)
                 .ConfigureAwait(false);
             var arguments = new AIFunctionArguments(argumentValues);
-            if (sessionId is not null && !string.IsNullOrWhiteSpace(correlationId))
+            if (progressConnection is not null && !string.IsNullOrWhiteSpace(correlationId))
             {
                 arguments.Context ??= new Dictionary<object, object?>();
                 arguments.Context[typeof(ReplToolProgress)] = new ReplToolProgress((progress, ct) => new ValueTask(
                     PushAsync(
-                        sessionId,
+                        progressConnection,
                         new ReplEnvelope(
                             EnvelopeVersion,
                             ReplMessageType.ToolProgress,
@@ -618,7 +764,7 @@ internal sealed class ReplControlHost : IDisposable
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Script tool '{Tool}' failed.", request.Tool);
+            logger.LogWarning(exception, "Script tool '{Tool}' failed.", tool);
             envelope = ToolJson.CreateFailureEnvelope("tool_failed", exception.Message);
         }
         finally
@@ -626,9 +772,9 @@ internal sealed class ReplControlHost : IDisposable
             if (!string.IsNullOrWhiteSpace(correlationId)) operations.Remove(correlationId);
         }
 
-        await RunPostHooksAsync(request.Tool, argumentValues, correlationId, envelope, cancellationToken)
+        await RunPostHooksAsync(tool, argumentValues, correlationId, envelope, cancellationToken)
             .ConfigureAwait(false);
-        await WriteEnvelopeAsync(context, envelope, cancellationToken).ConfigureAwait(false);
+        return envelope;
     }
 
     /// <summary>

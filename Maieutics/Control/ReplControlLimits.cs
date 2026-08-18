@@ -8,6 +8,14 @@ internal static class ReplControlLimits
 {
     internal const int MaximumInboundMessageBytes = 1024 * 1024;
     internal const int MaximumJsonDepth = 64;
+    internal const int QueueCapacity = 64;
+
+    /// <summary>
+    ///     How long a control request waits for a peer process to register before the kernel treats
+    ///     it as unowned. A Deno child may connect its control socket before its parent finishes
+    ///     registering the process id, but an unknown process must not hold a request open forever.
+    /// </summary>
+    internal static readonly TimeSpan PeerRegistrationWait = TimeSpan.FromSeconds(5);
 }
 
 internal static class ReplControlMessageReader

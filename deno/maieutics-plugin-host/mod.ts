@@ -62,11 +62,8 @@ async function main(): Promise<void> {
       `${config.plugins?.length ?? 0} plugin(s).`,
   );
 
-  const http = Deno.createHttpClient({
-    proxy: { transport: "unix", path: ipcAddress },
-  });
   const bus = await connectBus({
-    http,
+    address: ipcAddress,
     hello: {
       type: "control.hello",
       payload: { hostId },

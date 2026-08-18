@@ -3,9 +3,9 @@
  *
  * The kernel injects the channel address through `MAIEUTICS_REPL_IPC`, the
  * client module through `MAIEUTICS_REPL_CLIENT`, and the owning session id
- * through `MAIEUTICS_REPL_SESSION`. HTTP serves tools and health; a single
- * multiplexed WebSocket bus carries events, comm messages, and control
- * messages under one versioned envelope.
+ * through `MAIEUTICS_REPL_SESSION`. A single multiplexed WebSocket bus carries
+ * tools, health, events, comm messages, and control messages under one
+ * versioned envelope.
  *
  * The module namespace is the default client: `health`, `tools`, `events`,
  * and `comm` operate on the process's REPL connection. `connect()` creates
@@ -14,45 +14,30 @@
 
 const ADDRESS_ENV = "MAIEUTICS_REPL_IPC";
 const SESSION_ENV = "MAIEUTICS_REPL_SESSION";
-const PIPE_ENV = "MAIEUTICS_REPL_PIPE";
-const CREDENTIAL_HEADER = "X-Maieutics-Credential";
-const SERVER_URL = "http://localhost";
+const CREDENTIAL_ENV = "MAIEUTICS_REPL_CREDENTIAL";
 const BUS_TIMEOUT_MS = 5_000;
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolvePromise: Deferred<T>["resolve"] | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  if (resolvePromise === undefined) {
+    throw new Error("The terminal promise resolver was not initialized.");
+  }
+  return { promise, resolve: resolvePromise };
+}
+
 import { type BusConnection, connectBus } from "../shared/bus.ts";
-import { ENVELOPE_VERSION, type HttpClient, type ReplEnvelope } from "../shared/protocol.ts";
-import { type BootstrapCredential, bootstrapWindowsCredential } from "./windows_bootstrap.ts";
-
-const IS_WINDOWS = Deno.build.os === "windows";
-let windowsCredential: BootstrapCredential | undefined;
-
-function ensureCredential(): BootstrapCredential | undefined {
-  if (!IS_WINDOWS) {
-    return undefined;
-  }
-  if (windowsCredential === undefined) {
-    const pipeName = Deno.env.get(PIPE_ENV);
-    if (!pipeName) {
-      throw new Error(
-        `Missing ${PIPE_ENV} environment variable on Windows.`,
-      );
-    }
-    windowsCredential = bootstrapWindowsCredential(pipeName);
-  }
-  return windowsCredential;
-}
-
-function credentialHeaders(): Record<string, string> | undefined {
-  const credential = ensureCredential()?.credential;
-  return credential === undefined ? undefined : { [CREDENTIAL_HEADER]: credential };
-}
-
-function serverBase(address: string): string {
-  return IS_WINDOWS ? `http://${address}` : SERVER_URL;
-}
+import { type ReplEnvelope } from "../shared/protocol.ts";
 
 export interface ReplClientOptions {
-  /** Unix domain socket path of the kernel control channel. */
+  /** Unix-domain socket path or Windows loopback host:port of the control channel. */
   address?: string;
 }
 
@@ -81,7 +66,7 @@ export interface ReplComm {
 }
 
 export interface ReplClient {
-  /** Unix domain socket path of the kernel control channel. */
+  /** Unix-domain socket path or Windows loopback host:port of the control channel. */
   readonly address: string;
   /** Script tool invocation. */
   tools: ReplTools;
@@ -90,7 +75,7 @@ export interface ReplClient {
   /** Comm channel operations. */
   comm: ReplComm;
 
-  /** Probes the kernel control channel health endpoint. */
+  /** Probes the kernel control channel over the multiplexed bus. */
   health(): Promise<string>;
 }
 
@@ -202,28 +187,6 @@ export class ToolTask<T = unknown> extends EventTarget implements PromiseLike<T>
   }
 }
 
-function createHttp(address: string): HttpClient {
-  if (IS_WINDOWS) {
-    return Deno.createHttpClient({});
-  }
-  return Deno.createHttpClient({
-    proxy: { transport: "unix", path: address },
-  });
-}
-
-async function healthProbe(http: HttpClient): Promise<string> {
-  const response = await fetch(`${serverBase(resolveAddress())}/health`, {
-    client: http,
-    headers: credentialHeaders(),
-  });
-  if (!response.ok) {
-    throw new Error(
-      `REPL control channel health check failed with status ${response.status}.`,
-    );
-  }
-  return response.text();
-}
-
 function abortError(): DOMException {
   return new DOMException("The operation was aborted.", "AbortError");
 }
@@ -231,21 +194,27 @@ function abortError(): DOMException {
 class ReplBus {
   readonly events: EventTarget;
 
-  private readonly http: HttpClient;
   private readonly address: string;
   private readonly sessionId: string;
+  private readonly credential: string | undefined;
   private readonly waiters = new Map<
     string,
     (envelope: ReplEnvelope) => void
   >();
+  private readonly terminal: Promise<Error>;
+  private readonly resolveTerminal: (error: Error) => void;
+  private terminalError: Error | undefined;
   private bus: BusConnection | undefined;
   private connecting: Promise<void> | undefined;
 
-  constructor(http: HttpClient, address: string, events: EventTarget) {
-    this.http = http;
+  constructor(address: string, events: EventTarget) {
     this.address = address;
     this.events = events;
     this.sessionId = Deno.env.get(SESSION_ENV) ?? "";
+    this.credential = Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined;
+    const terminal = deferred<Error>();
+    this.terminal = terminal.promise;
+    this.resolveTerminal = terminal.resolve;
   }
 
   async connect(): Promise<void> {
@@ -266,51 +235,56 @@ class ReplBus {
   }
 
   send(envelope: Omit<ReplEnvelope, "version">): void {
-    this.bus?.send(envelope);
+    if (this.bus === undefined) {
+      throw new Error("The REPL control bus is not connected.");
+    }
+    this.bus.send(envelope);
   }
 
   waitCorrelation(correlationId: string): Promise<ReplEnvelope> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.waiters.delete(correlationId);
-        reject(
-          new Error(
-            `Timed out waiting for correlation ${correlationId}.`,
-          ),
-        );
-      }, BUS_TIMEOUT_MS);
-      this.waiters.set(correlationId, (envelope) => {
-        clearTimeout(timer);
-        if (envelope.type === "error") {
-          const payload = envelope.payload as {
-            code?: string;
-            message?: string;
-          } | undefined;
-          reject(
-            new Error(
-              `${payload?.code ?? "bus_error"}: ${payload?.message ?? "the channel failed"}`,
-            ),
-          );
-          return;
-        }
-        resolve(envelope);
-      });
-    });
+    return Promise.race([
+      new Promise<ReplEnvelope>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.waiters.delete(correlationId);
+          reject(new Error(`Timed out waiting for correlation ${correlationId}.`));
+        }, BUS_TIMEOUT_MS);
+        this.waiters.set(correlationId, (envelope) => {
+          clearTimeout(timer);
+          if (envelope.type === "error") {
+            const payload = envelope.payload as {
+              code?: string;
+              message?: string;
+            } | undefined;
+            reject(
+              new Error(
+                `${payload?.code ?? "bus_error"}: ${payload?.message ?? "the channel failed"}`,
+              ),
+            );
+            return;
+          }
+          resolve(envelope);
+        });
+      }),
+      this.terminal.then((error) => Promise.reject(error)),
+    ]);
   }
 
   waitForType(type: string): Promise<ReplEnvelope> {
-    return new Promise((resolve, reject) => {
-      const handler = (event: Event): void => {
-        clearTimeout(timer);
-        this.events.removeEventListener(type, handler);
-        resolve((event as CustomEvent<ReplEnvelope>).detail);
-      };
-      this.events.addEventListener(type, handler);
-      const timer = setTimeout(() => {
-        this.events.removeEventListener(type, handler);
-        reject(new Error(`Timed out waiting for ${type}.`));
-      }, BUS_TIMEOUT_MS);
-    });
+    return Promise.race([
+      new Promise<ReplEnvelope>((resolve, reject) => {
+        const handler = (event: Event): void => {
+          clearTimeout(timer);
+          this.events.removeEventListener(type, handler);
+          resolve((event as CustomEvent<ReplEnvelope>).detail);
+        };
+        this.events.addEventListener(type, handler);
+        const timer = setTimeout(() => {
+          this.events.removeEventListener(type, handler);
+          reject(new Error(`Timed out waiting for ${type}.`));
+        }, BUS_TIMEOUT_MS);
+      }),
+      this.terminal.then((error) => Promise.reject(error)),
+    ]);
   }
 
   close(): void {
@@ -323,28 +297,42 @@ class ReplBus {
         `Missing ${SESSION_ENV} environment variable; cannot open the REPL control bus.`,
       );
     }
-    this.bus = await connectBus({
-      http: IS_WINDOWS ? undefined : this.http,
-      url: IS_WINDOWS ? `ws://${this.address}/ws` : "ws://localhost/ws",
-      hello: {
-        type: "control.hello",
-        payload: {
-          sessionId: this.sessionId,
-          credential: ensureCredential()?.credential,
-        },
-      },
-      onMessage: (envelope) => this.route(envelope),
-      onClose: () => {
-        this.bus = undefined;
-      },
-    });
+    const ready = this.waitForType("control.ready");
     try {
-      await this.waitForType("control.ready");
+      this.bus = await connectBus({
+        address: this.address,
+        credential: this.credential,
+        hello: {
+          type: "control.hello",
+          payload: { sessionId: this.sessionId },
+        },
+        onMessage: (envelope) => this.route(envelope),
+        onClose: () => {
+          this.bus = undefined;
+          this.fail(new Error("The REPL control WebSocket closed unexpectedly."));
+        },
+        onError: (error) => this.fail(error),
+      });
+      await ready;
     } catch (error) {
       this.bus?.close();
       this.bus = undefined;
       throw error;
     }
+  }
+
+  private fail(error: Error): void {
+    if (this.terminalError !== undefined) return;
+    this.terminalError = error;
+    this.resolveTerminal(error);
+    for (const waiter of this.waiters.values()) {
+      waiter({
+        version: 1,
+        type: "error",
+        payload: { code: "control_closed", message: error.message },
+      });
+    }
+    this.waiters.clear();
   }
 
   private route(envelope: ReplEnvelope): void {
@@ -366,14 +354,25 @@ async function sendAndWait(
   envelope: Omit<ReplEnvelope, "version" | "correlationId">,
 ): Promise<void> {
   const correlationId = crypto.randomUUID();
-  const done = bus.waitCorrelation(correlationId);
   await bus.connect();
+  const done = bus.waitCorrelation(correlationId);
   bus.send({ ...envelope, correlationId });
   await done;
 }
 
+async function healthProbe(bus: ReplBus): Promise<string> {
+  const correlationId = crypto.randomUUID();
+  await bus.connect();
+  const done = bus.waitCorrelation(correlationId);
+  bus.send({ type: "control.ping", correlationId });
+  const envelope = await done;
+  if (envelope.type !== "control.pong") {
+    throw new Error(`Unexpected health reply '${envelope.type}'.`);
+  }
+  return "ok";
+}
+
 function startTool(
-  http: HttpClient,
   bus: ReplBus,
   name: string,
   args: Record<string, unknown> = {},
@@ -411,38 +410,27 @@ function startTool(
           });
         })
         .catch(() => {
-          // The fetch abort already covered client-side cancellation.
+          // The connection failure already makes cancellation moot.
         });
     };
     abort.signal.addEventListener("abort", sendCancel, { once: true });
     try {
       current.status = "working";
-      const response = await fetch(
-        `${serverBase(resolveAddress())}/v1/tool.invoke`,
-        {
-          client: http,
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...credentialHeaders(),
-          },
-          body: JSON.stringify({
-            version: ENVELOPE_VERSION,
-            tool: name,
-            arguments: args,
-            correlationId,
-            sessionId: Deno.env.get(SESSION_ENV),
-          }),
-          signal: abort.signal,
-        },
-      );
-      if (!response.ok) {
-        throw new Error(
-          `Tool invocation failed with status ${response.status}.`,
-        );
+      abort.signal.throwIfAborted();
+      const done = bus.waitCorrelation(correlationId);
+      await bus.connect();
+      abort.signal.throwIfAborted();
+      bus.send({
+        type: "tool.invoke",
+        correlationId,
+        payload: { tool: name, arguments: args },
+      });
+      const reply = await done;
+      if (reply.type !== "tool.result") {
+        throw new Error(`Unexpected tool reply '${reply.type}'.`);
       }
-      const envelope = await response.json() as ToolEnvelope;
-      if (envelope.status === "cancelled") {
+      const envelope = (reply.payload ?? {}) as ToolEnvelope;
+      if (envelope.status === "cancelled" || abort.signal.aborted) {
         throw abortError();
       }
       if (envelope.status !== "ok") {
@@ -464,11 +452,11 @@ function startTool(
   return task;
 }
 
-function createTools(http: HttpClient, bus: ReplBus): ReplTools {
+function createTools(bus: ReplBus): ReplTools {
   return {
-    start: (name, args, options) => startTool(http, bus, name, args, options),
+    start: (name, args, options) => startTool(bus, name, args, options),
     async invoke(name, args, options) {
-      return await startTool(http, bus, name, args, options);
+      return await startTool(bus, name, args, options);
     },
   };
 }
@@ -494,23 +482,18 @@ function createComm(bus: ReplBus): ReplComm {
   };
 }
 
-function createClient(
-  http: HttpClient,
-  address: string,
-  events: EventTarget,
-): ReplClient {
-  const bus = new ReplBus(http, address, events);
+function createClient(address: string, events: EventTarget): ReplClient {
+  const bus = new ReplBus(address, events);
   return {
     address,
-    health: () => healthProbe(http),
-    tools: createTools(http, bus),
+    health: () => healthProbe(bus),
+    tools: createTools(bus),
     events,
     comm: createComm(bus),
   };
 }
 
 let defaultAddress: string | undefined;
-let defaultHttp: HttpClient | undefined;
 let defaultClient: ReplClient | undefined;
 const defaultEvents = new EventTarget();
 
@@ -524,20 +507,8 @@ function resolveAddress(): string {
   return address;
 }
 
-function ensureDefault(): HttpClient {
-  if (defaultHttp !== undefined) {
-    return defaultHttp;
-  }
-  defaultHttp = createHttp(resolveAddress());
-  return defaultHttp;
-}
-
 function ensureDefaultClient(): ReplClient {
-  defaultClient ??= createClient(
-    ensureDefault(),
-    resolveAddress(),
-    defaultEvents,
-  );
+  defaultClient ??= createClient(resolveAddress(), defaultEvents);
   return defaultClient;
 }
 
@@ -549,7 +520,7 @@ export function connect(options: ReplClientOptions = {}): ReplClient {
       `Missing ${ADDRESS_ENV} environment variable; cannot connect to the REPL control channel.`,
     );
   }
-  return createClient(createHttp(address), address, new EventTarget());
+  return createClient(address, new EventTarget());
 }
 
 /** Probes the default client. Convenience for scripts that use the module namespace directly. */

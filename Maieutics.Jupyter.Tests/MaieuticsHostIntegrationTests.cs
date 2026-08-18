@@ -173,7 +173,7 @@ public sealed class MaieuticsHostIntegrationTests
         var configurationFile = CreateEmptyConfigurationFile("repl");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
         const string code =
-            "const name = prompt('Name: '); " +
+            "const name = await prompt('Name: '); " +
             "console.log('private-name=' + name); " +
             "console.log('private-stdout'); " +
             "console.error('shared-stderr'); " +
@@ -567,6 +567,74 @@ public sealed class MaieuticsHostIntegrationTests
             await client.ShutdownAsync(false, deadline.Token);
             await process.WaitForExitAsync(deadline.Token);
             process.ExitCode.Should().Be(0, started.FailureDetails());
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task ExternalHostCompletesDenoReplEvalBridge()
+    {
+        using var deadline = CreateDeadline(TimeSpan.FromSeconds(90));
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-native-repl-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(root, "connection.json");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        const string code = "console.error('native-repl-bridge'); 40 + 2";
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.Responses,
+            true,
+            toolName: "repl_execute",
+            toolArgumentsJson: JsonSerializer.Serialize(new { code }));
+        using var started = StartHostProcess(
+            connectionFile,
+            provider.Endpoint,
+            OpenAiApiFlavor.Responses,
+            root);
+        var process = started.Process;
+        var phase = "client readiness";
+
+        try
+        {
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            var ready = client.WaitForReadyAsync(deadline.Token);
+            var exited = process.WaitForExitAsync(deadline.Token);
+            (await Task.WhenAny(ready, exited)).Should().BeSameAs(ready, started.FailureDetails());
+            await ready;
+
+            phase = "Deno REPL eval bridge function continuation";
+            (await ExecuteAndGetMarkdownAsync(client, "use the Deno REPL", deadline.Token)).Should()
+                .Be("tool-backed answer");
+            await provider.Completion.WaitAsync(deadline.Token);
+            var toolOutput = provider.RequestBodies.Last()
+                .GetProperty("input")
+                .EnumerateArray()
+                .Single(item => item.GetProperty("type").GetString() == "function_call_output")
+                .GetProperty("output")
+                .GetString();
+            toolOutput.Should().NotBeNull().And.Contain("native-repl-bridge");
+            using var toolResult = JsonDocument.Parse(toolOutput);
+            toolResult.RootElement.GetProperty("value").GetProperty("executionStatus").GetString().Should().Be("ok");
+
+            phase = "kernel shutdown";
+            await client.ShutdownAsync(false, deadline.Token);
+            await process.WaitForExitAsync(deadline.Token);
+            process.ExitCode.Should().Be(0, started.FailureDetails());
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"External Deno REPL eval bridge failed during {phase}.\n{started.FailureDetails()}",
+                exception);
         }
         finally
         {

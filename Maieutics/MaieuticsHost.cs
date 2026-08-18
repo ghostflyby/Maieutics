@@ -5,6 +5,7 @@ using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Control;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
@@ -136,6 +137,7 @@ public static class MaieuticsHost
                     listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; });
         });
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
+        builder.Services.AddSingleton<ReplEvalWebSocketHost>();
         if (OperatingSystem.IsWindows())
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
                 OperatingSystem.IsWindows() ? CreateWindowsBootstrap(services) : throw new UnreachableException()
@@ -162,10 +164,11 @@ public static class MaieuticsHost
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
                 : null));
-        builder.Services.AddSingleton<ReplClientModule>();
+        builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
+        builder.Services.AddHostedService<DenoReplShutdownHostedService>();
         builder.Services.AddSingleton(static services =>
             new WorkspaceFunctions(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
@@ -195,6 +198,10 @@ public static class MaieuticsHost
         configure?.Invoke(builder);
         var application = builder.Build();
         var controlHost = application.Services.GetRequiredService<ReplControlHost>();
+        var evalHost = application.Services.GetRequiredService<ReplEvalWebSocketHost>();
+        // Terminate eval connections before Kestrel begins its shutdown window so upgraded WebSocket
+        // requests finish immediately instead of blocking the shutdown timeout.
+        application.Lifetime.ApplicationStopping.Register(evalHost.BeginShutdown);
         if (OperatingSystem.IsWindows())
             application.Lifetime.ApplicationStarted.Register(() =>
             {
@@ -202,9 +209,10 @@ public static class MaieuticsHost
                     .Features.Get<IServerAddressesFeature>();
                 var address = addresses?.Addresses.FirstOrDefault();
                 if (address is not null && Uri.TryCreate(address, UriKind.Absolute, out var uri))
-                    controlHost.WindowsControlAddress = $"{uri.Host}:{uri.Port}";
+                    controlHost.SetControlAddress($"{uri.Host}:{uri.Port}");
             });
 
+        application.Services.GetRequiredService<ReplEvalWebSocketHost>().MapEndpoint(application);
         controlHost.MapEndpoints(application);
         return application;
     }

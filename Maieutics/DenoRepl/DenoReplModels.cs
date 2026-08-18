@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Maieutics.Execution;
+namespace Maieutics.DenoRepl;
 
 internal sealed record DenoReplSessionResult(
     string SessionId,

@@ -1,12 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Agent;
-using Maieutics.Control;
-using Maieutics.Execution;
-using Maieutics.Jupyter.Client;
+using Maieutics.DenoRepl;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,41 +15,40 @@ public sealed class DenoReplSessionTests
     public async Task SameSessionSerializesWhileDifferentSessionsCanExecuteConcurrently()
     {
         var probe = new ConcurrencyProbe();
-        var firstManager = new ControlledManager(probe, true);
-        var secondManager = new ControlledManager(probe, true);
-        var options = LongRunningOptions();
+        var firstFactory = new ControlledFactory(() => new ControlledGeneration(probe));
+        var secondFactory = new ControlledFactory(() => new ControlledGeneration(probe));
         var owner = AgentSessionId.Create();
-        await using var firstSession = CreateSession(owner, "first", options, firstManager);
-        await using var secondSession = CreateSession(owner, "second", options, secondManager);
+        await using var firstSession = CreateSession(owner, "first", LongRunningOptions(), firstFactory);
+        await using var secondSession = CreateSession(owner, "second", LongRunningOptions(), secondFactory);
 
         var first = firstSession.ExecuteAsync(
             "first",
             AgentToolCallId.Create(),
             TestContext.Current.CancellationToken);
-        var firstExecution = await firstManager.ClientImpl.NextExecutionAsync(
+        var firstGeneration = await firstFactory.NextGenerationAsync(TestContext.Current.CancellationToken);
+        var firstExecution = await firstGeneration.ConnectionImpl.NextExecutionAsync(
             TestContext.Current.CancellationToken);
         var queued = firstSession.ExecuteAsync(
             "queued",
             AgentToolCallId.Create(),
             TestContext.Current.CancellationToken);
 
-        firstManager.ClientImpl.StartedCount.Should().Be(1);
-
         var parallel = secondSession.ExecuteAsync(
             "parallel",
             AgentToolCallId.Create(),
             TestContext.Current.CancellationToken);
-        var parallelExecution = await secondManager.ClientImpl.NextExecutionAsync(
+        var secondGeneration = await secondFactory.NextGenerationAsync(TestContext.Current.CancellationToken);
+        var parallelExecution = await secondGeneration.ConnectionImpl.NextExecutionAsync(
             TestContext.Current.CancellationToken);
         probe.Active.Should().Be(2);
         probe.Maximum.Should().Be(2);
 
-        firstExecution.Release();
-        parallelExecution.Release();
+        firstExecution.CompleteResult(1);
+        parallelExecution.CompleteResult(2);
         await Task.WhenAll(first, parallel);
-        var queuedExecution = await firstManager.ClientImpl.NextExecutionAsync(
+        var queuedExecution = await firstGeneration.ConnectionImpl.NextExecutionAsync(
             TestContext.Current.CancellationToken);
-        queuedExecution.Release();
+        queuedExecution.CompleteResult(3);
         await queued;
 
         probe.Maximum.Should().Be(2);
@@ -62,282 +58,113 @@ public sealed class DenoReplSessionTests
     [Theory(Timeout = 15_000)]
     [InlineData(true, "idle", 0)]
     [InlineData(false, "faulted", 1)]
-    public async Task CancellationInterruptsAndEscalatesOnlyWhenGracefulCompletionFails(
-        bool releaseOnInterrupt,
+    public async Task CancellationDrainsBeforeEscalatingToGenerationTermination(
+        bool releaseOnCancel,
         string expectedState,
         int expectedTerminateCount)
     {
-        var manager = new ControlledManager(new ConcurrencyProbe(), releaseOnInterrupt);
-        var options = LongRunningOptions(interruptGracePeriod: TimeSpan.FromMilliseconds(25));
-        await using var session = CreateSession(AgentSessionId.Create(), "cancel", options, manager);
+        var factory = new ControlledFactory(() => new ControlledGeneration
+        {
+            ConnectionImpl = { ReleaseOnCancel = releaseOnCancel }
+        });
+        await using var session = CreateSession(
+            AgentSessionId.Create(),
+            "cancel",
+            LongRunningOptions(interruptGracePeriod: TimeSpan.FromMilliseconds(25)),
+            factory);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
 
         var execution = session.ExecuteAsync("wait", AgentToolCallId.Create(), cancellation.Token);
-        await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
+        var generation = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
+        await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
         await execution.Invoking(static task => task).Should().ThrowAsync<OperationCanceledException>();
-        manager.InterruptCount.Should().Be(1);
-        manager.TerminateCount.Should().Be(expectedTerminateCount);
+        generation.ConnectionImpl.CancelCount.Should().Be(1);
+        generation.TerminateCount.Should().Be(expectedTerminateCount);
         session.GetSnapshot().State.Should().Be(expectedState);
     }
 
     [Fact(Timeout = 15_000)]
-    public async Task ExecutionTimeoutReturnsTypedFailureAfterInterrupt()
+    public async Task ExecutionTimeoutReturnsTypedFailureAfterCancellationDrain()
     {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        var options = LongRunningOptions(TimeSpan.FromMilliseconds(25));
-        await using var session = CreateSession(AgentSessionId.Create(), "timeout", options, manager);
+        var factory = new ControlledFactory(() => new ControlledGeneration
+        {
+            ConnectionImpl = { ReleaseOnCancel = true }
+        });
+        await using var session = CreateSession(
+            AgentSessionId.Create(),
+            "timeout",
+            LongRunningOptions(TimeSpan.FromMilliseconds(25)),
+            factory);
 
         var execution = session.ExecuteAsync(
             "wait",
             AgentToolCallId.Create(),
             TestContext.Current.CancellationToken);
-        await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
+        var generation = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
+        await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
 
         var failure = await execution.Invoking(static task => task).Should().ThrowAsync<AgentToolException>();
         failure.Which.Code.Should().Be("repl_timeout");
-        manager.InterruptCount.Should().Be(1);
-        manager.ShutdownCount.Should().Be(0);
+        generation.ConnectionImpl.CancelCount.Should().Be(1);
+        generation.TerminateCount.Should().Be(0);
         session.GetSnapshot().State.Should().Be("idle");
     }
 
     [Fact(Timeout = 15_000)]
-    public async Task RestartWaitsForActiveExecutionAndThenAdvancesGeneration()
+    public async Task RestartWaitsForActiveExecutionThenDisposesOldGenerationAndStartsTheNext()
     {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
+        var factory = new ControlledFactory();
         await using var session = CreateSession(
             AgentSessionId.Create(),
             "restart",
             LongRunningOptions(),
-            manager);
+            factory);
         var execution = session.ExecuteAsync(
             "wait",
             AgentToolCallId.Create(),
             TestContext.Current.CancellationToken);
-        var controlled = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
+        var firstGeneration = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
+        var controlled = await firstGeneration.ConnectionImpl.NextExecutionAsync(
+            TestContext.Current.CancellationToken);
 
         var restart = session.RestartAsync(TestContext.Current.CancellationToken);
         restart.IsCompleted.Should().BeFalse();
-        controlled.Release();
+        controlled.CompleteResult(42);
 
         await execution;
         var result = await restart;
+        var secondGeneration = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
         result.Generation.Should().Be(2);
         result.State.Should().Be("idle");
-        manager.RestartCount.Should().Be(1);
+        firstGeneration.DisposeCount.Should().Be(1);
+        secondGeneration.Generation.Should().Be(2);
+        factory.Starts.Select(static start => start.Generation).Should().Equal(1, 2);
     }
 
     [Fact(Timeout = 15_000)]
-    public async Task StartupRetriesHiddenStdinProbeUntilInputRequestCanBeAnswered()
+    public async Task ConcurrentDisposeCallsWaitForTheSameGenerationCleanup()
     {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        manager.ClientImpl.SetReadinessFailures(1);
-        await using var session = CreateSession(
+        var generation = new ControlledGeneration { BlockDisposal = true };
+        var factory = new ControlledFactory(() => generation);
+        var session = CreateSession(
             AgentSessionId.Create(),
-            "stdin-readiness",
+            "dispose",
             LongRunningOptions(),
-            manager);
+            factory);
 
         await session.StartAsync(TestContext.Current.CancellationToken);
+        var first = session.DisposeAsync().AsTask();
+        await generation.DisposalStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var second = session.DisposeAsync().AsTask();
+        second.IsCompleted.Should().BeFalse();
 
-        var probes = manager.ClientImpl.Requests
-            .Where(request => request.Code.StartsWith(
-                DenoReplSession.StdinReadinessProbeCodePrefix,
-                StringComparison.Ordinal))
-            .ToArray();
-        probes.Should().HaveCount(2).And.OnlyContain(request =>
-            request.Silent && !request.StoreHistory && request.AllowStdin);
-        manager.ClientImpl.ReadinessReplyCount.Should().Be(1);
-        manager.ClientImpl.StartedCount.Should().Be(0);
-        session.GetSnapshot().State.Should().Be("idle");
-    }
-
-    [Fact(Timeout = 15_000)]
-    public async Task LateOutputAlreadyIncludedInExecutionIsNotPresentedTwice()
-    {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        var presentedStderr = Channel.CreateUnbounded<string>();
-        var presentation = new ImmediatePresentationRouter(new NoopPresentationSink(presentedStderr));
-        await using var session = CreateSession(
-            AgentSessionId.Create(),
-            "late-output",
-            LongRunningOptions(),
-            manager,
-            presentation);
-        var resultTask = session.ExecuteAsync(
-            "work",
-            AgentToolCallId.Create(),
-            TestContext.Current.CancellationToken);
-        var execution = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-        var included = new JupyterStderr(execution.RequestId, "included");
-        execution.AddOutput(included);
-        manager.ClientImpl.PublishEvent(CreateLateOutput(included, true));
-        manager.ClientImpl.PublishEvent(CreateLateOutput(
-            new JupyterStderr(execution.RequestId, "after-completion")));
-        execution.Release();
-
-        var result = await resultTask;
-
-        result.Outputs.Where(static output => output.Kind == "stderr")
-            .Select(static output => output.Text).Should().Equal("included", "after-completion");
-        var presented = new List<string>();
-        while (presentedStderr.Reader.TryRead(out var text)) presented.Add(text);
-
-        presented.Should().Equal("included", "after-completion");
-    }
-
-    [Fact(Timeout = 15_000)]
-    public async Task LateOutputIsRequestCorrelatedAndBarrierDoesNotChangeUserHistory()
-    {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        await using var session = CreateSession(
-            AgentSessionId.Create(),
-            "late-correlation",
-            LongRunningOptions(),
-            manager);
-
-        var firstTask = session.ExecuteAsync(
-            "first",
-            AgentToolCallId.Create(),
-            TestContext.Current.CancellationToken);
-        var firstExecution = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-        manager.ClientImpl.PublishEvent(CreateLateOutput(
-            new JupyterStdout(firstExecution.RequestId, "first-late")));
-        firstExecution.Release();
-        var first = await firstTask;
-
-        var secondTask = session.ExecuteAsync(
-            "second",
-            AgentToolCallId.Create(),
-            TestContext.Current.CancellationToken);
-        var secondExecution = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-        manager.ClientImpl.PublishEvent(CreateLateOutput(
-            new JupyterStdout(firstExecution.RequestId, "stale-first")));
-        manager.ClientImpl.PublishEvent(CreateLateOutput(
-            new JupyterStdout(secondExecution.RequestId, "second-late")));
-        secondExecution.Release();
-        var second = await secondTask;
-
-        first.ExecutionCount.Should().Be(1);
-        first.Outputs.Should().ContainSingle().Which.Text.Should().Be("first-late");
-        second.ExecutionCount.Should().Be(2);
-        second.Outputs.Should().ContainSingle().Which.Text.Should().Be("second-late");
-
-        var requests = manager.ClientImpl.Requests;
-        requests.Should().HaveCount(5);
-        requests[0].Should().Match<JupyterExecuteRequest>(request =>
-            request.Silent && !request.StoreHistory && request.AllowStdin &&
-            request.Code.StartsWith(DenoReplSession.StdinReadinessProbeCodePrefix, StringComparison.Ordinal));
-        requests[1].Should().Match<JupyterExecuteRequest>(request =>
-            !request.Silent && request.StoreHistory && request.Code == "first");
-        requests[2].Should().Match<JupyterExecuteRequest>(request =>
-            request.Silent && !request.StoreHistory && !request.AllowStdin);
-        requests[3].Should().Match<JupyterExecuteRequest>(request =>
-            !request.Silent && request.StoreHistory && request.Code == "second");
-        requests[4].Should().Match<JupyterExecuteRequest>(request =>
-            request.Silent && !request.StoreHistory && !request.AllowStdin);
-        JsonSerializer.Serialize(second, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
-            .Should().NotContain(DenoReplSession.IopubBarrierMarkerPrefix)
-            .And.NotContain(DenoReplSession.IopubBarrierMediaType);
-    }
-
-    [Fact(Timeout = 15_000)]
-    public async Task BarrierMarkerInExecutionOutputCompletesWithoutLeakingMarker()
-    {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        manager.ClientImpl.BarrierMarkerInExecutionOutput = true;
-        await using var session = CreateSession(
-            AgentSessionId.Create(),
-            "regular-barrier",
-            LongRunningOptions(),
-            manager);
-
-        var resultTask = session.ExecuteAsync(
-            "work",
-            AgentToolCallId.Create(),
-            TestContext.Current.CancellationToken);
-        var execution = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-        execution.Release();
-
-        var result = await resultTask;
-
-        result.ExecutionCount.Should().Be(1);
-        result.Outputs.Should().BeEmpty();
-        JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
-            .Should().NotContain(DenoReplSession.IopubBarrierMarkerPrefix)
-            .And.NotContain(DenoReplSession.IopubBarrierMediaType);
-    }
-
-    [Fact(Timeout = 15_000)]
-    public async Task BarrierMarkerIncludedInExecutionLateEventCompletesWithoutLeakingMarker()
-    {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        manager.ClientImpl.BarrierMarkerInExecutionOutput = true;
-        manager.ClientImpl.BarrierMarkerAsIncludedLateOutput = true;
-        await using var session = CreateSession(
-            AgentSessionId.Create(),
-            "included-barrier",
-            LongRunningOptions(),
-            manager);
-
-        var resultTask = session.ExecuteAsync(
-            "work",
-            AgentToolCallId.Create(),
-            TestContext.Current.CancellationToken);
-        var execution = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-        execution.Release();
-
-        var result = await resultTask;
-
-        result.ExecutionCount.Should().Be(1);
-        result.Outputs.Should().BeEmpty();
-        JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
-            .Should().NotContain(DenoReplSession.IopubBarrierMarkerPrefix)
-            .And.NotContain(DenoReplSession.IopubBarrierMediaType);
-    }
-
-    [Fact(Timeout = 15_000)]
-    public async Task BarrierOutputDoesNotCompleteCaptureBeforeEarlierLateOutputEventIsConsumed()
-    {
-        var manager = new ControlledManager(new ConcurrencyProbe(), true);
-        manager.ClientImpl.BarrierMarkerInExecutionOutput = true;
-        await using var session = CreateSession(
-            AgentSessionId.Create(),
-            "barrier-event-order",
-            LongRunningOptions(),
-            manager);
-        await session.StartAsync(TestContext.Current.CancellationToken);
-        manager.ClientImpl.PauseEventConsumption();
-
-        try
-        {
-            var resultTask = session.ExecuteAsync(
-                "work",
-                AgentToolCallId.Create(),
-                TestContext.Current.CancellationToken);
-            var execution = await manager.ClientImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
-            manager.ClientImpl.PublishEvent(CreateLateOutput(
-                new JupyterStdout(execution.RequestId, "ordered-late")));
-            execution.Release();
-
-            await manager.ClientImpl.WaitForEventConsumptionBlockedAsync(TestContext.Current.CancellationToken);
-            await manager.ClientImpl.WaitForBarrierOutputsDrainedAsync(TestContext.Current.CancellationToken);
-            resultTask.IsCompleted.Should().BeFalse();
-
-            manager.ClientImpl.ResumeEventConsumption();
-            var result = await resultTask;
-
-            result.Outputs.Should().ContainSingle().Which.Text.Should().Be("ordered-late");
-            JsonSerializer.Serialize(result, DenoReplJsonSerializerContext.Default.DenoReplExecutionResult)
-                .Should().NotContain(DenoReplSession.IopubBarrierMarkerPrefix)
-                .And.NotContain(DenoReplSession.IopubBarrierMediaType);
-        }
-        finally
-        {
-            manager.ClientImpl.ResumeEventConsumption();
-        }
+        generation.AllowDisposal.TrySetResult();
+        await Task.WhenAll(first, second);
+        generation.DisposeCount.Should().Be(1);
+        session.GetSnapshot().State.Should().Be("closed");
     }
 
     private static DenoReplOptions LongRunningOptions(
@@ -351,27 +178,11 @@ public sealed class DenoReplSessionTests
         };
     }
 
-    private static JupyterLateOutput CreateLateOutput(
-        JupyterOutput output,
-        bool includedInExecution = false)
-    {
-        var message = JupyterMessage.Create(
-            "stream",
-            new JupyterStream("stdout", "wire"),
-            JupyterJsonContext.Default.JupyterStream,
-            new JupyterSessionIdentity("test", "tester"));
-        return new JupyterLateOutput(output.RequestId, message)
-        {
-            Output = output,
-            IncludedInExecution = includedInExecution
-        };
-    }
-
     private static DenoReplSession CreateSession(
         AgentSessionId owner,
         string id,
         DenoReplOptions options,
-        ControlledManager manager,
+        IDenoReplSessionFactory factory,
         IDenoReplPresentationRouter? presentationRouter = null)
     {
         return new DenoReplSession(
@@ -380,53 +191,174 @@ public sealed class DenoReplSessionTests
             false,
             Directory.GetCurrentDirectory(),
             options,
-            new SingleManagerFactory(manager),
+            factory,
             presentationRouter ?? new ImmediatePresentationRouter(),
-            new ReplControlSessionRegistry(),
             NullLogger<DenoReplSession>.Instance);
     }
 
-    private sealed class SingleManagerFactory(ControlledManager manager) : IDenoReplSessionFactory
+    internal sealed class ControlledFactory(Func<ControlledGeneration>? create = null) : IDenoReplSessionFactory
     {
-        public Task<IJupyterKernelManager> StartAsync(
+        private readonly Func<ControlledGeneration> create = create ?? (static () => new ControlledGeneration());
+        private readonly Channel<ControlledGeneration> started = Channel.CreateUnbounded<ControlledGeneration>();
+
+        internal List<ControlledGeneration> Generations { get; } = [];
+
+        internal List<(string WorkingDirectory, string SessionId, int Generation)> Starts { get; } = [];
+
+        public Task<IDenoReplGeneration> StartAsync(
             string workingDirectory,
             string sessionId,
+            int generation,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult<IJupyterKernelManager>(manager);
+            var value = create();
+            value.Generation = generation;
+            Generations.Add(value);
+            Starts.Add((workingDirectory, sessionId, generation));
+            started.Writer.TryWrite(value);
+            return Task.FromResult<IDenoReplGeneration>(value);
+        }
+
+        internal ValueTask<ControlledGeneration> NextGenerationAsync(CancellationToken cancellationToken)
+        {
+            return started.Reader.ReadAsync(cancellationToken);
         }
     }
 
-    private sealed class ControlledManager(ConcurrencyProbe probe, bool releaseOnInterrupt) : IJupyterKernelManager
+    internal sealed class ControlledGeneration : IDenoReplGeneration
     {
-        public ControlledClient ClientImpl { get; } = new(probe);
+        private readonly TaskCompletionSource completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource disposalCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int disposeState;
 
-        public int InterruptCount { get; private set; }
+        internal ControlledGeneration(ConcurrencyProbe? probe = null)
+        {
+            ConnectionImpl = new ControlledConnection(probe);
+        }
 
-        public int RestartCount { get; private set; }
+        internal ControlledConnection ConnectionImpl { get; init; }
 
-        public int ShutdownCount { get; private set; }
+        public IDenoReplConnection Connection => ConnectionImpl;
 
-        public int TerminateCount { get; private set; }
+        public Task Completion => completion.Task;
 
-        public IJupyterClient Client => ClientImpl;
+        public int? ExitCode { get; private set; }
 
-        public int? ProcessId => null;
+        internal int Generation { get; set; }
 
-        public Task InterruptAsync(CancellationToken cancellationToken = default)
+        internal int ShutdownCount { get; private set; }
+
+        internal int TerminateCount { get; private set; }
+
+        internal int DisposeCount { get; private set; }
+
+        internal bool BlockDisposal { get; set; }
+
+        internal TaskCompletionSource DisposalStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowDisposal { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ShutdownAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            InterruptCount++;
-            if (releaseOnInterrupt) ClientImpl.ReleaseAll();
-
+            ShutdownCount++;
+            ConnectionImpl.CompleteConnection();
+            completion.TrySetResult();
             return Task.CompletedTask;
         }
 
-        public Task RestartAsync(CancellationToken cancellationToken = default)
+        public Task TerminateAsync()
+        {
+            TerminateCount++;
+            ConnectionImpl.TerminateExecutions();
+            ConnectionImpl.CompleteConnection();
+            completion.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.CompareExchange(ref disposeState, 1, 0) == 0)
+            {
+                try
+                {
+                    DisposeCount++;
+                    DisposalStarted.TrySetResult();
+                    if (BlockDisposal)
+                        await AllowDisposal.Task.ConfigureAwait(false);
+                    ConnectionImpl.TerminateExecutions();
+                    ConnectionImpl.CompleteConnection();
+                    completion.TrySetResult();
+                    disposalCompletion.TrySetResult();
+                }
+                catch (Exception exception)
+                {
+                    disposalCompletion.TrySetException(exception);
+                }
+            }
+
+            await disposalCompletion.Task.ConfigureAwait(false);
+        }
+
+        internal void Complete(int? exitCode = 0)
+        {
+            ExitCode = exitCode;
+            ConnectionImpl.CompleteConnection();
+            completion.TrySetResult();
+        }
+    }
+
+    internal sealed class ControlledConnection(ConcurrencyProbe? probe = null) : IDenoReplConnection
+    {
+        private readonly TaskCompletionSource completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Lock gate = new();
+        private readonly List<ControlledEval> executions = [];
+        private readonly Channel<ControlledEval> started = Channel.CreateUnbounded<ControlledEval>();
+        private int nextExecutionId;
+
+        public Task Completion => completion.Task;
+
+        internal bool ReleaseOnCancel { get; set; }
+
+        internal int CancelCount { get; private set; }
+
+        internal int ShutdownCount { get; private set; }
+
+        internal List<(ReplEvalInputRequestEvent Request, string Value)> InputReplies { get; } = [];
+
+        public Task<ReplEvalExecution> ExecuteAsync(string code, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            RestartCount++;
+            var execution = new ControlledEval($"execution-{Interlocked.Increment(ref nextExecutionId)}", probe);
+            lock (gate)
+            {
+                executions.Add(execution);
+            }
+            started.Writer.TryWrite(execution);
+            return Task.FromResult(execution.Execution);
+        }
+
+        public Task CancelAsync(string executionId, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CancelCount++;
+            if (ReleaseOnCancel) Find(executionId).CompleteCancelled();
+            return Task.CompletedTask;
+        }
+
+        public Task ReplyInputAsync(
+            ReplEvalInputRequestEvent request,
+            string value,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            InputReplies.Add((request, value));
             return Task.CompletedTask;
         }
 
@@ -434,527 +366,113 @@ public sealed class DenoReplSessionTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             ShutdownCount++;
-            ClientImpl.ReleaseAll();
+            TerminateExecutions();
+            completion.TrySetResult();
             return Task.CompletedTask;
         }
 
-        public Task TerminateAsync(CancellationToken cancellationToken = default)
+        internal ValueTask<ControlledEval> NextExecutionAsync(CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            TerminateCount++;
-            ClientImpl.ReleaseAll();
-            return Task.CompletedTask;
+            return started.Reader.ReadAsync(cancellationToken);
         }
 
-        public ValueTask DisposeAsync()
+        internal void TerminateExecutions()
         {
-            return ValueTask.CompletedTask;
-        }
-    }
-
-    private sealed class ControlledClient(ConcurrencyProbe probe) : IJupyterClient
-    {
-        private readonly List<ControlledExecution> executions = [];
-
-        private readonly TaskCompletionSource barrierOutputsDrained =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        private readonly Channel<JupyterClientEvent> events = Channel.CreateUnbounded<JupyterClientEvent>();
-        private readonly Lock gate = new();
-        private readonly List<JupyterExecuteRequest> requests = [];
-        private readonly Channel<ControlledExecution> started = Channel.CreateUnbounded<ControlledExecution>();
-        private TaskCompletionSource? eventConsumptionBlocked;
-        private TaskCompletionSource? eventConsumptionRelease;
-        private int executionCount;
-        private int readinessFailuresRemaining;
-        private int readinessReplyCount;
-        private int startedCount;
-
-        public bool BarrierMarkerInExecutionOutput { get; set; }
-
-        public bool BarrierMarkerAsIncludedLateOutput { get; set; }
-
-        public int ReadinessReplyCount => Volatile.Read(ref readinessReplyCount);
-
-        public IReadOnlyList<JupyterExecuteRequest> Requests
-        {
-            get
-            {
-                lock (gate)
-                {
-                    return requests.ToArray();
-                }
-            }
-        }
-
-        public int StartedCount => Volatile.Read(ref startedCount);
-
-        public void SetReadinessFailures(int value)
-        {
-            Volatile.Write(ref readinessFailuresRemaining, value);
-        }
-
-        public async IAsyncEnumerable<JupyterClientEvent> WatchEventsAsync(
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            yield return new JupyterClientConnected();
-            await foreach (var clientEvent in events.Reader.ReadAllAsync(cancellationToken))
-            {
-                Task? release;
-                TaskCompletionSource? blocked;
-                lock (gate)
-                {
-                    release = eventConsumptionRelease?.Task;
-                    blocked = eventConsumptionBlocked;
-                }
-
-                if (release is not null)
-                {
-                    blocked?.TrySetResult();
-                    await release.WaitAsync(cancellationToken);
-                }
-
-                yield return clientEvent;
-            }
-        }
-
-        public Task<IJupyterExecution> ExecuteAsync(
-            JupyterExecuteRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            return ExecuteAsyncCore(request, false, cancellationToken);
-        }
-
-        public Task<IJupyterExecution> ExecuteAsync(
-            JupyterExecuteRequest request,
-            JupyterExecutionOptions options,
-            CancellationToken cancellationToken = default)
-        {
-            return ExecuteAsyncCore(request, options.ObserveOutputs, cancellationToken);
-        }
-
-        private Task<IJupyterExecution> ExecuteAsyncCore(
-            JupyterExecuteRequest request,
-            bool observeOutputs,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (TryGetReadinessNonce(request.Code) is { } readinessNonce)
-            {
-                var inputReady = !TryConsumeReadinessFailure();
-                lock (gate)
-                {
-                    requests.Add(request);
-                }
-
-                return Task.FromResult<IJupyterExecution>(new ReadinessExecution(
-                    Volatile.Read(ref executionCount),
-                    inputReady,
-                    readinessNonce,
-                    () => Interlocked.Increment(ref readinessReplyCount)));
-            }
-
-            var barrierMarker = TryGetBarrierMarker(request.Code);
-            if (barrierMarker is not null)
-            {
-                var barrierRequestId = JupyterMessageId.Create();
-                var barrierOutput = CreateBarrierOutput(barrierRequestId, barrierMarker);
-                var barrier = new CompletedExecution(
-                    barrierRequestId,
-                    Volatile.Read(ref executionCount),
-                    BarrierMarkerInExecutionOutput ? [barrierOutput] : [],
-                    () => barrierOutputsDrained.TrySetResult());
-                lock (gate)
-                {
-                    requests.Add(request);
-                }
-
-                var barrierEvent = CreateLateOutput(
-                    barrierOutput,
-                    BarrierMarkerInExecutionOutput);
-                if (BarrierMarkerAsIncludedLateOutput)
-                    PublishEvent(barrierEvent);
-                else if (BarrierMarkerInExecutionOutput && observeOutputs)
-                    PublishEvent(new JupyterExecutionOutputObserved(
-                        barrierRequestId,
-                        barrierEvent.Message,
-                        barrierOutput));
-                else
-                    PublishEvent(barrierEvent);
-
-                return Task.FromResult<IJupyterExecution>(barrier);
-            }
-
-            var execution = new ControlledExecution(probe, Interlocked.Increment(ref executionCount));
-            lock (gate)
-            {
-                requests.Add(request);
-                executions.Add(execution);
-            }
-
-            Interlocked.Increment(ref startedCount);
-            started.Writer.TryWrite(execution).Should().BeTrue();
-            return Task.FromResult<IJupyterExecution>(execution);
-        }
-
-        public Task<JupyterKernelInfo> GetKernelInfoAsync(CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<JupyterCompleteReply> CompleteAsync(
-            JupyterCompleteRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<JupyterInspectReply> InspectAsync(
-            JupyterInspectRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<JupyterIsCompleteReply> IsCompleteAsync(
-            JupyterIsCompleteRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public Task<TimeSpan> PingAsync(CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        public Task<ControlledExecution> NextExecutionAsync(CancellationToken cancellationToken)
-        {
-            return started.Reader.ReadAsync(cancellationToken).AsTask();
-        }
-
-        public void PauseEventConsumption()
-        {
-            lock (gate)
-            {
-                if (eventConsumptionRelease is not null)
-                    throw new InvalidOperationException("Event consumption is already paused.");
-
-                eventConsumptionBlocked = new TaskCompletionSource(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                eventConsumptionRelease = new TaskCompletionSource(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-            }
-        }
-
-        public Task WaitForEventConsumptionBlockedAsync(CancellationToken cancellationToken)
-        {
-            lock (gate)
-            {
-                return (eventConsumptionBlocked?.Task ??
-                        throw new InvalidOperationException("Event consumption is not paused."))
-                    .WaitAsync(cancellationToken);
-            }
-        }
-
-        public Task WaitForBarrierOutputsDrainedAsync(CancellationToken cancellationToken)
-        {
-            return barrierOutputsDrained.Task.WaitAsync(cancellationToken);
-        }
-
-        public void ResumeEventConsumption()
-        {
-            TaskCompletionSource? release;
-            lock (gate)
-            {
-                release = eventConsumptionRelease;
-                eventConsumptionRelease = null;
-                eventConsumptionBlocked = null;
-            }
-
-            release?.TrySetResult();
-        }
-
-        public void PublishEvent(JupyterClientEvent clientEvent)
-        {
-            events.Writer.TryWrite(clientEvent).Should().BeTrue();
-        }
-
-        public void ReleaseAll()
-        {
-            ControlledExecution[] snapshot;
+            ControlledEval[] snapshot;
             lock (gate)
             {
                 snapshot = executions.ToArray();
             }
-
-            foreach (var execution in snapshot) execution.Release();
+            foreach (var execution in snapshot) execution.CompleteCancelled();
         }
 
-        private static JupyterDisplayOutput CreateBarrierOutput(JupyterMessageId requestId, string marker)
+        internal void CompleteConnection()
         {
-            var data = new Dictionary<string, JsonElement>
+            completion.TrySetResult();
+        }
+
+        private ControlledEval Find(string executionId)
+        {
+            lock (gate)
             {
-                [DenoReplSession.IopubBarrierMediaType] = JsonSerializer.SerializeToElement(marker)
-            };
-            return new JupyterDisplayOutput(
-                requestId,
-                new MimeBundle(data),
-                new Dictionary<string, JsonElement>());
-        }
-
-        private static string? TryGetBarrierMarker(string code)
-        {
-            var start = code.IndexOf(DenoReplSession.IopubBarrierMarkerPrefix, StringComparison.Ordinal);
-            if (start < 0) return null;
-
-            var end = start + DenoReplSession.IopubBarrierMarkerPrefix.Length;
-            while (end < code.Length && char.IsAsciiHexDigit(code[end])) end++;
-
-            return code[start..end];
-        }
-
-        private static string? TryGetReadinessNonce(string code)
-        {
-            if (!code.StartsWith(DenoReplSession.StdinReadinessProbeCodePrefix, StringComparison.Ordinal)) return null;
-
-            var start = code.IndexOf(DenoReplSession.StdinReadinessNoncePrefix, StringComparison.Ordinal);
-            if (start < 0) return null;
-
-            var end = start + DenoReplSession.StdinReadinessNoncePrefix.Length;
-            while (end < code.Length && char.IsAsciiHexDigit(code[end])) end++;
-            return code[start..end];
-        }
-
-        private bool TryConsumeReadinessFailure()
-        {
-            while (true)
-            {
-                var remaining = Volatile.Read(ref readinessFailuresRemaining);
-                if (remaining <= 0) return false;
-
-                if (Interlocked.CompareExchange(ref readinessFailuresRemaining, remaining - 1, remaining) == remaining)
-                    return true;
+                return executions.Single(execution => execution.Execution.ExecutionId == executionId);
             }
         }
     }
 
-    private sealed class ControlledExecution : IJupyterExecution
+    internal sealed class ControlledEval
     {
-        private readonly Lock gate = new();
-        private readonly List<JupyterOutput> outputs = [];
-
-        private readonly TaskCompletionSource release =
+        private readonly TaskCompletionSource<ReplEvalTerminal> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly ConcurrencyProbe? probe;
+        private readonly Channel<ReplEvalEvent> events = Channel.CreateUnbounded<ReplEvalEvent>();
+        private int terminalState;
 
-        public ControlledExecution(ConcurrencyProbe probe, int executionCount)
+        internal ControlledEval(string executionId, ConcurrencyProbe? probe = null)
         {
-            RequestId = JupyterMessageId.Create();
-            probe.Enter();
-            Completion = CompleteAsync(probe, executionCount);
+            this.probe = probe;
+            Execution = new ReplEvalExecution(executionId, events.Reader, completion.Task);
+            probe?.Enter();
         }
 
-        public JupyterMessageId RequestId { get; }
+        internal ReplEvalExecution Execution { get; }
 
-        public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
-
-        public Task<JupyterExecutionResult> Completion { get; }
-
-        public Task ReplyInputAsync(
-            JupyterInputRequest request,
-            string value,
-            CancellationToken cancellationToken = default)
+        internal bool Publish(ReplEvalEvent replEvent)
         {
-            throw new NotSupportedException();
+            return events.Writer.TryWrite(replEvent);
         }
 
-        public ValueTask DisposeAsync()
+        internal void CompleteResult(JsonElement? value = null)
         {
-            return ValueTask.CompletedTask;
+            Complete(new ReplEvalResultTerminal(Execution.ExecutionId, value));
         }
 
-        public void Release()
+        internal void CompleteResult(int value)
         {
-            release.TrySetResult();
+            CompleteResult(JsonSerializer.SerializeToElement(value));
         }
 
-        public void AddOutput(JupyterOutput output)
+        internal void CompleteError(string code, string message, bool fatal = false)
         {
-            lock (gate)
-            {
-                outputs.Add(output);
-            }
+            Complete(new ReplEvalErrorTerminal(Execution.ExecutionId, code, message, fatal));
         }
 
-        private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
+        internal void CompleteCancelled()
         {
-            await release.Task;
-            JupyterOutput[] snapshot;
-            lock (gate)
-            {
-                snapshot = outputs.ToArray();
-            }
-
-            foreach (var output in snapshot) yield return output;
+            Complete(new ReplEvalCancelledTerminal(Execution.ExecutionId));
         }
 
-        private async Task<JupyterExecutionResult> CompleteAsync(ConcurrencyProbe probe, int executionCount)
+        private void Complete(ReplEvalTerminal terminal)
         {
-            try
-            {
-                await release.Task;
-                var reply = new JupyterExecuteReply("ok", executionCount);
-                return new JupyterExecutionResult(
-                    reply,
-                    JupyterMessage.Create(
-                        "execute_reply",
-                        reply,
-                        JupyterJsonContext.Default.JupyterExecuteReply,
-                        new JupyterSessionIdentity("test", "tester")));
-            }
-            finally
-            {
-                probe.Exit();
-            }
+            if (Interlocked.Exchange(ref terminalState, 1) != 0) return;
+            events.Writer.TryComplete();
+            probe?.Exit();
+            completion.TrySetResult(terminal);
         }
     }
 
-    private sealed class CompletedExecution(
-        JupyterMessageId requestId,
-        int executionCount,
-        IReadOnlyList<JupyterOutput> outputs,
-        Action outputsDrained) : IJupyterExecution
-    {
-        public JupyterMessageId RequestId { get; } = requestId;
-
-        public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
-
-        public Task<JupyterExecutionResult> Completion { get; } = Task.FromResult(CreateCompletion(executionCount));
-
-        public Task ReplyInputAsync(
-            JupyterInputRequest request,
-            string value,
-            CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
-        {
-            await Task.CompletedTask;
-            foreach (var output in outputs) yield return output;
-            outputsDrained();
-        }
-
-        private static JupyterExecutionResult CreateCompletion(int count)
-        {
-            var reply = new JupyterExecuteReply("ok", count);
-            return new JupyterExecutionResult(
-                reply,
-                JupyterMessage.Create(
-                    "execute_reply",
-                    reply,
-                    JupyterJsonContext.Default.JupyterExecuteReply,
-                    new JupyterSessionIdentity("test", "tester")));
-        }
-    }
-
-    private sealed class ReadinessExecution(
-        int executionCount,
-        bool inputReady,
-        string expectedNonce,
-        Action inputReplied) : IJupyterExecution
-    {
-        public JupyterMessageId RequestId { get; } = JupyterMessageId.Create();
-
-        public IAsyncEnumerable<JupyterOutput> Outputs => ReadOutputsAsync();
-
-        public Task<JupyterExecutionResult> Completion { get; } =
-            Task.FromResult(CreateCompletion(executionCount, inputReady ? "ok" : "error"));
-
-        public Task ReplyInputAsync(
-            JupyterInputRequest request,
-            string value,
-            CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            value.Should().Be(expectedNonce);
-            inputReplied();
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        private async IAsyncEnumerable<JupyterOutput> ReadOutputsAsync()
-        {
-            await Task.CompletedTask;
-            if (inputReady)
-            {
-                yield return new JupyterInputRequest(
-                    RequestId,
-                    JupyterMessageId.Create(),
-                    string.Empty,
-                    false);
-            }
-            else
-            {
-                yield return new JupyterExecuteInputOutput(RequestId, "hidden readiness probe", executionCount);
-                yield return new JupyterExecutionError(
-                    RequestId,
-                    "Error",
-                    "stdin readiness nonce mismatch",
-                    []);
-            }
-        }
-
-        private static JupyterExecutionResult CreateCompletion(int count, string status)
-        {
-            var reply = new JupyterExecuteReply("ok", count);
-            if (status != "ok") reply = new JupyterExecuteReply(status, count, ErrorName: "Error");
-            return new JupyterExecutionResult(
-                reply,
-                JupyterMessage.Create(
-                    "execute_reply",
-                    reply,
-                    JupyterJsonContext.Default.JupyterExecuteReply,
-                    new JupyterSessionIdentity("test", "tester")));
-        }
-    }
-
-    private sealed class ConcurrencyProbe
+    internal sealed class ConcurrencyProbe
     {
         private int active;
         private int maximum;
 
-        public int Active => Volatile.Read(ref active);
+        internal int Active => Volatile.Read(ref active);
 
-        public int Maximum => Volatile.Read(ref maximum);
+        internal int Maximum => Volatile.Read(ref maximum);
 
-        public void Enter()
+        internal void Enter()
         {
             var current = Interlocked.Increment(ref active);
-            while (true)
+            var observed = Volatile.Read(ref maximum);
+            while (current > observed)
             {
-                var observed = Volatile.Read(ref maximum);
-                if (observed >= current ||
-                    Interlocked.CompareExchange(ref maximum, current, observed) == observed) return;
+                var previous = Interlocked.CompareExchange(ref maximum, current, observed);
+                if (previous == observed) break;
+                observed = previous;
             }
         }
 
-        public void Exit()
+        internal void Exit()
         {
             Interlocked.Decrement(ref active);
         }
@@ -963,7 +481,7 @@ public sealed class DenoReplSessionTests
     internal sealed class ImmediatePresentationRouter(IDenoReplPresentationSink? currentSink = null)
         : IDenoReplPresentationRouter
     {
-        private static readonly IDenoReplPresentationSink DefaultSink = new NoopPresentationSink();
+        private readonly IDenoReplPresentationSink sink = currentSink ?? new NoopPresentationSink();
 
         public ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
             AgentSessionId sessionId,
@@ -971,70 +489,50 @@ public sealed class DenoReplSessionTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(currentSink ?? DefaultSink);
+            return ValueTask.FromResult(sink);
         }
 
-        public bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
+        public bool TryGetCurrentSink(
+            AgentSessionId sessionId,
+            [NotNullWhen(true)] out IDenoReplPresentationSink? current)
         {
-            sink = currentSink;
-            return sink is not null;
+            current = sink;
+            return true;
         }
     }
 
-    private sealed class NoopPresentationSink(Channel<string>? stderr = null) : IDenoReplPresentationSink
+    private sealed class NoopPresentationSink : IDenoReplPresentationSink
     {
         public ValueTask DisplayAsync(
             MimeBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.CompletedTask;
-        }
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
             MimeBundle data,
             JupyterDisplayId displayId,
             IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.FromResult(displayId);
-        }
+            CancellationToken cancellationToken) => ValueTask.FromResult(displayId);
 
         public ValueTask UpdateDisplayAsync(
             JupyterDisplayId displayId,
             MimeBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.CompletedTask;
-        }
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-        public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
-        {
-            return ValueTask.CompletedTask;
-        }
+        public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-        public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
-        {
-            stderr?.Writer.TryWrite(text);
-            return ValueTask.CompletedTask;
-        }
+        public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public ValueTask PublishErrorAsync(
             string name,
             string value,
             IReadOnlyList<string> traceback,
-            CancellationToken cancellationToken)
-        {
-            return ValueTask.CompletedTask;
-        }
+            CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public Task<string> RequestInputAsync(
             string prompt,
             bool password,
-            CancellationToken cancellationToken)
-        {
-            return Task.FromResult(string.Empty);
-        }
+            CancellationToken cancellationToken) => Task.FromResult(string.Empty);
     }
 }

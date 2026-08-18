@@ -1,5 +1,6 @@
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Mcp;
 using Maieutics.Plugins;

@@ -1,0 +1,16 @@
+{
+  "name": "@maieutics/deno-repl",
+  "version": "0.1.0",
+  "imports": {
+    "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
+    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0"
+  },
+  "exports": {
+    ".": "./main.ts",
+    "./protocol": "./protocol.ts"
+  },
+  "tasks": {
+    "check": "deno check main.ts repl_test.ts",
+    "test": "deno test --allow-read=. repl_test.ts"
+  }
+}

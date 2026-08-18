@@ -21,7 +21,7 @@ Deno.test("the shared bus stays inside the control contract", async () => {
   const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
   for (const specifier of imports) {
     assert(
-      specifier === "./protocol.ts",
+      specifier === "./protocol.ts" || specifier === "./ipc_websocket.ts",
       `unexpected import '${specifier}' in the shared bus`,
     );
   }

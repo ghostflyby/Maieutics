@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 using Maieutics.Agent;
 using Microsoft.Extensions.AI;
 
-namespace Maieutics.Execution;
+namespace Maieutics.DenoRepl;
 
 internal sealed class DenoReplFunctions
 {

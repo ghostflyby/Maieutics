@@ -139,11 +139,15 @@ internal sealed class ReplControlHost : IDisposable
         {
             try
             {
-                await registry.WaitForIdentityAsync(peerProcessId, context.RequestAborted)
+                using var identityWait = CancellationTokenSource.CreateLinkedTokenSource(
+                    context.RequestAborted);
+                identityWait.CancelAfter(ReplControlLimits.PeerRegistrationWait);
+                await registry.WaitForIdentityAsync(peerProcessId, identityWait.Token)
                     .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested)
             {
+                // The peer never registered; treat it as unowned instead of holding the request open.
                 return null;
             }
 

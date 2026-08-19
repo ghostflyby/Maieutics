@@ -76,16 +76,15 @@ internal static class PermissionBaseline
         // to jsr.io:443.
         var import = new List<string> { "jsr.io:443" };
         net.Add("jsr.io:443");
-        var ffi = new List<string>();
+        PermissionKindRules ffi = new() { Allow = [] };
         if (OperatingSystem.IsWindows())
         {
-            // The Windows pipe bootstrap dlopens kernel32 before any control channel exists, so the
-            // baseline carries a one-time ffi grant for that exact library; the broker gates every
-            // post-bootstrap dlopen (ADR 0018 §10; the path-qualified form is the ADR decision 1
-            // baseline — re-verify on Windows before narrowing to the unsuffixed fallback).
-            var systemRoot = Environment.GetEnvironmentVariable("SystemRoot")
-                             ?? throw new InvalidOperationException("SystemRoot is not configured.");
-            ffi.Add(Path.Combine(systemRoot, "System32", "kernel32.dll"));
+            // The Windows pipe bootstrap dlopens kernel32 and uses Deno.UnsafePointer (which also
+            // requires ffi access but carries no library path), so the baseline grants ffi fully
+            // for the bootstrap window; the broker gates every post-bootstrap dlopen by default
+            // (ADR 0018 §10; re-verify path-qualified grants on Windows before narrowing — the
+            // UnsafePointer.of call makes a path-qualified grant insufficient for the bootstrap).
+            ffi = new PermissionKindRules { AllowAll = true };
         }
 
         return PermissionLayerStore.Build(
@@ -99,7 +98,7 @@ internal static class PermissionBaseline
                         [PermissionKind.Net] = new() { Allow = net },
                         [PermissionKind.Env] = new() { Allow = env },
                         [PermissionKind.Import] = new() { Allow = import },
-                        [PermissionKind.Ffi] = new() { Allow = ffi }
+                        [PermissionKind.Ffi] = ffi
                     }
                 }
             ],

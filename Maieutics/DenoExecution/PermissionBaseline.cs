@@ -76,6 +76,17 @@ internal static class PermissionBaseline
         // to jsr.io:443.
         var import = new List<string> { "jsr.io:443" };
         net.Add("jsr.io:443");
+        var ffi = new List<string>();
+        if (OperatingSystem.IsWindows())
+        {
+            // The Windows pipe bootstrap dlopens kernel32 before any control channel exists, so the
+            // baseline carries a one-time ffi grant for that exact library; the broker gates every
+            // post-bootstrap dlopen (ADR 0018 §10; the path-qualified form is the ADR decision 1
+            // baseline — re-verify on Windows before narrowing to the unsuffixed fallback).
+            var systemRoot = Environment.GetEnvironmentVariable("SystemRoot")
+                             ?? throw new InvalidOperationException("SystemRoot is not configured.");
+            ffi.Add(Path.Combine(systemRoot, "System32", "kernel32.dll"));
+        }
 
         return PermissionLayerStore.Build(
             [
@@ -88,7 +99,7 @@ internal static class PermissionBaseline
                         [PermissionKind.Net] = new() { Allow = net },
                         [PermissionKind.Env] = new() { Allow = env },
                         [PermissionKind.Import] = new() { Allow = import },
-                        [PermissionKind.Ffi] = new() { Allow = [] }
+                        [PermissionKind.Ffi] = new() { Allow = ffi }
                     }
                 }
             ],

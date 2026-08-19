@@ -24,8 +24,8 @@ internal sealed class TerminalFunctions
         [
             CreateFunction(
                 (Func<string, AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalInputResult>>)
-                ExecuteAsync,
-                "terminal_execute",
+                InputAsync,
+                "terminal_input",
                 "Sends a batch of input lines to the interactive terminal. Each line is either 't <text>' " +
                 "for raw text (no escape processing) or 'k <keys>' for key sequences in vim notation, for " +
                 "example k <Esc>, k 5<Down>, or k <C-c>. The keys include <CR>, <Esc>, <Tab>, <S-Tab>, <BS>, " +
@@ -36,13 +36,23 @@ internal sealed class TerminalFunctions
                 "cursor and whether the program is drawing the alternate screen (vim, less, or a full-screen " +
                 "UI). The first call of a session returns the full screen; pass full=true to force a full snapshot."),
             CreateFunction(
+                (Func<string, AIFunctionArguments, string[]?, int?, bool?, int?, CancellationToken, ValueTask<TerminalRunResult>>)
+                RunAsync,
+                "terminal_run",
+                "Starts a PTY session running an executable with arguments and returns its screen. Without " +
+                "timeout this creates a persistent interactive session (state 'idle'); pass timeout to run " +
+                "the program as a one-shot command: state 'completed' with the exitCode and final frame when " +
+                "it finishes in time, or state 'running' with sessionId as a live handle to poll with " +
+                "terminal_snapshot, feed input with terminal_input, interrupt with terminal_interrupt, or " +
+                "close with terminal_close. The one-shot session reports 'completed' after the program exits."),
+            CreateFunction(
                 (Func<AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalSnapshotResult>>)
                 SnapshotAsync,
                 "terminal_snapshot",
                 "Returns the current terminal screen as the rows that changed since the last frame. Pass " +
                 "full=true to get the complete screen. Use this after running commands that print more than " +
                 "one screenful, or to re-read the screen after a delay. Requires an existing session: the " +
-                "default session is created by the first terminal_execute or terminal_paste."),
+                "default session is created by the first terminal_input or terminal_paste."),
             CreateFunction(
                 (Func<string, AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalPasteResult>>)
                 PasteAsync,
@@ -53,13 +63,8 @@ internal sealed class TerminalFunctions
             CreateFunction(
                 (Func<AIFunctionArguments, string?, CancellationToken, ValueTask<TerminalCloseResult>>)CloseAsync,
                 "terminal_close",
-                "Closes a terminal session, gracefully closing the shell and then force-killing it if it does " +
-                "not exit. Omit sessionId to close the default session."),
-            CreateFunction(
-                (Func<AIFunctionArguments, CancellationToken, ValueTask<TerminalInfo>>)CreateAsync,
-                "terminal_create",
-                "Creates and starts an additional isolated interactive terminal process. The default session " +
-                "starts lazily on the first terminal_execute and is usually the only session you need."),
+                "Closes a terminal session, gracefully closing the program and then force-killing it if it " +
+                "does not exit. Omit sessionId to close the default session."),
             CreateFunction(
                 (Func<AIFunctionArguments, CancellationToken, ValueTask<TerminalListResult>>)ListAsync,
                 "terminal_list",
@@ -70,7 +75,7 @@ internal sealed class TerminalFunctions
                 "terminal_interrupt",
                 "Sends the terminal interrupt byte (Ctrl-C) to the running foreground program. Returns the " +
                 "screen after the interrupt settles. Requires an existing session; the default session is " +
-                "created by the first terminal_execute or terminal_paste.")
+                "created by the first terminal_input or terminal_paste.")
         ];
     }
 
@@ -97,7 +102,7 @@ internal sealed class TerminalFunctions
     }
 
     [Description("Sends a batch of input lines to the interactive terminal.")]
-    private async ValueTask<TerminalInputResult> ExecuteAsync(
+    private async ValueTask<TerminalInputResult> InputAsync(
         [Description("Lines starting with 't ' (raw text) or 'k ' (vim-notation key sequences).")]
         string input,
         AIFunctionArguments arguments,
@@ -105,7 +110,7 @@ internal sealed class TerminalFunctions
         bool? full = null,
         [Description("The maximum characters the frame may carry, from 1 through 1048576. Defaults to the session limit.")]
         int? maxCharacters = null,
-        [Description("An opaque session ID returned by terminal_create. Omit to use the lazy default session.")]
+        [Description("An opaque session ID returned by terminal_run. Omit to use the lazy default session.")]
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
@@ -122,23 +127,65 @@ internal sealed class TerminalFunctions
             cancellationToken).ConfigureAwait(false);
     }
 
+    [Description("Starts a PTY session running an executable with arguments.")]
+    private async ValueTask<TerminalRunResult> RunAsync(
+        [Description("The executable to launch; resolved through PATH when it has no path separator.")]
+        string executable,
+        AIFunctionArguments arguments,
+        [Description("The command-line arguments passed to the executable. Defaults to none.")]
+        string[]? argumentsList = null,
+        [Description("The deadline in seconds, from 1 through 600. Omit to create a persistent interactive session.")]
+        int? timeout = null,
+        [Description("Whether to return the full screen instead of only the changed rows. Defaults to false.")]
+        bool? full = null,
+        [Description("The maximum characters the frame may carry, from 1 through 1048576. Defaults to the session limit.")]
+        int? maxCharacters = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(executable))
+            throw new AgentToolException("terminal_invalid_arguments", "executable is required and cannot be empty.");
+
+        ValidateSnapshotRequest(maxCharacters);
+        if (timeout is { } requested && requested is < 1 or > 600)
+            throw new AgentToolException(
+                "terminal_invalid_arguments",
+                "timeout must be between 1 and 600 seconds.");
+
+        return await registry.RunOnceAsync(
+            AgentToolContext.GetRequired(arguments).SessionId,
+            executable,
+            argumentsList ?? [],
+            timeout is { } deadline
+                ? TimeSpan.FromSeconds(deadline)
+                : null,
+            new TerminalSnapshotRequest(full, maxCharacters),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     [Description("Returns the current terminal screen.")]
-    private async ValueTask<TerminalSnapshotResult> SnapshotAsync(
+    private ValueTask<TerminalSnapshotResult> SnapshotAsync(
         AIFunctionArguments arguments,
         [Description("Whether to return the full screen instead of only the changed rows. Defaults to false.")]
         bool? full = null,
         [Description("The maximum characters the frame may carry, from 1 through 1048576. Defaults to the session limit.")]
         int? maxCharacters = null,
-        [Description("An opaque session ID returned by terminal_create. Omit to use the default session.")]
+        [Description("An opaque session ID returned by terminal_run. Omit to use the default session.")]
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
-        ValidateSnapshotRequest(maxCharacters);
-        cancellationToken.ThrowIfCancellationRequested();
-        return registry.Snapshot(
-            AgentToolContext.GetRequired(arguments).SessionId,
-            new TerminalSnapshotRequest(full, maxCharacters),
-            sessionId);
+        try
+        {
+            ValidateSnapshotRequest(maxCharacters);
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(registry.Snapshot(
+                AgentToolContext.GetRequired(arguments).SessionId,
+                new TerminalSnapshotRequest(full, maxCharacters),
+                sessionId));
+        }
+        catch (Exception exception)
+        {
+            return ValueTask.FromException<TerminalSnapshotResult>(exception);
+        }
     }
 
     [Description("Pastes multi-line text into the terminal.")]
@@ -150,7 +197,7 @@ internal sealed class TerminalFunctions
         bool? full = null,
         [Description("The maximum characters the frame may carry, from 1 through 1048576. Defaults to the session limit.")]
         int? maxCharacters = null,
-        [Description("An opaque session ID returned by terminal_create. Omit to use the lazy default session.")]
+        [Description("An opaque session ID returned by terminal_run. Omit to use the lazy default session.")]
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
@@ -169,23 +216,13 @@ internal sealed class TerminalFunctions
     [Description("Closes a terminal session.")]
     private async ValueTask<TerminalCloseResult> CloseAsync(
         AIFunctionArguments arguments,
-        [Description("An opaque session ID returned by terminal_create. Omit to close the default session.")]
+        [Description("An opaque session ID returned by terminal_run. Omit to close the default session.")]
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
         return await registry.CloseAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             sessionId,
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    [Description("Creates and starts an additional isolated terminal process.")]
-    private async ValueTask<TerminalInfo> CreateAsync(
-        AIFunctionArguments arguments,
-        CancellationToken cancellationToken = default)
-    {
-        return await registry.CreateAsync(
-            AgentToolContext.GetRequired(arguments).SessionId,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -205,7 +242,7 @@ internal sealed class TerminalFunctions
         bool? full = null,
         [Description("The maximum characters the frame may carry, from 1 through 1048576. Defaults to the session limit.")]
         int? maxCharacters = null,
-        [Description("An opaque session ID returned by terminal_create. Omit to use the default session.")]
+        [Description("An opaque session ID returned by terminal_run. Omit to use the default session.")]
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
@@ -222,6 +259,7 @@ internal sealed class TerminalFunctions
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(int?))]
 [JsonSerializable(typeof(bool?))]
 [JsonSerializable(typeof(TerminalInfo))]
@@ -234,4 +272,5 @@ internal sealed class TerminalFunctions
 [JsonSerializable(typeof(TerminalInputResult))]
 [JsonSerializable(typeof(TerminalPasteResult))]
 [JsonSerializable(typeof(TerminalInterruptResult))]
+[JsonSerializable(typeof(TerminalRunResult))]
 internal sealed partial class TerminalJsonSerializerContext : JsonSerializerContext;

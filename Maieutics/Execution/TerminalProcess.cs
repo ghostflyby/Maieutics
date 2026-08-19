@@ -15,6 +15,9 @@ internal interface ITerminalProcess : IAsyncDisposable
     /// <summary>Whether the child has been reaped.</summary>
     bool HasExited { get; }
 
+    /// <summary>The child's exit code once reaped; null while it is still running.</summary>
+    int? ExitCode { get; }
+
     /// <summary>The grace window between a graceful close request and a force kill during disposal.</summary>
     TimeSpan GracefulExitTimeout { get; set; }
 
@@ -49,6 +52,8 @@ internal sealed class LocalTerminalProcess : ITerminalProcess
     public int Pid => process.Pid;
 
     public bool HasExited => process.HasExited;
+
+    public int? ExitCode => process.ExitCode;
 
     public TimeSpan GracefulExitTimeout
     {

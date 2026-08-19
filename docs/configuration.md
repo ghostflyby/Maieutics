@@ -88,12 +88,15 @@ operational environment rather than the complete Maieutics environment; provider
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited. The first implementation has no worker, target, isolation,
 pooling, retry, or automatic code-replay setting.
 
-The terminal tools (`terminal_execute`, `terminal_snapshot`, `terminal_paste`, `terminal_list`, `terminal_create`, `terminal_close`,
-`terminal_interrupt`) are registered only when the selected model endpoint resolves the hosted `Shell` capability; see
+The terminal tools (`terminal_input`, `terminal_run`, `terminal_snapshot`, `terminal_paste`, `terminal_list`,
+`terminal_close`, `terminal_interrupt`) are registered only when the selected model endpoint resolves
+the hosted `Shell` capability; see
 [ADR 0017](architecture/decisions/0017-terminal-tool-protocol-and-session-lifecycle.md) for the input protocol and
-session lifecycle. The default terminal session starts lazily on the first `terminal_execute`; each explicitly created
-session starts one independent PTY child running the configured shell. Every child receives an allowlisted environment
-that never inherits provider credentials.
+session lifecycle. The default terminal session starts lazily on the first `terminal_input` or `terminal_paste`,
+running the configured `Maieutics:Terminal:Shell`. `terminal_run` starts a PTY session running an executable with
+arguments; without `timeout` it creates a persistent interactive session, and with a deadline it runs the program as a
+one-shot command, returning the final frame and exit code or a live session handle when it is still running at the
+deadline. Every child receives an allowlisted environment that never inherits provider credentials.
 
 The terminal configuration is captured once when the Maieutics host builder is created:
 

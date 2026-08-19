@@ -5,10 +5,11 @@ internal sealed class TerminalOptions
 {
     internal const string SectionName = "Maieutics:Terminal";
 
-    /// <summary>The interactive shell launched in the PTY. The default resolves through PATH.</summary>
+    /// <summary>The program the lazy default interactive session starts with; other sessions name their own
+    /// executable through <c>terminal_run</c>. The default resolves through PATH.</summary>
     public string Shell { get; set; } = OperatingSystem.IsWindows() ? "powershell.exe" : "/bin/sh";
 
-    /// <summary>The command-line arguments passed to the shell, if any.</summary>
+    /// <summary>The command-line arguments passed to the lazy default interactive session's program.</summary>
     public string[] Arguments { get; set; } = [];
 
     /// <summary>The maximum number of terminal sessions one Agent session may own.</summary>
@@ -59,11 +60,20 @@ internal sealed record TerminalTextOperation(int Line, string Text) : TerminalIn
 /// <summary>A <c>k </c> line whose keys are encoded at write time against the live terminal mode.</summary>
 internal sealed record TerminalKeysOperation(int Line, IReadOnlyList<TerminalKey> Keys) : TerminalInputOperation(Line);
 
-/// <summary>The static parse of a <c>terminal_execute</c> input batch.</summary>
+/// <summary>The static parse of a <c>terminal_input</c> input batch.</summary>
 internal sealed record TerminalInputBatch(IReadOnlyList<TerminalInputOperation> Operations, int LineCount);
 
 /// <summary>Controls how a frame is produced for a snapshot-style call.</summary>
 internal sealed record TerminalSnapshotRequest(bool? Full = null, int? MaxCharacters = null);
+
+internal enum TerminalSessionKind
+{
+    /// <summary>An interactive shell with an undefined completion; the session survives until closed.</summary>
+    Persistent,
+
+    /// <summary>A single command run with a deadline; the session completes when the child exits.</summary>
+    OneShot
+}
 
 internal enum TerminalSessionState
 {
@@ -71,6 +81,7 @@ internal enum TerminalSessionState
     Starting,
     Idle,
     Busy,
+    Completed,
     Closing,
     Closed,
     Faulted
@@ -82,9 +93,11 @@ internal sealed record TerminalInfo(
     string State,
     string Cwd,
     bool IsDefault,
+    string Kind,
     int Columns,
     int Rows,
-    bool HasExited);
+    bool HasExited,
+    int? ExitCode);
 
 internal sealed record TerminalListResult(IReadOnlyList<TerminalInfo> Sessions);
 
@@ -126,6 +139,17 @@ internal sealed record TerminalSnapshotResult(
     int Generation,
     string State,
     bool Full,
+    int? ExitCode,
+    TerminalFrame Frame);
+
+/// <summary>The outcome of one one-shot command call. <c>Running</c> carries the session handle to poll;
+/// <c>Completed</c> carries the exit code and the final frame.</summary>
+internal sealed record TerminalRunResult(
+    string SessionId,
+    int Generation,
+    string State,
+    int? ExitCode,
+    bool Settled,
     TerminalFrame Frame);
 
 internal sealed record TerminalInputResult(

@@ -17,12 +17,20 @@ is implemented as executable-owned tool state; it does not introduce a worker pr
 
 ## Decision
 
-The executable exposes `terminal_execute`, `terminal_snapshot`, `terminal_paste`, `terminal_list`, `terminal_create`, `terminal_close`,
-and `terminal_interrupt` as ordinary Microsoft.Extensions.AI functions, gated per run by the hosted `Shell` capability
-(ADR 0005 capability registry). Omitting `sessionId` selects a reserved lazy default session that starts on the first
-write call (`terminal_execute` or `terminal_paste`); reads and control calls never start a session and fail with
-`terminal_session_not_found` when none exists. Explicitly created sessions start immediately. Sessions are scoped to
-one Agent session, capture the workspace root as their working directory at creation, and never share one PTY child.
+The executable exposes `terminal_input`, `terminal_run`, `terminal_snapshot`, `terminal_paste`, `terminal_list`,
+`terminal_close`, and `terminal_interrupt` as ordinary Microsoft.Extensions.AI functions, gated per
+run by the hosted `Shell` capability (ADR 0005 capability registry). Omitting `sessionId` selects a reserved lazy
+default session that starts on the first write call (`terminal_input` or `terminal_paste`), running the configured
+`Maieutics:Terminal:Shell`; reads and control calls never start a session and fail with `terminal_session_not_found`
+when none exists. Sessions are scoped to one Agent session, capture the workspace root as their working directory at
+creation, and never share one PTY child.
+
+`terminal_run` starts a PTY session running a caller-selected executable with arguments. Without `timeout` it creates a
+persistent interactive session and returns its first frame; with a wall-clock deadline it runs the program as a
+one-shot command, returning `completed` with the exit code and final frame when the child exits in time, or `running`
+with the session as a live task handle when it is still running at the deadline. The handle is polled and operated
+through the same `terminal_snapshot`/`terminal_input`/`terminal_interrupt`/`terminal_close` tools; a one-shot session
+never occupies the lazy default slot and counts against `MaxSessionsPerAgent`.
 
 The terminal is composed of three deterministic parts: a PTY child (`Ghostflyby.Pty`, NuGet), a headless VT emulator
 (`XTerm.NET` `Terminal`), and an exclusive output pump that decodes the PTY byte stream into the emulator. The pump
@@ -30,7 +38,7 @@ owns the emulator; the emulator is the only writer of the screen buffer and is n
 
 ## Input protocol
 
-`terminal_execute` takes one `input` string whose lines are each one of:
+`terminal_input` takes one `input` string whose lines are each one of:
 
 ```text
 t <text>

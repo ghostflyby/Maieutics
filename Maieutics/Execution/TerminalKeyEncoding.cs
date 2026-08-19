@@ -53,15 +53,15 @@ internal sealed record TerminalCharKey(char Character, TerminalKeyModifiers Modi
 internal sealed record TerminalKey(int? Count, TerminalKeySpec Spec);
 
 /// <summary>
-///     Parses the <c>terminal_execute</c> input batch into encoded write operations. Parsing is purely
+///     Parses the <c>terminal_input</c> input batch into encoded write operations. Parsing is purely
 ///     static: every line is validated before the batch is executed, so a syntax error never leaves a
 ///     partially-sent batch. The byte encoding of key tokens is deferred to <see cref="TerminalKeyEncoder"/>,
 ///     which knows the terminal mode at write time.
 /// </summary>
 internal static class TerminalInputBatchParser
 {
-    internal const string TextPrefix = "t ";
-    internal const string KeyPrefix = "k ";
+    private const string TextPrefix = "t ";
+    private const string KeyPrefix = "k ";
 
     private static readonly IReadOnlyDictionary<string, TerminalKeyName> SpecialKeyNames =
         new Dictionary<string, TerminalKeyName>(StringComparer.OrdinalIgnoreCase)
@@ -132,7 +132,7 @@ internal static class TerminalInputBatchParser
         };
 
     /// <summary>The maximum repeat count for one key token; bounds the bytes one input line can write.</summary>
-    internal const int MaximumKeyCount = 10_000;
+    private const int MaximumKeyCount = 10_000;
 
     internal static TerminalInputBatch Parse(string input)
     {
@@ -348,16 +348,15 @@ internal sealed class TerminalKeyEncoder
         if ((key.Modifiers & TerminalKeyModifiers.Control) != 0)
             return [(byte)EncodeControl(key.Character)];
 
-        if ((key.Modifiers & TerminalKeyModifiers.Alt) != 0)
-        {
-            var payload = Encoding.UTF8.GetBytes(key.Character.ToString());
-            var bytes = new byte[payload.Length + 1];
-            bytes[0] = 0x1b;
-            payload.CopyTo(bytes, 1);
-            return bytes;
-        }
+        if ((key.Modifiers & TerminalKeyModifiers.Alt) == 0)
+            throw new ArgumentOutOfRangeException(nameof(key), key,
+                "A character key requires a control or meta modifier.");
+        var payload = Encoding.UTF8.GetBytes(key.Character.ToString());
+        var bytes = new byte[payload.Length + 1];
+        bytes[0] = 0x1b;
+        payload.CopyTo(bytes, 1);
+        return bytes;
 
-        throw new ArgumentOutOfRangeException(nameof(key), key, "A character key requires a control or meta modifier.");
     }
 
     private byte[] EncodeSpecialKey(TerminalSpecialKey key)

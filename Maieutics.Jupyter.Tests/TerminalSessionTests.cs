@@ -21,11 +21,23 @@ public sealed class TerminalSessionTests
 
     private static TerminalSession CreateSession(FakeTerminalProcess process)
     {
+        return CreateSession(process, TerminalSessionKind.Persistent, "sh", []);
+    }
+
+    private static TerminalSession CreateSession(
+        FakeTerminalProcess process,
+        TerminalSessionKind kind,
+        string executable,
+        IReadOnlyList<string> launchArguments)
+    {
         return new TerminalSession(
             AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),
+            kind,
+            executable,
+            launchArguments,
             TestOptions(),
             new FakeTerminalProcessFactory(process),
             NullLogger<TerminalSession>.Instance);
@@ -280,6 +292,88 @@ public sealed class TerminalSessionTests
         await WaitForStateAsync(session, "faulted", TestContext.Current.CancellationToken);
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotRunCompletesWithExitCodeAndFinalFrame()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "echo", ["hi"]);
+        var run = session.RunOnceAsync(
+            TimeSpan.FromSeconds(5),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+
+        fake.Emit("hi\r\n");
+        fake.EndOfOutput();
+        fake.RaiseExited(0);
+
+        var result = await run;
+        result.State.Should().Be("completed");
+        result.ExitCode.Should().Be(0);
+        result.Frame.Lines.Should().Contain(row => row.Text.Contains("hi"));
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotRunTimesOutAndReturnsRunningHandle()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "sleep", ["60"]);
+        fake.Emit("partial output\r\n");
+
+        var result = await session.RunOnceAsync(
+            TimeSpan.FromMilliseconds(50),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+
+        result.State.Should().Be("running");
+        result.ExitCode.Should().BeNull();
+
+        // The handle stays alive: snapshots report running until the child exits.
+        session.GetSnapshot().State.Should().Be("running");
+
+        fake.EndOfOutput();
+        fake.RaiseExited(3);
+        await WaitForStateAsync(session, "completed", TestContext.Current.CancellationToken);
+        session.GetSnapshot().ExitCode.Should().Be(3);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotRunCancelTerminatesTheChild()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "sleep", ["60"]);
+        using var cancel = new CancellationTokenSource();
+
+        // Start the run, then cancel while it waits for the child to exit.
+        var run = session.RunOnceAsync(TimeSpan.FromSeconds(60), new TerminalSnapshotRequest(), cancel.Token);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        cancel.Cancel();
+
+        var failure = () => run;
+        await failure.Should().ThrowAsync<OperationCanceledException>();
+        fake.Disposed.Should().BeTrue();
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotCompletionAllowsFollowUpSnapshot()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "echo", ["done"]);
+        var run = session.RunOnceAsync(
+            TimeSpan.FromSeconds(5),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+
+        fake.Emit("done\r\n");
+        fake.EndOfOutput();
+        fake.RaiseExited(7);
+
+        var completed = await run;
+        completed.State.Should().Be("completed");
+        var snapshot = session.Snapshot(new TerminalSnapshotRequest());
+        snapshot.State.Should().Be("completed");
+        snapshot.ExitCode.Should().Be(7);
+    }
+
     private static async Task WaitForStateAsync(
         TerminalSession session,
         string expected,
@@ -336,6 +430,8 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public bool HasExited { get; private set; }
 
+    public int? ExitCode { get; private set; }
+
     public TimeSpan GracefulExitTimeout { get; set; }
 
     public event Action<int, ITerminalProcess>? Exited;
@@ -346,6 +442,8 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public void RaiseExited(int exitCode)
     {
+        ExitCode = exitCode;
+        HasExited = true;
         Exited?.Invoke(exitCode, this);
     }
 

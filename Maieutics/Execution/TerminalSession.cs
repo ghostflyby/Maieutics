@@ -20,15 +20,20 @@ internal sealed class TerminalSession : IAsyncDisposable
     private readonly ILogger<TerminalSession> logger;
     private readonly TerminalOptions options;
     private readonly string workingDirectory;
+    private readonly TerminalSessionKind kind;
+    private readonly string executable;
+    private readonly IReadOnlyList<string> launchArguments;
     private readonly Lock signalGate = new();
     private readonly Lock stateGate = new();
     private readonly Lock terminalGate = new();
     private readonly XTerm.Terminal terminal;
     private readonly TerminalKeyEncoder keyEncoder;
+    private readonly TaskCompletionSource exitCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly UTF8Encoding utf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
     private bool cursorBlink;
     private XTerm.Common.CursorStyle cursorStyle = XTerm.Common.CursorStyle.Block;
     private int disposeState;
+    private int? exitCode;
     private int generation = 1;
     private string[]? lastRowTexts;
     private TaskCompletionSource screenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -43,6 +48,9 @@ internal sealed class TerminalSession : IAsyncDisposable
         string sessionId,
         bool isDefault,
         string workingDirectory,
+        TerminalSessionKind kind,
+        string executable,
+        IReadOnlyList<string> launchArguments,
         TerminalOptions options,
         ITerminalProcessFactory factory,
         ILogger<TerminalSession> logger)
@@ -51,6 +59,9 @@ internal sealed class TerminalSession : IAsyncDisposable
         SessionId = sessionId;
         IsDefault = isDefault;
         this.workingDirectory = workingDirectory;
+        this.kind = kind;
+        this.executable = executable;
+        this.launchArguments = launchArguments;
         this.options = options;
         this.factory = factory;
         this.logger = logger;
@@ -79,6 +90,8 @@ internal sealed class TerminalSession : IAsyncDisposable
     internal string SessionId { get; }
 
     internal bool IsDefault { get; }
+
+    internal TerminalSessionKind Kind => kind;
 
     /// <summary>The number of terminal screen writes the pump has applied; tests wait on it to observe
     /// emitted output without consuming frame state.</summary>
@@ -123,12 +136,14 @@ internal sealed class TerminalSession : IAsyncDisposable
             return new TerminalInfo(
                 SessionId,
                 generation,
-                ToWireState(state),
+                GetWireStateLocked(),
                 workingDirectory,
                 IsDefault,
+                ToWireKind(kind),
                 options.Columns,
                 options.Rows,
-                process?.HasExited ?? false);
+                process?.HasExited ?? false,
+                exitCode);
         }
     }
 
@@ -148,8 +163,8 @@ internal sealed class TerminalSession : IAsyncDisposable
             {
                 var environment = TerminalEnvironment.Capture();
                 var started = factory.Start(
-                    options.Shell,
-                    options.Arguments,
+                    executable,
+                    launchArguments,
                     workingDirectory,
                     environment,
                     options.Columns,
@@ -258,7 +273,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             return new TerminalInputResult(
                 SessionId,
                 generation,
-                ToWireState(GetState()),
+                GetWireState(),
                 executedLines,
                 failedLine,
                 settled,
@@ -321,7 +336,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             return new TerminalPasteResult(
                 SessionId,
                 generation,
-                ToWireState(GetState()),
+                GetWireState(),
                 bracketed,
                 settled,
                 frame);
@@ -337,12 +352,90 @@ internal sealed class TerminalSession : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(snapshotRequest);
         ThrowIfDisposed();
         var frame = CaptureFrame(snapshotRequest);
-        return new TerminalSnapshotResult(
-            SessionId,
-            generation,
-            ToWireState(GetState()),
-            frame.Full,
-            frame);
+        lock (stateGate)
+        {
+            return new TerminalSnapshotResult(
+                SessionId,
+                generation,
+                GetWireStateLocked(),
+                frame.Full,
+                exitCode,
+                frame);
+        }
+    }
+
+    /// <summary>Runs a one-shot command with a deadline. Returns <c>completed</c> with the exit code and final
+    /// frame when the child exits in time, <c>running</c> with the session as a pollable handle on timeout, and
+    /// throws OperationCanceledException (after terminating the child) when the caller cancels.</summary>
+    internal async Task<TerminalRunResult> RunOnceAsync(
+        TimeSpan timeout,
+        TerminalSnapshotRequest snapshotRequest,
+        CancellationToken cancellationToken)
+    {
+        await StartAsync(cancellationToken).ConfigureAwait(false);
+        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            if (GetState() == TerminalSessionState.Faulted) throw CreateFaultedException();
+
+            // The pump owns the pty reads; the pty library's own wait drains the stream with a sync read,
+            // which races the pump's pending async read, so completion is event-driven via the reaper's
+            // Exited signal instead.
+            try
+            {
+                await exitCompletion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                return new TerminalRunResult(
+                    SessionId,
+                    generation,
+                    GetWireState(),
+                    null,
+                    false,
+                    CaptureFrame(snapshotRequest));
+            }
+
+            // The child is reaped; let the pump drain the remaining output before capturing the final frame.
+            await WaitForSettleAsync(cancellationToken).ConfigureAwait(false);
+            int? completedExitCode;
+            lock (stateGate)
+            {
+                completedExitCode = exitCode;
+            }
+
+            return new TerminalRunResult(
+                SessionId,
+                generation,
+                GetWireState(),
+                completedExitCode,
+                true,
+                CaptureFrame(snapshotRequest));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller (or the run) cancelled: terminate the child before surfacing so no orphan is left.
+            var current = process;
+            if (current is not null)
+                try
+                {
+                    await current.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Could not terminate cancelled one-shot terminal session {SessionId}.",
+                        SessionId);
+                }
+
+            throw;
+        }
+        finally
+        {
+            executionGate.Release();
+        }
     }
 
     internal async Task<TerminalInterruptResult> InterruptAsync(
@@ -405,16 +498,31 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private void OnProcessExited(int exitCode, ITerminalProcess exited)
     {
-        // Fired on the pty reaper thread; must not block. The pump owns the completion, so this only
-        // observes the exit for sessions that are not already being closed.
+        // Fired on the pty reaper thread; must not block. A persistent session faults because its
+        // completion is undefined and the shell is gone; a one-shot command completes by definition.
         lock (stateGate)
         {
             if (state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
-            state = TerminalSessionState.Faulted;
+            if (kind == TerminalSessionKind.OneShot)
+            {
+                if (state != TerminalSessionState.Completed)
+                {
+                    state = TerminalSessionState.Completed;
+                    this.exitCode = exited.ExitCode ?? exitCode;
+                }
+            }
+            else
+            {
+                state = TerminalSessionState.Faulted;
+            }
         }
 
+        if (kind == TerminalSessionKind.OneShot)
+            exitCompletion.TrySetResult();
+
         NotifyScreenChanged();
-        logger.LogWarning("Terminal session {SessionId} child exited unexpectedly.", SessionId);
+        if (kind == TerminalSessionKind.Persistent)
+            logger.LogWarning("Terminal session {SessionId} child exited unexpectedly.", SessionId);
     }
 
     private byte[] EncodeOperationLocked(TerminalInputOperation operation)
@@ -464,8 +572,14 @@ internal sealed class TerminalSession : IAsyncDisposable
             if (Volatile.Read(ref disposeState) == 0 &&
                 GetState() is not (TerminalSessionState.Closing or TerminalSessionState.Closed))
             {
-                MarkFaulted();
-                logger.LogWarning("Terminal session {SessionId} output ended unexpectedly.", SessionId);
+                if (kind == TerminalSessionKind.Persistent)
+                {
+                    // The pty stream ended without a graceful close: the child is gone.
+                    MarkFaulted();
+                    logger.LogWarning("Terminal session {SessionId} output ended unexpectedly.", SessionId);
+                }
+
+                // For a one-shot session the Exited handler already recorded the completion.
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -768,6 +882,24 @@ internal sealed class TerminalSession : IAsyncDisposable
         };
     }
 
+    private string GetWireState()
+    {
+        lock (stateGate)
+        {
+            return GetWireStateLocked();
+        }
+    }
+
+    /// <summary>The wire state of the session. A one-shot command reports <c>running</c> while its child is
+    /// alive (the internal idle state is an implementation detail); completed and terminal states pass through.</summary>
+    private string GetWireStateLocked()
+    {
+        if (kind == TerminalSessionKind.OneShot && state == TerminalSessionState.Idle)
+            return "running";
+
+        return ToWireState(state);
+    }
+
     private static string ToWireState(TerminalSessionState value)
     {
         return value switch
@@ -776,9 +908,20 @@ internal sealed class TerminalSession : IAsyncDisposable
             TerminalSessionState.Starting => "starting",
             TerminalSessionState.Idle => "idle",
             TerminalSessionState.Busy => "busy",
+            TerminalSessionState.Completed => "completed",
             TerminalSessionState.Closing => "closing",
             TerminalSessionState.Closed => "closed",
             TerminalSessionState.Faulted => "faulted",
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
+        };
+    }
+
+    private static string ToWireKind(TerminalSessionKind value)
+    {
+        return value switch
+        {
+            TerminalSessionKind.Persistent => "persistent",
+            TerminalSessionKind.OneShot => "oneshot",
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
         };
     }

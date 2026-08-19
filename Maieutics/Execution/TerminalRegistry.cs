@@ -51,13 +51,38 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
         await disposalCompletion.Task.ConfigureAwait(false);
     }
 
-    internal async Task<TerminalInfo> CreateAsync(
+    internal async Task<TerminalRunResult> RunOnceAsync(
         AgentSessionId ownerSessionId,
+        string executable,
+        IReadOnlyList<string> arguments,
+        TimeSpan? timeout,
+        TerminalSnapshotRequest snapshotRequest,
         CancellationToken cancellationToken)
     {
-        var session = Reserve(ownerSessionId, Guid.NewGuid().ToString("N"), false);
+        // Without a timeout this starts a persistent session and returns immediately (the terminal_run
+        // creation mode); with a timeout it runs a one-shot command through the deadline path. One-shot
+        // sessions get a Guid id so they never occupy the lazy default slot; persistent sessions from
+        // terminal_run also get a Guid id and are listed like any explicitly created session.
+        var kind = timeout.HasValue ? TerminalSessionKind.OneShot : TerminalSessionKind.Persistent;
+        var session = Reserve(
+            ownerSessionId,
+            Guid.NewGuid().ToString("N"),
+            false,
+            kind,
+            executable,
+            arguments);
+        if (timeout is { } deadline)
+            return await session.RunOnceAsync(deadline, snapshotRequest, cancellationToken).ConfigureAwait(false);
+
         await session.StartAsync(cancellationToken).ConfigureAwait(false);
-        return session.GetSnapshot();
+        var snapshot = session.GetSnapshot();
+        return new TerminalRunResult(
+            snapshot.SessionId,
+            snapshot.Generation,
+            snapshot.State,
+            null,
+            true,
+            session.Snapshot(snapshotRequest).Frame);
     }
 
     internal TerminalListResult List(AgentSessionId ownerSessionId)
@@ -165,10 +190,16 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
                 throw NotFound(resolvedSessionId);
         }
 
-        return Reserve(ownerSessionId, DefaultSessionId, true);
+        return Reserve(ownerSessionId, DefaultSessionId, true, TerminalSessionKind.Persistent, options.Shell, options.Arguments);
     }
 
-    private TerminalSession Reserve(AgentSessionId ownerSessionId, string sessionId, bool isDefault)
+    private TerminalSession Reserve(
+        AgentSessionId ownerSessionId,
+        string sessionId,
+        bool isDefault,
+        TerminalSessionKind kind,
+        string executable,
+        IReadOnlyList<string> launchArguments)
     {
         lock (gate)
         {
@@ -191,6 +222,9 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
                 sessionId,
                 isDefault,
                 workspace.Capture().RootPath,
+                kind,
+                executable,
+                launchArguments,
                 options,
                 factory,
                 logger);

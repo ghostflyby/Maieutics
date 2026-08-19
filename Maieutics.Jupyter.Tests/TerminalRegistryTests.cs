@@ -20,6 +20,21 @@ public sealed class TerminalRegistryTests
             NullLogger<TerminalSession>.Instance);
     }
 
+    private static async Task<TerminalRunResult> RunAsync(
+        TerminalRegistry registry,
+        AgentSessionId owner,
+        CancellationToken cancellationToken)
+    {
+        // No timeout: terminal_run creates and starts a persistent session.
+        return await registry.RunOnceAsync(
+            owner,
+            "sh",
+            [],
+            null,
+            new TerminalSnapshotRequest(),
+            cancellationToken);
+    }
+
     [Fact(Timeout = 10_000)]
     public async Task ExplicitSessionsAreBoundedAndListedPerAgent()
     {
@@ -27,14 +42,15 @@ public sealed class TerminalRegistryTests
         await using var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();
 
-        var first = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
-        var second = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
+        var first = await RunAsync(registry, owner, TestContext.Current.CancellationToken);
+        var second = await RunAsync(registry, owner, TestContext.Current.CancellationToken);
 
         first.SessionId.Should().MatchRegex("^[0-9a-f]{32}$");
         second.SessionId.Should().NotBe(first.SessionId);
+        first.State.Should().Be("idle");
         registry.List(owner).Sessions.Should().HaveCount(2);
 
-        var limitFailure = () => registry.CreateAsync(owner, TestContext.Current.CancellationToken);
+        var limitFailure = () => RunAsync(registry, owner, TestContext.Current.CancellationToken);
         (await limitFailure.Should().ThrowAsync<AgentToolException>())
             .Which.Code.Should().Be("terminal_session_limit");
     }
@@ -46,7 +62,7 @@ public sealed class TerminalRegistryTests
         await using var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();
 
-        var created = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
+        var created = await RunAsync(registry, owner, TestContext.Current.CancellationToken);
         var closed = await registry.CloseAsync(owner, created.SessionId, TestContext.Current.CancellationToken);
 
         closed.Should().Be(new TerminalCloseResult(created.SessionId, true));
@@ -72,7 +88,7 @@ public sealed class TerminalRegistryTests
         var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();
 
-        await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
+        await RunAsync(registry, owner, TestContext.Current.CancellationToken);
         await registry.DisposeAsync();
 
         process.Disposed.Should().BeTrue();

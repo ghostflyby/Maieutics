@@ -12,6 +12,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Primitives;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -1646,8 +1647,22 @@ public sealed class MaieuticsConfigurationTests
         string contents,
         CancellationToken cancellationToken)
     {
+        // The reload token's initial file stamp is captured when the token is created. If the
+        // token already fired (a previous reload consumed it), registering still fires the
+        // callback immediately — but a token whose stamp was captured after the write below would
+        // never fire. Loop until we hold an unfired token so the write is guaranteed to change
+        // its stamp (avoids a Windows scheduling race where the write lands before the token's
+        // initial stamp read).
+        IChangeToken token;
+        do
+        {
+            token = configuration.GetReloadToken();
+            if (!token.HasChanged) break;
+        }
+        while (!cancellationToken.IsCancellationRequested);
+
         var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = configuration.GetReloadToken().RegisterChangeCallback(
+        using var registration = token.RegisterChangeCallback(
             static state => (state as TaskCompletionSource)?.TrySetResult(),
             changed);
         await File.WriteAllTextAsync(path, contents, cancellationToken);

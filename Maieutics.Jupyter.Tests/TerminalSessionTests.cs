@@ -370,7 +370,6 @@ public sealed class TerminalSessionTests
         var completed = await run;
         completed.State.Should().Be("completed");
         var snapshot = session.Snapshot(new TerminalSnapshotRequest());
-        snapshot.State.Should().Be("completed");
         snapshot.ExitCode.Should().Be(7);
     }
 
@@ -426,10 +425,6 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public Stream BaseStream => stream;
 
-    public int Pid => 42;
-
-    public bool HasExited { get; private set; }
-
     public int? ExitCode { get; private set; }
 
     public TimeSpan GracefulExitTimeout { get; set; }
@@ -443,7 +438,6 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
     public void RaiseExited(int exitCode)
     {
         ExitCode = exitCode;
-        HasExited = true;
         Exited?.Invoke(exitCode, this);
     }
 
@@ -455,24 +449,6 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
     public void EndOfOutput()
     {
         stream.EndOfOutput();
-    }
-
-    public void RequestClose()
-    {
-    }
-
-    public void Kill()
-    {
-        HasExited = true;
-    }
-
-    public void Resize(int columns, int rows)
-    {
-    }
-
-    public Task<bool> WaitForExitAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(HasExited);
     }
 
     public ValueTask DisposeAsync()

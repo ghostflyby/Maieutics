@@ -78,28 +78,27 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
         var snapshot = session.GetSnapshot();
         return new TerminalRunResult(
             snapshot.SessionId,
-            snapshot.Generation,
             snapshot.State,
             null,
             true,
             session.Snapshot(snapshotRequest).Frame);
     }
 
-    internal TerminalListResult List(AgentSessionId ownerSessionId)
+    internal TerminalInfo[] List(AgentSessionId ownerSessionId)
     {
         TerminalSession[] snapshot;
         lock (gate)
         {
             ThrowIfDisposed();
-            if (!sessions.TryGetValue(ownerSessionId, out var owned)) return new TerminalListResult([]);
+            if (!sessions.TryGetValue(ownerSessionId, out var owned)) return [];
             snapshot = owned.Values.ToArray();
         }
 
-        return new TerminalListResult(snapshot
-            .Select(static session => session.GetSnapshot())
+        return snapshot
             .OrderByDescending(static session => session.IsDefault)
             .ThenBy(static session => session.SessionId, StringComparer.Ordinal)
-            .ToArray());
+            .Select(static session => session.GetSnapshot())
+            .ToArray();
     }
 
     internal async Task<TerminalInputResult> ExecuteAsync(
@@ -173,7 +172,7 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
             Remove(ownerSessionId, resolvedSessionId, session);
         }
 
-        return new TerminalCloseResult(resolvedSessionId, true);
+        return new TerminalCloseResult();
     }
 
     private TerminalSession GetOrReserveDefault(AgentSessionId ownerSessionId, string? sessionId)

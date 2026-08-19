@@ -89,19 +89,12 @@ internal enum TerminalSessionState
 
 internal sealed record TerminalInfo(
     string SessionId,
-    int Generation,
     string State,
-    string Cwd,
-    bool IsDefault,
     string Kind,
-    int Columns,
-    int Rows,
-    bool HasExited,
     int? ExitCode);
 
-internal sealed record TerminalListResult(IReadOnlyList<TerminalInfo> Sessions);
-
-internal sealed record TerminalCloseResult(string SessionId, bool Closed);
+/// <summary>The result of <c>terminal_close</c>: no payload, the session is gone.</summary>
+internal sealed record TerminalCloseResult;
 
 /// <summary>
 ///     The cursor as a deterministic row/column address plus a small content window so the model can
@@ -135,10 +128,6 @@ internal sealed record TerminalFrame(
     int OmittedCharacters);
 
 internal sealed record TerminalSnapshotResult(
-    string SessionId,
-    int Generation,
-    string State,
-    bool Full,
     int? ExitCode,
     TerminalFrame Frame);
 
@@ -146,32 +135,22 @@ internal sealed record TerminalSnapshotResult(
 /// <c>Completed</c> carries the exit code and the final frame.</summary>
 internal sealed record TerminalRunResult(
     string SessionId,
-    int Generation,
     string State,
     int? ExitCode,
     bool Settled,
     TerminalFrame Frame);
 
 internal sealed record TerminalInputResult(
-    string SessionId,
-    int Generation,
-    string State,
     int ExecutedLines,
     int? FailedLine,
     bool Settled,
     TerminalFrame Frame);
 
 internal sealed record TerminalPasteResult(
-    string SessionId,
-    int Generation,
-    string State,
     bool Bracketed,
     bool Settled,
     TerminalFrame Frame);
 
 internal sealed record TerminalInterruptResult(
-    string SessionId,
-    int Generation,
-    string State,
     bool Settled,
     TerminalFrame Frame);

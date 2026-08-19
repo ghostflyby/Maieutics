@@ -3,17 +3,13 @@ using Ghostflyby.Pty;
 namespace Maieutics.Execution;
 
 /// <summary>The PTY child surface the terminal session needs. Product code owns this boundary so tests
-/// can substitute an in-memory process and the concrete PtyProcess wrapper stays small.</summary>
+/// can substitute an in-memory process and the concrete PtyProcess wrapper stays small. The surface is
+/// exactly what the session consumes: the byte stream, the reaper exit signal and code, and disposal
+/// (which runs the graceful-close ladder inside the PTY library).</summary>
 internal interface ITerminalProcess : IAsyncDisposable
 {
     /// <summary>The master side of the pseudo-terminal: reads yield child output, writes deliver input.</summary>
     Stream BaseStream { get; }
-
-    /// <summary>The operating-system process identifier.</summary>
-    int Pid { get; }
-
-    /// <summary>Whether the child has been reaped.</summary>
-    bool HasExited { get; }
 
     /// <summary>The child's exit code once reaped; null while it is still running.</summary>
     int? ExitCode { get; }
@@ -23,18 +19,6 @@ internal interface ITerminalProcess : IAsyncDisposable
 
     /// <summary>Raised on the reaper thread when the child is reaped; handlers must not block.</summary>
     event Action<int, ITerminalProcess>? Exited;
-
-    /// <summary>Requests a graceful close (SIGHUP / CTRL_CLOSE_EVENT); the child decides how to handle it.</summary>
-    void RequestClose();
-
-    /// <summary>Force-terminates the child without cleanup.</summary>
-    void Kill();
-
-    /// <summary>Resizes the terminal; the child re-lays out immediately (SIGWINCH / ConPTY).</summary>
-    void Resize(int columns, int rows);
-
-    /// <summary>Waits for the child to be reaped, returning whether it exited within the timeout.</summary>
-    Task<bool> WaitForExitAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default);
 }
 
 internal sealed class LocalTerminalProcess : ITerminalProcess
@@ -49,10 +33,6 @@ internal sealed class LocalTerminalProcess : ITerminalProcess
 
     public Stream BaseStream => process.BaseStream;
 
-    public int Pid => process.Pid;
-
-    public bool HasExited => process.HasExited;
-
     public int? ExitCode => process.ExitCode;
 
     public TimeSpan GracefulExitTimeout
@@ -62,26 +42,6 @@ internal sealed class LocalTerminalProcess : ITerminalProcess
     }
 
     public event Action<int, ITerminalProcess>? Exited;
-
-    public void RequestClose()
-    {
-        process.RequestClose();
-    }
-
-    public void Kill()
-    {
-        process.Kill();
-    }
-
-    public void Resize(int columns, int rows)
-    {
-        process.Resize(columns, rows);
-    }
-
-    public Task<bool> WaitForExitAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default)
-    {
-        return process.WaitForExitAsync(timeout, cancellationToken);
-    }
 
     public ValueTask DisposeAsync()
     {

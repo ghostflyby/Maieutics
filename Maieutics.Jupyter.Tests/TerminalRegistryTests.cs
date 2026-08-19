@@ -48,7 +48,7 @@ public sealed class TerminalRegistryTests
         first.SessionId.Should().MatchRegex("^[0-9a-f]{32}$");
         second.SessionId.Should().NotBe(first.SessionId);
         first.State.Should().Be("idle");
-        registry.List(owner).Sessions.Should().HaveCount(2);
+        registry.List(owner).Should().HaveCount(2);
 
         var limitFailure = () => RunAsync(registry, owner, TestContext.Current.CancellationToken);
         (await limitFailure.Should().ThrowAsync<AgentToolException>())
@@ -65,8 +65,8 @@ public sealed class TerminalRegistryTests
         var created = await RunAsync(registry, owner, TestContext.Current.CancellationToken);
         var closed = await registry.CloseAsync(owner, created.SessionId, TestContext.Current.CancellationToken);
 
-        closed.Should().Be(new TerminalCloseResult(created.SessionId, true));
-        registry.List(owner).Sessions.Should().BeEmpty();
+        closed.Should().Be(new TerminalCloseResult());
+        registry.List(owner).Should().BeEmpty();
     }
 
     [Fact(Timeout = 10_000)]
@@ -104,7 +104,7 @@ public sealed class TerminalRegistryTests
         var failure = () => registry.Snapshot(owner, new TerminalSnapshotRequest(), null);
         failure.Should().Throw<AgentToolException>()
             .Which.Code.Should().Be("terminal_session_not_found");
-        registry.List(owner).Sessions.Should().BeEmpty();
+        registry.List(owner).Should().BeEmpty();
     }
 
     [Fact(Timeout = 10_000)]
@@ -120,6 +120,6 @@ public sealed class TerminalRegistryTests
             null,
             TestContext.Current.CancellationToken);
         await failure.Should().ThrowAsync<AgentToolException>();
-        registry.List(owner).Sessions.Should().BeEmpty();
+        registry.List(owner).Should().BeEmpty();
     }
 }

@@ -66,9 +66,10 @@ internal sealed class TerminalFunctions
                 "Closes a terminal session, gracefully closing the program and then force-killing it if it " +
                 "does not exit. Omit sessionId to close the default session."),
             CreateFunction(
-                (Func<AIFunctionArguments, CancellationToken, ValueTask<TerminalListResult>>)ListAsync,
+                (Func<AIFunctionArguments, CancellationToken, ValueTask<TerminalInfo[]>>)ListAsync,
                 "terminal_list",
-                "Lists the terminal sessions owned by the current Agent session."),
+                "Lists the terminal sessions owned by the current Agent session as an array of session " +
+                "infos, each with sessionId, state, kind, and exitCode."),
             CreateFunction(
                 (Func<AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalInterruptResult>>)
                 InterruptAsync,
@@ -227,7 +228,7 @@ internal sealed class TerminalFunctions
     }
 
     [Description("Lists terminal sessions owned by the current Agent session.")]
-    private ValueTask<TerminalListResult> ListAsync(
+    private ValueTask<TerminalInfo[]> ListAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -263,7 +264,7 @@ internal sealed class TerminalFunctions
 [JsonSerializable(typeof(int?))]
 [JsonSerializable(typeof(bool?))]
 [JsonSerializable(typeof(TerminalInfo))]
-[JsonSerializable(typeof(TerminalListResult))]
+[JsonSerializable(typeof(TerminalInfo[]))]
 [JsonSerializable(typeof(TerminalCloseResult))]
 [JsonSerializable(typeof(TerminalCursor))]
 [JsonSerializable(typeof(TerminalScreenRow))]

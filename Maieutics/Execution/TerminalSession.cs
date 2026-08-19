@@ -135,14 +135,8 @@ internal sealed class TerminalSession : IAsyncDisposable
         {
             return new TerminalInfo(
                 SessionId,
-                generation,
                 GetWireStateLocked(),
-                workingDirectory,
-                IsDefault,
                 ToWireKind(kind),
-                options.Columns,
-                options.Rows,
-                process?.HasExited ?? false,
                 exitCode);
         }
     }
@@ -271,9 +265,6 @@ internal sealed class TerminalSession : IAsyncDisposable
             var settled = await WaitForSettleAsync(cancellationToken).ConfigureAwait(false);
             var frame = CaptureFrame(snapshotRequest);
             return new TerminalInputResult(
-                SessionId,
-                generation,
-                GetWireState(),
                 executedLines,
                 failedLine,
                 settled,
@@ -334,9 +325,6 @@ internal sealed class TerminalSession : IAsyncDisposable
             var settled = await WaitForSettleAsync(cancellationToken).ConfigureAwait(false);
             var frame = CaptureFrame(snapshotRequest);
             return new TerminalPasteResult(
-                SessionId,
-                generation,
-                GetWireState(),
                 bracketed,
                 settled,
                 frame);
@@ -355,10 +343,6 @@ internal sealed class TerminalSession : IAsyncDisposable
         lock (stateGate)
         {
             return new TerminalSnapshotResult(
-                SessionId,
-                generation,
-                GetWireStateLocked(),
-                frame.Full,
                 exitCode,
                 frame);
         }
@@ -390,7 +374,6 @@ internal sealed class TerminalSession : IAsyncDisposable
             {
                 return new TerminalRunResult(
                     SessionId,
-                    generation,
                     GetWireState(),
                     null,
                     false,
@@ -407,7 +390,6 @@ internal sealed class TerminalSession : IAsyncDisposable
 
             return new TerminalRunResult(
                 SessionId,
-                generation,
                 GetWireState(),
                 completedExitCode,
                 true,
@@ -447,9 +429,6 @@ internal sealed class TerminalSession : IAsyncDisposable
             1);
         var result = await ExecuteInputAsync(batch, snapshotRequest, cancellationToken).ConfigureAwait(false);
         return new TerminalInterruptResult(
-            result.SessionId,
-            result.Generation,
-            result.State,
             result.Settled,
             result.Frame);
     }

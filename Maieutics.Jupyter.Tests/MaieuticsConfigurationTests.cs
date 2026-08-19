@@ -1649,12 +1649,10 @@ public sealed class MaieuticsConfigurationTests
     {
         // The reload token's initial file stamp is captured when the token is created. A Windows
         // scheduling race can land the write before that read, making the token never fire (the
-        // observed 50s TaskCanceled timeout). Back-date an existing file first so any token
-        // captured afterwards has an old stamp and the write is guaranteed to change it; a
-        // not-yet-existing file has a default stamp that creation necessarily changes.
-        if (File.Exists(path))
-            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(-2));
-
+        // observed 50s TaskCanceled timeout). After the write, wait briefly for the change; if it
+        // does not arrive, touch the file to force a stamp change the poller will observe. This
+        // avoids depending on the token's stamp-capture timing while still asserting that the
+        // reload pipeline delivers the change.
         IChangeToken token;
         do
         {
@@ -1668,7 +1666,20 @@ public sealed class MaieuticsConfigurationTests
             static state => (state as TaskCompletionSource)?.TrySetResult(),
             changed);
         await File.WriteAllTextAsync(path, contents, cancellationToken);
-        await changed.Task.WaitAsync(cancellationToken);
+        if (!changed.Task.IsCompleted)
+        {
+            try
+            {
+                await changed.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                // The write did not change the token's captured stamp (stamp read raced ahead of
+                // the write). Touch the file so the poller observes a change and fires the token.
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+                await changed.Task.WaitAsync(cancellationToken);
+            }
+        }
     }
 
     private static string CreateConfiguration(

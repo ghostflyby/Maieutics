@@ -48,8 +48,10 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     }
 
     /// <summary>Address REPL and plugin-host children use to reach the broker via
-    /// <c>DENO_PERMISSION_BROKER_PATH</c> (a unix socket path on unix, a named pipe name on Windows).</summary>
-    public string Address => socketPath ?? pipeName ?? string.Empty;
+    /// <c>DENO_PERMISSION_BROKER_PATH</c>: a unix socket path on unix, the full named-pipe path
+    /// (<c>\\.\pipe\name</c>) on Windows — Deno's broker client connects to the pipe by path, so
+    /// the bare pipe name alone fails with <c>NotFound</c> (verified in CI).</summary>
+    public string Address => socketPath ?? (pipeName is { } name ? $@"\\.\pipe\{name}" : string.Empty);
 
     internal static DenoPermissionBroker Create(ILogger<DenoPermissionBroker> logger)
     {

@@ -110,8 +110,13 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             startInfo.Environment[DenoReplEnvironment.PipeName] = options.WindowsPipeName;
         }
 
-        var inner = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.DenoRepl, logger, true);
-        options.Broker?.RegisterProcess(inner.ProcessId, BuildPolicy(options, esbuildWasm));
+        var inner = DenoRunProcess.Start(
+            startInfo,
+            InternalDenoProcessKind.DenoRepl,
+            logger,
+            captureStandardError: true,
+            broker: options.Broker,
+            policy: options.Broker is null ? null : BuildPolicy(options, esbuildWasm));
         logger.LogInformation(
             "Deno REPL session {SessionId} generation {Generation} started with pid {ProcessId}.",
             options.SessionId,

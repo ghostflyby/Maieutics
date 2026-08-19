@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoExecution;
@@ -62,12 +63,19 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         ProcessStartInfo startInfo,
         InternalDenoProcessKind kind,
         ILogger logger,
-        bool captureStandardError = false)
+        bool captureStandardError = false,
+        DenoPermissionBroker? broker = null,
+        EffectivePolicy? policy = null)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentNullException.ThrowIfNull(logger);
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException($"The {Describe(kind)} process could not be started.");
+        // Register the policy synchronously before returning: the child can connect to the broker
+        // immediately after spawn, and a late registration would let its first requests be denied
+        // by default (ADR 0018 §9; the broker is the single authority).
+        if (broker is not null && policy is not null) broker.RegisterProcess(process.Id, policy);
+
         return new DenoRunProcess(
             process,
             kind,

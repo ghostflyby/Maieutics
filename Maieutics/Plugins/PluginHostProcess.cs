@@ -120,8 +120,12 @@ internal sealed class PluginHostProcess : IAsyncDisposable
             if (!string.IsNullOrEmpty(value)) startInfo.EnvironmentVariables[name] = value;
         }
 
-        var inner = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.PluginHost, logger);
-        options.Broker?.RegisterProcess(inner.ProcessId, BuildPolicy(options));
+        var inner = DenoRunProcess.Start(
+            startInfo,
+            InternalDenoProcessKind.PluginHost,
+            logger,
+            broker: options.Broker,
+            policy: options.Broker is null ? null : BuildPolicy(options));
         logger.LogInformation("Plugin host started with pid {ProcessId}.", inner.ProcessId);
         return new PluginHostProcess(inner);
     }

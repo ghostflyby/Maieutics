@@ -21,18 +21,19 @@ public sealed class DenoPermissionBrokerTests
         try
         {
             var scriptPath = Path.Combine(root, "probe.ts");
+            var targetPath = Path.Combine(root, "target.txt");
+            await File.WriteAllTextAsync(targetPath, "payload", deadline.Token);
+            var escapedTarget = targetPath.Replace("\\", "\\\\");
             await File.WriteAllTextAsync(
                 scriptPath,
-                """
-                try { await Deno.readTextFile("/tmp/maieutics-perm-eval/net_probe.ts"); console.log("read OK"); }
-                catch (e) { console.log("read DENIED:", String(e).split("\n")[0]); }
-                try { console.log("PATH:", Deno.env.get("PATH")); }
-                catch (e) { console.log("env DENIED:", String(e).split("\n")[0]); }
-                """,
+                "try { await Deno.readTextFile(\"" + escapedTarget + "\"); console.log(\"read OK\"); }\n" +
+                "catch (e) { console.log(\"read DENIED:\", String(e).split(\"\\n\")[0]); }\n" +
+                "try { console.log(\"PATH:\", Deno.env.get(\"PATH\")); }\n" +
+                "catch (e) { console.log(\"env DENIED:\", String(e).split(\"\\n\")[0]); }\n",
                 deadline.Token);
             var broker = DenoPermissionBroker.Create(new CollectingLogger<DenoPermissionBroker>());
 
-            var output = await RunChildAsync(broker, CreatePolicy(0), scriptPath, deadline.Token);
+            var output = await RunChildAsync(broker, CreatePolicy(root), scriptPath, deadline.Token);
 
             output.Should().Contain("read OK");
             output.Should().Contain("env DENIED: NotCapable");
@@ -56,7 +57,7 @@ public sealed class DenoPermissionBrokerTests
             await File.WriteAllTextAsync(
                 scriptPath,
                 """
-                try { await Deno.readTextFile("/tmp/maieutics-perm-eval/net_probe.ts"); console.log("read OK"); }
+                try { await Deno.readTextFile("target.txt"); console.log("read OK"); }
                 catch (e) { console.log("read DENIED:", String(e).split("\n")[0]); }
                 """,
                 deadline.Token);
@@ -95,10 +96,10 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionResolver.Resolve(policy, "unknown", "x").IsAllowed.Should().BeFalse();
     }
 
-    private static EffectivePolicy CreatePolicy(int _)
+    private static EffectivePolicy CreatePolicy(string readableRoot)
     {
         return Build(
-            (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp/maieutics-perm-eval"] }),
+            (PermissionKind.Read, new PermissionKindRules { Allow = [readableRoot] }),
             (PermissionKind.Env, new PermissionKindRules { Allow = ["HOME"] }));
     }
 

@@ -29,8 +29,9 @@ internal sealed class TerminalFunctions
                 "Sends a batch of input lines to the interactive terminal. Each line is either 't <text>' " +
                 "for raw text (no escape processing) or 'k <keys>' for key sequences in vim notation, for " +
                 "example k <Esc>, k 5<Down>, or k <C-c>. The keys include <CR>, <Esc>, <Tab>, <S-Tab>, <BS>, " +
-                "<Del>, <Space>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, <F1>-<F12>, " +
-                "C-<letter> controls such as <C-c> and <C-d>, and M-<letter>/A-<letter> meta keys. To type " +
+                "<Del>, <Ins>, <Space>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, " +
+                "<F1>-<F12>, C-<letter> controls such as <C-c> and <C-d>, <C-Space> (the NUL byte), and " +
+                "M-<letter>/A-<letter> meta keys. To type " +
                 "ordinary characters use 't ' lines; to enter ':' in a vim command, send k <Esc> then t :w " +
                 "then k <CR> separately. Returns the screen rows that changed since the last frame, plus the " +
                 "cursor and whether the program is drawing the alternate screen (vim, less, or a full-screen " +

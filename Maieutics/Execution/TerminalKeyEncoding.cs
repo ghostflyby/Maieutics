@@ -12,6 +12,7 @@ internal enum TerminalKeyName
     Tab,
     Backspace,
     Delete,
+    Insert,
     Space,
     Up,
     Down,
@@ -75,6 +76,8 @@ internal static class TerminalInputBatchParser
             ["Backspace"] = TerminalKeyName.Backspace,
             ["Del"] = TerminalKeyName.Delete,
             ["Delete"] = TerminalKeyName.Delete,
+            ["Ins"] = TerminalKeyName.Insert,
+            ["Insert"] = TerminalKeyName.Insert,
             ["Space"] = TerminalKeyName.Space,
             ["Up"] = TerminalKeyName.Up,
             ["Down"] = TerminalKeyName.Down,
@@ -108,6 +111,7 @@ internal static class TerminalInputBatchParser
             [TerminalKeyName.Tab] = Key.Tab,
             [TerminalKeyName.Backspace] = Key.Backspace,
             [TerminalKeyName.Delete] = Key.Delete,
+            [TerminalKeyName.Insert] = Key.Insert,
             [TerminalKeyName.Space] = Key.Space,
             [TerminalKeyName.Up] = Key.UpArrow,
             [TerminalKeyName.Down] = Key.DownArrow,
@@ -275,6 +279,12 @@ internal static class TerminalInputBatchParser
 
         if (!SpecialKeyNames.TryGetValue(token, out var name))
             throw InvalidInput(lineNumber, $"'{token}' is not a known key name.");
+
+        // C-Space is the conventional name for the NUL control byte; encode it like <C-@> rather than
+        // as a modified Space key, which terminals read as an unrelated CSI sequence.
+        if (name == TerminalKeyName.Space &&
+            modifiers == TerminalKeyModifiers.Control)
+            return new TerminalKey(count, new TerminalCharKey('@', TerminalKeyModifiers.Control));
 
         return new TerminalKey(count, new TerminalSpecialKey(name, modifiers));
     }

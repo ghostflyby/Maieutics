@@ -34,7 +34,6 @@ internal sealed class TerminalSession : IAsyncDisposable
     private XTerm.Common.CursorStyle cursorStyle = XTerm.Common.CursorStyle.Block;
     private int disposeState;
     private int? exitCode;
-    private int generation = 1;
     private string[]? lastRowTexts;
     private TaskCompletionSource screenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long screenVersion;

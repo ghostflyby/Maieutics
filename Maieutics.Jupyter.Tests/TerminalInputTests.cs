@@ -115,6 +115,26 @@ public sealed class TerminalInputParserTests
             new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)));
     }
 
+    [Theory]
+    [InlineData("<Ins>")]
+    [InlineData("<Insert>")]
+    public void InsertNamesParseToTheInsertSpecialKey(string token)
+    {
+        var batch = TerminalInputBatchParser.Parse($"k {token}");
+        var keys = batch.Operations.Single().Should().BeOfType<TerminalKeysOperation>().Which;
+        keys.Keys.Should().ContainSingle().Which.Spec.Should().Be(
+            new TerminalSpecialKey(TerminalKeyName.Insert, TerminalKeyModifiers.None));
+    }
+
+    [Fact]
+    public void CtrlSpaceParsesAsTheNulControlByte()
+    {
+        var batch = TerminalInputBatchParser.Parse("k <C-Space>");
+        var keys = batch.Operations.Single().Should().BeOfType<TerminalKeysOperation>().Which;
+        keys.Keys.Should().ContainSingle().Which.Spec.Should().Be(
+            new TerminalCharKey('@', TerminalKeyModifiers.Control));
+    }
+
     [Fact]
     public void ControlCharactersCannotHideInsideTextPayloads()
     {
@@ -175,6 +195,13 @@ public sealed class TerminalKeyEncoderTests
         encoder.Encode([Special(TerminalKeyName.Enter)]).Should().Equal(0x0d);
         encoder.Encode([Special(TerminalKeyName.Tab)]).Should().Equal(0x09);
         encoder.Encode([Special(TerminalKeyName.Space)]).Should().Equal(0x20);
+    }
+
+    [Fact]
+    public void InsertEncodesAsTheStandardEscapeSequence()
+    {
+        var encoder = CreateEncoder(out _);
+        encoder.Encode([Special(TerminalKeyName.Insert)]).Should().Equal(Esc.Concat("[2~"u8.ToArray()));
     }
 
     [Fact]

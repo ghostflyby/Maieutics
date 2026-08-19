@@ -175,10 +175,8 @@ public static class MaieuticsHost
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
                 : null));
         builder.Services.AddSingleton<DenoReplModule>();
-        builder.Services.AddSingleton(static services => new AsyncLazy<DenoPermissionBroker>(
-            () => DenoPermissionBroker.CreateAsync(services.GetRequiredService<ILogger<DenoPermissionBroker>>())));
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
-            services.GetRequiredService<AsyncLazy<DenoPermissionBroker>>().Value);
+            DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
         builder.Services.AddSingleton<IDenoReplSessionFactory>(static services =>
             new LocalDenoReplSessionFactory(
                 services.GetRequiredService<DenoReplOptions>(),
@@ -192,6 +190,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();
+        builder.Services.AddHostedService<DenoModuleGraphWarmer>();
         builder.Services.AddSingleton(static services =>
             new WorkspaceFunctions(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>

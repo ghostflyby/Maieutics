@@ -16,7 +16,7 @@ internal sealed record PluginHostProcessOptions(
     string WorkerEntryUrl,
     string HostConfigFile,
     PluginHostProcessGrants Grants,
-    DenoPermissionBroker? Broker = null);
+    DenoPermissionBroker Broker);
 
 /// <summary>Positive permission grants for the host process (the union of plugin grants).</summary>
 internal sealed record PluginHostProcessGrants(
@@ -34,7 +34,10 @@ internal sealed record PluginHostProcessGrants(
 /// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the out-of-process plugin host:
 /// launches the restricted <c>deno run</c> process with the control channel address and the
 /// kernel-written plugin configuration, and delegates drain, exit observation, and stop to the
-/// shared internal Deno process module (ADR 0018 §8).</summary>
+/// shared internal Deno process module (ADR 0018 §8). The broker is the single permission
+/// authority: the host launches with <c>DENO_PERMISSION_BROKER_PATH</c> and no <c>--allow-*</c>
+/// flags, and the policy registered at spawn carries the plugin grants plus the host's own
+/// control-channel grants.</summary>
 internal sealed class PluginHostProcess : IAsyncDisposable
 {
     private static readonly string[] AllowedEnvironmentNames =
@@ -93,18 +96,6 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--unstable-worker-options");
         startInfo.ArgumentList.Add($"--config={options.HostConfigFile}");
-        if (options.Broker is null)
-        {
-            // Without a broker, the grants are expressed as launch flags (the previous behavior).
-            // With a broker, the broker is the single authority and the flags would be ignored, so
-            // they are omitted and the policy is registered instead (ADR 0018 §9).
-            AddGrant(startInfo, "--allow-read", options.Grants.ReadAll, options.Grants.Read);
-            AddGrant(startInfo, "--allow-write", options.Grants.WriteAll, options.Grants.Write);
-            AddGrant(startInfo, "--allow-net", options.Grants.NetAll, options.Grants.Net);
-            AddGrant(startInfo, "--allow-env", options.Grants.EnvAll, options.Grants.Env);
-            AddGrant(startInfo, "--allow-import", options.Grants.ImportAll, options.Grants.Import);
-        }
-
         startInfo.ArgumentList.Add(options.HostModuleUrl);
 
         startInfo.EnvironmentVariables[ReplControlEnvironment.IpcAddress] = options.SocketPath;
@@ -112,8 +103,7 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginConfig] = options.ConfigPath;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginSdk] = options.SdkUrl;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginWorkerEntry] = options.WorkerEntryUrl;
-        if (options.Broker is { } broker)
-            startInfo.EnvironmentVariables[ReplControlEnvironment.BrokerAddress] = broker.Address;
+        startInfo.EnvironmentVariables[ReplControlEnvironment.BrokerAddress] = options.Broker.Address;
         foreach (var name in AllowedEnvironmentNames)
         {
             var value = Environment.GetEnvironmentVariable(name);
@@ -124,37 +114,49 @@ internal sealed class PluginHostProcess : IAsyncDisposable
             startInfo,
             InternalDenoProcessKind.PluginHost,
             logger,
-            broker: options.Broker,
-            policy: options.Broker is null ? null : BuildPolicy(options));
+            options.Broker,
+            BuildPolicy(options));
         logger.LogInformation("Plugin host started with pid {ProcessId}.", inner.ProcessId);
         return new PluginHostProcess(inner);
     }
 
     private static EffectivePolicy BuildPolicy(PluginHostProcessOptions options)
     {
-        return PermissionBaseline.ForPluginHost(
+        // The plugin grants (the union of each plugin's manifest permissions) overlay the built-in
+        // baseline's control-channel grants. The broker resolves every request against this
+        // composed policy, so the plugins' own grants (e.g. read "./") are enforced.
+        var baseline = PermissionBaseline.ForPluginHost(
             options.ConfigPath,
             options.HostModuleUrl,
             options.SocketPath,
             options.SdkUrl,
             options.WorkerEntryUrl,
             options.HostId);
+        var kinds = new Dictionary<PermissionKind, PermissionKindRules>(baseline.Kinds)
+        {
+            [PermissionKind.Read] = MergeKinds(baseline.For(PermissionKind.Read), options.Grants.ReadAll, options.Grants.Read),
+            [PermissionKind.Write] = MergeKinds(baseline.For(PermissionKind.Write), options.Grants.WriteAll, options.Grants.Write),
+            [PermissionKind.Net] = MergeKinds(baseline.For(PermissionKind.Net), options.Grants.NetAll, options.Grants.Net),
+            [PermissionKind.Env] = MergeKinds(baseline.For(PermissionKind.Env), options.Grants.EnvAll, options.Grants.Env),
+            [PermissionKind.Import] = MergeKinds(baseline.For(PermissionKind.Import), options.Grants.ImportAll, options.Grants.Import)
+        };
+        return new EffectivePolicy(kinds, baseline.Variables);
     }
 
-    private static void AddGrant(
-        ProcessStartInfo startInfo,
-        string flag,
-        bool allowAll,
-        IReadOnlyList<string> values)
+    private static PermissionKindRules MergeKinds(
+        PermissionKindRules baseline,
+        bool grantAll,
+        IReadOnlyList<string> grants)
     {
-        if (allowAll)
+        var allow = new List<string>(baseline.Allow);
+        allow.AddRange(grants.Distinct(StringComparer.Ordinal));
+        return new PermissionKindRules
         {
-            startInfo.ArgumentList.Add(flag);
-            return;
-        }
-
-        var distinct = values.Distinct(StringComparer.Ordinal).ToArray();
-        if (distinct.Length > 0) startInfo.ArgumentList.Add($"{flag}={string.Join(",", distinct)}");
+            AllowAll = baseline.AllowAll || grantAll,
+            DenyAll = baseline.DenyAll,
+            Allow = allow,
+            Deny = baseline.Deny
+        };
     }
 
     public Task StopAsync()

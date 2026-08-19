@@ -1,12 +1,17 @@
 using System.Collections.Concurrent;
 using FluentAssertions;
+using Maieutics.DenoExecution;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
 
 public sealed class PluginHostProcessTests
 {
+    private static readonly DenoPermissionBroker SharedBroker =
+        DenoPermissionBroker.Create(new NullLogger<DenoPermissionBroker>());
+
     [Fact(Timeout = 30_000)]
     public async Task DrainsStdoutAndStderrConcurrentlyWithBoundedLogging()
     {
@@ -50,7 +55,8 @@ public sealed class PluginHostProcessTests
                         false,
                         [],
                         false,
-                        [])),
+                        []),
+                    SharedBroker),
                 logger);
 
             await process.Completion.WaitAsync(deadline.Token);

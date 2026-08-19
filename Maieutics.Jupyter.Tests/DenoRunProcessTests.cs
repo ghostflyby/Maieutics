@@ -2,12 +2,33 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using FluentAssertions;
 using Maieutics.DenoExecution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Jupyter.Tests;
 
 public sealed class DenoRunProcessTests
 {
+    private static readonly DenoPermissionBroker SharedBroker =
+        DenoPermissionBroker.Create(new NullLogger());
+
+    private static DenoRunProcess StartChild(
+        ProcessStartInfo startInfo,
+        InternalDenoProcessKind kind,
+        ILogger logger,
+        bool captureStandardError = false)
+    {
+        // The process tests exercise drain/stop/exit observation, not permissions; the broker is
+        // required by the launch surface, so reuse one class-level broker with the empty policy.
+        return DenoRunProcess.Start(
+            startInfo,
+            kind,
+            logger,
+            SharedBroker,
+            EffectivePolicy.Default,
+            captureStandardError);
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task CompletesWithTheChildExitCode()
     {
@@ -24,7 +45,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("eval");
         startInfo.ArgumentList.Add("console.log('ready'); Deno.exit(7)");
 
-        await using var process = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
+        await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
 
         process.ExitCode.Should().BeNull();
         await process.Completion.WaitAsync(deadline.Token);
@@ -47,7 +68,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("eval");
         startInfo.ArgumentList.Add("console.error('boom')");
 
-        await using var process = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger(), true);
+        await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger(), true);
 
         await process.Completion.WaitAsync(deadline.Token);
         process.StandardError.Should().NotBeNull();
@@ -71,7 +92,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("for (let i = 0; i < 200_000; i++) console.log('payload-' + i)");
         var logger = new CollectingLogger();
 
-        await using var process = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.PluginHost, logger);
+        await using var process = StartChild(startInfo, InternalDenoProcessKind.PluginHost, logger);
 
         await process.Completion.WaitAsync(deadline.Token);
         process.ExitCode.Should().Be(0);
@@ -96,7 +117,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("eval");
         startInfo.ArgumentList.Add("await new Promise(() => {})");
 
-        await using var process = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
+        await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
 
         var firstStop = process.StopAsync();
         var secondStop = process.StopAsync();
@@ -130,7 +151,7 @@ public sealed class DenoRunProcessTests
         }
     }
 
-    private sealed class NullLogger : ILogger
+    private sealed class NullLogger : ILogger<DenoPermissionBroker>
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull
         {

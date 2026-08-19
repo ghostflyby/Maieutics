@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
+using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Plugins;
@@ -15,6 +16,9 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class PluginHostIntegrationTests
 {
+    private static readonly DenoPermissionBroker SharedBroker =
+        DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+
     private static readonly JsonSerializerOptions JsonSerializerOptionsCaseInsensitive =
         new() { PropertyNameCaseInsensitive = true };
 
@@ -34,7 +38,8 @@ public sealed class PluginHostIntegrationTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            SharedBroker);
 
         try
         {
@@ -81,7 +86,8 @@ public sealed class PluginHostIntegrationTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            SharedBroker);
 
         try
         {
@@ -120,7 +126,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            SharedBroker);
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -178,7 +185,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            SharedBroker);
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -205,7 +213,8 @@ public sealed class PluginHostIntegrationTests
                 evalHost,
                 registry,
                 credentials,
-                NullLogger<DenoReplProcess>.Instance);
+                NullLogger<DenoReplProcess>.Instance,
+                SharedBroker);
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "hook-session",

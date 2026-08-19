@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
+using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Microsoft.AspNetCore.Builder;
@@ -13,6 +14,9 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class ReplControlChannelIntegrationTests
 {
+    private static readonly DenoPermissionBroker SharedBroker =
+        DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+
     private const string ReplChildProbeScript = """
                                                 if (!Deno.env.get("MAIEUTICS_REPL_IPC")) {
                                                   throw new Error("MAIEUTICS_REPL_IPC is missing");
@@ -59,7 +63,8 @@ public sealed class ReplControlChannelIntegrationTests
                 evalHost,
                 registry,
                 credentials,
-                NullLogger<DenoReplProcess>.Instance);
+                NullLogger<DenoReplProcess>.Instance,
+                SharedBroker);
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "verify",
@@ -117,7 +122,8 @@ public sealed class ReplControlChannelIntegrationTests
                 evalHost,
                 registry,
                 credentials,
-                NullLogger<DenoReplProcess>.Instance);
+                NullLogger<DenoReplProcess>.Instance,
+                SharedBroker);
             var generation = await factory.StartAsync(
                 Directory.GetCurrentDirectory(),
                 "integration-session",
@@ -166,7 +172,8 @@ public sealed class ReplControlChannelIntegrationTests
                 evalHost,
                 registry,
                 credentials,
-                NullLogger<DenoReplProcess>.Instance);
+                NullLogger<DenoReplProcess>.Instance,
+                SharedBroker);
             var generation = await factory.StartAsync(
                 Directory.GetCurrentDirectory(),
                 "input-session",

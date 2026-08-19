@@ -68,7 +68,7 @@ internal sealed class PluginHostManager(
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
     TimeProvider timeProvider,
-    DenoPermissionBroker? broker = null)
+    DenoPermissionBroker broker)
     : IHostedService, IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;

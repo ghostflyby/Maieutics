@@ -34,7 +34,7 @@ internal sealed class LocalDenoReplSessionFactory(
     ReplControlSessionRegistry sessionRegistry,
     ReplControlCredentialRegistry credentialRegistry,
     ILogger<DenoReplProcess> logger,
-    DenoPermissionBroker? broker = null)
+    DenoPermissionBroker broker)
     : IDenoReplSessionFactory
 {
     private readonly ReplControlCredentialRegistry credentialRegistry =

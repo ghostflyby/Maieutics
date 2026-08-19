@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using Maieutics.DenoExecution;
 using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
@@ -18,13 +17,15 @@ internal sealed record DenoReplProcessOptions(
     int Generation,
     string ClientUrl,
     string? WindowsPipeName,
-    DenoPermissionBroker? Broker = null,
+    DenoPermissionBroker Broker,
     bool AutoInstallModuleGraph = true);
 
 /// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the Deno REPL child. Owns the
 /// REPL-specific concerns — esbuild-wasm resolution, module-graph install, and the launch-time
-/// control-channel flags and environment — and delegates launch, drain, exit observation, and
-/// stop to the shared internal Deno process module (ADR 0018 §8).</summary>
+/// control-channel environment — and delegates launch, drain, exit observation, and stop to the
+/// shared internal Deno process module (ADR 0018 §8). The broker is the single permission
+/// authority: the child launches with <c>DENO_PERMISSION_BROKER_PATH</c> and no <c>--allow-*</c>
+/// flags, and the policy registered at spawn carries the control-channel and module-graph grants.</summary>
 internal sealed class DenoReplProcess : IAsyncDisposable
 {
     private const string EsbuildWasmVersion = "0.25.12";
@@ -79,15 +80,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("--unstable-worker-options");
         startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
         startInfo.ArgumentList.Add($"--lock={options.LockFile}");
-        if (options.Broker is null)
-        {
-            // Without a broker the fixed grants are expressed as launch flags (the previous
-            // behavior). With a broker the broker is the single authority and flags would be
-            // ignored, so they are omitted and the policy is registered instead (ADR 0018 §9).
-            foreach (var argument in BuildFixedPermissionFlags(options, esbuildWasm))
-                startInfo.ArgumentList.Add(argument);
-        }
-
         startInfo.ArgumentList.Add(options.MainUrl);
 
         startInfo.Environment.Clear();
@@ -96,8 +88,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.Environment[DenoReplEnvironment.Generation] = options.Generation.ToString(
             System.Globalization.CultureInfo.InvariantCulture);
         startInfo.Environment[DenoReplEnvironment.ClientModule] = options.ClientUrl;
-        if (options.Broker is { } broker)
-            startInfo.Environment[DenoReplEnvironment.BrokerAddress] = broker.Address;
+        startInfo.Environment[DenoReplEnvironment.BrokerAddress] = options.Broker.Address;
         CopyEnvironment(startInfo, "DENO_DIR");
         CopyEnvironment(startInfo, "TMPDIR");
         CopyEnvironment(startInfo, "TMP");
@@ -114,9 +105,9 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             startInfo,
             InternalDenoProcessKind.DenoRepl,
             logger,
-            captureStandardError: true,
-            broker: options.Broker,
-            policy: options.Broker is null ? null : BuildPolicy(options, esbuildWasm));
+            options.Broker,
+            BuildPolicy(options, esbuildWasm),
+            captureStandardError: true);
         logger.LogInformation(
             "Deno REPL session {SessionId} generation {Generation} started with pid {ProcessId}.",
             options.SessionId,
@@ -135,48 +126,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             options.IpcAddress,
             esbuildWasm,
             options.WindowsPipeName);
-    }
-
-    private static IReadOnlyList<string> BuildFixedPermissionFlags(DenoReplProcessOptions options, string esbuildWasm)
-    {
-        var environmentNames = new List<string>
-        {
-            DenoReplEnvironment.IpcAddress,
-            DenoReplEnvironment.SessionId,
-            DenoReplEnvironment.Generation,
-            DenoReplEnvironment.ClientModule,
-            // Provider secret names are readable so Deno.env.get does not fail, but the values are
-            // never injected into the child environment; evaluated cells observe them as undefined.
-            "OPENAI_API_KEY"
-        };
-        var readablePaths = new List<string>
-        {
-            options.ModuleDirectory,
-            options.WorkingDirectory,
-            options.ConfigFile,
-            options.LockFile,
-            esbuildWasm
-        };
-
-        var fixedGrants = new List<string> { $"--allow-env={string.Join(',', environmentNames)}" };
-        if (OperatingSystem.IsWindows())
-        {
-            var pipeName = options.WindowsPipeName
-                           ?? throw new PlatformNotSupportedException(
-                               "The Windows named-pipe bootstrap is not configured.");
-            fixedGrants.Add($"--allow-net={RequireWindowsLoopbackAddress(options.IpcAddress)}");
-            fixedGrants.Add("--allow-ffi");
-        }
-        else
-        {
-            var socketPath = Path.GetFullPath(options.IpcAddress);
-            fixedGrants.Add($"--allow-net=unix:{socketPath},localhost:80");
-            readablePaths.Add(socketPath);
-            fixedGrants.Add($"--allow-write={socketPath}");
-        }
-
-        fixedGrants.Add($"--allow-read={string.Join(',', readablePaths.Distinct(StringComparer.Ordinal))}");
-        return fixedGrants;
     }
 
     internal Task StopAsync()
@@ -266,15 +215,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             throw new InvalidOperationException(
                 $"Installing the Deno REPL module graph failed with exit code {process.ExitCode}. " +
                 $"stderr: {error.Trim()}");
-    }
-
-    private static string RequireWindowsLoopbackAddress(string address)
-    {
-        if (!Uri.TryCreate($"http://{address}", UriKind.Absolute, out var uri) ||
-            !IPAddress.TryParse(uri.Host, out var ipAddress) ||
-            !IPAddress.IsLoopback(ipAddress) || uri.Port <= 0)
-            throw new InvalidOperationException("The Windows REPL endpoint must be a concrete loopback host and port.");
-        return $"{ipAddress}:{uri.Port}";
     }
 
     private static void CopyEnvironment(ProcessStartInfo startInfo, string name)

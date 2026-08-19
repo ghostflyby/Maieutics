@@ -383,14 +383,18 @@ Rules:
 ## Resolved decisions (2026-08-20)
 
 4. **Cold-cache first-start timeout is a real risk.** The REPL's module graph (jsr.io packages) must be
-   fetched on first run; an empty `DENO_DIR` can exceed the 30s `StartupTimeout` (reproduced locally). The
-   follow-up is either a longer first-start allowance or a .NET-side startup pre-warm of the module graph;
-   not yet scheduled.
-5. **The broker is the only permission path; the no-broker flag fallback will be removed.** The merged
+   fetched on first run; an empty `DENO_DIR` can exceed the 30s `StartupTimeout` (reproduced locally).
+   Addressed by the startup pre-warm (resolved decision 7).
+5. **The broker is the only permission path; the no-broker flag fallback is removed.** The merged
    Phase 2+4 kept a no-broker fallback (`BuildFixedPermissionFlags`/`AddGrant`) for tests that construct
-   the REPL factory and plugin manager directly. The production composition root always creates a broker,
-   so the fallback contradicts AGENTS.md invariant 19 ("no launch path builds its own grant list") and will
-   be deleted; the tests will construct a broker instead.
+   the REPL factory and plugin manager directly. The fallback has now been deleted: the composition root
+   always creates a broker, the REPL factory and plugin manager require one, and the tests construct a
+   broker (AGENTS.md invariant 19 — no launch path builds its own grant list). The plugin host's
+   per-plugin grants are merged into the registered policy on top of the built-in baseline.
+7. **Cold-cache first-start pre-warm is implemented.** A `DenoModuleGraphWarmer` hosted service runs
+   `deno cache` on the materialized module graph in the background at startup, so the first REPL session
+   does not pay the network fetch inside its startup timeout (resolved decision 4). A failed warm never
+   fails startup; the REPL falls back to the existing on-demand install path.
 6. **Broker factory is synchronous; the registration API is a single `RegisterPolicy`.** Bind/listen are
    synchronous, so the async factory, `AsyncLazy`, the ready signal, and the two-phase
    `RegisterProcess`/`RegisterPolicy` API were all simplified away (section 9 readiness invariant).

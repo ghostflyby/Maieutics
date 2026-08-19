@@ -31,7 +31,7 @@ public sealed class DenoPermissionBrokerTests
                 "try { console.log(\"PATH:\", Deno.env.get(\"PATH\")); }\n" +
                 "catch (e) { console.log(\"env DENIED:\", String(e).split(\"\\n\")[0]); }\n",
                 deadline.Token);
-            var broker = await DenoPermissionBroker.CreateAsync(new CollectingLogger<DenoPermissionBroker>());
+            var broker = DenoPermissionBroker.Create(new CollectingLogger<DenoPermissionBroker>());
 
             var output = await RunChildAsync(broker, CreatePolicy(root), scriptPath, deadline.Token);
 
@@ -61,7 +61,7 @@ public sealed class DenoPermissionBrokerTests
                 catch (e) { console.log("read DENIED:", String(e).split("\n")[0]); }
                 """,
                 deadline.Token);
-            var broker = await DenoPermissionBroker.CreateAsync(new CollectingLogger<DenoPermissionBroker>());
+            var broker = DenoPermissionBroker.Create(new CollectingLogger<DenoPermissionBroker>());
 
             var output = await RunChildAsync(broker, EffectivePolicy.Default, scriptPath, deadline.Token);
 

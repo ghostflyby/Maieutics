@@ -18,7 +18,7 @@ namespace Maieutics.DenoExecution;
 ///     <c>--allow-env=PATH</c> still produced a broker request and the broker's deny won). Requests
 ///     arrive on a unix socket (peer-pid attributed like the control channel) or a Windows named
 ///     pipe; each request is resolved against the policy the owner registered for that process via
-///     <see cref="RegisterProcess"/> — exact allow → allow, exact deny → deny with the policy
+///     <see cref="RegisterPolicy"/> — exact allow → allow, exact deny → deny with the policy
 ///     reason, otherwise deny by default. The broker never prompts.
 /// </summary>
 internal sealed class DenoPermissionBroker : IAsyncDisposable
@@ -33,8 +33,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private readonly ConcurrentDictionary<int, TaskCompletionSource<EffectivePolicy>> registrations = new();
     private readonly string? socketPath;
     private readonly string? pipeName;
-    private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly Task loop;
+    private Task loop = Task.CompletedTask;
     private Socket? unixListener;
     private NamedPipeServerStream? pipeListener;
 
@@ -46,7 +45,6 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         this.socketPath = socketPath;
         this.pipeName = pipeName;
         this.logger = logger;
-        loop = RunAsync();
     }
 
     /// <summary>Address REPL and plugin-host children use to reach the broker via
@@ -57,40 +55,45 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     {
         get
         {
-            // The listener must be bound before any child can use the address: a child spawned
-            // with a broker that is not yet listening fails to connect and surfaces a socket
-            // error instead of a permission decision.
-            if (!ready.Task.IsCompleted)
-                throw new InvalidOperationException(
-                    "The permission broker is not ready; children must be spawned only after it is.");
+            // The listener is bound synchronously by Create before this is ever handed to a
+            // child, so the address is unconditionally safe to spawn against.
             return socketPath ?? (pipeName is { } name ? $@"\\.\pipe\{name}" : string.Empty);
         }
     }
 
-    internal static async Task<DenoPermissionBroker> CreateAsync(ILogger<DenoPermissionBroker> logger)
+    /// <summary>Creates the broker with its listener already bound (unix socket or Windows named
+    /// pipe). The accept loop runs in the background; the returned broker is ready to serve
+    /// immediately, so no child can be spawned against a broker that is not yet listening.</summary>
+    internal static DenoPermissionBroker Create(ILogger<DenoPermissionBroker> logger)
     {
         ArgumentNullException.ThrowIfNull(logger);
-        var broker = OperatingSystem.IsWindows()
-            ? new DenoPermissionBroker(null, $"maieutics-broker-{Guid.NewGuid():N}", logger)
-            : new DenoPermissionBroker(CreateSocketPath(), null, logger);
-        await broker.ready.Task.ConfigureAwait(false);
+        if (OperatingSystem.IsWindows())
+        {
+            var windowsBroker = new DenoPermissionBroker(null, $"maieutics-broker-{Guid.NewGuid():N}", logger);
+            windowsBroker.pipeListener = new NamedPipeServerStream(
+                windowsBroker.pipeName!,
+                PipeDirection.InOut,
+                MaximumPendingConnections,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous);
+            windowsBroker.loop = windowsBroker.AcceptLoopAsync();
+            return windowsBroker;
+        }
+
+        var socketPath = CreateSocketPath();
+        var broker = new DenoPermissionBroker(socketPath, null, logger);
+        var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+        listener.Listen(MaximumPendingConnections);
+        broker.unixListener = listener;
+        broker.loop = broker.AcceptLoopAsync();
         return broker;
     }
 
-    /// <summary>Reserves the registration slot for one internal Deno child. The owner calls this
-    /// <b>before</b> <c>Process.Start</c> so that a request arriving immediately after spawn finds
-    /// a pending slot; <see cref="RegisterPolicy"/> fills it after start. Reserved-then-unused
-    /// slots are reclaimed by <see cref="UnregisterProcess"/>.</summary>
-    internal void RegisterProcess(int processId)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
-        registrations.TryAdd(
-            processId,
-            new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously));
-    }
-
     /// <summary>Completes the registration slot with the effective policy for one child, captured
-    /// once at launch (AGENTS.md invariant 19: the policy never changes mid-operation).</summary>
+    /// once at launch (AGENTS.md invariant 19: the policy never changes mid-operation). A request
+    /// that arrives before registration waits on the slot (see <see cref="GetPolicyAsync"/>), so
+    /// there is no spawn-to-register window.</summary>
     internal void RegisterPolicy(int processId, EffectivePolicy policy)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
@@ -137,24 +140,17 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         return Path.Combine(Path.GetTempPath(), name);
     }
 
-    private async Task RunAsync()
+    private async Task AcceptLoopAsync()
     {
         try
         {
             if (OperatingSystem.IsWindows())
             {
-                pipeListener = new NamedPipeServerStream(
-                    pipeName!,
-                    PipeDirection.InOut,
-                    MaximumPendingConnections,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
-                ready.TrySetResult();
                 while (!lifetime.IsCancellationRequested)
                 {
                     try
                     {
-                        await pipeListener.WaitForConnectionAsync(lifetime.Token).ConfigureAwait(false);
+                        await pipeListener!.WaitForConnectionAsync(lifetime.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -173,30 +169,19 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                 return;
             }
 
-            var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            try
+            var listener = unixListener!;
+            while (!lifetime.IsCancellationRequested)
             {
-                listener.Bind(new UnixDomainSocketEndPoint(socketPath!));
-                listener.Listen(MaximumPendingConnections);
-                unixListener = listener;
-                ready.TrySetResult();
-                while (!lifetime.IsCancellationRequested)
-                {
-                    var connection = await listener.AcceptAsync(lifetime.Token).ConfigureAwait(false);
-                    _ = ServeSocketConnectionAsync(connection, lifetime.Token);
-                }
-            }
-            finally
-            {
-                listener.Dispose();
+                var connection = await listener.AcceptAsync(lifetime.Token).ConfigureAwait(false);
+                _ = ServeSocketConnectionAsync(connection, lifetime.Token);
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
-            // A broker that cannot bind must fail the address accessor and the consumers that
-            // spawned children against it, rather than silently dropping requests.
-            ready.TrySetException(exception);
-            throw;
+        }
+        finally
+        {
+            unixListener?.Dispose();
         }
     }
 

@@ -42,8 +42,9 @@ internal static class DenoPermissionResolver
 
     private static bool MatchesAny(IReadOnlyList<string> patterns, string value)
     {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         foreach (var pattern in patterns)
-            if (pattern.Length == 0 || value.StartsWith(pattern, StringComparison.Ordinal))
+            if (pattern.Length == 0 || value.StartsWith(pattern, comparison))
                 return true;
 
         return false;

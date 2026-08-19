@@ -55,7 +55,7 @@ internal static class PermissionBaseline
             net.Add(RequireLoopbackAddress(ipcAddress));
             env.Add(DenoReplEnvironment.PipeName);
             env.Add(DenoReplEnvironment.Credential);
-            env.Add("SystemRoot");
+            env.Add("SYSTEMROOT");
             // The Windows pipe bootstrap binds kernel32 before any control channel exists, so the
             // baseline carries the launch-time ffi grant; the broker gates post-bootstrap dlopen.
             // Re-verify path-qualified grants on Windows before narrowing (ADR 0018 §10).

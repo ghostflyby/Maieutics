@@ -287,14 +287,15 @@ path-qualified ffi grant still rejects `dlopen`). The design:
    default deny. Fallback: if the Windows verification task (below) shows the current Deno still rejects
    path-qualified ffi grants on Windows, keep the unsuffixed `--allow-ffi` for the bootstrap only and rely on
    the broker to deny post-bootstrap `dlopen`; the effective ffi window is identical either way.
-2. **Windows verification task** (blocks Phase 2+4, runs in parallel with Phase 1–3): on a Windows host, run the
-   ffi probe matrix (exact file, directory with/without trailing slash, unsuffixed) against the pinned Deno
-   version and record the outcome. The current code comment ("Deno 2.9.5 ignores the path argument of
-   --allow-ffi; an exact file or directory grant still rejects Deno.dlopen") is **not reproducible on macOS**
-   (exact-file and directory ffi grants both work, verified). The Deno source confirms ffi grants are matched
-   by path prefix on all platforms, and Windows path comparisons were made case-insensitive in 2.6+ with
-   `\\?\`-prefix equivalence in 2.8+, so the claim is likely stale (pre-2.6) or a path-normalization artifact.
-   The verification picks the exact baseline flag; the broker gating is unchanged regardless of the outcome.
+2. **Windows verification task — resolved by CI, 2026-08-20.** The original plan was to run an ffi probe
+   matrix on a Windows host and pick the exact baseline flag. The Windows CI runner answered it: the
+   path-qualified `--allow-ffi=<systemRoot>\System32\kernel32.dll` grant lets the bootstrap's `Deno.dlopen`
+   succeed, but the bootstrap also calls `Deno.UnsafePointer.of` (for the pipe path bytes), which requires ffi
+   access and produces an **empty-value ffi request** that a path-qualified grant cannot match. The baseline
+   therefore uses `AllowAll` for ffi (the unsuffixed form) for the bootstrap window, and the broker gates every
+   post-bootstrap `dlopen` by default — the "unsuffixed fallback" in decision 1 is what Windows actually
+   requires, so the effective ffi window is exactly the bootstrap and nothing more. Re-verify if the
+   bootstrap's `UnsafePointer` usage changes.
 
 ### 11. Namespace partition (domain-driven)
 
@@ -354,17 +355,20 @@ Rules:
   starts (terminal, MCP), never to internal Deno children.
 - One `EffectivePolicy` type is the single consumption point, so a future seatbelt/bwrap enforcer renders the
   same snapshot.
-- Windows ffi grant narrows to the bootstrap window (launch-time grant, then broker-gated), with the
-  Windows-specific flag claim re-verified before relying on the unsuffixed form.
+- Windows ffi grant narrows to the bootstrap window (launch-time `AllowAll`, then broker-gated); the Windows
+  verification (2026-08-20) confirmed the unsuffixed form is required because the bootstrap uses
+  `Deno.UnsafePointer`, and the broker denies every post-bootstrap `dlopen` by default.
 - The permission model is Deno-shaped but not Deno-only: kinds that a sandbox cannot express (env, import) are
   explicit and enforced by their owning layer.
 
-## Resolved decisions (2026-08-19)
+## Resolved decisions (2026-08-19; decision 1 updated 2026-08-20)
 
-1. **Windows `--allow-ffi` baseline: tighten.** The launch grant is the path-qualified
-   `--allow-ffi=<systemRoot>\System32\kernel32.dll`; the unsuffixed form is a documented fallback only if the
-   Windows verification task disproves path grants on the pinned Deno. Broker gating applies regardless
-   (section 10).
+1. **Windows `--allow-ffi` baseline: AllowAll for the bootstrap window.** The original decision was the
+   path-qualified `--allow-ffi=<systemRoot>\System32\kernel32.dll` with the unsuffixed form as fallback. The
+   Windows CI verification (2026-08-20, section 10) showed the bootstrap's `Deno.UnsafePointer.of` produces an
+   empty-value ffi request that a path-qualified grant cannot match, so the baseline uses ffi `AllowAll` for
+   the bootstrap window; the broker gates every post-bootstrap `dlopen` by default. The effective ffi window
+   is exactly the bootstrap and nothing more.
 2. **Terminal `run`: default unrestricted.** The built-in baseline grants `run` fully; the PTY factory checks
    the executable against an allowlist only when a layer restricts `run`. Existing behavior is unchanged
    (section 7).

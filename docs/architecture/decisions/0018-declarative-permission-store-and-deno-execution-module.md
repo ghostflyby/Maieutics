@@ -209,21 +209,22 @@ the pipe bootstrap, and those are expressed as Deno grants, not as sandbox mount
 
 ### 9. Deno permission broker: runtime policy without a prompt
 
-The current design launches REPL/plugin children with static flags. The requirement is a *broker* so that
-scenarios like "a path grant with interpolation that changes after declaration" can be enforced at runtime.
-Deno 2.5+ ships the mechanism natively as the **`DENO_PERMISSION_BROKER_PATH`** broker (unstable,
-`runtime/permissions/broker.rs`, versioned JSON-lines protocol over a unix socket or Windows named pipe):
+The REPL/plugin children resolve every permission check through a *broker* so that grants can be enforced
+at runtime. Deno 2.5+ ships the mechanism natively as the **`DENO_PERMISSION_BROKER_PATH`** broker
+(unstable, `runtime/permissions/broker.rs`, versioned JSON-lines protocol over a unix socket or Windows
+named pipe — the env var carries the socket path on unix and the full named-pipe path `\\.\pipe\<name>` on
+Windows; a bare pipe name fails to connect, verified in CI):
 
 ```text
 request  {"v":1,"pid":...,"id":...,"datetime":...,"permission":...,"value":...}   child -> broker
 response {"id":...,"result":"allow"|"deny","reason":...}                          broker -> child
 ```
 
-The broker is consulted on every permission check that is not locally settled; a `deny` response produces a
-`NotCapable` error whose message is the broker-supplied `reason` (verified locally against Deno 2.9.5 with a
-python unix-socket broker: read requests were allowed, env requests were denied with the custom reason).
-Because the broker round-trip is synchronous per check, the broker path must stay fast (in-process policy
-lookup, no user prompting on the hot path).
+The broker is consulted on every permission check; a `deny` response produces a `NotCapable` error whose
+message is the broker-supplied `reason` (verified locally against Deno 2.9.5 with a python unix-socket
+broker: read requests were allowed, env requests were denied with the custom reason). Because the broker
+round-trip is synchronous per check, the broker path must stay fast (in-process policy lookup, no user
+prompting on the hot path).
 
 **Broker architecture.** `Maieutics.DenoExecution.DenoPermissionBroker` is the .NET side of the official
 broker protocol. Each internal Deno child gets the broker address through `DENO_PERMISSION_BROKER_PATH`; the
@@ -248,16 +249,17 @@ grants become the built-in baseline layer of that policy (section 2), which is w
 routing) and Phase 4 (broker) are merged: the broker is the only enforcement point and the policy
 is its only input.
 
-**Broker readiness and registration (architecture invariant, 2026-08-19).** Two invariants make the
-broker safe to depend on at spawn time: (1) the broker's listener is bound before any child can be
-spawned — the factory is asynchronous (`CreateAsync`) and completes only after bind/listen, and the
-`Address` accessor throws until then; (2) a permission request from a child whose policy is not yet
-registered **waits** (signal-driven, bounded) for the registration instead of being denied by
-default — the owner registers the policy immediately after `Process.Start` (the pid is only known
-then), and the broker's per-process registration slot makes the child's first request block until
-the policy lands, denying by default only if the registration never arrives. This closes the
-spawn-to-register window that previously let a REPL's first `jsr.io` import be denied on slow CI
-runners.
+**Broker readiness and registration (architecture invariant, 2026-08-19; simplified 2026-08-20).** Two
+invariants make the broker safe to depend on at spawn time: (1) the broker's listener is bound **before**
+any child can be spawned — the factory binds and starts the accept loop synchronously before returning, so
+`Address` is unconditionally safe (the earlier `CreateAsync`/ready-signal design was removed: bind/listen
+are synchronous, so an asynchronous factory and `AsyncLazy` added nothing); (2) a permission request from a
+child whose policy is not yet registered **waits** (signal-driven, bounded) for the registration instead of
+being denied by default — the owner registers the policy immediately after `Process.Start` (the pid is only
+known then), and the broker's per-process registration slot (created on demand for any unknown pid, so no
+pre-registration step is needed) makes the child's first request block until the policy lands, denying by
+default only if the registration never arrives. This closes the spawn-to-register window that previously
+let a REPL's first `jsr.io` import be denied on slow CI runners.
 
 **Alternative considered and rejected:** a custom prompter over the existing control channel. Deno's
 `PermissionPrompter` trait (`runtime/permissions/prompter.rs`) is synchronous, not exposed as a stable public
@@ -377,6 +379,25 @@ Rules:
    resolved against the file's directory — matching Deno's config semantics so the renderer and broker reuse
    the same shape. On Deno 2.9.5 the config `permissions` field requires explicit `-P <set>` opt-in and the
    store renders to CLI flags and/or the broker regardless (verified locally).
+
+## Resolved decisions (2026-08-20)
+
+4. **Cold-cache first-start timeout is a real risk.** The REPL's module graph (jsr.io packages) must be
+   fetched on first run; an empty `DENO_DIR` can exceed the 30s `StartupTimeout` (reproduced locally). The
+   follow-up is either a longer first-start allowance or a .NET-side startup pre-warm of the module graph;
+   not yet scheduled.
+5. **The broker is the only permission path; the no-broker flag fallback will be removed.** The merged
+   Phase 2+4 kept a no-broker fallback (`BuildFixedPermissionFlags`/`AddGrant`) for tests that construct
+   the REPL factory and plugin manager directly. The production composition root always creates a broker,
+   so the fallback contradicts AGENTS.md invariant 19 ("no launch path builds its own grant list") and will
+   be deleted; the tests will construct a broker instead.
+6. **Broker factory is synchronous; the registration API is a single `RegisterPolicy`.** Bind/listen are
+   synchronous, so the async factory, `AsyncLazy`, the ready signal, and the two-phase
+   `RegisterProcess`/`RegisterPolicy` API were all simplified away (section 9 readiness invariant).
+7. **Windows env/path matching is case-insensitive; net/sys keep case-sensitive matching.** On Windows the
+   resolver compares env names and paths case-insensitively (matching the platform environment and
+   filesystem semantics); net hosts, sys API names, and import values remain case-sensitive.
+
 
 ## Implementation plan
 
@@ -555,7 +576,8 @@ is already fixed so this phase has no model changes.
 - Phases that touch the executable's launch/process surface (2+4, 3, 5) run the supported-RID NativeAOT
   publish check.
 - The AGENTS.md invariants 19–23 are enforced by construction: every consumer acquires one `EffectivePolicy`
-  per scope, and no hand-built grant lists survive Phase 2+4.
+  per scope, and the no-broker flag fallback (resolved decision 5) is removed so no hand-built grant lists
+  survive the broker-only path.
 
 ## Verification appendix (local, Deno 2.9.5, macOS arm64)
 

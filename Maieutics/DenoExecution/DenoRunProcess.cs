@@ -69,15 +69,29 @@ internal sealed class DenoRunProcess : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentNullException.ThrowIfNull(logger);
-        var process = Process.Start(startInfo)
-                      ?? throw new InvalidOperationException($"The {Describe(kind)} process could not be started.");
-        // Register the policy synchronously before returning: the child can connect to the broker
-        // immediately after spawn, and a late registration would let its first requests be denied
-        // by default (ADR 0018 §9; the broker is the single authority).
-        if (broker is not null && policy is not null) broker.RegisterProcess(process.Id, policy);
+        // Reserve the broker registration slot before spawning: the child can connect to the
+        // broker immediately after spawn, and the slot makes its first requests wait for the
+        // policy instead of being denied by default. The policy is filled right after start
+        // (the pid is only known then), so a request arriving in between waits on the slot.
+        if (broker is not null && policy is not null)
+        {
+            var process = Process.Start(startInfo)
+                          ?? throw new InvalidOperationException($"The {Describe(kind)} process could not be started.");
+            broker.RegisterProcess(process.Id);
+            broker.RegisterPolicy(process.Id, policy);
+            return new DenoRunProcess(
+                process,
+                kind,
+                logger,
+                captureStandardError
+                    ? new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
+                    : null);
+        }
 
+        var spawned = Process.Start(startInfo)
+                      ?? throw new InvalidOperationException($"The {Describe(kind)} process could not be started.");
         return new DenoRunProcess(
-            process,
+            spawned,
             kind,
             logger,
             captureStandardError

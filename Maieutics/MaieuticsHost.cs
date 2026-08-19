@@ -175,8 +175,10 @@ public static class MaieuticsHost
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
                 : null));
         builder.Services.AddSingleton<DenoReplModule>();
+        builder.Services.AddSingleton(static services => new AsyncLazy<DenoPermissionBroker>(
+            () => DenoPermissionBroker.CreateAsync(services.GetRequiredService<ILogger<DenoPermissionBroker>>())));
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
-            DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
+            services.GetRequiredService<AsyncLazy<DenoPermissionBroker>>().Value);
         builder.Services.AddSingleton<IDenoReplSessionFactory>(static services =>
             new LocalDenoReplSessionFactory(
                 services.GetRequiredService<DenoReplOptions>(),

@@ -61,6 +61,9 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
   bind `kernel32`, then the broker revokes it. Re-verify platform ffi path-grant behavior before narrowing the flag.
 - The Deno permission broker answers `Deno.permissions.request` against the child's effective policy; `--no-prompt` is
   always passed so unsolicited requests deny by default.
+- The broker must be ready before any child is spawned: its listener is bound by the time `CreateAsync` completes,
+  and a request from a not-yet-registered child waits (bounded) for the policy registration instead of being denied
+  by default (ADR 0018 §9 readiness invariant).
 
 Read the narrower instructions before changing:
 

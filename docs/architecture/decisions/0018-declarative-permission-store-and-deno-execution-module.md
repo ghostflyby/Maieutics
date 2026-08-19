@@ -248,6 +248,17 @@ grants become the built-in baseline layer of that policy (section 2), which is w
 routing) and Phase 4 (broker) are merged: the broker is the only enforcement point and the policy
 is its only input.
 
+**Broker readiness and registration (architecture invariant, 2026-08-19).** Two invariants make the
+broker safe to depend on at spawn time: (1) the broker's listener is bound before any child can be
+spawned — the factory is asynchronous (`CreateAsync`) and completes only after bind/listen, and the
+`Address` accessor throws until then; (2) a permission request from a child whose policy is not yet
+registered **waits** (signal-driven, bounded) for the registration instead of being denied by
+default — the owner registers the policy immediately after `Process.Start` (the pid is only known
+then), and the broker's per-process registration slot makes the child's first request block until
+the policy lands, denying by default only if the registration never arrives. This closes the
+spawn-to-register window that previously let a REPL's first `jsr.io` import be denied on slow CI
+runners.
+
 **Alternative considered and rejected:** a custom prompter over the existing control channel. Deno's
 `PermissionPrompter` trait (`runtime/permissions/prompter.rs`) is synchronous, not exposed as a stable public
 API for `deno run` children, and `deno jupyter` itself no longer uses a permission prompter (it runs

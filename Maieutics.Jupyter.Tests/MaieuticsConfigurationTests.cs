@@ -1647,12 +1647,14 @@ public sealed class MaieuticsConfigurationTests
         string contents,
         CancellationToken cancellationToken)
     {
-        // The reload token's initial file stamp is captured when the token is created. If the
-        // token already fired (a previous reload consumed it), registering still fires the
-        // callback immediately — but a token whose stamp was captured after the write below would
-        // never fire. Loop until we hold an unfired token so the write is guaranteed to change
-        // its stamp (avoids a Windows scheduling race where the write lands before the token's
-        // initial stamp read).
+        // The reload token's initial file stamp is captured when the token is created. A Windows
+        // scheduling race can land the write before that read, making the token never fire (the
+        // observed 50s TaskCanceled timeout). Back-date an existing file first so any token
+        // captured afterwards has an old stamp and the write is guaranteed to change it; a
+        // not-yet-existing file has a default stamp that creation necessarily changes.
+        if (File.Exists(path))
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(-2));
+
         IChangeToken token;
         do
         {

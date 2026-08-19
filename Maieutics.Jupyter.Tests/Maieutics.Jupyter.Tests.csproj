@@ -8,32 +8,31 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="FluentAssertions" Version="8.8.0"/>
-        <PackageReference Include="coverlet.collector" Version="6.0.4"/>
-        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
-        <PackageReference Include="ModelContextProtocol.Core" Version="2.0.0"/>
-        <PackageReference Include="ZmqSharp" Version="0.4.0"/>
-        <PackageReference Include="xunit.v3" Version="3.2.2"/>
-        <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5"/>
+        <PackageReference Include="FluentAssertions" Version="8.8.0" />
+        <PackageReference Include="coverlet.collector" Version="6.0.4" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+        <PackageReference Include="ModelContextProtocol.Core" Version="2.0.0" />
+        <PackageReference Include="XTerm.NET" Version="1.0.15" />
+        <PackageReference Include="ZmqSharp" Version="0.4.0" />
+        <PackageReference Include="xunit.v3" Version="3.2.2" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
-        <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj"/>
-        <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj"/>
-        <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj"/>
-        <ProjectReference Include="..\Maieutics\Maieutics.csproj"/>
+        <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj" />
+        <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj" />
+        <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj" />
+        <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj" />
+        <ProjectReference Include="..\Maieutics\Maieutics.csproj" />
     </ItemGroup>
 
     <ItemGroup>
-        <Using Include="Xunit"/>
+        <Using Include="Xunit" />
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="TestData\kernels\deno\kernel.json" CopyToOutputDirectory="PreserveNewest"/>
-        <None Include="..\Maieutics\kernelspec\kernel.json"
-              Link="TestData\kernels\maieutics\kernel.json"
-              CopyToOutputDirectory="PreserveNewest"/>
+        <None Include="TestData\kernels\deno\kernel.json" CopyToOutputDirectory="PreserveNewest" />
+        <None Include="..\Maieutics\kernelspec\kernel.json" Link="TestData\kernels\maieutics\kernel.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

@@ -60,6 +60,17 @@
       "MaxPresentationEventsPerExecution": 256,
       "MaxPresentationBundleBytes": 16777216
     },
+    "Terminal": {
+      "Shell": "/bin/sh",
+      "Arguments": [],
+      "MaxSessionsPerAgent": 4,
+      "Columns": 120,
+      "Rows": 30,
+      "StartupTimeout": "00:00:15",
+      "SettleTimeout": "00:00:00.600",
+      "GracefulExitTimeout": "00:00:10",
+      "MaxSnapshotCharacters": 16384
+    },
     "Jupyter": {
       "FlushInterval": "00:00:00.050",
       "FlushCharacters": 1024

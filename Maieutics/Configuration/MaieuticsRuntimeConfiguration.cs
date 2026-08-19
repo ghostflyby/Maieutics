@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
+using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
@@ -20,6 +21,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
     IMaieuticsMcpController,
     IAsyncDisposable
 {
+    private const string TerminalShellCapability = "Shell";
+
     private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ReloadDrainTimeout = TimeSpan.FromSeconds(10);
     private readonly IReadOnlyList<AIFunction> builtInTools;
@@ -49,6 +52,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     private readonly List<Task> retiredGenerations = [];
     private readonly McpStartupDirectory startupDirectory;
+    private readonly TerminalFunctions terminalFunctions;
     private readonly TimeProvider timeProvider;
     private long completedReloadAttempt;
     private long completedReloadRequest;
@@ -70,6 +74,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         MaieuticsConfigurationFileErrors fileErrors,
         IEnumerable<IConfiguredChatClientFactory> factories,
         IReadOnlyList<AIFunction> builtInTools,
+        TerminalFunctions terminalFunctions,
         McpStartupDirectory startupDirectory,
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
@@ -86,6 +91,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.mcpTransportFactory = mcpTransportFactory;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
+        this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
 
         var candidate = CreateCandidate();
         ConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
@@ -97,6 +103,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
     }
 
     internal long ReloadAttempt => Interlocked.Read(ref reloadAttempt);
+
+    /// <summary>Every built-in tool name plus the capability-gated terminal tool names. MCP and plugin tools
+    /// must never collide with these, even though terminal tools are only visible when the endpoint hosts
+    /// the Shell capability: the run still assembles them from the same namespace.</summary>
+    internal HashSet<string> ReservedToolNames => [.. builtInTools.Select(static function => function.Name),
+        .. terminalFunctions.Functions.Select(static function => function.Name)];
 
     internal long CompletedReloadAttempt => Interlocked.Read(ref completedReloadAttempt);
 
@@ -256,6 +268,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             cancellationToken.ThrowIfCancellationRequested();
             var tools = new List<AIFunction>(builtInTools.Count);
             tools.AddRange(builtInTools);
+            if (selection.HostedCapabilities.Contains(TerminalShellCapability, StringComparer.OrdinalIgnoreCase))
+                tools.AddRange(terminalFunctions.Functions);
             foreach (var lease in mcpLeases) tools.AddRange(lease.Tools);
 
             return new RuntimeProfileLease(
@@ -493,8 +507,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     "The runtime configuration is already bound to a different plugin host manager.");
 
             Volatile.Write(ref pluginHosts, activePluginHosts);
-            activePluginHosts.SetReservedToolNames(
-                builtInTools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal));
+            activePluginHosts.SetReservedToolNames(ReservedToolNames);
             return initialization ??= InitializeCoreAsync(cancellationToken);
         }
     }
@@ -908,9 +921,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         var mcpServers = new Dictionary<string, McpServerGeneration>(StringComparer.OrdinalIgnoreCase);
         var createdMcp = new List<McpServerGeneration>();
         var createdProfiles = new List<ProfileGeneration>();
-        var reservedToolNames = builtInTools
-            .Select(static function => function.Name)
-            .ToHashSet(StringComparer.Ordinal);
+        var reservedToolNames = ReservedToolNames;
         try
         {
             foreach (var server in candidate.McpServers)

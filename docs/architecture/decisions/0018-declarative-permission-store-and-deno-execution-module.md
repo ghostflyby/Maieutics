@@ -234,12 +234,19 @@ Windows) and resolves each request against the child's *effective policy*:
 - otherwise deny by default (`--no-prompt` is always passed; unsolicited requests never escalate);
 - an interactive user prompt is a possible future extension of the deny-by-default path, never a silent grant.
 
-**Launch-time flags plus broker.** The CLI flags remain the deterministic baseline for everything known at
-launch (control channel, module graph, SDK). The broker covers the residual dynamic cases (interpolated paths
-whose values changed, user-approved grants, revocations) and is a single enforcement point shared by the
-REPL and the plugin host. The broker is *not* a bypass: `has_broker()` forces even "allow-all" states through
-the broker for non-global grants, and local `--allow-*` still short-circuits matching requests, so the two
-compose as "local flags first, broker for the rest".
+**Launch-time flags plus broker — revised: the broker is the permission source.** Setting
+`DENO_PERMISSION_BROKER_PATH` makes the broker the **single authority** for the child's permission
+checks: when a broker is configured, the child consults it for every permission access, and local
+`--allow-*`/`--deny-*` flags do **not** short-circuit broker requests (verified against Deno 2.9.5
+with a unix-socket broker: with the broker env var set and no permission flags at all, every read
+and env access produced a broker request and the broker's deny reasons surfaced as `NotCapable`).
+The broker is therefore a **replacement** for the flag baseline, not an overlay on it. The child
+still launches with `--no-prompt` so unsolicited requests never escalate to an interactive prompt,
+but the grants the flags used to express are now resolved by the broker against the same
+`EffectivePolicy` snapshot the flags would have rendered. Fixed control-channel and module-graph
+grants become the built-in baseline layer of that policy (section 2), which is why Phase 2 (policy
+routing) and Phase 4 (broker) are merged: the broker is the only enforcement point and the policy
+is its only input.
 
 **Alternative considered and rejected:** a custom prompter over the existing control channel. Deno's
 `PermissionPrompter` trait (`runtime/permissions/prompter.rs`) is synchronous, not exposed as a stable public
@@ -269,7 +276,7 @@ path-qualified ffi grant still rejects `dlopen`). The design:
    default deny. Fallback: if the Windows verification task (below) shows the current Deno still rejects
    path-qualified ffi grants on Windows, keep the unsuffixed `--allow-ffi` for the bootstrap only and rely on
    the broker to deny post-bootstrap `dlopen`; the effective ffi window is identical either way.
-2. **Windows verification task** (blocks Phase 4, runs in parallel with Phase 1–3): on a Windows host, run the
+2. **Windows verification task** (blocks Phase 2+4, runs in parallel with Phase 1–3): on a Windows host, run the
    ffi probe matrix (exact file, directory with/without trailing slash, unsuffixed) against the pinned Deno
    version and record the outcome. The current code comment ("Deno 2.9.5 ignores the path argument of
    --allow-ffi; an exact file or directory grant still rejects Deno.dlopen") is **not reproducible on macOS**
@@ -325,10 +332,11 @@ Rules:
 
 - `DenoReplProcess` and `PluginHostProcess` shrink to adapters over `DenoRunProcess`; the drain/stop/observe
   loops exist once.
-- The REPL and plugin host get one enforcement point: launch-time `--allow-*`/`--deny-*` flags from the
-  `EffectivePolicy` plus the official `DENO_PERMISSION_BROKER_PATH` broker for everything not settled at
-  launch. The broker is versioned (`v:1`), supports Windows named pipes, and its deny reasons surface as
-  `NotCapable` messages (verified).
+- The REPL and plugin host get one enforcement point: the official `DENO_PERMISSION_BROKER_PATH` broker
+  resolves every permission check against the child's `EffectivePolicy`. The broker is the single authority
+  (setting the env var replaces the flag baseline), is versioned (`v:1`), supports Windows named pipes, and
+  its deny reasons surface as `NotCapable` messages (verified). `--no-prompt` stays so unsolicited requests
+  deny by default.
 - Terminal starts become policy-governed: env allowlist from the policy, exec allowlist enforced for restricted
   policies, no behavior change for the default policy.
 - The REPL and plugin host keep "privileged internal Deno" semantics; sandboxing applies to general process
@@ -369,11 +377,10 @@ Phase 0  Permissions core + Processes namespace        (foundation; nothing depe
    |
    +---> Phase 1  DenoExecution extraction (DenoRunProcess + DenoPermissionArguments)
    |        |
-   |        +---> Phase 2  route REPL/plugin through the policy module
-   |        |        |
-   |        |        +---> Phase 4  Deno permission broker + Windows ffi gating
-   |        |        |
-   |        |        +---> Phase 5  full layering pipeline + workspace permissions.json
+   |        +---> Phase 2+4  policy routing + Deno permission broker (merged; broker is the
+   |        |                single permission authority for internal Deno children)
+   |        |
+   |        +---> Phase 5  full layering pipeline + workspace permissions.json
    |
    +---> Phase 3  Terminal through policy (independent of Phase 1; needs Phase 0 only)
    |        |
@@ -382,9 +389,9 @@ Phase 0  Permissions core + Processes namespace        (foundation; nothing depe
    +---> Phase 7  process-sandbox enforcement seam (future; not scheduled)
 ```
 
-Parallel tracks: after Phase 0, Phase 1 (Deno) and Phase 3 (Terminal) are independent. Phase 2 needs Phase 1;
-Phase 4 and Phase 5 need Phase 2 (children launched through the module, plus the acquisition path). Phase 6
-needs Phase 3. The Windows verification task runs in parallel from Phase 0 and gates Phase 4's ffi baseline.
+Parallel tracks: after Phase 0, Phase 1 (Deno) and Phase 3 (Terminal) are independent. Phase 2+4 (policy
+routing plus the permission broker) needs Phase 1; Phase 5 needs Phase 2+4. Phase 6 needs Phase 3. The
+Windows verification task runs in parallel from Phase 0 and gates the Windows ffi baseline in Phase 2+4.
 
 ### Phase 0 — Permissions core + Processes namespace
 
@@ -421,19 +428,36 @@ Goal: one supervised `deno run` child; remove the duplicated drain/stop/exit plu
 - Gate: all Deno REPL and plugin host tests green; behavior identical.
 - Depends on: Phase 0.
 
-### Phase 2 — route REPL/plugin through the policy module
+### Phase 2+4 — policy routing + Deno permission broker (merged)
 
-Goal: replace hand-built `--allow-*` lists with policy-rendered ones; flags must be identical to today.
+Goal: the broker is the single permission authority for internal Deno children, resolving every
+permission check against the child's `EffectivePolicy`; the hand-built `--allow-*` lists are replaced
+by policy-rendered flags, which are identical to today's grants but now enforced by the broker.
 
-- Composition root builds the built-in baseline layer (control channel address, module graph dirs, workspace
-  root, SystemRoot/TMPDIR on Windows, broker address once Phase 4 lands).
-- `LocalDenoReplSessionFactory.StartAsync` acquires `EffectivePolicy` for the session and renders flags via
-  `DenoPermissionArguments` instead of the hard-coded lists in `DenoReplProcess.StartAsync`.
+- New file `Maieutics/DenoExecution/DenoPermissionBroker.cs`: v1 JSON-lines broker server — unix socket
+  (peer-pid attributed like the control channel) or Windows named pipe; parses
+  `{"v":1,"pid","id","datetime","permission","value"}` and answers `{"id","result","reason"}`; resolves
+  each request against the child's `EffectivePolicy` (exact allow → allow; exact deny → deny with policy
+  reason; otherwise deny by default; never prompts). Malformed/unmatched requests follow the control
+  channel's failure policy (typed errors, no loop crash).
+- Composition root builds the built-in baseline layer (control channel address, module graph dirs,
+  workspace root, SystemRoot/TMPDIR on Windows) as a `PermissionLayer`.
+- `LocalDenoReplSessionFactory.StartAsync` acquires `EffectivePolicy` for the session; the REPL child
+  launches with the broker address in `DENO_PERMISSION_BROKER_PATH` and `--no-prompt` (the broker is the
+  enforcement point, so the launch flags are the minimal baseline — the broker answers everything else).
 - `PluginHostManager.BuildProcessGrants` is replaced: each `PluginPermissionGrant` becomes a layer
-  contribution; compose, render.
-- Tests: renderer round-trip asserts the exact current arg sets (the launch commands documented in the
-  `maieutics-deno-repl`/`maieutics-plugin-host` READMEs are the fixture); REPL/plugin integration tests green.
-- Gate: rendered flags equal today's; full `dotnet test Maieutics.slnx` green.
+  contribution; compose, and the plugin host launches with the broker address too.
+- Windows ffi baseline: **tightened** (decision 1) — `--allow-ffi=<systemRoot>\System32\kernel32.dll` at
+  launch for the pipe bootstrap, then the broker gates post-bootstrap `dlopen`; unsuffixed fallback only
+  if the Windows verification task disproves path grants.
+- Windows verification task (parallel, earliest): ffi probe matrix on a Windows host against the pinned
+  Deno; output fixes the exact baseline flag.
+- Tests: `DenoPermissionBrokerTests` — protocol round-trip against a real `deno run` child (allow, deny
+  with custom reason, deny-by-default), policy-resolution unit tests; Windows ffi bootstrap test on the
+  Windows runner; renderer round-trip asserts the exact current arg sets (the launch commands documented
+  in the `maieutics-deno-repl`/`maieutics-plugin-host` READMEs are the fixture).
+- Gate: broker integration green on unix; Windows bootstrap test green on the Windows runner; full
+  `dotnet test Maieutics.slnx` green; NativeAOT publish check.
 - Depends on: Phase 1.
 
 ### Phase 3 — Terminal through policy
@@ -454,7 +478,9 @@ Goal: terminal process starts flow through the permission module.
 
 ### Phase 4 — Deno permission broker + Windows ffi gating
 
-Goal: dynamic policy enforcement via the official `DENO_PERMISSION_BROKER_PATH` protocol.
+> **Merged into Phase 2+4** (2026-08-19): the broker is the single permission authority, so policy
+> routing and the broker are implemented together. This section is retained for the broker-specific
+> details; the phase gate is the merged Phase 2+4 gate.
 
 - New file `Maieutics/DenoExecution/DenoPermissionBroker.cs`: v1 JSON-lines broker server — unix socket
   (shared, peer-pid attributed like the control channel) or Windows named pipe; parses
@@ -469,11 +495,11 @@ Goal: dynamic policy enforcement via the official `DENO_PERMISSION_BROKER_PATH` 
 - Windows verification task (parallel, earliest): ffi probe matrix on a Windows host against the pinned Deno;
   output fixes the exact baseline flag.
 - Tests: `DenoPermissionBrokerTests` — protocol round-trip against a real `deno run` child (allow, deny with
-  custom reason, local-flag short-circuit, deny-by-default), policy-resolution unit tests; Windows ffi
-  bootstrap test on the Windows runner.
+  custom reason, deny-by-default), policy-resolution unit tests; Windows ffi bootstrap test on the Windows
+  runner.
 - Gate: broker integration green on unix; Windows bootstrap test green on the Windows runner; NativeAOT
   publish check (executable-affecting change).
-- Depends on: Phase 2.
+- Depends on: Phase 1.
 
 ### Phase 5 — full layering pipeline + workspace permissions.json
 
@@ -489,7 +515,7 @@ Goal: the four layers compose from real configuration.
   load/validation/reload tests, integration (workspace profile grants a path → REPL reads it; denies →
   `NotCapable`).
 - Gate: layer-composition integration green; reload keeps last-known-good on invalid files.
-- Depends on: Phase 2.
+- Depends on: Phase 2+4.
 
 ### Phase 6 — MCP stdio policy (follow-up)
 
@@ -498,7 +524,7 @@ Goal: MCP server children get policy-derived environments.
 - `McpServerGeneration` stdio transports build the child environment from the policy env grants; restricted
   `run` policies check the stdio command.
 - Tests: `McpServerGenerationTests` env construction; existing MCP tests green.
-- Depends on: Phase 3's acquisition path (or Phase 2's, if simpler).
+- Depends on: Phase 3's acquisition path (or Phase 2+4's, if simpler).
 
 ### Phase 7 — process-sandbox enforcement seam (future)
 
@@ -511,10 +537,10 @@ is already fixed so this phase has no model changes.
 
 - Every phase: focused tests first, then the standard acceptance
   (`dotnet test Maieutics.slnx`, `dotnet build Maieutics.slnx --no-restore -warnaserror`, `git diff --check`).
-- Phases that touch the executable's launch/process surface (2, 3, 4, 5) run the supported-RID NativeAOT
+- Phases that touch the executable's launch/process surface (2+4, 3, 5) run the supported-RID NativeAOT
   publish check.
 - The AGENTS.md invariants 19–23 are enforced by construction: every consumer acquires one `EffectivePolicy`
-  per scope, and no hand-built grant lists survive Phase 2/3.
+  per scope, and no hand-built grant lists survive Phase 2+4.
 
 ## Verification appendix (local, Deno 2.9.5, macOS arm64)
 

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Plugins;
@@ -14,7 +15,8 @@ internal sealed record PluginHostProcessOptions(
     string SdkUrl,
     string WorkerEntryUrl,
     string HostConfigFile,
-    PluginHostProcessGrants Grants);
+    PluginHostProcessGrants Grants,
+    DenoPermissionBroker? Broker = null);
 
 /// <summary>Positive permission grants for the host process (the union of plugin grants).</summary>
 internal sealed record PluginHostProcessGrants(
@@ -91,11 +93,18 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--unstable-worker-options");
         startInfo.ArgumentList.Add($"--config={options.HostConfigFile}");
-        AddGrant(startInfo, "--allow-read", options.Grants.ReadAll, options.Grants.Read);
-        AddGrant(startInfo, "--allow-write", options.Grants.WriteAll, options.Grants.Write);
-        AddGrant(startInfo, "--allow-net", options.Grants.NetAll, options.Grants.Net);
-        AddGrant(startInfo, "--allow-env", options.Grants.EnvAll, options.Grants.Env);
-        AddGrant(startInfo, "--allow-import", options.Grants.ImportAll, options.Grants.Import);
+        if (options.Broker is null)
+        {
+            // Without a broker, the grants are expressed as launch flags (the previous behavior).
+            // With a broker, the broker is the single authority and the flags would be ignored, so
+            // they are omitted and the policy is registered instead (ADR 0018 §9).
+            AddGrant(startInfo, "--allow-read", options.Grants.ReadAll, options.Grants.Read);
+            AddGrant(startInfo, "--allow-write", options.Grants.WriteAll, options.Grants.Write);
+            AddGrant(startInfo, "--allow-net", options.Grants.NetAll, options.Grants.Net);
+            AddGrant(startInfo, "--allow-env", options.Grants.EnvAll, options.Grants.Env);
+            AddGrant(startInfo, "--allow-import", options.Grants.ImportAll, options.Grants.Import);
+        }
+
         startInfo.ArgumentList.Add(options.HostModuleUrl);
 
         startInfo.EnvironmentVariables[ReplControlEnvironment.IpcAddress] = options.SocketPath;
@@ -103,6 +112,8 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginConfig] = options.ConfigPath;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginSdk] = options.SdkUrl;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginWorkerEntry] = options.WorkerEntryUrl;
+        if (options.Broker is { } broker)
+            startInfo.EnvironmentVariables[ReplControlEnvironment.BrokerAddress] = broker.Address;
         foreach (var name in AllowedEnvironmentNames)
         {
             var value = Environment.GetEnvironmentVariable(name);
@@ -110,8 +121,20 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         }
 
         var inner = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.PluginHost, logger);
+        options.Broker?.RegisterProcess(inner.ProcessId, BuildPolicy(options));
         logger.LogInformation("Plugin host started with pid {ProcessId}.", inner.ProcessId);
         return new PluginHostProcess(inner);
+    }
+
+    private static EffectivePolicy BuildPolicy(PluginHostProcessOptions options)
+    {
+        return PermissionBaseline.ForPluginHost(
+            options.ConfigPath,
+            options.HostModuleUrl,
+            options.SocketPath,
+            options.SdkUrl,
+            options.WorkerEntryUrl,
+            options.HostId);
     }
 
     private static void AddGrant(

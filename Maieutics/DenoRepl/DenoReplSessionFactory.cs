@@ -1,4 +1,5 @@
 using Maieutics.Control;
+using Maieutics.DenoExecution;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoRepl;
@@ -32,7 +33,8 @@ internal sealed class LocalDenoReplSessionFactory(
     ReplEvalWebSocketHost evalHost,
     ReplControlSessionRegistry sessionRegistry,
     ReplControlCredentialRegistry credentialRegistry,
-    ILogger<DenoReplProcess> logger)
+    ILogger<DenoReplProcess> logger,
+    DenoPermissionBroker? broker = null)
     : IDenoReplSessionFactory
 {
     private readonly ReplControlCredentialRegistry credentialRegistry =
@@ -82,6 +84,7 @@ internal sealed class LocalDenoReplSessionFactory(
                     generation,
                     modules.ClientUrl,
                     controlHost.WindowsPipeName,
+                    broker,
                     options.AutoInstallModuleGraph),
                 logger,
                 startup.Token).ConfigureAwait(false);

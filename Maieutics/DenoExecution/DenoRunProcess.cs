@@ -119,7 +119,6 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         var remainingLogBudget = logger.IsEnabled(LogLevel.Debug) ? MaximumLoggedCharactersPerStream : 0;
         var captured = capturedOutput is null ? null : new StringBuilder();
         var streamCompleted = false;
-        var truncationLogged = false;
         try
         {
             while (true)

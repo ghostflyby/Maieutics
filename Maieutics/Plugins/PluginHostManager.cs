@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Control;
+using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Mcp;
@@ -66,7 +67,8 @@ internal sealed class PluginHostManager(
     ReplControlSessionRegistry sessionRegistry,
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    DenoPermissionBroker? broker = null)
     : IHostedService, IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
@@ -268,7 +270,8 @@ internal sealed class PluginHostManager(
                 modules.SdkUrl,
                 modules.WorkerEntryUrl,
                 modules.ConfigFile,
-                BuildProcessGrants(configPath)),
+                BuildProcessGrants(configPath),
+                broker),
             logger);
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         processExitObservation = ObserveExitAsync(process, configPath);

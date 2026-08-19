@@ -5,11 +5,13 @@ using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Control;
+using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
@@ -159,7 +161,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
-            services.GetRequiredService<TimeProvider>()));
+            services.GetRequiredService<TimeProvider>(),
+            services.GetRequiredService<DenoPermissionBroker>()));
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
@@ -172,7 +175,18 @@ public static class MaieuticsHost
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
                 : null));
         builder.Services.AddSingleton<DenoReplModule>();
-        builder.Services.AddSingleton<IDenoReplSessionFactory, LocalDenoReplSessionFactory>();
+        builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
+            DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
+        builder.Services.AddSingleton<IDenoReplSessionFactory>(static services =>
+            new LocalDenoReplSessionFactory(
+                services.GetRequiredService<DenoReplOptions>(),
+                services.GetRequiredService<ReplControlHost>(),
+                services.GetRequiredService<DenoReplModule>(),
+                services.GetRequiredService<ReplEvalWebSocketHost>(),
+                services.GetRequiredService<ReplControlSessionRegistry>(),
+                services.GetRequiredService<ReplControlCredentialRegistry>(),
+                services.GetRequiredService<ILogger<DenoReplProcess>>(),
+                services.GetRequiredService<DenoPermissionBroker>()));
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();

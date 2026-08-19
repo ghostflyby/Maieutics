@@ -18,6 +18,7 @@ internal sealed record DenoReplProcessOptions(
     int Generation,
     string ClientUrl,
     string? WindowsPipeName,
+    DenoPermissionBroker? Broker = null,
     bool AutoInstallModuleGraph = true);
 
 /// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the Deno REPL child. Owns the
@@ -78,8 +79,15 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("--unstable-worker-options");
         startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
         startInfo.ArgumentList.Add($"--lock={options.LockFile}");
-        foreach (var argument in BuildPermissionArguments(options, esbuildWasm))
-            startInfo.ArgumentList.Add(argument);
+        if (options.Broker is null)
+        {
+            // Without a broker the fixed grants are expressed as launch flags (the previous
+            // behavior). With a broker the broker is the single authority and flags would be
+            // ignored, so they are omitted and the policy is registered instead (ADR 0018 §9).
+            foreach (var argument in BuildFixedPermissionFlags(options, esbuildWasm))
+                startInfo.ArgumentList.Add(argument);
+        }
+
         startInfo.ArgumentList.Add(options.MainUrl);
 
         startInfo.Environment.Clear();
@@ -88,6 +96,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.Environment[DenoReplEnvironment.Generation] = options.Generation.ToString(
             System.Globalization.CultureInfo.InvariantCulture);
         startInfo.Environment[DenoReplEnvironment.ClientModule] = options.ClientUrl;
+        if (options.Broker is { } broker)
+            startInfo.Environment[DenoReplEnvironment.BrokerAddress] = broker.Address;
         CopyEnvironment(startInfo, "DENO_DIR");
         CopyEnvironment(startInfo, "TMPDIR");
         CopyEnvironment(startInfo, "TMP");
@@ -101,6 +111,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         }
 
         var inner = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.DenoRepl, logger, true);
+        options.Broker?.RegisterProcess(inner.ProcessId, BuildPolicy(options, esbuildWasm));
         logger.LogInformation(
             "Deno REPL session {SessionId} generation {Generation} started with pid {ProcessId}.",
             options.SessionId,
@@ -109,7 +120,19 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         return new DenoReplProcess(inner);
     }
 
-    private static IReadOnlyList<string> BuildPermissionArguments(DenoReplProcessOptions options, string esbuildWasm)
+    private static EffectivePolicy BuildPolicy(DenoReplProcessOptions options, string esbuildWasm)
+    {
+        return PermissionBaseline.ForDenoRepl(
+            options.ModuleDirectory,
+            options.WorkingDirectory,
+            options.ConfigFile,
+            options.LockFile,
+            options.IpcAddress,
+            esbuildWasm,
+            options.WindowsPipeName);
+    }
+
+    private static IReadOnlyList<string> BuildFixedPermissionFlags(DenoReplProcessOptions options, string esbuildWasm)
     {
         var environmentNames = new List<string>
         {
@@ -137,11 +160,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                            ?? throw new PlatformNotSupportedException(
                                "The Windows named-pipe bootstrap is not configured.");
             fixedGrants.Add($"--allow-net={RequireWindowsLoopbackAddress(options.IpcAddress)}");
-            // Deno 2.9.5 ignores the path argument of --allow-ffi (verified: an exact file or
-            // directory grant still rejects Deno.dlopen), so the Windows named-pipe credential
-            // bootstrap requires the unsuffixed form. The grant is Windows-only and the child
-            // launch arguments remain fully controlled by the kernel. Re-verify on Windows
-            // before narrowing (ADR 0018 §10; Maieutics/AGENTS.md).
             fixedGrants.Add("--allow-ffi");
         }
         else
@@ -153,7 +171,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         }
 
         fixedGrants.Add($"--allow-read={string.Join(',', readablePaths.Distinct(StringComparer.Ordinal))}");
-        return DenoPermissionArguments.Build(EffectivePolicy.Default, fixedGrants);
+        return fixedGrants;
     }
 
     internal Task StopAsync()
@@ -269,4 +287,5 @@ internal static class DenoReplEnvironment
     internal const string ClientModule = "MAIEUTICS_REPL_CLIENT";
     internal const string PipeName = "MAIEUTICS_REPL_PIPE";
     internal const string Credential = "MAIEUTICS_REPL_CREDENTIAL";
+    internal const string BrokerAddress = "DENO_PERMISSION_BROKER_PATH";
 }

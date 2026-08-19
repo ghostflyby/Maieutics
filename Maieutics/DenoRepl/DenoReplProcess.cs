@@ -1,8 +1,7 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Net;
-using System.Text;
-using System.Text.Json;
+using Maieutics.DenoExecution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoRepl;
@@ -21,46 +20,31 @@ internal sealed record DenoReplProcessOptions(
     string? WindowsPipeName,
     bool AutoInstallModuleGraph = true);
 
+/// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the Deno REPL child. Owns the
+/// REPL-specific concerns — esbuild-wasm resolution, module-graph install, and the launch-time
+/// control-channel flags and environment — and delegates launch, drain, exit observation, and
+/// stop to the shared internal Deno process module (ADR 0018 §8).</summary>
 internal sealed class DenoReplProcess : IAsyncDisposable
 {
-    private const int DrainBufferCharacters = 4096;
-    private const int MaximumLoggedCharactersPerStream = 32 * 1024;
     private const string EsbuildWasmVersion = "0.25.12";
-    private readonly Lock gate = new();
-    private readonly Process process;
-    private readonly int processId;
-    private readonly TaskCompletionSource<string> standardError =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private int exitCode = int.MinValue;
-    private Task? stopping;
+    private readonly DenoRunProcess inner;
 
-    private DenoReplProcess(Process process, ILogger logger)
+    private DenoReplProcess(DenoRunProcess inner)
     {
-        this.process = process;
-        processId = process.Id;
-        var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", logger, processId, null);
-        var stderrDrain = DrainAsync(process.StandardError, "stderr", logger, processId, standardError);
-        Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
+        this.inner = inner;
     }
 
-    internal int ProcessId => processId;
+    internal int ProcessId => inner.ProcessId;
 
-    internal Task Completion { get; }
+    internal Task Completion => inner.Completion;
 
-    internal int? ExitCode
-    {
-        get
-        {
-            var value = Volatile.Read(ref exitCode);
-            return value == int.MinValue ? null : value;
-        }
-    }
+    internal int? ExitCode => inner.ExitCode;
 
-    internal Task<string> StandardError => standardError.Task;
+    internal Task<string> StandardError => inner.StandardError ?? Task.FromResult(string.Empty);
 
     public ValueTask DisposeAsync()
     {
-        return new ValueTask(StopAsync());
+        return inner.DisposeAsync();
     }
 
     internal static async Task<DenoReplProcess> StartAsync(
@@ -94,55 +78,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("--unstable-worker-options");
         startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
         startInfo.ArgumentList.Add($"--lock={options.LockFile}");
-
-        var environmentNames = new List<string>
-        {
-            DenoReplEnvironment.IpcAddress,
-            DenoReplEnvironment.SessionId,
-            DenoReplEnvironment.Generation,
-            DenoReplEnvironment.ClientModule,
-            // Provider secret names are readable so Deno.env.get does not fail, but the values are
-            // never injected into the child environment; evaluated cells observe them as undefined.
-            "OPENAI_API_KEY"
-        };
-        var readablePaths = new List<string>
-        {
-            options.ModuleDirectory,
-            options.WorkingDirectory,
-            options.ConfigFile,
-            options.LockFile,
-            esbuildWasm
-        };
-
-        if (OperatingSystem.IsWindows())
-        {
-            var pipeName = options.WindowsPipeName
-                           ?? throw new PlatformNotSupportedException(
-                               "The Windows named-pipe bootstrap is not configured.");
-            var systemRoot = Environment.GetEnvironmentVariable("SystemRoot")
-                             ?? throw new InvalidOperationException("SystemRoot is not configured.");
-            environmentNames.Add(DenoReplEnvironment.PipeName);
-            environmentNames.Add(DenoReplEnvironment.Credential);
-            environmentNames.Add("SystemRoot");
-            startInfo.ArgumentList.Add($"--allow-net={RequireWindowsLoopbackAddress(options.IpcAddress)}");
-            // Deno 2.9.5 ignores the path argument of --allow-ffi (verified: an exact file or
-            // directory grant still rejects Deno.dlopen), so the Windows named-pipe credential
-            // bootstrap requires the unsuffixed form. The grant is Windows-only and the child
-            // launch arguments remain fully controlled by the kernel.
-            startInfo.ArgumentList.Add("--allow-ffi");
-            startInfo.Environment[DenoReplEnvironment.PipeName] = pipeName;
-            startInfo.Environment["SystemRoot"] = systemRoot;
-        }
-        else
-        {
-            var socketPath = Path.GetFullPath(options.IpcAddress);
-            startInfo.ArgumentList.Add($"--allow-net=unix:{socketPath},localhost:80");
-            readablePaths.Add(socketPath);
-            startInfo.ArgumentList.Add($"--allow-write={socketPath}");
-        }
-
-        startInfo.ArgumentList.Add($"--allow-env={string.Join(',', environmentNames)}");
-        startInfo.ArgumentList.Add($"--allow-read={string.Join(',', readablePaths.Distinct(StringComparer.Ordinal))}");
+        foreach (var argument in BuildPermissionArguments(options, esbuildWasm))
+            startInfo.ArgumentList.Add(argument);
         startInfo.ArgumentList.Add(options.MainUrl);
 
         startInfo.Environment.Clear();
@@ -163,44 +100,65 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             startInfo.Environment[DenoReplEnvironment.PipeName] = options.WindowsPipeName;
         }
 
-        var process = Process.Start(startInfo)
-                      ?? throw new InvalidOperationException("The Deno REPL process could not be started.");
+        var inner = DenoRunProcess.Start(startInfo, InternalDenoProcessKind.DenoRepl, logger, true);
         logger.LogInformation(
             "Deno REPL session {SessionId} generation {Generation} started with pid {ProcessId}.",
             options.SessionId,
             options.Generation,
-            process.Id);
-        return new DenoReplProcess(process, logger);
+            inner.ProcessId);
+        return new DenoReplProcess(inner);
+    }
+
+    private static IReadOnlyList<string> BuildPermissionArguments(DenoReplProcessOptions options, string esbuildWasm)
+    {
+        var environmentNames = new List<string>
+        {
+            DenoReplEnvironment.IpcAddress,
+            DenoReplEnvironment.SessionId,
+            DenoReplEnvironment.Generation,
+            DenoReplEnvironment.ClientModule,
+            // Provider secret names are readable so Deno.env.get does not fail, but the values are
+            // never injected into the child environment; evaluated cells observe them as undefined.
+            "OPENAI_API_KEY"
+        };
+        var readablePaths = new List<string>
+        {
+            options.ModuleDirectory,
+            options.WorkingDirectory,
+            options.ConfigFile,
+            options.LockFile,
+            esbuildWasm
+        };
+
+        var fixedGrants = new List<string> { $"--allow-env={string.Join(',', environmentNames)}" };
+        if (OperatingSystem.IsWindows())
+        {
+            var pipeName = options.WindowsPipeName
+                           ?? throw new PlatformNotSupportedException(
+                               "The Windows named-pipe bootstrap is not configured.");
+            fixedGrants.Add($"--allow-net={RequireWindowsLoopbackAddress(options.IpcAddress)}");
+            // Deno 2.9.5 ignores the path argument of --allow-ffi (verified: an exact file or
+            // directory grant still rejects Deno.dlopen), so the Windows named-pipe credential
+            // bootstrap requires the unsuffixed form. The grant is Windows-only and the child
+            // launch arguments remain fully controlled by the kernel. Re-verify on Windows
+            // before narrowing (ADR 0018 §10; Maieutics/AGENTS.md).
+            fixedGrants.Add("--allow-ffi");
+        }
+        else
+        {
+            var socketPath = Path.GetFullPath(options.IpcAddress);
+            fixedGrants.Add($"--allow-net=unix:{socketPath},localhost:80");
+            readablePaths.Add(socketPath);
+            fixedGrants.Add($"--allow-write={socketPath}");
+        }
+
+        fixedGrants.Add($"--allow-read={string.Join(',', readablePaths.Distinct(StringComparer.Ordinal))}");
+        return DenoPermissionArguments.Build(EffectivePolicy.Default, fixedGrants);
     }
 
     internal Task StopAsync()
     {
-        lock (gate)
-        {
-            return stopping ??= StopCoreAsync();
-        }
-    }
-
-    private async Task StopCoreAsync()
-    {
-        await Task.Yield();
-        try
-        {
-            if (!Completion.IsCompleted && !process.HasExited) process.Kill(true);
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
-        {
-        }
-
-        try
-        {
-            await Completion.ConfigureAwait(false);
-        }
-        catch
-        {
-        }
-
-        process.Dispose();
+        return inner.StopAsync();
     }
 
     private static async Task<string?> ResolveEsbuildWasmAsync(
@@ -300,57 +258,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
     {
         if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
             startInfo.Environment[name] = value;
-    }
-
-    private static async Task DrainAsync(
-        TextReader reader,
-        string streamName,
-        ILogger logger,
-        int processId,
-        TaskCompletionSource<string>? capturedOutput)
-    {
-        var buffer = ArrayPool<char>.Shared.Rent(DrainBufferCharacters);
-        var remainingLogBudget = logger.IsEnabled(LogLevel.Debug) ? MaximumLoggedCharactersPerStream : 0;
-        var captured = capturedOutput is null ? null : new StringBuilder();
-        try
-        {
-            while (true)
-            {
-                var read = await reader.ReadAsync(buffer.AsMemory(0, DrainBufferCharacters)).ConfigureAwait(false);
-                if (read == 0) break;
-                if (captured is not null && captured.Length < MaximumLoggedCharactersPerStream)
-                {
-                    var count = Math.Min(read, MaximumLoggedCharactersPerStream - captured.Length);
-                    captured.Append(buffer, 0, count);
-                }
-                if (remainingLogBudget <= 0) continue;
-                var loggedCount = Math.Min(read, remainingLogBudget);
-                var output = new string(buffer, 0, loggedCount);
-                if (!string.IsNullOrWhiteSpace(output))
-                    logger.LogDebug(
-                        "Deno REPL {ProcessId} {StreamName}: {Output}",
-                        processId,
-                        streamName,
-                        output);
-                remainingLogBudget -= loggedCount;
-            }
-        }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
-        {
-            logger.LogDebug(exception, "Deno REPL {ProcessId} {StreamName} drain ended before EOF.", processId, streamName);
-        }
-        finally
-        {
-            ArrayPool<char>.Shared.Return(buffer);
-            capturedOutput?.TrySetResult(captured?.ToString() ?? string.Empty);
-        }
-    }
-
-    private async Task ObserveCompletionAsync(Task stdoutDrain, Task stderrDrain)
-    {
-        await process.WaitForExitAsync().ConfigureAwait(false);
-        await Task.WhenAll(stdoutDrain, stderrDrain).ConfigureAwait(false);
-        Volatile.Write(ref exitCode, process.ExitCode);
     }
 }
 

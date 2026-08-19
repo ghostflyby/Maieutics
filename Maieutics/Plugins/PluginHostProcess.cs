@@ -1,6 +1,7 @@
-using System.Buffers;
 using System.Diagnostics;
 using Maieutics.Control;
+using Maieutics.DenoExecution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Plugins;
@@ -14,7 +15,8 @@ internal sealed record PluginHostProcessOptions(
     string SdkUrl,
     string WorkerEntryUrl,
     string HostConfigFile,
-    PluginHostProcessGrants Grants);
+    PluginHostProcessGrants Grants,
+    DenoPermissionBroker? Broker = null);
 
 /// <summary>Positive permission grants for the host process (the union of plugin grants).</summary>
 internal sealed record PluginHostProcessGrants(
@@ -29,15 +31,12 @@ internal sealed record PluginHostProcessGrants(
     bool ImportAll,
     IReadOnlyList<string> Import);
 
-/// <summary>
-///     Owns the out-of-process plugin host: launches the restricted `deno run` process with the
-///     control channel address and the kernel-written plugin configuration, and observes its exit.
-/// </summary>
+/// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the out-of-process plugin host:
+/// launches the restricted <c>deno run</c> process with the control channel address and the
+/// kernel-written plugin configuration, and delegates drain, exit observation, and stop to the
+/// shared internal Deno process module (ADR 0018 §8).</summary>
 internal sealed class PluginHostProcess : IAsyncDisposable
 {
-    private const int DrainBufferCharacters = 4096;
-    private const int MaximumLoggedCharactersPerStream = 32 * 1024;
-
     private static readonly string[] AllowedEnvironmentNames =
     [
         "PATH",
@@ -58,37 +57,22 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         "PATHEXT"
     ];
 
-    private readonly Lock gate = new();
-    private readonly Process process;
-    private readonly int processId;
-    private int exitCode = int.MinValue;
-    private Task? stopping;
+    private readonly DenoRunProcess inner;
 
-    private PluginHostProcess(Process process, ILogger logger)
+    private PluginHostProcess(DenoRunProcess inner)
     {
-        this.process = process;
-        processId = process.Id;
-        var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", logger, processId);
-        var stderrDrain = DrainAsync(process.StandardError, "stderr", logger, processId);
-        Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
+        this.inner = inner;
     }
 
-    public int ProcessId => processId;
+    public int ProcessId => inner.ProcessId;
 
-    public Task Completion { get; }
+    public Task Completion => inner.Completion;
 
-    public int? ExitCode
-    {
-        get
-        {
-            var value = Volatile.Read(ref exitCode);
-            return value == int.MinValue ? null : value;
-        }
-    }
+    public int? ExitCode => inner.ExitCode;
 
     public ValueTask DisposeAsync()
     {
-        return new ValueTask(StopAsync());
+        return inner.DisposeAsync();
     }
 
     public static PluginHostProcess Start(
@@ -109,11 +93,18 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("run");
         startInfo.ArgumentList.Add("--unstable-worker-options");
         startInfo.ArgumentList.Add($"--config={options.HostConfigFile}");
-        AddGrant(startInfo, "--allow-read", options.Grants.ReadAll, options.Grants.Read);
-        AddGrant(startInfo, "--allow-write", options.Grants.WriteAll, options.Grants.Write);
-        AddGrant(startInfo, "--allow-net", options.Grants.NetAll, options.Grants.Net);
-        AddGrant(startInfo, "--allow-env", options.Grants.EnvAll, options.Grants.Env);
-        AddGrant(startInfo, "--allow-import", options.Grants.ImportAll, options.Grants.Import);
+        if (options.Broker is null)
+        {
+            // Without a broker, the grants are expressed as launch flags (the previous behavior).
+            // With a broker, the broker is the single authority and the flags would be ignored, so
+            // they are omitted and the policy is registered instead (ADR 0018 §9).
+            AddGrant(startInfo, "--allow-read", options.Grants.ReadAll, options.Grants.Read);
+            AddGrant(startInfo, "--allow-write", options.Grants.WriteAll, options.Grants.Write);
+            AddGrant(startInfo, "--allow-net", options.Grants.NetAll, options.Grants.Net);
+            AddGrant(startInfo, "--allow-env", options.Grants.EnvAll, options.Grants.Env);
+            AddGrant(startInfo, "--allow-import", options.Grants.ImportAll, options.Grants.Import);
+        }
+
         startInfo.ArgumentList.Add(options.HostModuleUrl);
 
         startInfo.EnvironmentVariables[ReplControlEnvironment.IpcAddress] = options.SocketPath;
@@ -121,16 +112,33 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginConfig] = options.ConfigPath;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginSdk] = options.SdkUrl;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginWorkerEntry] = options.WorkerEntryUrl;
+        if (options.Broker is { } broker)
+            startInfo.EnvironmentVariables[ReplControlEnvironment.BrokerAddress] = broker.Address;
         foreach (var name in AllowedEnvironmentNames)
         {
             var value = Environment.GetEnvironmentVariable(name);
             if (!string.IsNullOrEmpty(value)) startInfo.EnvironmentVariables[name] = value;
         }
 
-        var process = Process.Start(startInfo)
-                      ?? throw new InvalidOperationException("The plugin host process could not be started.");
-        logger.LogInformation("Plugin host started with pid {ProcessId}.", process.Id);
-        return new PluginHostProcess(process, logger);
+        var inner = DenoRunProcess.Start(
+            startInfo,
+            InternalDenoProcessKind.PluginHost,
+            logger,
+            broker: options.Broker,
+            policy: options.Broker is null ? null : BuildPolicy(options));
+        logger.LogInformation("Plugin host started with pid {ProcessId}.", inner.ProcessId);
+        return new PluginHostProcess(inner);
+    }
+
+    private static EffectivePolicy BuildPolicy(PluginHostProcessOptions options)
+    {
+        return PermissionBaseline.ForPluginHost(
+            options.ConfigPath,
+            options.HostModuleUrl,
+            options.SocketPath,
+            options.SdkUrl,
+            options.WorkerEntryUrl,
+            options.HostId);
     }
 
     private static void AddGrant(
@@ -151,104 +159,6 @@ internal sealed class PluginHostProcess : IAsyncDisposable
 
     public Task StopAsync()
     {
-        lock (gate)
-        {
-            return stopping ??= StopCoreAsync();
-        }
-    }
-
-    private async Task StopCoreAsync()
-    {
-        await Task.Yield();
-        try
-        {
-            if (!Completion.IsCompleted && !process.HasExited) process.Kill(true);
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
-        {
-            // The process exited between the check and the kill.
-        }
-
-        try
-        {
-            await Completion.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Exit observation must not mask shutdown.
-        }
-
-        process.Dispose();
-    }
-
-    private static async Task DrainAsync(
-        TextReader reader,
-        string streamName,
-        ILogger logger,
-        int processId)
-    {
-        var buffer = ArrayPool<char>.Shared.Rent(DrainBufferCharacters);
-        var remainingLogBudget = logger.IsEnabled(LogLevel.Debug) ? MaximumLoggedCharactersPerStream : 0;
-        var truncationLogged = false;
-        try
-        {
-            while (true)
-            {
-                var read = await reader.ReadAsync(buffer.AsMemory(0, DrainBufferCharacters)).ConfigureAwait(false);
-                if (read == 0) break;
-
-                if (remainingLogBudget == 0)
-                {
-                    if (!truncationLogged && logger.IsEnabled(LogLevel.Debug))
-                    {
-                        logger.LogDebug(
-                            "Plugin host {ProcessId} {StreamName} logging was truncated after {CharacterLimit} characters; remaining output is still drained.",
-                            processId,
-                            streamName,
-                            MaximumLoggedCharactersPerStream);
-                        truncationLogged = true;
-                    }
-
-                    continue;
-                }
-
-                var loggedCount = Math.Min(read, remainingLogBudget);
-                var output = new string(buffer, 0, loggedCount);
-                if (!string.IsNullOrWhiteSpace(output))
-                    logger.LogDebug(
-                        "Plugin host {ProcessId} {StreamName}: {Output}",
-                        processId,
-                        streamName,
-                        output);
-                remainingLogBudget -= loggedCount;
-                if (loggedCount >= read) continue;
-
-                logger.LogDebug(
-                    "Plugin host {ProcessId} {StreamName} logging was truncated after {CharacterLimit} characters; remaining output is still drained.",
-                    processId,
-                    streamName,
-                    MaximumLoggedCharactersPerStream);
-                truncationLogged = true;
-            }
-        }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
-        {
-            logger.LogDebug(
-                exception,
-                "Plugin host {ProcessId} {StreamName} drain ended before EOF.",
-                processId,
-                streamName);
-        }
-        finally
-        {
-            ArrayPool<char>.Shared.Return(buffer);
-        }
-    }
-
-    private async Task ObserveCompletionAsync(Task stdoutDrain, Task stderrDrain)
-    {
-        await process.WaitForExitAsync().ConfigureAwait(false);
-        await Task.WhenAll(stdoutDrain, stderrDrain).ConfigureAwait(false);
-        Volatile.Write(ref exitCode, process.ExitCode);
+        return inner.StopAsync();
     }
 }

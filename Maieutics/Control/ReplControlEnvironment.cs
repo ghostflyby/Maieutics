@@ -25,4 +25,8 @@ internal static class ReplControlEnvironment
 
     /// <summary>Named pipe name for the Windows credential bootstrap.</summary>
     public const string PipeName = "MAIEUTICS_REPL_PIPE";
+
+    /// <summary>Address of the Deno permission broker (unix socket path on unix, named pipe on Windows),
+    /// passed to internal Deno children so they reach the broker via <c>DENO_PERMISSION_BROKER_PATH</c>.</summary>
+    public const string BrokerAddress = "DENO_PERMISSION_BROKER_PATH";
 }

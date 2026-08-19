@@ -70,7 +70,7 @@ public sealed class DenoReplSessionTests
         await using var session = CreateSession(
             AgentSessionId.Create(),
             "cancel",
-            LongRunningOptions(interruptGracePeriod: TimeSpan.FromMilliseconds(25)),
+            LongRunningOptions(),
             factory);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
@@ -167,14 +167,12 @@ public sealed class DenoReplSessionTests
         session.GetSnapshot().State.Should().Be("closed");
     }
 
-    private static DenoReplOptions LongRunningOptions(
-        TimeSpan? executionTimeout = null,
-        TimeSpan? interruptGracePeriod = null)
+    private static DenoReplOptions LongRunningOptions(TimeSpan? executionTimeout = null)
     {
         return new DenoReplOptions
         {
             ExecutionTimeout = executionTimeout ?? TimeSpan.FromSeconds(5),
-            InterruptGracePeriod = interruptGracePeriod ?? TimeSpan.FromSeconds(1)
+            InterruptGracePeriod = TimeSpan.FromSeconds(1)
         };
     }
 

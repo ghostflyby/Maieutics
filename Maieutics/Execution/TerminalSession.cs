@@ -1,6 +1,8 @@
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Maieutics.Agent;
+using Maieutics.Permissions;
+using Maieutics.Processes;
 
 namespace Maieutics.Execution;
 
@@ -154,7 +156,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             SetState(TerminalSessionState.Starting);
             try
             {
-                var environment = TerminalEnvironment.Capture();
+                var environment = ProcessEnvironment.Capture(EffectivePolicy.Default);
                 var started = factory.Start(
                     executable,
                     launchArguments,

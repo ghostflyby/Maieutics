@@ -5,7 +5,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Maieutics.Execution;
 
-internal sealed class Workspace
+internal sealed class Workspace : IPermissionVariableSource
 {
     private readonly Lock gate = new();
     private readonly string startupRootPath;
@@ -18,6 +18,11 @@ internal sealed class Workspace
     }
 
     internal string RootPath => Capture().RootPath;
+
+    string? IPermissionVariableSource.GetVariable(string name)
+    {
+        return string.Equals(name, "workspace", StringComparison.Ordinal) ? RootPath : null;
+    }
 
     internal static Workspace Create(string? configuredPath, string startupCurrentDirectory)
     {

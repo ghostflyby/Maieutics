@@ -25,7 +25,7 @@ above the protocol and kernel-host layers.
 | `Maieutics.Jupyter.Tests` | Jupyter unit, transport, interoperability, and product integration tests |
 | `Maieutics.Agent` | Jupyter-independent Agent facade, run lifecycle, transcript, and tool runtime |
 | `Maieutics.Agent.Tests` | Agent runtime unit tests |
-| `Maieutics` | NativeAOT executable composition root, configuration, providers, and Agent-to-Jupyter adapter |
+| `Maieutics` | NativeAOT executable composition root, configuration, providers, permissions, process policy, Deno execution, and Agent-to-Jupyter adapter |
 
 `Maieutics.Agent` is currently an internal, non-packable product assembly rather than a supported Agent SDK. Its public
 boundary stays provider- and host-neutral so independent use can be evaluated later. Product-specific provider and
@@ -64,6 +64,7 @@ Maieutics.Agent facade
 
 Maieutics executable
     |-- product-specific provider wiring
+    |-- permission store, process policy, and Deno execution
     `-- Agent-to-Jupyter adapter
             |-- Maieutics.Agent
             `-- Maieutics.Jupyter.Kernel
@@ -98,6 +99,16 @@ Every change must preserve these invariants:
 16. Backpressure never silently drops protocol messages or Agent events.
 17. Unknown protocol messages cannot crash long-running receive loops.
 18. Expected tool failures remain typed and recoverable within a turn unless the runtime itself is unusable.
+19. Every child process start flows through the permission module: the process's effective policy is captured
+    once per owning scope and rendered before launch; no launch path builds its own grant list.
+20. The effective permission of a scope is the layered overlay of the built-in baseline, app-wide defaults,
+    the project/workspace profile, and the session override; denials always win over grants.
+21. Permission path patterns are expressed with the single-source variable table (`${env.*}`, `${var.*}`),
+    never with literal duplicated paths.
+22. Internal Deno children (REPL, plugin host) are privileged by Deno permissions and are not process-sandbox
+    targets; process sandboxes apply to general starts (terminal, MCP), never to internal Deno children.
+23. The permission store stays Deno-shaped but is not Deno-only: kinds a process sandbox cannot express (env,
+    import) are explicit and enforced by their owning layer.
 
 Use structured concurrency. Every long-lived loop or child process needs an owner, cancellation source, completion task,
 and deterministic disposal path. Observe background exceptions. Do not hold locks while awaiting provider streams, tool
@@ -124,6 +135,37 @@ do not describe it as an untrusted-code sandbox.
 The live in-memory session is authoritative. Notebook snapshots and optional runtime state are separate persistence
 forms. Version persisted runtime and IPC formats, tolerate unknown fields, and document migrations for breaking changes.
 
+## Namespace domains in the executable
+
+Logical namespaces under the executable are product modules, not independent SDK assemblies. A namespace is a semantic
+domain whose files participate in one call tree; it is not a folder mirror. See ADR 0018 for the partition rationale.
+
+| Namespace | Domain |
+|---|---|
+| `Maieutics.Execution` | Workspace root, workspace://local URI resolution, and bounded read/search tools |
+| `Maieutics.Terminal` | PTY sessions, headless VT screen, terminal input encoding, and `terminal_*` tools |
+| `Maieutics.Permissions` | Declarative permission layers, variable interpolation, effective policy, and Deno rendering |
+| `Maieutics.Processes` | General process start policy: environment allowlist and the future sandbox-enforcement seam (terminal and MCP children) |
+| `Maieutics.DenoExecution` | Supervised internal `deno run` children, Deno permission arguments, and the Deno permission broker |
+| `Maieutics.DenoRepl` | REPL sessions, eval protocol, execution collector, and presentation above `DenoExecution` |
+| `Maieutics.Plugins` | Plugin manifest, host manager, extension points, and MCP coordination |
+| `Maieutics.Control` | Control-channel host, credentials, session registry, and peer identity |
+| `Maieutics.Configuration` | Configuration discovery, binding, validation, reload, and profile catalogs |
+| `Maieutics.Jupyter` | Agent-to-Jupyter adapter, command language, and status rendering |
+
+Dependency direction between these domains:
+
+```text
+Permissions -> (Execution seam, Agent ids)   <- lower layer
+Processes   -> Permissions
+DenoExecution -> Permissions, Control
+Terminal    -> Permissions, Processes, Agent
+DenoRepl    -> DenoExecution, Control, Agent
+Plugins     -> DenoExecution, Control, Mcp
+Control     -> Agent, Plugins (host attach), DenoRepl (registry)
+Configuration -> Agent, Execution, Jupyter, Mcp, Plugins, Providers, Terminal
+```
+
 ## Security and errors
 
 - Verify HMAC signatures whenever a connection key is configured.
@@ -131,6 +173,8 @@ forms. Version persisted runtime and IPC formats, tolerate unknown fields, and d
 - Treat notebook input, model output, tool arguments, and tool output as untrusted.
 - Execute cell text only through an explicitly selected runtime or tool.
 - Validate tool arguments and enforce filesystem, workspace, network, process, and environment policy inside tools.
+- Every child process gets its environment and permissions from the effective policy of its owning scope. No launch
+  path builds its own grant list; the built-in baseline plus the overlay renders one policy.
 - Allowlist child-process environment variables.
 - Bound payloads, queues, retained logs, history, and persisted data.
 - Redact secrets before persistence where practical.
@@ -185,7 +229,7 @@ When a scoped file references a skill, follow both. Do not duplicate a skill ver
 |---|---|
 | `.agents/skills/maieutics-jupyter-protocol/SKILL.md` | Wire DTOs, Client/Kernel protocol behavior, ZeroMQ channels, output ordering, cursors, and Deno interoperability |
 | `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and Agent-to-Jupyter semantics |
-| `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, disposal, processes, and shutdown |
+| `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, processes, and shutdown |
 | `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3, FluentAssertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |
 
 ## Change workflow

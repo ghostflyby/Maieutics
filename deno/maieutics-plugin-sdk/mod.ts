@@ -16,6 +16,19 @@
  */
 
 const NAMESPACE = "maieutics/extensionPoint/v1";
+const RPC_NAMESPACE = "maieutics/rpc/v1";
+
+/**
+ * Cross-plugin frames use string keys, not symbols: frames cross worker
+ * boundaries through postMessage, and symbol-keyed properties are not carried
+ * by structured clone. The marker is a versioned string field.
+ */
+const RpcFrame = {
+  Kind: "__maieuticsRpc",
+  Call: "call",
+  Return: "return",
+  Throw: "throw",
+} as const;
 
 /** Versioned extension point identity markers. */
 export const ExtensionPoint = {
@@ -187,4 +200,178 @@ export function defineExtensionPoint<K extends ExtensionPointName>(
     );
   }
   return impl as ExtensionPointImpl<K>;
+}
+
+/**
+ * Cross-plugin actor channels. A consumer plugin imports another plugin's
+ * module specifier and gets a remote reference whose shape is identical to the
+ * real module (the stub binds a callable for every top-level export). A call on
+ * such an export marshals over the acquired MessagePort to the owner worker,
+ * which serves the call through `serveActor`.
+ *
+ * The protocol is a minimal JSON-RPC with symbol-tagged frames; arguments and
+ * results must be structured-cloneable values. A cross-plugin call cannot pass
+ * or return object references into another worker's world. Channel closure
+ * rejects pending calls.
+ */
+
+interface RpcRequest {
+  readonly [RpcFrame.Kind]: typeof RpcFrame.Call;
+  readonly id: number;
+  readonly path: readonly string[];
+  readonly args: readonly unknown[];
+}
+
+interface RpcResponse {
+  readonly [RpcFrame.Kind]: typeof RpcFrame.Return;
+  readonly id: number;
+  readonly value: unknown;
+}
+
+interface RpcThrow {
+  readonly [RpcFrame.Kind]: typeof RpcFrame.Throw;
+  readonly id: number;
+  readonly message: string;
+}
+
+type RpcFrameData = RpcRequest | RpcResponse | RpcThrow;
+
+function isRequest(data: unknown): data is RpcRequest {
+  return typeof data === "object" && data !== null &&
+    (data as Record<string, unknown>)[RpcFrame.Kind] === RpcFrame.Call;
+}
+
+function isResponse(data: unknown): data is RpcResponse {
+  return typeof data === "object" && data !== null &&
+    (data as Record<string, unknown>)[RpcFrame.Kind] === RpcFrame.Return;
+}
+
+function isThrow(data: unknown): data is RpcThrow {
+  return typeof data === "object" && data !== null &&
+    (data as Record<string, unknown>)[RpcFrame.Kind] === RpcFrame.Throw;
+}
+
+/**
+ * Serves calls for a cross-plugin surface over a MessagePort. `path` resolves
+ * into `surface` (nested objects are traversed). A resolved function is
+ * invoked with the request arguments; any other value is returned as-is (the
+ * consumer's stub binds every export as a callable, so a value export is read
+ * as a zero-argument call). Returns a detach function.
+ */
+export function serveActor(
+  port: MessagePort,
+  surface: Record<string, unknown>,
+): () => void {
+  port.start();
+  const messageHandler = (event: MessageEvent): void => {
+    const data = event.data;
+    if (!isRequest(data)) return;
+    const path = data.path;
+    Promise.resolve()
+      .then(() => {
+        const target = path.reduce<unknown>(
+          (current, segment) => {
+            if (
+              typeof current !== "object" || current === null ||
+              !(segment in current)
+            ) {
+              throw new Error(
+                `Remote member '${path.join(".")}' does not exist on the served surface.`,
+              );
+            }
+            return (current as Record<string, unknown>)[segment];
+          },
+          surface,
+        );
+        if (typeof target === "function") {
+          return (target as (...args: unknown[]) => unknown)(...data.args);
+        }
+        return target;
+      })
+      .then(
+        (value) => {
+          port.postMessage({
+            [RpcFrame.Kind]: RpcFrame.Return,
+            id: data.id,
+            value,
+          });
+        },
+        (error: Error) => {
+          port.postMessage({
+            [RpcFrame.Kind]: RpcFrame.Throw,
+            id: data.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
+  };
+  port.addEventListener("message", messageHandler);
+  return () => port.removeEventListener("message", messageHandler);
+}
+
+interface PendingRemote {
+  path: readonly string[];
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+}
+
+/**
+ * Creates a caller bound to one acquired channel. The channel is acquired
+ * lazily on the first call (`importing gets the reference, first use gets the
+ * connection`); every call on any stub binding shares it. `path` selects the
+ * export on the owner surface; a path of `[]` addresses the module namespace
+ * itself (used when a plugin module's default export is callable).
+ */
+export function createActorCaller(
+  acquire: () => Promise<MessagePort>,
+  callTimeoutMs = 15_000,
+): (path: readonly string[], args: readonly unknown[]) => Promise<unknown> {
+  let port: MessagePort | undefined;
+  let pending = new Map<number, PendingRemote>();
+  let nextId = 0;
+
+  const onMessage = (event: MessageEvent): void => {
+    const data = event.data;
+    if (isResponse(data)) {
+      const entry = pending.get(data.id);
+      if (entry === undefined) return;
+      pending.delete(data.id);
+      entry.resolve(data.value);
+    } else if (isThrow(data)) {
+      const entry = pending.get(data.id);
+      if (entry === undefined) return;
+      pending.delete(data.id);
+      entry.reject(new Error(data.message));
+    }
+  };
+
+  return async (path, args) => {
+    if (port === undefined) {
+      port = await acquire();
+        pending = new Map<number, PendingRemote>();
+      port.start();
+      port.addEventListener("message", onMessage);
+    }
+    const id = ++nextId;
+    return await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(
+          new Error(`Remote call '${path.join(".") || "<module>"}' timed out.`),
+        );
+      }, callTimeoutMs);
+      pending.set(id, {
+        path,
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      port!.postMessage({ [RpcFrame.Kind]: RpcFrame.Call, id, path, args });
+    });
+  };
 }

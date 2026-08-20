@@ -15,6 +15,22 @@ using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Plugins;
 
+/// <summary>Plugin watch behavior for source-level hot reload, bound from <c>Maieutics:Plugins</c>.</summary>
+internal sealed class PluginHostOptions
+{
+    internal const string SectionName = "Maieutics:Plugins";
+
+    public bool WatchEnabled { get; set; } = true;
+
+    public TimeSpan WatchDebounce { get; set; } = TimeSpan.FromMilliseconds(500);
+
+    internal void Validate()
+    {
+        if (WatchDebounce <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(WatchDebounce), "The debounce interval must be positive.");
+    }
+}
+
 internal sealed record PluginRegistration(string PluginId, string ExportName, string ExtensionPoint);
 
 internal sealed record PluginHostStatus(
@@ -68,13 +84,17 @@ internal sealed class PluginHostManager(
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
     TimeProvider timeProvider,
-    DenoPermissionBroker broker)
+    DenoPermissionBroker broker,
+    PluginHostOptions? options = null)
     : IHostedService, IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
+    private readonly PluginHostOptions options = options ?? new PluginHostOptions();
+    private readonly bool watchEnabled = (options ?? new PluginHostOptions()).WatchEnabled;
+    private readonly TimeSpan watchDebounce = (options ?? new PluginHostOptions()).WatchDebounce;
     private readonly List<PluginDescriptor> descriptors = [];
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -94,6 +114,24 @@ internal sealed class PluginHostManager(
         new(StringComparer.Ordinal);
 
     private readonly List<PluginRegistration> registrations = [];
+
+    /// <summary>
+    ///     Latest per-plugin lifecycle state reported by the host (running, stopped, failed, disabled),
+    ///     keyed by plugin id. Tracks reloads and crash-disables driven by the host.
+    /// </summary>
+    private readonly Dictionary<string, PluginHostState> pluginStates = new(StringComparer.Ordinal);
+
+    private readonly Dictionary<string, string> pluginReasons = new(StringComparer.Ordinal);
+
+    private readonly Channel<string> reloadRequests = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+    {
+        SingleReader = true,
+        SingleWriter = false,
+    });
+
+    private CancellationTokenSource? watcherLifetime;
+    private Task? watcherLoop;
+    private FileSystemWatcher? watcher;
 
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
@@ -252,6 +290,20 @@ internal sealed class PluginHostManager(
             descriptors.AddRange(ScanPlugins());
         }
 
+        var graph = PluginDependencyGraph.Build(descriptors);
+        foreach (var (pluginId, reason) in graph.ExcludedReasons)
+            logger.LogWarning(
+                "Plugin '{PluginId}' is excluded from the host: {Reason}.",
+                pluginId,
+                reason);
+
+        var enabled = graph.StartOrder;
+        lock (gate)
+        {
+            descriptors.Clear();
+            descriptors.AddRange(enabled);
+        }
+
         if (descriptors.Count == 0)
         {
             StartDynamicMcpCoordinator();
@@ -276,6 +328,7 @@ internal sealed class PluginHostManager(
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         processExitObservation = ObserveExitAsync(process, configPath);
         StartDynamicMcpCoordinator();
+        StartWatcher();
     }
 
     private void StartDynamicMcpCoordinator()
@@ -380,10 +433,22 @@ internal sealed class PluginHostManager(
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
         RegistryChanges.Writer.TryComplete();
 
+        await StopProcessCoreAsync().ConfigureAwait(false);
+
+        lifetime.Dispose();
+    }
+
+    /// <summary>
+    ///     Stops the host process and watcher without disposing the lifetime or completing the
+    ///     registry channel, so the manager can be restarted (used by manifest-change restarts).
+    /// </summary>
+    private async Task StopProcessCoreAsync()
+    {
         if (process is not null)
         {
             await process.StopAsync().ConfigureAwait(false);
             await processExitObservation.ConfigureAwait(false);
+            process = null;
         }
         else if (configPath is not null)
             try
@@ -395,7 +460,298 @@ internal sealed class PluginHostManager(
                 // Best-effort temp cleanup must not mask shutdown.
             }
 
-        lifetime.Dispose();
+        await StopWatcherAsync().ConfigureAwait(false);
+    }
+
+    private void StartWatcher()
+    {
+        if (!watchEnabled || !Directory.Exists(pluginsRoot)) return;
+        if (watcher is not null) return;
+
+        watcherLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        watcher = new FileSystemWatcher(pluginsRoot)
+        {
+            IncludeSubdirectories = true,
+            NotifyFilter = NotifyFilters.LastWrite
+                | NotifyFilters.FileName
+                | NotifyFilters.DirectoryName,
+            EnableRaisingEvents = true
+        };
+        watcher.Changed += OnFileChanged;
+        watcher.Created += OnFileChanged;
+        watcher.Deleted += OnFileChanged;
+        watcher.Renamed += OnFileRenamed;
+        watcherLoop = RunWatcherLoopAsync(watcherLifetime.Token);
+        logger.LogDebug("Plugin source watcher started on '{PluginsRoot}'.", pluginsRoot);
+    }
+
+    private async Task StopWatcherAsync()
+    {
+        if (watcher is null) return;
+
+        watcher.EnableRaisingEvents = false;
+        watcher.Dispose();
+        watcher = null;
+        if (watcherLifetime is not null)
+        {
+            await watcherLifetime.CancelAsync().ConfigureAwait(false);
+            if (watcherLoop is not null)
+            {
+                try
+                {
+                    await watcherLoop.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            watcherLifetime.Dispose();
+            watcherLifetime = null;
+        }
+    }
+
+    private void OnFileChanged(object sender, FileSystemEventArgs args)
+    {
+        var pluginId = PluginIdForPath(args.FullPath);
+        if (pluginId is null) return;
+        reloadRequests.Writer.TryWrite(pluginId);
+    }
+
+    private void OnFileRenamed(object sender, RenamedEventArgs args)
+    {
+        OnFileChanged(sender, args);
+    }
+
+    private string? PluginIdForPath(string fullPath)
+    {
+        var relative = Path.GetRelativePath(pluginsRoot, fullPath);
+        if (relative.StartsWith("..", StringComparison.Ordinal)) return null;
+        var firstSegment = relative.Split(Path.DirectorySeparatorChar, 2)[0];
+        if (string.IsNullOrEmpty(firstSegment)) return null;
+
+        string[] pluginIds;
+        lock (gate)
+        {
+            pluginIds = descriptors.Select(descriptor => descriptor.Id).ToArray();
+        }
+
+        return pluginIds.Contains(firstSegment, StringComparer.Ordinal) ? firstSegment : null;
+    }
+
+    private async Task RunWatcherLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var batch in DebounceReloadRequestsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (batch.Count == 0) continue;
+                var needsRestart = await DetectManifestOrTopologyChangesAsync(batch, cancellationToken)
+                    .ConfigureAwait(false);
+                if (needsRestart)
+                {
+                    await RestartHostProcessAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await SendPluginReloadAsync(batch, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Plugin source watcher loop failed.");
+        }
+    }
+
+    private async IAsyncEnumerable<List<string>> DebounceReloadRequestsAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        while (await reloadRequests.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var batch = new List<string>();
+            if (reloadRequests.Reader.TryRead(out var first)) batch.Add(first);
+
+            // Drain everything that arrives within the debounce window. A timeout
+            // while draining is the normal "quiet" end of the window, not an error.
+            var drainDeadline = DateTimeOffset.UtcNow + watchDebounce;
+            while (DateTimeOffset.UtcNow < drainDeadline)
+            {
+                var remaining = drainDeadline - DateTimeOffset.UtcNow;
+                using var drainTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                drainTimeout.CancelAfter(remaining);
+                bool more;
+                try
+                {
+                    more = await reloadRequests.Reader.WaitToReadAsync(drainTimeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                if (!more) break;
+                while (reloadRequests.Reader.TryRead(out var id))
+                    if (!batch.Contains(id, StringComparer.Ordinal))
+                        batch.Add(id);
+            }
+
+            yield return batch;
+        }
+    }
+
+    private async Task<bool> DetectManifestOrTopologyChangesAsync(
+        IReadOnlyList<string> pluginIds,
+        CancellationToken cancellationToken)
+    {
+        // A manifest/topology change (deno.json edit, directory add/remove) requires a host
+        // process restart so the new permission policy is captured once. Everything else
+        // (source edits) can be reloaded in place.
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var pluginId in pluginIds)
+        {
+            string root;
+            lock (gate)
+            {
+                var descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
+                if (descriptor is null) continue;
+                root = descriptor.RootDirectory;
+            }
+
+            var config = Path.Combine(root, "deno.json");
+            if (!File.Exists(config)) config = Path.Combine(root, "deno.jsonc");
+            if (!File.Exists(config)) continue;
+            if (ManifestDiffersFromSnapshot(pluginId)) return true;
+        }
+
+        return false;
+    }
+
+    private bool ManifestDiffersFromSnapshot(string pluginId)
+    {
+        PluginDescriptor? current;
+        lock (gate)
+        {
+            current = descriptors.FirstOrDefault(descriptor => descriptor.Id == pluginId);
+        }
+
+        if (current is null) return true;
+        if (!PluginManifest.TryLoad(current.RootDirectory, out var fresh, out _)) return true;
+
+        // Records with reference-type members compare by reference; compare structurally.
+        return !string.Equals(fresh.Name, current.Name, StringComparison.Ordinal)
+               || fresh.Workers.Select(worker => worker.ExportName)
+                   .SequenceEqual(current.Workers.Select(worker => worker.ExportName)) is false
+               || fresh.Dependencies.SequenceEqual(current.Dependencies) is false
+               || PermissionsDiffer(fresh.Permissions, current.Permissions);
+    }
+
+    private static bool PermissionsDiffer(PluginPermissionGrants left, PluginPermissionGrants right)
+    {
+        return GrantDiffers(left.Env, right.Env)
+               || GrantDiffers(left.Net, right.Net)
+               || GrantDiffers(left.Read, right.Read)
+               || GrantDiffers(left.Write, right.Write)
+               || GrantDiffers(left.Run, right.Run)
+               || GrantDiffers(left.Ffi, right.Ffi)
+               || GrantDiffers(left.Sys, right.Sys)
+               || GrantDiffers(left.Import, right.Import);
+    }
+
+    private static bool GrantDiffers(PluginPermissionGrant left, PluginPermissionGrant right)
+    {
+        return left.AllowAll != right.AllowAll
+               || left.Values.SequenceEqual(right.Values) is false;
+    }
+
+    private async Task RestartHostProcessAsync(CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Plugin manifest or topology changed; restarting the plugin host process.");
+        lock (lifecycleGate)
+        {
+            if (stopping is not null)
+                return; // A stop is already in flight; the restart will be superseded.
+        }
+
+        await StopProcessCoreAsync().ConfigureAwait(false);
+        if (cancellationToken.IsCancellationRequested) return;
+
+        // Re-arm the lifecycle for a fresh start (the host process is gone now).
+        lock (lifecycleGate)
+        {
+            starting = null;
+            stopping = null;
+        }
+
+        await StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RestartCoreAsync(CancellationToken cancellationToken)
+    {
+        lock (lifecycleGate)
+        {
+            starting = null;
+            stopping = null;
+        }
+
+        await StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SendPluginReloadAsync(
+        IReadOnlyList<string> pluginIds,
+        CancellationToken cancellationToken)
+    {
+        await SendPluginReloadCoreAsync(pluginIds, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Reloads the given plugins in the host (source-only change); used by the watcher and tests.</summary>
+    internal async Task ReloadPluginsAsync(IReadOnlyList<string> pluginIds, CancellationToken cancellationToken)
+    {
+        await SendPluginReloadCoreAsync(pluginIds, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SendPluginReloadCoreAsync(
+        IReadOnlyList<string> pluginIds,
+        CancellationToken cancellationToken)
+    {
+        if (pluginIds.Count == 0) return;
+        if (Socket is not { State: WebSocketState.Open } socket)
+        {
+            logger.LogWarning("Plugin host is not connected; skipping reload for {Count} plugin(s).", pluginIds.Count);
+            return;
+        }
+
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pending[correlationId] = tcs;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        timeout.CancelAfter(InvokeTimeout);
+        try
+        {
+            var payload = new PluginReloadPayload(pluginIds.ToArray());
+            await PushAsync(
+                socket,
+                new ReplEnvelope(
+                    EnvelopeVersion,
+                    ReplMessageType.PluginReload,
+                    correlationId,
+                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.PluginReloadPayload)),
+                timeout.Token).ConfigureAwait(false);
+            await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+            logger.LogInformation("Reloaded {Count} plugin(s) in the host.", pluginIds.Count);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Plugin reload failed for {Count} plugin(s).", pluginIds.Count);
+        }
+        finally
+        {
+            pending.TryRemove(correlationId, out _);
+        }
     }
 
     private async Task ObserveExitAsync(PluginHostProcess pluginProcess, string path)
@@ -473,12 +829,14 @@ internal sealed class PluginHostManager(
         var config = new PluginHostConfigFile(
             plugins.Select(descriptor => new PluginHostConfigPlugin(
                 descriptor.Id,
+                descriptor.Name,
                 descriptor.RootDirectory,
                 [
                     .. descriptor.Workers
                         .Select(worker => new PluginHostConfigWorker(worker.ExportName, worker.EntryUrl))
                 ],
-                ToConfigPermissions(descriptor.Permissions))).ToArray());
+                ToConfigPermissions(descriptor.Permissions),
+                descriptor.Dependencies)).ToArray());
         var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
         var path = Path.Combine(Path.GetTempPath(), $"mc-plugins-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, json);
@@ -626,6 +984,14 @@ internal sealed class PluginHostManager(
                 foreach (var extensionPoint in plugin.ExtensionPoints)
                     registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
 
+            pluginStates.Clear();
+            pluginReasons.Clear();
+            foreach (var state in payload.States ?? [])
+            {
+                pluginStates[state.PluginId] = ToManagedState(state.State);
+                if (!string.IsNullOrEmpty(state.Reason)) pluginReasons[state.PluginId] = state.Reason;
+            }
+
             logger.LogInformation(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
                 registrations.Count,
@@ -639,6 +1005,26 @@ internal sealed class PluginHostManager(
 
         RegistryChanges.Writer.TryWrite(registrySnapshot);
         dynamicMcpCoordinator?.PublishRegistry(snapshot);
+    }
+
+    private static PluginHostState ToManagedState(string hostState)
+    {
+        return hostState switch
+        {
+            "running" => PluginHostState.Ready,
+            "starting" => PluginHostState.Starting,
+            "stopping" => PluginHostState.Stopping,
+            "disabled" or "failed" => PluginHostState.Failed,
+            _ => PluginHostState.Stopped
+        };
+    }
+
+    internal IReadOnlyDictionary<string, PluginHostState> GetPluginStates()
+    {
+        lock (gate)
+        {
+            return new Dictionary<string, PluginHostState>(pluginStates, StringComparer.Ordinal);
+        }
     }
 
     private async Task<PluginMcpDiscoveryResult> DiscoverDynamicMcpAsync(

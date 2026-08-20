@@ -10,7 +10,8 @@ internal sealed record PluginDescriptor(
     string RootDirectory,
     IReadOnlyList<PluginWorkerDescriptor> Workers,
     PluginPermissionGrants Permissions,
-    string? Isolation);
+    string? Isolation,
+    IReadOnlyList<string> Dependencies);
 
 internal sealed record PluginWorkerDescriptor(string ExportName, string EntryUrl);
 
@@ -112,7 +113,8 @@ internal static class PluginManifest
         var workers = ReadWorkers(manifest.Exports, directory);
         var permissions = ReadPermissions(manifest.Permissions?.Default);
         var isolation = manifest.Maieutics.Isolation;
-        descriptor = new PluginDescriptor(id, name, directory, workers, permissions, isolation);
+        var dependencies = ReadDependencies(manifest.Maieutics.Dependencies);
+        descriptor = new PluginDescriptor(id, name, directory, workers, permissions, isolation, dependencies);
         error = string.Empty;
         return true;
     }
@@ -145,6 +147,12 @@ internal static class PluginManifest
         }
 
         return workers;
+    }
+
+    private static IReadOnlyList<string> ReadDependencies(IReadOnlyList<string>? dependencies)
+    {
+        if (dependencies is null || dependencies.Count == 0) return [];
+        return dependencies.Where(static id => !string.IsNullOrWhiteSpace(id)).ToArray();
     }
 
     private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
@@ -190,4 +198,6 @@ internal sealed record PluginManifestPermissionSet(
     PluginPermissionGrant? Sys = null,
     PluginPermissionGrant? Import = null);
 
-internal sealed record PluginManifestMaieutics(string? Isolation = null);
+internal sealed record PluginManifestMaieutics(
+    string? Isolation = null,
+    IReadOnlyList<string>? Dependencies = null);

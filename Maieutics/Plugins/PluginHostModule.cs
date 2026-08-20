@@ -76,9 +76,11 @@ internal sealed record PluginHostConfigFile(IReadOnlyList<PluginHostConfigPlugin
 
 internal sealed record PluginHostConfigPlugin(
     string Id,
+    string Name,
     string RootDir,
     IReadOnlyList<PluginHostConfigWorker> Workers,
-    PluginHostConfigPermissions Permissions);
+    PluginHostConfigPermissions Permissions,
+    IReadOnlyList<string> Dependencies);
 
 internal sealed record PluginHostConfigWorker(string ExportName, string EntryUrl);
 

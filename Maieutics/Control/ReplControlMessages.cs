@@ -23,6 +23,8 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(ToolPostHookContextPayload))]
 [JsonSerializable(typeof(Dictionary<string, JsonElement>))]
 [JsonSerializable(typeof(DiscoverContextPayload))]
+[JsonSerializable(typeof(PluginReloadPayload))]
+[JsonSerializable(typeof(ExtensionRegistryState))]
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 internal static class ReplControlJson
@@ -77,6 +79,7 @@ internal static class ReplMessageType
     public const string ExtensionResult = "extension.result";
     public const string ExtensionError = "extension.error";
     public const string ExtensionRegistry = "extension.registry";
+    public const string PluginReload = "plugin.reload";
     public const string Error = "error";
 }
 
@@ -136,12 +139,23 @@ internal sealed record ExtensionResultPayload(JsonElement? Value = null);
 internal sealed record ExtensionErrorPayload(string Code, string Message);
 
 /// <summary>Host-to-kernel registry snapshot of scanned extension points per worker.</summary>
-internal sealed record ExtensionRegistryPayload(IReadOnlyList<ExtensionRegistryPlugin> Plugins);
+internal sealed record ExtensionRegistryPayload(
+    IReadOnlyList<ExtensionRegistryPlugin> Plugins,
+    IReadOnlyList<ExtensionRegistryState>? States = null);
 
 internal sealed record ExtensionRegistryPlugin(
     string PluginId,
     string ExportName,
     IReadOnlyList<string> ExtensionPoints);
+
+/// <summary>Per-plugin lifecycle state reported by the host (reloads, failures, crashes).</summary>
+internal sealed record ExtensionRegistryState(
+    string PluginId,
+    string State,
+    string? Reason = null);
+
+/// <summary>Kernel-to-host request to reload one or more plugins (source-only change).</summary>
+internal sealed record PluginReloadPayload(IReadOnlyList<string> PluginIds);
 
 /// <summary>Context passed to a plugin's pre-invoke hook.</summary>
 internal sealed record ToolHookContextPayload(

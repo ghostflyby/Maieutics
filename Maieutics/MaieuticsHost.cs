@@ -107,6 +107,9 @@ public static class MaieuticsHost
         var terminalOptions = new TerminalOptions();
         builder.Configuration.GetSection(TerminalOptions.SectionName).Bind(terminalOptions);
         terminalOptions.Validate();
+        var pluginHostOptions = new PluginHostOptions();
+        builder.Configuration.GetSection(PluginHostOptions.SectionName).Bind(pluginHostOptions);
+        pluginHostOptions.Validate();
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
@@ -126,6 +129,7 @@ public static class MaieuticsHost
             startupCurrentDirectory));
         builder.Services.AddSingleton(denoReplOptions);
         builder.Services.AddSingleton(terminalOptions);
+        builder.Services.AddSingleton(pluginHostOptions);
         builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();
         // Phase 5 replaces this fixed default with the layered acquisition path; for now every
         // terminal session captures the default policy (ADR 0018 §7, decision 2: run unrestricted).
@@ -165,7 +169,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
             services.GetRequiredService<TimeProvider>(),
-            services.GetRequiredService<DenoPermissionBroker>()));
+            services.GetRequiredService<DenoPermissionBroker>(),
+            services.GetRequiredService<PluginHostOptions>()));
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,

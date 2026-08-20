@@ -107,6 +107,37 @@ public sealed class PluginManifestTests
         descriptor.Permissions.Env.Values.Should().BeEmpty();
     }
 
+    [Fact]
+    public void LoadsDeclaredDependencies()
+    {
+        var descriptor = LoadPlugin("""
+                                    {
+                                      "name": "@maieutics/depends",
+                                      "version": "0.1.0",
+                                      "exports": { ".": "./mod.ts" },
+                                      "maieutics": {
+                                        "dependencies": ["base", ""]
+                                      }
+                                    }
+                                    """);
+
+        descriptor.Dependencies.Should().Equal("base");
+    }
+
+    [Fact]
+    public void TreatsMissingDependenciesAsEmpty()
+    {
+        var descriptor = LoadPlugin("""
+                                    {
+                                      "name": "@maieutics/standalone",
+                                      "exports": { ".": "./mod.ts" },
+                                      "maieutics": {}
+                                    }
+                                    """);
+
+        descriptor.Dependencies.Should().BeEmpty();
+    }
+
     private static PluginDescriptor LoadPlugin(string denoJson)
     {
         if (PluginManifest.TryLoad(CreatePluginDirectory(denoJson), out var descriptor, out var error))

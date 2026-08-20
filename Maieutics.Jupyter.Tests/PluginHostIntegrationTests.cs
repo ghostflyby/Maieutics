@@ -242,6 +242,72 @@ public sealed class PluginHostIntegrationTests
         Directory.Delete(workspaceRoot, true);
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task SourceEditReloadsThePluginAndPublishesTheNewRegistry()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var pluginsRoot = CreatePluginsRoot("hotreload");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            SharedBroker,
+            new PluginHostOptions { WatchEnabled = true, WatchDebounce = TimeSpan.FromMilliseconds(200) });
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            var registrations = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token);
+            registrations.Should().HaveCount(1);
+
+            // Source edit: add a ToolPreInvoke extension point to the plugin module.
+            var pluginDir = Path.Combine(pluginsRoot, "hotreload");
+            var modPath = Path.Combine(pluginDir, "mod.ts");
+            File.WriteAllText(
+                modPath,
+                """
+                import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+                export const discover = defineExtensionPoint("McpDiscover", {
+                  handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
+                });
+                export const pre = defineExtensionPoint("ToolPreInvoke", {
+                  handler: () => ({ action: "continue" }),
+                });
+                """);
+
+            // The file watcher should detect the edit and reload the plugin in place,
+            // publishing the new registry.
+            var updated = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.ToolPreInvoke,
+                timeout.Token);
+            updated.Should().HaveCount(1);
+            updated[0].PluginId.Should().Be("hotreload");
+
+            // The reloaded plugin is still serving: McpDiscover must still be registered.
+            manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Should().HaveCount(1);
+        }
+    }
+
     private static async Task<WebApplication> StartHostAsync(
         string socketPath,
         ReplControlHost controlHost,

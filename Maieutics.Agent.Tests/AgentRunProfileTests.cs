@@ -60,7 +60,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task StaticConstructorKeepsExistingClientOptionsAndTranscriptBehavior()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync("first answer"),
             (_, _) => StreamAsync("second answer"));
@@ -83,7 +83,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task DynamicProfileAppliesToNextRunAndReplaysCanonicalTranscript()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var firstClient = new ScriptedChatClient((_, _) => StreamAsync("first answer"));
         var secondClient = new ScriptedChatClient((_, _) => StreamAsync("second answer"));
         var firstLease = new TrackingProfileLease(CreateProfile(firstClient, "first instructions"));
@@ -107,7 +107,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task PendingProfileAcquisitionKeepsTheSessionReserved()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var acquisition = new TaskCompletionSource<IAgentRunProfileLease>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var lease = new TrackingProfileLease(
@@ -133,7 +133,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task CanceledProfileAcquisitionReleasesTheSessionReservation()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         var pendingAcquisition = new TaskCompletionSource<IAgentRunProfileLease>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -160,7 +160,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task SuccessfulRunCommitsCapturedModelIdentityToResultAndTranscript()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var identity = new AgentModelIdentity(
             new AgentModelProfileId("claude"),
             "Anthropic",
@@ -183,7 +183,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task MissingStreamingCapabilityFailsBeforeProviderInvocation()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var identity = new AgentModelIdentity(new AgentModelProfileId("metadata"), "Test", "metadata-only");
         var lease = new TrackingProfileLease(new AgentRunProfile(
@@ -209,7 +209,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task MissingFunctionCallingCapabilityFailsBeforeProviderInvocationWhenToolsExist()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var identity = new AgentModelIdentity(new AgentModelProfileId("text"), "Test", "text-only");
         var lease = new TrackingProfileLease(new AgentRunProfile(
@@ -237,7 +237,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task ActiveRunUsesOneCapturedClientAcrossToolIterations()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var firstClient = new ScriptedChatClient(
             (_, _) => StreamAsync(new ChatResponseUpdate(
                 ChatRole.Assistant,
@@ -264,7 +264,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task DynamicProfilesExposeDifferentRunLocalToolRegistries()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var firstClient = new ScriptedChatClient(
             (_, _) => StreamAsync(new ChatResponseUpdate(
                 ChatRole.Assistant,
@@ -297,7 +297,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task InputLimitIsRunLocalAndRejectedStartReleasesItsLease()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var rejectedClient = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var acceptedClient = new ScriptedChatClient((_, _) => StreamAsync("accepted"));
         var rejectedLease = new TrackingProfileLease(new AgentRunProfile(
@@ -322,7 +322,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task CompletionRemainsPendingUntilLeaseIsReleased()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var releaseLease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lease = new TrackingProfileLease(
             CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("answer")), "instructions"),
@@ -343,7 +343,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task LeaseReleaseFailureRollsBackSuccessfulTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var failedLease = new TrackingProfileLease(
             CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("uncommitted")), "first"),
             releaseException: new InvalidOperationException("lease release failed"));
@@ -369,7 +369,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderFailureReleasesLeaseAndAllowsNextProfile()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var failedLease = new TrackingProfileLease(CreateProfile(
             new ScriptedChatClient((_, _) => FailAsync(new InvalidOperationException("failed"))),
             "failed"));
@@ -395,7 +395,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task CancellationReleasesLeaseAndSessionReservation()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var providerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceledLease = new TrackingProfileLease(CreateProfile(
             new ScriptedChatClient((_, token) => WaitUntilCanceledAsync(providerStarted, token)),
@@ -472,9 +472,9 @@ public sealed class AgentRunProfileTests
         yield break;
     }
 
-    private static CancellationTokenSource CreateDeadline()
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         return deadline;
     }

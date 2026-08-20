@@ -17,7 +17,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task AgentKernelStreamsTrackedMarkdownAndRetainsConversation()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var timeProvider = new ManualTimeProvider();
         var chatClient = new ScriptedChatClient(
             (_, token) => TimedResponseAsync(timeProvider, token),
@@ -77,7 +77,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderFailureKeepsPartialOutputButRollsBackHistory()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var chatClient = new ScriptedChatClient(
             (_, token) => FailAfterTextAsync(new InvalidOperationException("provider secret"), token, "part", "ial"),
             (_, token) => TextResponseAsync(token, "recovered"));
@@ -118,7 +118,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task IncompatibleContentReturnsSafeUnsupportedResponseAndRollsBackHistory()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient((_, token) => IncompatibleContentResponseAsync(token)));
         var application = new MaieuticsAgentKernelApplication(session);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -149,7 +149,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task IterationBudgetTruncationCommitsPartialTurnAndRendersStatus()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var chatClient = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("one", "again")),
             (_, _) => StreamAsync(ToolCallUpdate("two", "again")));
@@ -184,7 +184,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task TurnDurationExpiryRendersTypedError()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var chatClient = new ScriptedChatClient((_, token) => WaitOnTokenAsync(token));
         var session = new AgentSession(
             chatClient,
@@ -213,7 +213,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task InterruptAbortsStreamingTurnAndLeavesHistoryUnchanged()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var responseStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var chatClient =
             new ScriptedChatClient((_, token) => WaitAfterTextAsync(responseStarted, token, "part", "ial"));
@@ -257,7 +257,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task InterruptAfterEventStreamCompletionDoesNotAbortCommittedRun()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new CommitBoundarySession();
         var application = new MaieuticsAgentKernelApplication(session);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -286,7 +286,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task WorkspaceCommandsSwitchAndResetWithoutInvokingAgentOrChangingTranscript()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var parent = Path.Combine(Path.GetTempPath(), $"maieutics-workspace-command-{Guid.NewGuid():N}");
         var startup = Directory.CreateDirectory(Path.Combine(parent, "startup")).FullName;
         var other = Directory.CreateDirectory(Path.Combine(parent, "other workspace")).FullName;
@@ -364,7 +364,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task CanonicalCommandsAndSlashPromptsRouteThroughFlatSyntax()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var parent = Path.Combine(Path.GetTempPath(), $"maieutics-flat-command-{Guid.NewGuid():N}");
         var startup = Directory.CreateDirectory(Path.Combine(parent, "startup")).FullName;
         var other = Directory.CreateDirectory(Path.Combine(parent, "other workspace")).FullName;
@@ -448,7 +448,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ModelCommandsSwitchProfilesWithoutInvokingAgentOrChangingTranscript()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient());
         var controller = new TestRuntimeConfiguration();
         var application = new MaieuticsAgentKernelApplication(
@@ -512,7 +512,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ModelCommandsRemainAvailableWithoutConfiguredProfiles()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient());
         var application = new MaieuticsAgentKernelApplication(
             session,
@@ -564,7 +564,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task AutomaticProfileEnablesTurnsWithoutConfiguredProfiles()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session =
             new AgentSession(new ScriptedChatClient((_, token) => TextResponseAsync(token, "automatic response")));
         var controller = new AutomaticRuntimeConfiguration();
@@ -616,7 +616,7 @@ public sealed class AgentJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ModelDiscoveryRendersExternalIdentifiersAsInertMarkdown()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient());
         var application = new MaieuticsAgentKernelApplication(
             session,
@@ -798,9 +798,9 @@ public sealed class AgentJupyterIntegrationTests
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
-    private static CancellationTokenSource CreateDeadline()
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         return deadline;
     }

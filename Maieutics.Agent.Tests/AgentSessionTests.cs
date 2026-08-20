@@ -11,7 +11,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task StartTurnStartsProviderImmediatelyAndReservesSessionBeforeReturning()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var providerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseProvider = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new ScriptedChatClient(
@@ -40,7 +40,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task SuccessfulRunStreamsStableIdsSequencesAndCommittedTranscript()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient((_, _) => StreamAsync("Hello", " world")));
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Question"), deadline.Token);
@@ -75,7 +75,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderFailureRollsBackPartialTurnAndReleasesSession()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => FailAfterTextAsync("partial", new InvalidOperationException("provider failed")),
             (_, _) => StreamAsync("recovered"));
@@ -98,7 +98,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task CancellationPreservesPartialEventsAndRollsBackTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new ScriptedChatClient(
             (_, token) => WaitAfterTextAsync("partial", waiting, token),
@@ -124,7 +124,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task InputAndResponseLimitsRollBackWholeTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var unusedClient = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var inputLimited = new AgentSession(unusedClient, new AgentSessionOptions { MaxInputCharacters = 3 });
         var inputFailure = (await (Session: inputLimited, deadline.Token)
@@ -149,7 +149,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task EmptyAndUnsupportedResponsesRollBackWholeTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var emptySession = new AgentSession(new ScriptedChatClient((_, _) => StreamAsync()));
         await using var emptyRun = await emptySession.StartTurnAsync(AgentTurn.FromText("empty"), deadline.Token);
         (await ReadEventsAsync(emptyRun, deadline.Token)).Should().BeEmpty();
@@ -176,7 +176,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task HistoryEvictionAlwaysRemovesCompleteOldestTurns()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync("one"),
             (_, _) => StreamAsync("two"),
@@ -202,7 +202,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task EventsAllowOnlyOneConsumer()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient((_, _) => StreamAsync("answer")));
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
 
@@ -217,7 +217,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task CancellationReleasesAProducerBlockedByEventBackpressure()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var secondUpdateProduced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new ScriptedChatClient(
             (_, token) => SignalBeforeSecondUpdateAsync(secondUpdateProduced, token),
@@ -242,7 +242,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task CancellationAndDisposalAreIdempotentAndReleaseSession()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new ScriptedChatClient(
             (_, token) => WaitWithoutOutputAsync(waiting, token),
@@ -267,7 +267,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task DirectHistoryRequestsContainSystemPromptAndCommittedTurnsOnly()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync("First answer"),
             (_, _) => StreamAsync("Second answer"));
@@ -288,7 +288,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderConversationIdConflictRollsBackAndAllowsNextRun()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var conflicting = new ChatResponseUpdate(ChatRole.Assistant, "conflict")
         {
             ConversationId = "provider-owned-conversation"
@@ -341,7 +341,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task EarlyEventDisposalFollowedByRunDisposalCancelsAndRollsBack()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, token) => StreamUntilCanceledAsync(token),
             (_, _) => StreamAsync("next"));
@@ -368,7 +368,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ToolCallPublishesLifecycleCommitsCompleteTurnAndReplaysHistory()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var tool = CreateTool(
             "echo",
             async (context, arguments, cancellationToken) =>
@@ -451,7 +451,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ExpectedToolFailureReturnsStableEnvelopeAndAllowsModelRecovery()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var tool = CreateTool(
             "lookup",
             (_, _, _) => ValueTask.FromException<JsonElement?>(
@@ -485,7 +485,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task MultipleToolCallsExecuteSeriallyInProviderOrder()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var active = 0;
         var maximumActive = 0;
         var order = new List<string>();
@@ -527,7 +527,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task UnexpectedToolExceptionPublishesFailureAndRollsBackWholeTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var tool = CreateTool(
             "explode",
             (_, _, _) => ValueTask.FromException<JsonElement?>(new InvalidOperationException("secret detail")));
@@ -552,7 +552,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task NonJsonFunctionResultFailsDeterministicallyAndRollsBackWholeTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var tool = AIFunctionFactory.Create(
             (string value) => value,
             new AIFunctionFactoryOptions
@@ -583,7 +583,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ToolArgumentLimitTerminatesRunBeforeInvocation()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var invoked = false;
         var tool = CreateTool(
             "echo",
@@ -611,7 +611,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task CancellationStopsActiveToolAndRollsBackTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var tool = CreateTool(
@@ -649,7 +649,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ToolResultAndProgressLimitsRollBackWholeTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var resultLimited = new AgentSession(
             new ScriptedChatClient((_, _) => StreamAsync(ToolCallUpdate("call", "large"))),
             new AgentSessionOptions { MaxToolResultBytes = 16 },
@@ -702,7 +702,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ToolCallAndModelIterationLimitsRollBackWholeTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var invoked = 0;
         var twoCalls = new ChatResponseUpdate(
             ChatRole.Assistant,
@@ -782,7 +782,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ToolUseWithinBudgetCommitsCompleteUntruncatedTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("one", "echo")),
             (_, _) => StreamAsync("done"));
@@ -807,7 +807,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task TurnDurationExpiryFailsTurnRollsBackAndReleasesSession()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, token) => WaitUntilCanceledAsync(token),
             (_, _) => StreamAsync("next"));
@@ -837,7 +837,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ToolBearingHistoryEvictionRemovesWholeOldestTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var tool = CreateTool(
             "echo",
             (_, _, _) => ValueTask.FromResult<JsonElement?>(
@@ -867,7 +867,7 @@ public sealed class AgentSessionTests
     [Fact(Timeout = 30_000)]
     public async Task TextBeforeToolCallAndFinalTextUseTheirCompletedMessageIds()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var preamble = new ChatResponseUpdate(ChatRole.Assistant, "checking") { MessageId = "before-tool" };
         var call = ToolCallUpdate("call", "echo");
         call.MessageId = "before-tool";
@@ -1075,9 +1075,9 @@ public sealed class AgentSessionTests
         yield break;
     }
 
-    private static CancellationTokenSource CreateDeadline()
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         return deadline;
     }

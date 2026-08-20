@@ -862,7 +862,7 @@ public sealed class JupyterProtocolSessionTests
     {
         var transport = new FakeJupyterTransport();
         await using var session = new JupyterProtocolSession(transport);
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var task = session.CompleteAsync(new JupyterCompleteRequest("cons", 4), cancellation.Token);
 
         await cancellation.CancelAsync();

@@ -19,7 +19,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task LocalManagerConnectsToRealDenoKernel()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var cancellationToken = deadline.Token;
         var spec = await JupyterKernelSpec.ReadAsync(
             DenoKernelSpecPath,
@@ -67,7 +67,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task FreshLocalManagerRoutesFirstDenoPrompt()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
         await using var manager = await LocalJupyterKernelManager.StartAsync(
             spec,
@@ -96,7 +96,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task RealDenoRoutesPromptAfterReadinessProbe()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
         await using var manager = await LocalJupyterKernelManager.StartAsync(
             spec,
@@ -148,7 +148,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task RealDenoSeparatesStreamsDisplayResultAndError()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
         await using var manager = await LocalJupyterKernelManager.StartAsync(
             spec,
@@ -212,7 +212,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task RealDenoDisplayUpdatesAreTypedAndMalformedUpdatesDoNotDisconnect()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
         await using var manager = await LocalJupyterKernelManager.StartAsync(
             spec,
@@ -262,7 +262,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 45_000)]
     public async Task IndependentDenoManagersUseDistinctProcessesAndRestartClearsState()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(35));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(35));
         var spec = await JupyterKernelSpec.ReadAsync(DenoKernelSpecPath, deadline.Token);
         await using var first = await LocalJupyterKernelManager.StartAsync(
             spec,
@@ -285,7 +285,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task LocalManagerLifecycleAndConnectionFileCleanupAreRepeatable()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var runtimeDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(runtimeDirectory);
         try
@@ -316,7 +316,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task LocalManagerReportsBoundedDiagnosticsWhenKernelExitsDuringStartup()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var spec = new JupyterKernelSpec(
             ["deno", "eval", "console.error('startup-marker-' + 'x'.repeat(20000)); Deno.exit(17)"],
             "Failing Deno",
@@ -340,7 +340,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task LocalManagerAppliesWorkingDirectoryAndExplicitEnvironment()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var workingDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-deno-cwd-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workingDirectory);
         var inheritedName = $"MAIEUTICS_DENIED_{Guid.NewGuid():N}";
@@ -401,7 +401,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ShutdownTimeoutKillsUnresponsiveKernelAndDeletesConnectionFile()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(20));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         var runtimeDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(runtimeDirectory);
         try
@@ -453,7 +453,7 @@ public sealed class DenoKernelIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task TerminateImmediatelyKillsBusyKernelAndDeletesConnectionFile()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(20));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         var runtimeDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(runtimeDirectory);
         try
@@ -547,9 +547,9 @@ public sealed class DenoKernelIntegrationTests
         return result.Data.Data["text/plain"].GetString() ?? result.Data.Data["text/plain"].GetRawText();
     }
 
-    private static CancellationTokenSource CreateDeadline(TimeSpan? timeout = null)
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(20));
         return deadline;
     }

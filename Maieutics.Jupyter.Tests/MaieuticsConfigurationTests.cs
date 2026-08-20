@@ -117,7 +117,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationAllowsNoModelOrProviderConfiguration()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-empty-config-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -156,7 +157,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationCancellationRetiresCreatedProfileExactlyOnce()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-init-cancel-{Guid.NewGuid():N}");
@@ -196,7 +198,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationFailureRetiresEarlierProfilesExactlyOnce()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-init-rollback-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -237,7 +240,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationRetainsSourcesWithoutProfilesForDiscovery()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-source-only-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -296,7 +300,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task AutomaticProfileSelectionCancellationRetiresCreatedClientExactlyOnce()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-cancel-{Guid.NewGuid():N}");
@@ -341,7 +346,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task AutomaticProfileRetiresAfterItsSourceGenerationChanges()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -391,7 +397,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task AutomaticProfileRetiresWhenHostedCapabilitiesChangeOnReload()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-endpoints-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -458,7 +465,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task AutomaticProfileSelectionFailureRetiresCreatedClientExactlyOnce()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-race-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -510,7 +518,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task CanceledPluginReadinessWaitRollsBackTheProfileGenerationLease()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-readiness-{Guid.NewGuid():N}");
@@ -553,7 +562,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task StaleDiscoveryCannotReplaceCacheAfterSourceReload()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-stale-discovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -611,7 +621,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task CallerCancellationIsNotConvertedIntoOrCachedAsDiscoveryFailure()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-cancelled-discovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -660,7 +671,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task AutomaticProfileRequiresQualifiedSelectorForDuplicateModelIds()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-ambiguity-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -705,7 +717,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task RuntimeInitializationReconcilesConfigurationChangesDuringProviderCreation()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-startup-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -759,7 +772,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task ReloadPublishedWhilePreviousRequestIsInFlightIsAppliedByLaterAttempt()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-reload-race-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1072,7 +1086,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task AgentTurnDurationBindsToLeaseAndNegativeValuesAreRejected()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-turn-duration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         try
@@ -1116,7 +1131,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task HistoryLimitCompatibilityParticipatesInHotReloadValidation()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1211,7 +1227,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task RuntimeConfigurationReloadsValidSnapshotsAndKeepsLastKnownGood()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1322,7 +1339,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task NamedProfileCatalogSwitchesReusesAndAtomicallyReplacesGenerations()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-catalog-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1560,7 +1578,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task McpFileChangesTriggerReloadAndInvalidUpdatesRetainLastKnownGood()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1820,7 +1839,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task AcquiredProfileMergesConfiguredEndpointCapabilities()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-endpoint-capabilities-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1890,7 +1910,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task UnmatchedEndpointKeepsOnlyDeclaredSourceCapabilities()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-endpoint-baseline-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -1960,7 +1981,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task KnownVendorEndpointGrantsAutomaticHostedCapabilities()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-known-vendor-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2016,7 +2038,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task VendorsCatalogNarrowsCapabilitiesByModel()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-vendor-model-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2085,7 +2108,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task AutomaticProfileRetiresWhenVendorCatalogChangesOnReload()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-vendor-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2143,7 +2167,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 60_000)]
     public async Task AutomaticProfileRetiresWhenVendorModelCatalogChangesOnReload()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(50));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-model-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2367,7 +2392,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsReturnsModelsFromDiscoveryEnabledSources()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2414,7 +2440,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsCacheRespectsRefreshFlag()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-cache-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2461,7 +2488,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsSkipsSourcesWithoutDiscoverySupport()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-skip-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -2498,7 +2526,8 @@ public sealed class MaieuticsConfigurationTests
     [Fact(Timeout = 40_000)]
     public async Task GetDiscoveredModelsCapturesErrorsFromFailingSources()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-error-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);

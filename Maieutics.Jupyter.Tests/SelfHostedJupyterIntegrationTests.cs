@@ -14,7 +14,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ClientAndKernelCompleteCoreLifecycle()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var cancellationToken = deadline.Token;
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var application = new TestKernelApplication();
@@ -162,7 +162,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task HostRequestInterruptAbortsWaitingExecution()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var cancellationToken = deadline.Token;
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var application = new TestKernelApplication();
@@ -191,7 +191,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task InterruptCoordinatorForwardsInterruptToActiveHost()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var cancellationToken = deadline.Token;
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var application = new TestKernelApplication();
@@ -223,7 +223,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task DisplayUpdateAfterIdleBecomesTypedLateOutput()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var application = new TestKernelApplication();
         await using var host = await JupyterKernelHost.StartAsync(
@@ -263,7 +263,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task MissingProviderReturnsTypedError()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         await using var host = await JupyterKernelHost.StartAsync(
             connection,
@@ -289,7 +289,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task HostLifecycleAndConcurrentDisposeAreRepeatable()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         for (var iteration = 0; iteration < 5; iteration++)
         {
             var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -309,7 +309,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     [Fact(Timeout = 15_000)]
     public async Task FirstIopubSubscriptionPublishesInitializationAndRequestLifecycle()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(10));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         await using var host = await JupyterKernelHost.StartAsync(
             connection,
@@ -367,9 +367,9 @@ public sealed class SelfHostedJupyterIntegrationTests
         return output is JupyterDisplayOutput or JupyterDisplayUpdateOutput or JupyterClearOutput;
     }
 
-    private static CancellationTokenSource CreateDeadline(TimeSpan? timeout = null)
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(20));
         return deadline;
     }

@@ -252,7 +252,7 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ReasoningAndProtectedDataStayPrivateAndReplayToTheNextTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var reasoning = new TextReasoningContent("private chain") { ProtectedData = "opaque-state" };
         var client = new RecordingClient(
             (_, _) => StreamUpdatesAsync(
@@ -282,7 +282,7 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ReasoningOnlyAndCustomContentRollBackTranscriptVersion()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var reasoningOnly = new AgentSession(new RecordingClient((_, _) => StreamUpdatesAsync(new ChatResponseUpdate(
             ChatRole.Assistant,
             [new TextReasoningContent("private only")]))));
@@ -316,7 +316,7 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task InlineBinaryResponseRollsBackAndSessionRemainsUsable()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var binary = new ChatResponseUpdate(
             ChatRole.Assistant,
             [new TextContent("visible"), new DataContent(new byte[] { 1, 2, 3 }, "image/png")]);
@@ -348,7 +348,7 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task MutatingPublicMessagesCannotChangeCanonicalReplay()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new RecordingClient(
             (_, _) => StreamAsync("first answer"),
             (_, _) => StreamAsync("second answer"));
@@ -372,7 +372,7 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderCannotMutateCanonicalReplayMessages()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new RecordingClient(
             (_, _) => StreamAsync("first answer"),
             (messages, _) =>
@@ -396,7 +396,7 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task HistoryByteLimitEvictsCompleteOldestTurnForNonAsciiMessages()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var sample = AgentTranscriptCodec.DetachPrivateTurn(
             AgentRunId.Create(),
             null,
@@ -449,9 +449,9 @@ public sealed class AgentTranscriptSessionTests
         foreach (var update in updates) yield return update;
     }
 
-    private static CancellationTokenSource CreateDeadline()
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         return deadline;
     }

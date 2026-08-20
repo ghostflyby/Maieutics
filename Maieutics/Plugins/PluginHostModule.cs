@@ -78,9 +78,10 @@ internal sealed record PluginHostConfigPlugin(
     string Id,
     string RootDir,
     IReadOnlyList<PluginHostConfigWorker> Workers,
-    PluginHostConfigPermissions Permissions);
+    PluginHostConfigPermissions Permissions,
+    IReadOnlyList<string> Dependencies);
 
-internal sealed record PluginHostConfigWorker(string ExportName, string EntryUrl);
+internal sealed record PluginHostConfigWorker(string ExportName, string EntryUrl, string Specifier);
 
 internal sealed record PluginHostConfigPermissions(
     JsonElement Env,

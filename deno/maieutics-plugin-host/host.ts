@@ -1,9 +1,20 @@
 /**
- * Plugin host process logic: manages one permission-scoped worker per plugin
- * export module and multiplexes extension point invocations over postMessage
- * frames. The bus wiring lives in `mod.ts`; this module is testable without a
- * control channel.
+ * Plugin host process logic: spawns one permission-scoped plugin worker per
+ * export module with worker-actor's `spawn()`, owns the specifier→workerId
+ * registry and the `__acquire-actor` main-side router, and orchestrates
+ * dependency start order, cascade teardown, crash handling, and hot reload.
+ * The bus wiring lives in `mod.ts`; this module is testable without a control
+ * channel.
+ *
+ * Cross-plugin calls reuse worker-actor's reference-acquire machinery: a
+ * consumer's first call posts `__acquire-actor { specifier, refId }`; the host
+ * maps the specifier to its owner worker id, rewrites the refId prefix, and
+ * answers with `__serve-actor` (owner) / `__ref-acquired` (consumer). After
+ * acquisition the two workers talk directly; the host is out of the data path.
  */
+
+import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
+import { actorRefCodec } from "../maieutics-plugin-sdk/actor_ref.ts";
 
 /** Positive permission grant: `true` allows all, `false` denies, a list allows those entries. */
 export type PermissionGrant = boolean | readonly string[];
@@ -20,10 +31,12 @@ export interface PermissionGrants {
 }
 
 export interface PluginWorkerConfig {
-  /** Export subpath, e.g. "./mcp"; stable identity within the plugin. */
+  /** Export subpath, e.g. "./main"; stable identity within the plugin. */
   exportName: string;
   /** File URL of the plugin export module. */
   entryUrl: string;
+  /** Canonical specifier of this export (`<name>/<subpath>`). */
+  specifier: string;
 }
 
 export interface PluginConfig {
@@ -32,12 +45,30 @@ export interface PluginConfig {
   rootDir: string;
   workers: readonly PluginWorkerConfig[];
   permissions: PermissionGrants;
+  /** Declared dependency plugin ids (directory names), resolved by the kernel. */
+  dependencies?: readonly string[];
 }
 
 export interface RegisteredExtension {
   readonly pluginId: string;
   readonly exportName: string;
   readonly extensionPoint: string;
+  readonly specifier: string;
+}
+
+export interface PluginState {
+  readonly pluginId: string;
+  readonly exportName: string;
+  readonly specifier: string;
+  readonly state:
+    | "starting"
+    | "running"
+    | "stopping"
+    | "stopped"
+    | "failed"
+    | "disabled"
+    | "crashed";
+  readonly failure?: string;
 }
 
 export interface HostOptions {
@@ -50,10 +81,13 @@ export interface HostOptions {
   invokeTimeoutMs?: number;
   /** Maximum restarts per worker before it is disabled. */
   maxRestarts?: number;
+  /** Cooperative teardown window per cascade wave. */
+  stopGraceMs?: number;
 }
 
 const DEFAULT_INVOKE_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RESTARTS = 3;
+const DEFAULT_STOP_GRACE_MS = 5_000;
 
 function filePathOf(url: string): string {
   return decodeURIComponent(new URL(url).pathname);
@@ -76,6 +110,10 @@ function buildWorkerPermissions(
     entries.add(plugin.rootDir);
     entries.add(filePathOf(options.sdkUrl));
     entries.add(filePathOf(options.workerEntryUrl));
+    // The SDK imports @ghostflyby/worker-actor from the local Deno cache; the
+    // worker must be able to read it.
+    const denoDir = Deno.env.get("DENO_DIR") ?? defaultDenoDir();
+    if (denoDir !== undefined) entries.add(denoDir);
     return [...entries];
   })();
   return {
@@ -90,242 +128,91 @@ function buildWorkerPermissions(
   };
 }
 
-interface PendingInvoke {
-  timer: ReturnType<typeof setTimeout>;
-
-  resolve(value: unknown): void;
-
-  reject(error: Error): void;
+function defaultDenoDir(): string | undefined {
+  const home = Deno.env.get("HOME");
+  if (home === undefined) return undefined;
+  if (Deno.build.os === "darwin") return `${home}/Library/Caches/deno`;
+  if (Deno.build.os === "linux") return `${home}/.cache/deno`;
+  return `${Deno.env.get("LOCALAPPDATA") ?? home}/deno`;
 }
 
-class PluginWorker {
-  readonly pluginId: string;
-  readonly exportName: string;
-  readonly extensionPoints = new Set<string>();
+/** The worker's RPC surface as seen by the host: extension points by name. */
+interface WorkerRpc {
+  [method: string]: (payload: unknown) => Promise<unknown>;
+}
 
-  #worker: Worker | undefined;
-  #pending = new Map<string, PendingInvoke>();
-  #restarts = 0;
-  #disabled = false;
-  #started: Promise<void> | undefined;
-  #options: HostOptions;
-  #plugin: PluginConfig;
+/** Identity + runtime handle of one spawned worker. */
+interface WorkerHandle {
+  plugin: PluginConfig;
+  config: PluginWorkerConfig;
+  /** Canonical specifier of this worker's export; interop identity. */
+  specifier: string;
+  actor: Remote<WorkerRpc> & ActorHandle;
+  worker: Worker;
+  state: "starting" | "running" | "stopping" | "stopped" | "failed" | "disabled" | "crashed";
+  failure?: string;
+  extensionPoints: Set<string>;
+  restarts: number;
+}
 
-  constructor(
-    plugin: PluginConfig,
-    exportName: string,
-    options: HostOptions,
-  ) {
-    this.pluginId = plugin.id;
-    this.exportName = exportName;
-    this.#plugin = plugin;
-    this.#options = options;
-  }
+const enum State {
+  Starting = "starting",
+  Running = "running",
+  Stopping = "stopping",
+  Stopped = "stopped",
+  Failed = "failed",
+  Disabled = "disabled",
+  Crashed = "crashed",
+}
 
-  get disabled(): boolean {
-    return this.#disabled;
-  }
-
-  /** Starts the worker and waits for its extension point scan. */
-  async start(): Promise<void> {
-    if (this.#started !== undefined) {
-      return this.#started;
-    }
-    this.#started = this.#startWorker().catch((error) => {
-      this.#started = undefined;
-      throw error;
-    });
-    return this.#started;
-  }
-
-  async invoke(extensionPoint: string, request: unknown): Promise<unknown> {
-    await this.start();
-    if (this.#disabled) {
-      throw new Error(
-        `Plugin worker '${this.pluginId}/${this.exportName}' is disabled after repeated crashes.`,
-      );
-    }
-    if (!this.extensionPoints.has(extensionPoint)) {
-      throw new Error(
-        `Extension point '${extensionPoint}' is not registered by '${this.pluginId}/${this.exportName}'.`,
-      );
-    }
-    const worker = this.#worker;
-    if (worker === undefined) {
-      throw new Error(
-        `Plugin worker '${this.pluginId}/${this.exportName}' is not running.`,
-      );
-    }
-    const id = crypto.randomUUID();
-    const done = new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(
-          new Error(`Extension point '${extensionPoint}' timed out.`),
-        );
-      }, this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS);
-      this.#pending.set(id, { resolve, reject, timer });
-    });
-    worker.postMessage({ type: "invoke", id, extensionPoint, request });
-    return await done;
-  }
-
-  dispose(): void {
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error("Plugin worker is shutting down."));
-    }
-    this.#pending.clear();
-    this.#worker?.terminate();
-    this.#worker = undefined;
-  }
-
-  async #startWorker(): Promise<void> {
-    const entryUrl = this.#plugin.workers.find((worker) => worker.exportName === this.exportName)
-      ?.entryUrl;
-    if (entryUrl === undefined) {
-      throw new Error(
-        `Worker '${this.exportName}' of plugin '${this.pluginId}' has no entry URL.`,
-      );
-    }
-    const worker = new Worker(this.#options.workerEntryUrl, {
-      type: "module",
-      deno: {
-        permissions: buildWorkerPermissions(
-          this.#plugin,
-          this.#options,
-        ),
-      },
-    });
-    this.#worker = worker;
-    const ready = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        worker.terminate();
-        reject(
-          new Error(
-            `Plugin worker '${this.pluginId}/${this.exportName}' did not become ready.`,
-          ),
-        );
-      }, this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS);
-      worker.onmessage = (event: MessageEvent): void => {
-        const frame = event.data as {
-          type: string;
-          extensionPoints?: string[];
-          id?: string | null;
-        };
-        if (frame.type === "ready") {
-          for (const name of frame.extensionPoints ?? []) {
-            this.extensionPoints.add(name);
-          }
-          clearTimeout(timeout);
-          resolve();
-        } else if (
-          frame.type === "error" &&
-          (frame.id === null || frame.id === undefined)
-        ) {
-          clearTimeout(timeout);
-          reject(
-            new Error(
-              `Plugin worker failed to initialize: ${JSON.stringify(frame)}`,
-            ),
-          );
-        }
-      };
-      worker.onerror = (event: ErrorEvent): void => {
-        clearTimeout(timeout);
-        this.#worker = undefined;
-        reject(new Error(`Plugin worker crashed: ${event.message}`));
-      };
-      worker.postMessage({
-        type: "init",
-        entryUrl,
-      });
-    });
-    await ready;
-    worker.onmessage = (event: MessageEvent): void => this.#handleMessage(event);
-    worker.onerror = (event: ErrorEvent): void => this.#handleCrash(event);
-  }
-
-  #handleMessage(event: MessageEvent): void {
-    const frame = event.data as {
-      type: string;
-      id?: string | null;
-      value?: unknown;
-      code?: string;
-      message?: string;
-    };
-    if (frame.id === undefined || frame.id === null) {
-      return;
-    }
-    const pending = this.#pending.get(frame.id);
-    if (pending === undefined) {
-      return;
-    }
-    this.#pending.delete(frame.id);
-    clearTimeout(pending.timer);
-    if (frame.type === "result") {
-      pending.resolve(frame.value);
-    } else if (frame.type === "error") {
-      pending.reject(
-        new Error(
-          `${frame.code ?? "extension_failed"}: ${frame.message ?? "the extension failed"}`,
-        ),
-      );
-    }
-  }
-
-  #handleCrash(event: ErrorEvent): void {
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(
-        new Error(`Plugin worker crashed: ${event.message}`),
-      );
-    }
-    this.#pending.clear();
-    this.#worker = undefined;
-    this.#started = undefined;
-    this.#restarts += 1;
-    if (
-      this.#restarts > (this.#options.maxRestarts ?? DEFAULT_MAX_RESTARTS)
-    ) {
-      this.#disabled = true;
-    }
-  }
+function specifierOf(plugin: PluginConfig, worker: PluginWorkerConfig): string {
+  return worker.specifier;
 }
 
 export class PluginHost {
   readonly extensions: RegisteredExtension[] = [];
 
-  #workers = new Map<string, PluginWorker>();
+  #workers = new Map<string, WorkerHandle>();
+  #bySpecifier = new Map<string, string>(); // specifier → workerKey
   #options: HostOptions;
+  #acquireRouterInstalled = false;
 
   constructor(options: HostOptions) {
     this.#options = options;
     for (const plugin of options.plugins) {
       for (const workerConfig of plugin.workers) {
-        const worker = new PluginWorker(
+        const key = workerKey(plugin.id, workerConfig.exportName);
+        this.#workers.set(key, {
           plugin,
-          workerConfig.exportName,
-          options,
-        );
-        this.#workers.set(
-          workerKey(plugin.id, workerConfig.exportName),
-          worker,
-        );
+          config: workerConfig,
+          specifier: specifierOf(plugin, workerConfig),
+          actor: undefined as never,
+          worker: undefined as never,
+          state: State.Stopped,
+          extensionPoints: new Set(),
+          restarts: 0,
+        });
+        this.#bySpecifier.set(workerConfig.specifier, key);
       }
     }
+    this.#installAcquireRouter();
   }
 
-  /** Starts every worker eagerly and collects the extension registry. */
+  /** Starts every worker in topological waves (dependencies first) and collects the registry. */
   async startAll(): Promise<readonly RegisteredExtension[]> {
+    const waves = this.#computeStartWaves();
     const registrations: RegisteredExtension[] = [];
-    for (const worker of this.#workers.values()) {
-      await worker.start();
-      for (const name of worker.extensionPoints) {
+    for (const wave of waves) {
+      await Promise.all(wave.map((key) => this.#startWorker(key)));
+    }
+    for (const key of this.#workers.keys()) {
+      const handle = this.#requireHandle(key);
+      for (const name of handle.extensionPoints) {
         registrations.push({
-          pluginId: worker.pluginId,
-          exportName: worker.exportName,
+          pluginId: handle.plugin.id,
+          exportName: handle.config.exportName,
           extensionPoint: name,
+          specifier: handle.specifier,
         });
       }
     }
@@ -341,20 +228,330 @@ export class PluginHost {
     extensionPoint: string,
     request: unknown,
   ): Promise<unknown> {
-    const worker = this.#workers.get(workerKey(pluginId, exportName));
-    if (worker === undefined) {
+    const handle = this.#requireHandle(workerKey(pluginId, exportName));
+    if (handle.state !== State.Running) {
       throw new Error(
-        `No worker for plugin '${pluginId}' export '${exportName}'.`,
+        `Plugin worker '${pluginId}/${exportName}' is not running (state ${handle.state}).`,
       );
     }
-    return await worker.invoke(extensionPoint, request);
+    if (!handle.extensionPoints.has(extensionPoint)) {
+      throw new Error(
+        `Extension point '${extensionPoint}' is not registered by '${pluginId}/${exportName}'.`,
+      );
+    }
+    const actor = handle.actor as unknown as Record<string, (p: unknown) => Promise<unknown>>;
+    const call = actor[extensionPoint];
+    if (typeof call !== "function") {
+      throw new Error(
+        `Extension point '${extensionPoint}' has no remote callable on '${pluginId}/${exportName}'.`,
+      );
+    }
+    return await call(request);
+  }
+
+  /** Snapshot of per-worker lifecycle states (backward compatible registry field). */
+  states(): PluginState[] {
+    const result: PluginState[] = [];
+    for (const handle of this.#workers.values()) {
+      result.push({
+        pluginId: handle.plugin.id,
+        exportName: handle.config.exportName,
+        specifier: handle.specifier,
+        state: handle.state,
+        ...(handle.failure === undefined ? {} : { failure: handle.failure }),
+      });
+    }
+    return result;
+  }
+
+  /** Cascade-disables one worker and every transitive dependent, then restarts topologically. */
+  async reload(pluginId: string, exportName: string): Promise<void> {
+    const key = workerKey(pluginId, exportName);
+    const handle = this.#workers.get(key);
+    if (handle === undefined) return;
+    await this.#cascade(key);
+    await this.#startSubgraph([key]);
   }
 
   dispose(): void {
-    for (const worker of this.#workers.values()) {
-      worker.dispose();
+    for (const handle of this.#workers.values()) {
+      if (handle.actor !== undefined && handle.state !== State.Stopped) {
+        try {
+          void handle.actor.dispose();
+        } catch {
+          // best-effort shutdown
+        }
+      }
+      handle.state = State.Stopped;
     }
-    this.#workers.clear();
+  }
+
+  // —— Acquire router (main side) ——
+
+  #installAcquireRouter(): void {
+    if (this.#acquireRouterInstalled) return;
+    this.#acquireRouterInstalled = true;
+    // The router is attached per spawned worker (see #attachAcquireListener);
+    // nothing to install at construction.
+  }
+
+  /** Attach the acquire router to a freshly spawned worker. */
+  #attachAcquireListener(worker: Worker): void {
+    worker.addEventListener("message", (event: MessageEvent) => {
+      const frame = event.data as {
+        type?: string;
+        specifier?: unknown;
+        refId?: unknown;
+      };
+      if (frame?.type !== "__acquire-actor") return;
+      const specifier = frame.specifier;
+      const refId = frame.refId;
+      if (typeof specifier !== "string" || typeof refId !== "string") return;
+      const requester = event.currentTarget as Worker;
+      this.#routeAcquire(requester, specifier, refId);
+    });
+  }
+
+  /** Bootstraps the owner↔holder channel for a specifier acquire. */
+  #routeAcquire(requester: Worker, specifier: string, refId: string): void {
+    const key = this.#bySpecifier.get(specifier);
+    if (key === undefined) {
+      return;
+    }
+    const owner = this.#requireHandle(key);
+    if (owner.state !== State.Running || owner.worker === undefined) {
+      console.error(
+        `[plugin-host] acquire of '${specifier}' refused: owner is ${owner.state}.`,
+      );
+      return;
+    }
+    const { port1, port2 } = new MessageChannel();
+    // serveWorker dispatches __serve-ref / __ref-acquired; the specifier rides
+    // on the serve frame so the owner serves the right surface.
+    owner.worker.postMessage(
+      { type: "__serve-ref", refId, specifier, port: port1 },
+      { transfer: [port1] },
+    );
+    requester.postMessage(
+      { type: "__ref-acquired", refId, port: port2 },
+      { transfer: [port2] },
+    );
+  }
+
+  // —— Lifecycle ——
+
+  async #startWorker(key: string): Promise<void> {
+    const handle = this.#requireHandle(key);
+    if (handle.state === State.Running || handle.state === State.Starting) return;
+    handle.state = State.Starting;
+    handle.failure = undefined;
+    try {
+      const worker = new Worker(this.#options.workerEntryUrl, {
+        type: "module",
+        deno: {
+          permissions: buildWorkerPermissions(handle.plugin, this.#options),
+        },
+      });
+      this.#attachAcquireListener(worker);
+      // The worker's SDK reads its specifier and dependency specifiers from
+      // this per-worker message. It must be posted before spawn() runs the
+      // handshake: the SDK awaits the config before calling serveWorker, which
+      // is what sends the handshake frame.
+      worker.postMessage({
+        type: "maieutics-config",
+        payload: {
+          specifier: handle.specifier,
+          dependencies: this.#dependencySpecifiers(handle),
+        },
+      });
+      const actor = await spawn<WorkerRpc>(worker, {
+        codecs: [actorRefCodec],
+        signal: AbortSignal.timeout(this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS),
+        onDeath: (reason) => this.#handleDeath(key, reason),
+      });
+      handle.actor = actor;
+      handle.worker = worker;
+      await this.#initWorker(key);
+      handle.state = State.Running;
+    } catch (error) {
+      handle.state = State.Failed;
+      handle.failure = error instanceof Error ? error.message : String(error);
+      if (handle.worker !== undefined) {
+        try {
+          handle.worker.terminate();
+        } catch {
+          // already gone
+        }
+      }
+      throw error;
+    }
+  }
+
+  #initWorker(key: string): Promise<void> {
+    const handle = this.#requireHandle(key);
+    const ready = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Plugin worker '${key}' did not become ready.`));
+      }, this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS);
+      // addEventListener coexists with spawn's onmessage property (which owns
+      // the RPC response channel); the ready/init-error frames are host-side.
+      const onMessage = (event: MessageEvent): void => {
+        const frame = event.data as { type?: string; extensionPoints?: string[]; message?: string };
+        if (frame?.type === "ready") {
+          handle.worker.removeEventListener("message", onMessage);
+          for (const name of frame.extensionPoints ?? []) handle.extensionPoints.add(name);
+          clearTimeout(timeout);
+          resolve();
+        } else if (frame?.type === "init-error") {
+          handle.worker.removeEventListener("message", onMessage);
+          clearTimeout(timeout);
+          reject(new Error(frame.message ?? "Plugin worker failed to initialize."));
+        }
+      };
+      handle.worker.addEventListener("message", onMessage);
+    });
+    handle.worker.postMessage({
+      type: "init",
+      entryUrl: handle.config.entryUrl,
+      specifier: handle.specifier,
+    });
+    return ready;
+  }
+
+  #handleDeath(key: string, reason: unknown): void {
+    const handle = this.#workers.get(key);
+    if (handle === undefined || handle.state === State.Stopped) return;
+    handle.state = State.Crashed;
+    handle.failure = reason instanceof Error ? reason.message : String(reason);
+    handle.restarts += 1;
+    if (handle.restarts > (this.#options.maxRestarts ?? DEFAULT_MAX_RESTARTS)) {
+      handle.state = State.Disabled;
+    }
+    void this.#cascade(key);
+  }
+
+  async #cascade(rootKey: string): Promise<void> {
+    const closure = this.#dependencyClosure(rootKey);
+    // Reverse-topological waves: leaves first, wave-parallel, waves-serial.
+    const waves = this.#reverseWaves(closure);
+    for (const wave of waves) {
+      await Promise.all(wave.map((key) => this.#stopWorker(key)));
+    }
+  }
+
+  async #stopWorker(key: string): Promise<void> {
+    const handle = this.#workers.get(key);
+    if (handle === undefined || handle.state === State.Stopped || handle.state === State.Failed) {
+      return;
+    }
+    handle.state = State.Stopping;
+    const grace = this.#options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
+    const stopped = Promise.race([
+      handle.actor?.dispose().catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, grace)),
+    ]);
+    await stopped;
+    handle.state = State.Stopped;
+    handle.extensionPoints.clear();
+  }
+
+  async #startSubgraph(keys: string[]): Promise<void> {
+    const waves = this.#computeStartWaves(keys);
+    for (const wave of waves) {
+      await Promise.all(
+        wave.map((key) =>
+          this.#startWorker(key).catch((error) => {
+            const handle = this.#workers.get(key);
+            if (handle) handle.state = State.Failed;
+          })
+        ),
+      );
+    }
+  }
+
+  // —— Dependency graph (waves) ——
+
+  /** Canonical specifiers of the dependency workers this worker may acquire. */
+  #dependencySpecifiers(handle: WorkerHandle): string[] {
+    const result: string[] = [];
+    for (const depId of handle.plugin.dependencies ?? []) {
+      for (const candidate of this.#workers.values()) {
+        if (candidate.plugin.id === depId && candidate.specifier.length > 0) {
+          result.push(candidate.specifier);
+        }
+      }
+    }
+    return result;
+  }
+
+  #dependencyOf(key: string): string[] {
+    const handle = this.#workers.get(key);
+    if (handle === undefined) return [];
+    const result: string[] = [];
+    for (const depId of handle.plugin.dependencies ?? []) {
+      for (const [candidateKey, candidate] of this.#workers) {
+        if (candidate.plugin.id === depId) result.push(candidateKey);
+      }
+    }
+    return result;
+  }
+
+  #computeStartWaves(scope?: string[]): string[][] {
+    const keys = scope ?? [...this.#workers.keys()];
+    const remaining = new Set(keys);
+    const waves: string[][] = [];
+    while (remaining.size > 0) {
+      const wave = [...remaining].filter((key) =>
+        this.#dependencyOf(key).every((dep) => !remaining.has(dep))
+      );
+      if (wave.length === 0) {
+        // Cycle: break it deterministically (start everything left).
+        wave.push(...remaining);
+      }
+      for (const key of wave) remaining.delete(key);
+      waves.push(wave);
+    }
+    return waves;
+  }
+
+  #dependencyClosure(rootKey: string): string[] {
+    const closure = new Set<string>([rootKey]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [key, handle] of this.#workers) {
+        if (closure.has(key)) continue;
+        if (this.#dependencyOf(key).some((dep) => closure.has(dep))) {
+          closure.add(key);
+          grew = true;
+        }
+      }
+    }
+    return [...closure];
+  }
+
+  #reverseWaves(closure: string[]): string[][] {
+    const remaining = new Set(closure);
+    const waves: string[][] = [];
+    while (remaining.size > 0) {
+      const wave = [...remaining].filter((key) =>
+        this.#dependencyOf(key).every((dep) => !remaining.has(dep))
+      );
+      if (wave.length === 0) {
+        wave.push(...remaining);
+      }
+      for (const key of wave) remaining.delete(key);
+      waves.push(wave);
+    }
+    return waves;
+  }
+
+  #requireHandle(key: string): WorkerHandle {
+    const handle = this.#workers.get(key);
+    if (handle === undefined) {
+      throw new Error(`No worker for key '${key}'.`);
+    }
+    return handle;
   }
 }
 

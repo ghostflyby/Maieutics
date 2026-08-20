@@ -19,6 +19,8 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(ExtensionResultPayload))]
 [JsonSerializable(typeof(ExtensionErrorPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPayload))]
+[JsonSerializable(typeof(ExtensionRegistryPlugin))]
+[JsonSerializable(typeof(PluginStatePayload))]
 [JsonSerializable(typeof(ToolHookContextPayload))]
 [JsonSerializable(typeof(ToolPostHookContextPayload))]
 [JsonSerializable(typeof(Dictionary<string, JsonElement>))]
@@ -136,12 +138,23 @@ internal sealed record ExtensionResultPayload(JsonElement? Value = null);
 internal sealed record ExtensionErrorPayload(string Code, string Message);
 
 /// <summary>Host-to-kernel registry snapshot of scanned extension points per worker.</summary>
-internal sealed record ExtensionRegistryPayload(IReadOnlyList<ExtensionRegistryPlugin> Plugins);
+internal sealed record ExtensionRegistryPayload(
+    IReadOnlyList<ExtensionRegistryPlugin> Plugins,
+    IReadOnlyList<PluginStatePayload>? States = null);
 
 internal sealed record ExtensionRegistryPlugin(
     string PluginId,
     string ExportName,
-    IReadOnlyList<string> ExtensionPoints);
+    IReadOnlyList<string> ExtensionPoints,
+    string? Specifier = null);
+
+/// <summary>Per-worker lifecycle state published with every registry snapshot.</summary>
+internal sealed record PluginStatePayload(
+    string PluginId,
+    string ExportName,
+    string Specifier,
+    string State,
+    string? Failure = null);
 
 /// <summary>Context passed to a plugin's pre-invoke hook.</summary>
 internal sealed record ToolHookContextPayload(

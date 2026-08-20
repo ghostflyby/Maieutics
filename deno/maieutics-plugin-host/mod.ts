@@ -1,11 +1,11 @@
 /**
  * Maieutics plugin host process entry. The kernel spawns this process with the
  * control channel address and a plugin configuration file; the host creates
- * permission-scoped workers per plugin export and bridges `extension.*` bus
- * messages between the kernel and the workers.
+ * permission-scoped worker actors per plugin export via worker-actor's `spawn`
+ * and bridges control messages between the kernel and the workers.
  */
 
-import { type PluginConfig, PluginHost } from "./host.ts";
+import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
 import { connectBus } from "../shared/bus.ts";
 import { type ReplEnvelope } from "../shared/protocol.ts";
 
@@ -23,21 +23,6 @@ function requireEnv(name: string): string {
     );
   }
   return value;
-}
-
-function isExtensionInvoke(payload: unknown): payload is {
-  pluginId: string;
-  exportName: string;
-  extensionPoint: string;
-  request: unknown;
-} {
-  if (typeof payload !== "object" || payload === null) {
-    return false;
-  }
-  const candidate = payload as Record<string, unknown>;
-  return typeof candidate.pluginId === "string" &&
-    typeof candidate.exportName === "string" &&
-    typeof candidate.extensionPoint === "string";
 }
 
 async function main(): Promise<void> {
@@ -72,7 +57,7 @@ async function main(): Promise<void> {
   });
   bus.send({
     type: "extension.registry",
-    payload: registryPayload(registered),
+    payload: registryPayload(registered, host.states()),
   });
 
   const shutdown = (): void => {
@@ -82,44 +67,20 @@ async function main(): Promise<void> {
   globalThis.addEventListener("unload", shutdown);
 
   function handleMessage(envelope: ReplEnvelope): void {
-    if (envelope.type !== "extension.invoke") {
+    if (envelope.type === "plugin.reload") {
+      const payload = envelope.payload as { pluginId?: string; exportName?: string };
+      if (typeof payload?.pluginId === "string" && typeof payload.exportName === "string") {
+        void host.reload(payload.pluginId, payload.exportName).then(() => {
+          bus.send({
+            type: "extension.registry",
+            payload: registryPayload(host.extensions, host.states()),
+          });
+        }).catch((error: Error) => {
+          console.error(`[plugin-host] reload of '${payload.pluginId}' failed: ${error.message}`);
+        });
+      }
       return;
     }
-    const payload = envelope.payload;
-    if (!isExtensionInvoke(payload)) {
-      bus.send({
-        type: "extension.error",
-        correlationId: envelope.correlationId,
-        payload: {
-          code: "invalid_invoke",
-          message: "The extension.invoke payload is malformed.",
-        },
-      });
-      return;
-    }
-    void host.invoke(
-      payload.pluginId,
-      payload.exportName,
-      payload.extensionPoint,
-      payload.request,
-    )
-      .then((value) => {
-        bus.send({
-          type: "extension.result",
-          correlationId: envelope.correlationId,
-          payload: { value },
-        });
-      })
-      .catch((error: Error) => {
-        bus.send({
-          type: "extension.error",
-          correlationId: envelope.correlationId,
-          payload: {
-            code: "extension_failed",
-            message: error.message,
-          },
-        });
-      });
   }
 }
 
@@ -128,30 +89,45 @@ function registryPayload(
     pluginId: string;
     exportName: string;
     extensionPoint: string;
+    specifier: string;
   }>,
+  states: readonly PluginState[],
 ): {
   plugins: Array<
-    { pluginId: string; exportName: string; extensionPoints: string[] }
+    {
+      pluginId: string;
+      exportName: string;
+      extensionPoints: string[];
+      specifier?: string;
+    }
   >;
+  states?: readonly PluginState[];
 } {
-  const byWorker = new Map<string, Map<string, string[]>>();
+  const byWorker = new Map<string, Map<string, { points: string[]; specifier?: string }>>();
   for (const registration of registrations) {
     let workers = byWorker.get(registration.pluginId);
     if (workers === undefined) {
       workers = new Map();
       byWorker.set(registration.pluginId, workers);
     }
-    const points = workers.get(registration.exportName) ?? [];
-    points.push(registration.extensionPoint);
-    workers.set(registration.exportName, points);
+    const entry = workers.get(registration.exportName) ??
+      { points: [], specifier: registration.specifier };
+    entry.points.push(registration.extensionPoint);
+    entry.specifier ??= registration.specifier;
+    workers.set(registration.exportName, entry);
   }
   const plugins = [];
   for (const [pluginId, workers] of byWorker) {
-    for (const [exportName, extensionPoints] of workers) {
-      plugins.push({ pluginId, exportName, extensionPoints });
+    for (const [exportName, entry] of workers) {
+      plugins.push({
+        pluginId,
+        exportName,
+        extensionPoints: entry.points,
+        ...(entry.specifier === undefined ? {} : { specifier: entry.specifier }),
+      });
     }
   }
-  return { plugins };
+  return { plugins, states };
 }
 
 await main();

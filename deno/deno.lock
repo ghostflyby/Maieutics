@@ -57,6 +57,11 @@
           "jsr:@ghostflyby/aves@0.6.0",
           "jsr:@ghostflyby/worker-actor@0.1.0"
         ]
+      },
+      "maieutics-plugin-sdk": {
+        "dependencies": [
+          "jsr:@ghostflyby/worker-actor@0.1.0"
+        ]
       }
     }
   }

@@ -17,6 +17,9 @@ namespace Maieutics.Plugins;
 
 internal sealed record PluginRegistration(string PluginId, string ExportName, string ExtensionPoint);
 
+/// <summary>Per-plugin lifecycle state reported by the host (backward compatible new field).</summary>
+internal sealed record PluginState(string PluginId, string ExportName, string Specifier, string State, string? Failure);
+
 internal sealed record PluginHostStatus(
     PluginHostState State,
     int PluginCount,
@@ -94,6 +97,7 @@ internal sealed class PluginHostManager(
         new(StringComparer.Ordinal);
 
     private readonly List<PluginRegistration> registrations = [];
+    private readonly List<PluginState> states = [];
 
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
@@ -246,10 +250,21 @@ internal sealed class PluginHostManager(
 
     private void Start()
     {
+        PluginGraphResult graph;
         lock (gate)
         {
             descriptors.Clear();
-            descriptors.AddRange(ScanPlugins());
+            var scanned = ScanPlugins();
+            graph = PluginDependencyGraph.Validate(scanned);
+            foreach (var exclusion in graph.Exclusions)
+            {
+                logger.LogWarning(
+                    "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
+                    exclusion.PluginId,
+                    exclusion.Reason,
+                    exclusion.Detail);
+            }
+            descriptors.AddRange(graph.Enabled);
         }
 
         if (descriptors.Count == 0)
@@ -476,13 +491,24 @@ internal sealed class PluginHostManager(
                 descriptor.RootDirectory,
                 [
                     .. descriptor.Workers
-                        .Select(worker => new PluginHostConfigWorker(worker.ExportName, worker.EntryUrl))
+                        .Select(worker => new PluginHostConfigWorker(
+                            worker.ExportName,
+                            worker.EntryUrl,
+                            SpecifierOf(descriptor, worker.ExportName)))
                 ],
-                ToConfigPermissions(descriptor.Permissions))).ToArray());
+                ToConfigPermissions(descriptor.Permissions),
+                descriptor.Dependencies.ToArray())).ToArray());
         var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
         var path = Path.Combine(Path.GetTempPath(), $"mc-plugins-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, json);
         return path;
+    }
+
+    /// <summary>Canonical interop specifier of one export: `&lt;name&gt;/&lt;subpath&gt;` (`.` → bare name).</summary>
+    private static string SpecifierOf(PluginDescriptor descriptor, string exportName)
+    {
+        var name = descriptor.Name;
+        return exportName == "." ? name : $"{name}/{exportName[2..]}";
     }
 
     private static PluginHostConfigPermissions ToConfigPermissions(PluginPermissionGrants permissions)
@@ -625,6 +651,10 @@ internal sealed class PluginHostManager(
             foreach (var plugin in payload.Plugins)
                 foreach (var extensionPoint in plugin.ExtensionPoints)
                     registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+
+            states.Clear();
+            foreach (var state in payload.States ?? [])
+                states.Add(new PluginState(state.PluginId, state.ExportName, state.Specifier, state.State, state.Failure));
 
             logger.LogInformation(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",

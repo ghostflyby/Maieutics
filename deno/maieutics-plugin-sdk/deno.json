@@ -4,8 +4,11 @@
   "exports": {
     ".": "./mod.ts"
   },
+  "imports": {
+    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0"
+  },
   "tasks": {
-    "check": "deno check mod.ts mod_test.ts",
-    "test": "deno test --allow-read"
+    "check": "deno check mod.ts mod_test.ts actor_ref.ts",
+    "test": "deno test --allow-read --allow-env --allow-net --unstable-worker-options"
   }
 }

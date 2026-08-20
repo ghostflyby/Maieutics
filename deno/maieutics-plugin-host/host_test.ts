@@ -15,7 +15,11 @@ function createPlugin(dir: string, source: string): PluginConfig {
     id: "test",
     rootDir: dir,
     permissions: { read: [dir] },
-    workers: [{ exportName: "./main", entryUrl: pathToFileUrl(entryPath) }],
+    workers: [{
+      exportName: "./main",
+      entryUrl: pathToFileUrl(entryPath),
+      specifier: "@maieutics/test/main",
+    }],
   };
 }
 

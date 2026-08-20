@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { defineExtensionPoint, ExtensionPoint } from "./mod.ts";
 
 Deno.test("global symbols are shared across any module instance", () => {
@@ -37,8 +37,16 @@ Deno.test("defineExtensionPoint rejects a bare object without a handler", () => 
   );
 });
 
-Deno.test("the sdk module is self-contained and imports nothing", async () => {
+Deno.test("the sdk module imports only worker-actor and its actor ref module", async () => {
   const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
-  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
-  assertEquals(imports, []);
+  const imports = [...source.matchAll(/^import[^\n]*?from\s+"([^"]+)"/gm)].map((match) => match[1]);
+  assert(imports.length > 0, "expected at least one import in the sdk module");
+  for (const specifier of imports) {
+    assert(
+      specifier === "./actor_ref.ts" ||
+        specifier === "@ghostflyby/worker-actor" ||
+        specifier.startsWith("@ghostflyby/worker-actor/"),
+      `unexpected import '${specifier}' in the sdk module`,
+    );
+  }
 });

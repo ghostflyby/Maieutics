@@ -21,13 +21,16 @@ public sealed class PermissionProfileLoaderTests
         Directory.CreateDirectory(root);
         try
         {
+            // A platform root path (e.g. / on Unix, C:\ on Windows): rooted, so the loader must
+            // not resolve it against the profile directory.
+            var absolutePath = Path.GetFullPath(Path.GetPathRoot(Path.GetTempPath())!);
             var path = Path.Combine(root, "permissions.json");
             File.WriteAllText(
                 path,
-                """
+                $$"""
                 {
                   "sets": {
-                    "default": { "read": { "allow": ["./src", "/etc/ssl"], "deny": ["./src/secret"] } }
+                    "default": { "read": { "allow": ["./src", "{{absolutePath.Replace("\\", "\\\\")}}"], "deny": ["./src/secret"] } }
                   },
                   "default": "default"
                 }
@@ -36,7 +39,7 @@ public sealed class PermissionProfileLoaderTests
             var layer = PermissionProfileLoader.Load(path);
 
             var read = layer.Kinds[PermissionKind.Read];
-            read.Allow.Should().Equal(Path.Combine(root, "src"), "/etc/ssl");
+            read.Allow.Should().Equal(Path.Combine(root, "src"), absolutePath);
             read.Deny.Should().Equal(Path.Combine(root, "src", "secret"));
         }
         finally

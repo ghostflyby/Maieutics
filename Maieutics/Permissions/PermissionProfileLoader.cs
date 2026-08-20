@@ -101,8 +101,11 @@ internal static class PermissionProfileLoader
         return values
             .Where(static value => value.Length > 0)
             .Select(value =>
-                Path.IsPathFullyQualified(value)
-                    ? value
+                // Path.IsPathRooted is the cross-platform absolute-path test: it treats a leading
+                // '/' (e.g. /etc/ssl) as rooted on every platform, whereas IsPathFullyQualified
+                // would resolve such a path against the base directory on Windows.
+                Path.IsPathRooted(value)
+                    ? Path.GetFullPath(value)
                     : Path.GetFullPath(value, baseDirectory))
             .ToArray();
     }

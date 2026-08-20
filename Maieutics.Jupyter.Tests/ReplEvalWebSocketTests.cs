@@ -37,7 +37,7 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task OrderedExecutionRoutesInputAndDisposesGracefully()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         var credentials = new ReplControlCredentialRegistry();
@@ -122,7 +122,7 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task HelloCredentialAuthenticatesButIsNotEchoed()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         var credentials = new ReplControlCredentialRegistry();
         var credential = credentials.Issue("session-1");
@@ -149,7 +149,7 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task UnauthenticatedHelloIsRejected()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         await using var host = new ReplEvalWebSocketHost(
             new ReplControlSessionRegistry(),
             new ReplControlCredentialRegistry());
@@ -169,7 +169,7 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task DuplicateTerminalTerminatesConnection()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         await using var host = new ReplEvalWebSocketHost(registry, new ReplControlCredentialRegistry());
@@ -204,7 +204,7 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task CancelWaitsForCancelledTerminalThenConnectionClosesGracefully()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         await using var host = new ReplEvalWebSocketHost(registry, new ReplControlCredentialRegistry());
@@ -272,9 +272,9 @@ public sealed class ReplEvalWebSocketTests
         return Encoding.UTF8.GetString(ReplEvalProtocol.Serialize(envelope));
     }
 
-    private static CancellationTokenSource CreateDeadline()
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         return deadline;
     }

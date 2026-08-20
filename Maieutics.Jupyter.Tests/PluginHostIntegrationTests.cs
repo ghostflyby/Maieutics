@@ -113,7 +113,8 @@ public sealed class PluginHostIntegrationTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
@@ -168,7 +169,8 @@ public sealed class PluginHostIntegrationTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
         var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();

@@ -11,7 +11,7 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class DenoReplRegistryTests
 {
-    [Fact(Timeout = 30_000)]
+    [Fact]
     public async Task FunctionsExposeFiveStrictReplSchemas()
     {
         var workspace = Workspace.Create(Directory.GetCurrentDirectory(), Directory.GetCurrentDirectory());

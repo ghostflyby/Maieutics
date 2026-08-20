@@ -96,7 +96,7 @@ public sealed class TerminalRegistryTests
         process.Disposed.Should().BeTrue();
     }
 
-    [Fact(Timeout = 10_000)]
+    [Fact]
     public async Task SnapshotOfMissingSessionFailsWithoutStartingOne()
     {
         var process = new FakeTerminalProcess();

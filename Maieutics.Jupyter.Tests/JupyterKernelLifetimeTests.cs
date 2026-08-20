@@ -45,11 +45,12 @@ public sealed class JupyterKernelLifetimeTests
         var coordinator = new FakeInterruptCoordinator();
         using var lifetime =
             new JupyterKernelLifetime(application, coordinator, NullLogger<JupyterKernelLifetime>.Instance);
+        var cancellation = TestContext.Current.CancellationToken;
 
-        await lifetime.WaitForStartAsync(CancellationToken.None);
-        await lifetime.StopAsync(CancellationToken.None);
-        await lifetime.WaitForStartAsync(CancellationToken.None);
-        await lifetime.StopAsync(CancellationToken.None);
+        await lifetime.WaitForStartAsync(cancellation);
+        await lifetime.StopAsync(cancellation);
+        await lifetime.WaitForStartAsync(cancellation);
+        await lifetime.StopAsync(cancellation);
     }
 
     [Fact]

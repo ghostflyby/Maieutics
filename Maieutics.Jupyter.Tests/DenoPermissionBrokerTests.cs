@@ -73,7 +73,7 @@ public sealed class DenoPermissionBrokerTests
         }
     }
 
-    [Fact(Timeout = 30_000)]
+    [Fact]
     public async Task ResolverMatchesExactDenyOverAllow()
     {
         var policy = Build(
@@ -85,7 +85,7 @@ public sealed class DenoPermissionBrokerTests
         decision.Reason.Should().Contain("read access");
     }
 
-    [Fact(Timeout = 30_000)]
+    [Fact]
     public async Task ResolverAllowsExactGrantAndDeniesUnknownKind()
     {
         var policy = Build(

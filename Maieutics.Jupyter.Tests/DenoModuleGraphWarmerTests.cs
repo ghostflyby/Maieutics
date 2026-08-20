@@ -9,7 +9,8 @@ public sealed class DenoModuleGraphWarmerTests
     [Fact(Timeout = 120_000)]
     public async Task WarmSucceedsWithARealDenoCacheAndDoesNotThrowOnFailure()
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var options = new DenoReplOptions { Executable = "deno" };
         var modules = new DenoReplModule();
         var warmer = new DenoModuleGraphWarmer(options, modules, NullLogger<DenoModuleGraphWarmer>.Instance);

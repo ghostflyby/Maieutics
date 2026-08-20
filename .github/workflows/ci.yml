@@ -128,4 +128,4 @@ jobs:
       - name: Smoke test published executable
         env:
           MAIEUTICS_TEST_HOST_EXECUTABLE: ${{ github.workspace }}/${{ matrix.executable }}
-        run: dotnet test Maieutics.Jupyter.Tests/Maieutics.Jupyter.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~GenericHostStartsRealKernelAndStopsAfterShutdown|FullyQualifiedName~ExternalHostCompletesWorkspaceFunctionLoop|FullyQualifiedName~ExternalHostCompletesDenoReplEvalBridge"
+        run: dotnet test Maieutics.Jupyter.Tests/Maieutics.Jupyter.Tests.csproj --configuration Release --no-restore --filter-trait "Category=Smoke"

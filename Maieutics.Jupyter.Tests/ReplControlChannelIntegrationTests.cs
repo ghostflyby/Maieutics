@@ -42,7 +42,8 @@ public sealed class ReplControlChannelIntegrationTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
         var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
@@ -97,7 +98,8 @@ public sealed class ReplControlChannelIntegrationTests
             // Windows fails explicitly until the named-pipe bootstrap milestone.
             return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
         var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
@@ -149,7 +151,8 @@ public sealed class ReplControlChannelIntegrationTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
         var credentials = new ReplControlCredentialRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();

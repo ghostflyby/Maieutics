@@ -32,7 +32,7 @@ public sealed class MaieuticsHostIntegrationTests
     [Fact(Timeout = 45_000)]
     public async Task CompositionRootStartsKernelInProcess()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(20));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-in-process-{Guid.NewGuid():N}.json");
         var configurationFile = CreateEmptyConfigurationFile("in-process");
@@ -109,7 +109,7 @@ public sealed class MaieuticsHostIntegrationTests
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
     public async Task InProcessHostCompletesToolLoopWithoutPublishingToolLifecycle(OpenAiApiFlavor apiFlavor)
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-tool-{Guid.NewGuid():N}.json");
         var configurationFile = CreateEmptyConfigurationFile("tool");
@@ -167,7 +167,7 @@ public sealed class MaieuticsHostIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task InProcessHostRoutesDenoReplOutputsByJupyterMessageType()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-repl-{Guid.NewGuid():N}.json");
         var configurationFile = CreateEmptyConfigurationFile("repl");
@@ -284,7 +284,7 @@ public sealed class MaieuticsHostIntegrationTests
     [Fact(Timeout = 45_000)]
     public async Task ChatCompletionsReasoningIsPrivateAcrossTheProviderAndJupyterBoundaries()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-reasoning-{Guid.NewGuid():N}.json");
         var configurationFile = Path.Combine(
@@ -389,7 +389,7 @@ public sealed class MaieuticsHostIntegrationTests
     [Fact(Timeout = 45_000)]
     public async Task InProcessHostCompletesAnthropicToolLoopWithoutPublishingToolLifecycle()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(30));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-anthropic-tool-{Guid.NewGuid():N}.json");
         var configurationFile = CreateEmptyConfigurationFile("anthropic-tool");
@@ -454,11 +454,12 @@ public sealed class MaieuticsHostIntegrationTests
     }
 
     [Theory(Timeout = 45_000)]
+    [Trait("Category", "Smoke")]
     [InlineData(OpenAiApiFlavor.Responses)]
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
     public async Task GenericHostStartsRealKernelAndStopsAfterShutdown(OpenAiApiFlavor apiFlavor)
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(35));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(35));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-host-{Guid.NewGuid():N}.json");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
@@ -526,11 +527,12 @@ public sealed class MaieuticsHostIntegrationTests
     }
 
     [Theory(Timeout = 60_000)]
+    [Trait("Category", "Smoke")]
     [InlineData(OpenAiApiFlavor.Responses)]
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
     public async Task ExternalHostCompletesWorkspaceFunctionLoop(OpenAiApiFlavor apiFlavor)
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-native-tool-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -581,9 +583,10 @@ public sealed class MaieuticsHostIntegrationTests
     }
 
     [Fact(Timeout = 120_000)]
+    [Trait("Category", "Smoke")]
     public async Task ExternalHostCompletesDenoReplEvalBridge()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(90));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(90));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-native-repl-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -654,7 +657,7 @@ public sealed class MaieuticsHostIntegrationTests
         var mcpServer = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE");
         if (string.IsNullOrWhiteSpace(mcpServer)) return;
 
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-native-mcp-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -716,7 +719,7 @@ public sealed class MaieuticsHostIntegrationTests
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
     public async Task ReloadedProviderConfigurationIsUsedByTheNextNotebookCell(OpenAiApiFlavor apiFlavor)
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-hot-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -792,7 +795,7 @@ public sealed class MaieuticsHostIntegrationTests
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
     public async Task NotebookSwitchesBetweenOpenAiAndAnthropicWithCanonicalHistory(OpenAiApiFlavor apiFlavor)
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-switch-{Guid.NewGuid():N}.json");
         var configurationFile = CreateEmptyConfigurationFile("switch");
@@ -867,7 +870,7 @@ public sealed class MaieuticsHostIntegrationTests
     [InlineData(OpenAiApiFlavor.ChatCompletions)]
     public async Task ExternalHostSwitchesBetweenOpenAiAndAnthropic(OpenAiApiFlavor apiFlavor)
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(60));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(60));
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-process-switch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var connection = JupyterConnectionInfo.CreateLocalTcp();
@@ -1260,9 +1263,9 @@ public sealed class MaieuticsHostIntegrationTests
             });
     }
 
-    private static CancellationTokenSource CreateDeadline(TimeSpan timeout)
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
         return deadline;
     }

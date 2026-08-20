@@ -69,7 +69,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -86,7 +87,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -115,7 +117,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -159,7 +162,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -188,7 +192,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -217,7 +222,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -261,7 +267,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(
@@ -302,7 +309,8 @@ public sealed class ReplControlHostTests
     {
         if (!OperatingSystem.IsLinux()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId + 1_000_000, "other-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -318,7 +326,8 @@ public sealed class ReplControlHostTests
     {
         if (!OperatingSystem.IsLinux()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
@@ -339,7 +348,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var (application, host) = await ReplControlTestHost.StartAsync(
             new ReplControlSessionRegistry(),
             timeout.Token);
@@ -356,7 +366,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var root = Path.Combine(Path.GetTempPath(), $"mc-tools-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         try
@@ -399,7 +410,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var invocations = 0;
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
@@ -433,7 +445,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var invocations = 0;
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
@@ -471,7 +484,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
         var invocations = 0;
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "test-session");
@@ -499,7 +513,8 @@ public sealed class ReplControlHostTests
     {
         if (OperatingSystem.IsWindows()) return;
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
         var registry = new ReplControlSessionRegistry();
         var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token);
         await using (application)

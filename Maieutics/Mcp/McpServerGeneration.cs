@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
@@ -454,7 +455,8 @@ internal sealed class McpServerGeneration
                 definition.Id,
                 stdio,
                 definition.ShutdownTimeout,
-                loggerFactory),
+                loggerFactory,
+                EffectivePolicy.Default),
             HttpMcpTransportDefinition http => CreateHttpTransport(
                 definition.Id,
                 http,
@@ -472,8 +474,15 @@ internal sealed class McpServerGeneration
         string id,
         StdioMcpTransportDefinition transport,
         TimeSpan shutdownTimeout,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        EffectivePolicy policy)
     {
+        // The MCP server child is a general process start: when the policy restricts run, reject a
+        // command outside the allowlist before the child is spawned (ADR 0018 §7, Phase 6). The
+        // default policy leaves run unrestricted, so nothing changes by default. Environment stays
+        // the MCP SDK's curated allowlist plus explicit overrides; policy env integration is a
+        // follow-up once the allowlists are unified.
+        EnsureCommandAllowed(transport.Command, policy);
         var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
         foreach (var pair in transport.EnvironmentVariables ?? new Dictionary<string, string?>(StringComparer.Ordinal))
             environment[pair.Key] = pair.Value;
@@ -490,6 +499,26 @@ internal sealed class McpServerGeneration
                 ShutdownTimeout = shutdownTimeout
             },
             loggerFactory);
+    }
+
+    /// <summary>Rejects an MCP server command when the policy restricts <c>run</c>; the default
+    /// policy leaves it unrestricted (ADR 0018 §7, Phase 6). Internal so tests can exercise the
+    /// check directly.</summary>
+    internal static void EnsureCommandAllowed(string command, EffectivePolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        var run = policy.For(PermissionKind.Run);
+        if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
+
+        foreach (var allowed in run.Allow)
+            if (allowed.Length > 0 &&
+                command.StartsWith(allowed, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal))
+                return;
+
+        throw new ArgumentException(
+            $"The MCP server command '{command}' is not permitted by the effective policy.",
+            nameof(command));
     }
 
     private static HttpClientTransport CreateHttpTransport(

@@ -1,7 +1,9 @@
 using System.IO.Pipelines;
 using System.Text.Json;
 using FluentAssertions;
+using Maieutics.Execution;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -13,6 +15,48 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class McpServerGenerationTests
 {
+    [Fact]
+    public void RestrictedRunPolicyRejectsAnMcpServerCommand()
+    {
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-server"] }));
+
+        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted);
+
+        check.Should().Throw<ArgumentException>()
+            .WithMessage("*not permitted by the effective policy*");
+    }
+
+    [Fact]
+    public void RestrictedRunPolicyAllowsAMatchingCommand()
+    {
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-server"] }));
+
+        McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-server", restricted);
+    }
+
+    [Fact]
+    public void DefaultPolicyAllowsAnyCommand()
+    {
+        McpServerGeneration.EnsureCommandAllowed("/usr/bin/anything", EffectivePolicy.Default);
+    }
+
+    private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
+    {
+        return PermissionLayerStore.Build(
+            [new PermissionLayer { Kinds = kinds.ToDictionary(static entry => entry.Kind, static entry => entry.Rules) }],
+            new VariableTable(new EmptyVariableSource()));
+    }
+
+    private sealed class EmptyVariableSource : IPermissionVariableSource
+    {
+        public string? GetVariable(string name)
+        {
+            return null;
+        }
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task OfficialStreamServerDiscoversAndInvokesAllExposedTools()
     {

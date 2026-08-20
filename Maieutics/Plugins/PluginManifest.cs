@@ -205,6 +205,53 @@ internal static class PluginManifest
                !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    ///     Resolves the local (file/relative) targets of a project's deno.json imports to their
+    ///     package directories. Remote (jsr:/npm:/http) imports are skipped: they are resolved by the
+    ///     Deno toolchain during install, not by the kernel.
+    /// </summary>
+    internal static IEnumerable<string> ReadLocalImportTargets(string projectDirectory)
+    {
+        var denoJson = Path.Combine(projectDirectory, "deno.json");
+        if (!File.Exists(denoJson)) yield break;
+
+        JsonElement imports;
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(denoJson));
+            imports = document.RootElement.TryGetProperty("imports", out var value)
+                ? value.Clone()
+                : default;
+        }
+        catch (JsonException)
+        {
+            yield break;
+        }
+        if (imports.ValueKind != JsonValueKind.Object) yield break;
+
+        foreach (var property in imports.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.String) continue;
+            var target = property.Value.GetString();
+            if (string.IsNullOrWhiteSpace(target)) continue;
+            if (target.StartsWith("jsr:", StringComparison.Ordinal) ||
+                target.StartsWith("npm:", StringComparison.Ordinal) ||
+                target.StartsWith("http", StringComparison.Ordinal))
+                continue;
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(target, projectDirectory);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                continue;
+            }
+            yield return fullPath;
+        }
+    }
+
     private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
     {
         return new PluginPermissionGrants(

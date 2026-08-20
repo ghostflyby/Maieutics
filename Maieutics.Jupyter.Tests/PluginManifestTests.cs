@@ -147,6 +147,30 @@ public sealed class PluginManifestTests
         descriptor.Workers[0].ExportName.Should().Be("ok");
     }
 
+    [Fact]
+    public void ResolvesLocalImportTargetsAndSkipsRemoteOnes()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"mc-plugin-project-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(Path.Combine(directory, "local-dep"));
+        File.WriteAllText(
+            Path.Combine(directory, "deno.json"),
+            """
+            {
+              "imports": {
+                "@local": "./local-dep/mod.ts",
+                "@std": "jsr:@std/assert@1",
+                "@npm": "npm:left-pad@1",
+                "@http": "https://example.com/x.ts"
+              }
+            }
+            """);
+
+        var targets = PluginManifest.ReadLocalImportTargets(directory).ToArray();
+        targets.Should().HaveCount(1);
+        targets[0].Should().Be(Path.GetFullPath(Path.Combine(directory, "local-dep", "mod.ts")));
+    }
+
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)
     {
         if (PluginManifest.TryLoad(

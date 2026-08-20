@@ -447,32 +447,44 @@ internal sealed class PluginHostManager(
         if (!Directory.Exists(pluginsRoot)) return [];
 
         var result = new List<PluginDescriptor>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var directory in Directory.EnumerateDirectories(pluginsRoot))
-            if (PluginManifest.TryLoad(directory, out var descriptor, out var error))
+        {
+            // A subdirectory is a plugin project: it is itself a plugin (its own
+            // maieutics.json), and its deno.json imports declare the installed
+            // plugins (local file/workspace packages whose directory carries a
+            // maieutics.json). jsr:/npm: imports are not resolved here yet.
+            foreach (var descriptor in ScanProject(directory))
             {
-                if (!RequiresProcessIsolation(descriptor))
+                if (seen.Add(descriptor.Id))
                 {
                     result.Add(descriptor);
                     logger.LogInformation(
-                        "Discovered Maieutics plugin '{PluginName}' with {WorkerCount} extension carrier(s).",
+                        "Discovered Maieutics plugin '{PluginName}' with {WorkerCount} worker entrypoint(s).",
                         descriptor.Name,
                         descriptor.Workers.Count);
-                    continue;
                 }
+            }
+        }
+        return result;
+    }
 
-                logger.LogWarning(
-                    "Plugin '{Directory}' requires process isolation (run/ffi or isolation=process), " +
-                    "which is not implemented yet; it is disabled.",
-                    Path.GetFileName(directory));
-            }
-            else if (error.Contains("is not a Maieutics plugin", StringComparison.Ordinal))
-            {
-            }
-            else
-            {
-                logger.LogWarning("Skipping plugin directory '{Directory}': {Error}", directory, error);
-            }
+    /// <summary>Scans one plugin project directory: itself, plus its imports-declared local plugins.</summary>
+    private List<PluginDescriptor> ScanProject(string projectDirectory)
+    {
+        var result = new List<PluginDescriptor>();
+        if (PluginManifest.TryLoad(projectDirectory, out var self, out _) &&
+            !RequiresProcessIsolation(self))
+            result.Add(self);
 
+        foreach (var importTarget in PluginManifest.ReadLocalImportTargets(projectDirectory))
+        {
+            var packageDirectory = Path.GetDirectoryName(importTarget);
+            if (packageDirectory is null || !Directory.Exists(packageDirectory)) continue;
+            if (PluginManifest.TryLoad(packageDirectory, out var plugin, out _) &&
+                !RequiresProcessIsolation(plugin))
+                result.Add(plugin);
+        }
         return result;
     }
 

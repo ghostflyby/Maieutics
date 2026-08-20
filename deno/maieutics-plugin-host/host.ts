@@ -757,7 +757,8 @@ export class PluginHost {
       consumer.postToWorker({
         type: "actor-acquired",
         refId: request.refId,
-        error: `Plugin dependency '${request.specifier}' is not declared by '${consumer.pluginId}'.`,
+        error:
+          `Plugin dependency '${request.specifier}' is not declared by '${consumer.pluginId}'.`,
       });
       return;
     }

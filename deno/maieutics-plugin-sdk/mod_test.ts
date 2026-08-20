@@ -1,10 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import {
-  createActorCaller,
-  defineExtensionPoint,
-  ExtensionPoint,
-  serveActor,
-} from "./mod.ts";
+import { createActorCaller, defineExtensionPoint, ExtensionPoint, serveActor } from "./mod.ts";
 
 Deno.test("global symbols are shared across any module instance", () => {
   assertEquals(

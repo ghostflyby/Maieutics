@@ -348,7 +348,7 @@ export function createActorCaller(
   return async (path, args) => {
     if (port === undefined) {
       port = await acquire();
-        pending = new Map<number, PendingRemote>();
+      pending = new Map<number, PendingRemote>();
       port.start();
       port.addEventListener("message", onMessage);
     }

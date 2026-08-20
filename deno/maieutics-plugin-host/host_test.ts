@@ -351,7 +351,8 @@ Deno.test("reload stops the reloaded plugin and its dependents, then restarts th
     const value = await host.invoke("con", "./main", "McpDiscover", {
       reason: "startup",
     }) as Array<{ doubled?: number }>;
-    assertEquals(value[0].doubled, 63);  } finally {
+    assertEquals(value[0].doubled, 63);
+  } finally {
     host.dispose();
   }
 });

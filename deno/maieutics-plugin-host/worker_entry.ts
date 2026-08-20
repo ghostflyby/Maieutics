@@ -64,7 +64,9 @@ function makeStubSource(
 ): string {
   const lines = [
     `import { createActorCaller } from ${JSON.stringify(SDK_MODULE_URL)};`,
-    `const caller = createActorCaller(() => globalThis.__maieuticsAcquire(${JSON.stringify(specifier)}));`,
+    `const caller = createActorCaller(() => globalThis.__maieuticsAcquire(${
+      JSON.stringify(specifier)
+    }));`,
   ];
   for (const name of exportNames) {
     if (name === "default") {
@@ -73,9 +75,7 @@ function makeStubSource(
       );
       continue;
     }
-    const safe = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
-      ? name
-      : JSON.stringify(name);
+    const safe = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
     lines.push(
       `export const ${safe} = (...args) => caller([${JSON.stringify(name)}], args);`,
     );

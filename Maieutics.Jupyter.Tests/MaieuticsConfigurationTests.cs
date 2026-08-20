@@ -114,6 +114,56 @@ public sealed class MaieuticsConfigurationTests
         }
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task PollingChangeTokenFiresWhenContentChangesEvenIfMetadataStampIsRestored()
+    {
+        // Deterministic regression for the Windows-only flake in
+        // RuntimeInitializationReconcilesConfigurationChangesDuringProviderCreation.
+        //
+        // The poller used to capture only the metadata stamp (exists, length, last-write ticks)
+        // when the change token was constructed and fired only when that stamp differed. On
+        // Windows a rewrite can keep the metadata stamp identical (NTFS coalesces rapid
+        // same-length writes, or a scheduling race lands the write before the token captured its
+        // initial stamp), so the token never fired and the test timed out as TaskCanceledException.
+        //
+        // The fix adds a content hash to the stamp: the token fires when either the metadata or
+        // the content changes. This test injects the exact race deterministically -- rewrite the
+        // file, then roll the last-write time back to the pre-write value -- and asserts the token
+        // still fires. Synchronization uses the change callback (a completion notification), not
+        // a sleep-and-poll loop; the bounded WaitAsync only guards against a poller that never
+        // runs at all.
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-stamp-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        try
+        {
+            File.WriteAllText(configurationFile, "one");
+            var initialWriteTime = new FileInfo(configurationFile).LastWriteTimeUtc;
+
+            using var provider = MaieuticsConfigurationFileProvider.Create(configurationFile);
+            var token = provider.Provider.Watch("maieutics.json");
+
+            // Inject the race: the write completes and the metadata stamp is restored so a
+            // metadata-only poller cannot distinguish "before" from "after". The content changes.
+            File.WriteAllText(configurationFile, "two");
+            File.SetLastWriteTimeUtc(configurationFile, initialWriteTime);
+
+            var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = token.RegisterChangeCallback(
+                static state => ((TaskCompletionSource?)state)?.TrySetResult(),
+                changed);
+
+            // The content hash must make the token fire within several poll intervals (250 ms
+            // each). The bounded wait is a completion notification with a fallback timeout, not a
+            // polling loop.
+            await changed.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     [Fact(Timeout = 40_000)]
     public async Task RuntimeInitializationAllowsNoModelOrProviderConfiguration()
     {

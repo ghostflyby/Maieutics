@@ -279,7 +279,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
             }
         }
 
-        private readonly record struct FileStamp(bool Exists, long Length, long LastWriteTicks)
+        private readonly record struct FileStamp(bool Exists, long Length, long LastWriteTicks, ulong ContentHash)
         {
             internal static FileStamp Read(string path)
             {
@@ -288,17 +288,43 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
                     var file = new FileInfo(path);
                     file.Refresh();
                     return file.Exists
-                        ? new FileStamp(true, file.Length, file.LastWriteTimeUtc.Ticks)
+                        ? new FileStamp(true, file.Length, file.LastWriteTimeUtc.Ticks, ContentHashOf(path))
                         : default;
                 }
                 catch (IOException)
                 {
-                    return new FileStamp(true, -1, DateTime.UtcNow.Ticks);
+                    return new FileStamp(true, -1, DateTime.UtcNow.Ticks, 0);
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    return new FileStamp(true, -1, DateTime.UtcNow.Ticks);
+                    return new FileStamp(true, -1, DateTime.UtcNow.Ticks, 0);
                 }
+            }
+
+            // The content hash closes the Windows-only gap where a rewrite keeps the metadata
+            // stamp identical (NTFS coalesces rapid same-length writes or a scheduling race
+            // lands the write before the token captured its initial stamp). Without it the
+            // poller never observes a difference and the reload silently never fires.
+            private static ulong ContentHashOf(string path)
+            {
+                const int maxHashedBytes = 64 * 1024;
+                var buffer = new byte[maxHashedBytes];
+                int read;
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    read = stream.Read(buffer, 0, buffer.Length);
+                }
+
+                const ulong offsetBasis = 14695981039346656037UL;
+                const ulong prime = 1099511628211UL;
+                var hash = offsetBasis;
+                for (var index = 0; index < read; index++)
+                {
+                    hash ^= buffer[index];
+                    hash *= prime;
+                }
+
+                return hash;
             }
         }
     }

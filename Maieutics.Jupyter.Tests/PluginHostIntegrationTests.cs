@@ -309,11 +309,17 @@ public sealed class PluginHostIntegrationTests
                 "name": "@maieutics/{{pluginName}}",
                 "version": "0.1.0",
                 "exports": { "./main": "./mod.ts" },
-                "permissions": { "default": { "read": ["./"] } },
-                "maieutics": { "isolation": "auto" }
+                "permissions": { "default": { "read": ["./"] } }
               }
               """);
         File.WriteAllText(
+            Path.Combine(directory, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);        File.WriteAllText(
             Path.Combine(directory, "mod.ts"),
             pluginName == "rejecting"
                 ? """

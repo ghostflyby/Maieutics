@@ -292,8 +292,12 @@ export function depActor<T>(
 interface WorkerInitConfig {
   /** Canonical specifier of this worker's plugin export. */
   specifier: string;
-  /** Canonical specifiers this worker may acquire (declared dependencies). */
-  dependencies: readonly string[];
+  /**
+   * Actor-entry registry of the declared dependencies: the canonical specifier
+   * and entry file URL of each dependency worker this plugin may call. The
+   * load hook redirects only import edges that resolve to one of these.
+   */
+  actorEntries: readonly { specifier: string; entryUrl: string }[];
 }
 
 let ownSpecifierValue = "";
@@ -343,7 +347,7 @@ export async function initPluginWorker(): Promise<void> {
     }
     configResolve?.({
       specifier: parsed.specifier,
-      dependencies: Array.isArray(parsed.dependencies) ? parsed.dependencies : [],
+      actorEntries: Array.isArray(parsed.actorEntries) ? parsed.actorEntries : [],
     });
   });
 
@@ -357,7 +361,7 @@ export async function initPluginWorker(): Promise<void> {
     (globalThis as unknown as { __maieuticsWorkerId: string }).__maieuticsWorkerId = frame.refId;
   });
 
-  installDependencyLoadHook(config.dependencies);
+  installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
     codecs: [actorRefCodec],
@@ -684,31 +688,54 @@ function createRefProxyForStub(
  * the only runtime resolver.
  */
 /**
- * Load hook: intercepts declared dependency specifiers inside the worker's
- * module graph and serves a synthesized stub whose default export is the lazy
- * acquire surface. Consumers import the specifier's default (via `depActor`
- * with a `typeof import(...)` type), so no export names are needed at runtime.
- * The import map used for `deno check`/editors resolves the same specifiers to
+ * Load hook: intercepts import edges inside the worker's module graph that
+ * resolve to a registered actor entry, and serves a synthesized stub whose
+ * default export is the lazy acquire surface. Only edges that hit the
+ * registry (two-way match below) are redirected; every other import —
+ * local files, third-party jsr/npm packages — passes through unchanged. The
+ * import map used for `deno check`/editors resolves the same specifiers to
  * the real module (compile-time `Remote<T>`); this hook is the only runtime
  * resolver.
+ *
+ * The two-way match covers the forms a consumer may write:
+ *   - canonical: the raw specifier, normalized (strip `jsr:` prefix, strip the
+ *     `@version` segment after the package name) equals a registry specifier;
+ *   - resolved: `nextResolve` (which applies the import map) yields a URL that
+ *     equals a registry entry URL (import-map aliases, relative paths, ...).
  */
-function installDependencyLoadHook(dependencies: readonly string[]): void {
-  if (dependencies.length === 0) return;
-  const specifiers = new Set(dependencies);
+function installDependencyLoadHook(
+  actorEntries: readonly { specifier: string; entryUrl: string }[],
+): void {
+  if (actorEntries.length === 0) return;
+  const canonical = new Map(
+    actorEntries.map((entry) => [normalizeSpecifier(entry.specifier), entry.specifier]),
+  );
+  const entryUrls = new Map(
+    actorEntries.map((entry) => [normalizeFileUrl(entry.entryUrl), entry.specifier]),
+  );
   // node:module is CJS; registerHooks is Deno's implemented (sync) form of
   // Node's registerHooks. `import` is hoisted to module top level (fine: the
   // worker runs after the SDK module finished evaluating).
   const { registerHooks } = importNodeModuleHooks();
   registerHooks({
     resolve(specifier: string, context: unknown, nextResolve: (s: string, c: unknown) => unknown) {
-      if (specifiers.has(specifier)) {
-        return { url: `maieutics-stub:${encodeURIComponent(specifier)}`, shortCircuit: true };
+      // The stub is keyed by the registered canonical specifier, so the
+      // acquire routes to the right owner regardless of the consumer's import
+      // form (jsr: prefix, version segment, import-map alias).
+      const canonicalSpecifier = canonical.get(normalizeSpecifier(specifier));
+      if (canonicalSpecifier !== undefined) {
+        return { url: stubUrl(canonicalSpecifier), shortCircuit: true };
       }
-      return nextResolve(specifier, context);
+      const resolved = nextResolve(specifier, context) as { url: string };
+      const byUrl = entryUrls.get(normalizeFileUrl(resolved.url));
+      if (byUrl !== undefined) {
+        return { url: stubUrl(byUrl), shortCircuit: true };
+      }
+      return resolved;
     },
     load(url: string, context: unknown, nextLoad: (u: string, c: unknown) => unknown) {
-      if (url.startsWith("maieutics-stub:")) {
-        const specifier = decodeURIComponent(url.slice("maieutics-stub:".length));
+      if (url.startsWith(STUB_SCHEME)) {
+        const specifier = decodeURIComponent(url.slice(STUB_SCHEME.length));
         return {
           format: "module",
           source: stubSource(specifier),
@@ -718,6 +745,41 @@ function installDependencyLoadHook(dependencies: readonly string[]): void {
       return nextLoad(url, context);
     },
   });
+}
+
+const STUB_SCHEME = "maieutics-stub:";
+
+function stubUrl(specifier: string): string {
+  return `${STUB_SCHEME}${encodeURIComponent(specifier)}`;
+}
+
+/**
+ * Normalizes a specifier to its canonical comparison form: strip a `jsr:`
+ * prefix and the `@version` segment between the package name and the first
+ * subpath (`jsr:@scope/name@0.1/subpath` → `@scope/name/subpath`). Import-map
+ * aliases and relative paths are left as-is; they are covered by the URL match.
+ */
+function normalizeSpecifier(specifier: string): string {
+  let value = specifier.startsWith("jsr:") ? specifier.slice(4) : specifier;
+  // jsr specifier shape: `@scope/name@version/subpath`. The version `@` is
+  // the second `@` (after the leading scope `@`); strip from it up to the
+  // next `/` (the subpath start). `@scope/name@0.1/main` → `@scope/name/main`.
+  const at = value.indexOf("@", 1);
+  const slashAfterVersion = at === -1 ? -1 : value.indexOf("/", at + 1);
+  if (at > 0 && slashAfterVersion !== -1) {
+    value = value.slice(0, at) + value.slice(slashAfterVersion);
+  }
+  return value;
+}
+
+/** Normalizes a file URL for comparison (resolves `/tmp` → `/private/tmp` symlinks). */
+function normalizeFileUrl(url: string): string {
+  if (!url.startsWith("file://")) return url;
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
 }
 
 function importNodeModuleHooks(): { registerHooks(hooks: unknown): void } {

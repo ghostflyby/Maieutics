@@ -75,78 +75,134 @@ internal sealed class PluginPermissionGrantJsonConverter : JsonConverter<PluginP
     }
 }
 
-/// <summary>Reads a plugin's deno.json into a runtime descriptor without executing plugin code.</summary>
+/// <summary>Reads a plugin's declaration files into a runtime descriptor without executing plugin code.</summary>
+/// <remarks>
+///     A plugin is a directory containing a <c>maieutics.json</c> (the plugin declaration: entrypoints,
+///     dependencies, isolation) and optionally a <c>deno.json</c> (package identity: name used for
+///     specifiers, exports exposed to other plugins for type imports, permissions). The two are
+///     separated: exports never decide worker startup — only <c>maieutics.json</c> entrypoints do.
+/// </remarks>
 internal static class PluginManifest
 {
     public static bool TryLoad(string directory, [NotNullWhen(true)] out PluginDescriptor? descriptor, out string error)
     {
         descriptor = null;
-        var configPath = FindConfig(directory);
-        if (configPath is null)
+        var pluginConfigPath = Path.Combine(directory, "maieutics.json");
+        if (!File.Exists(pluginConfigPath))
         {
-            error = $"No deno.json or deno.jsonc found in '{directory}'.";
+            error = $"No maieutics.json found in '{directory}' (a Maieutics plugin is declared by maieutics.json).";
             return false;
         }
 
-        PluginManifestFile manifest;
+        MaieuticsManifestFile pluginManifest;
         try
         {
-            manifest = JsonSerializer.Deserialize(
-                           File.ReadAllText(configPath),
-                           PluginManifestJsonContext.Default.PluginManifestFile) ??
-                       throw new JsonException("The manifest is null.");
+            pluginManifest = JsonSerializer.Deserialize(
+                                 File.ReadAllText(pluginConfigPath),
+                                 PluginManifestJsonContext.Default.MaieuticsManifestFile) ??
+                             throw new JsonException("The manifest is null.");
         }
         catch (JsonException exception)
         {
-            error = $"Invalid deno.json '{configPath}': {exception.Message}";
-            return false;
-        }
-
-        if (manifest.Maieutics is null)
-        {
-            error = $"'{configPath}' is not a Maieutics plugin (missing the 'maieutics' marker).";
+            error = $"Invalid maieutics.json '{pluginConfigPath}': {exception.Message}";
             return false;
         }
 
         var id = Path.GetFileName(Path.TrimEndingDirectorySeparator(directory));
-        var name = manifest.Name ?? id;
-        var workers = ReadWorkers(manifest.Exports, directory);
-        var permissions = ReadPermissions(manifest.Permissions?.Default);
-        var isolation = manifest.Maieutics.Isolation;
-        var dependencies = manifest.Maieutics.Dependencies ?? [];
+        var name = ReadPackageName(directory, id);
+        var workers = ReadEntrypoints(pluginManifest.Entrypoints, directory);
+        var permissions = ReadPermissions(ReadPackagePermissions(directory));
+        var isolation = pluginManifest.Isolation;
+        var dependencies = pluginManifest.Dependencies ?? [];
         descriptor = new PluginDescriptor(id, name, directory, workers, permissions, isolation, dependencies);
         error = string.Empty;
         return true;
     }
 
-    private static string? FindConfig(string directory)
+    /// <summary>Reads the package name from deno.json (falling back to the directory name).</summary>
+    private static string ReadPackageName(string directory, string fallback)
     {
         var denoJson = Path.Combine(directory, "deno.json");
-        if (File.Exists(denoJson)) return denoJson;
-
-        var denoJsonc = Path.Combine(directory, "deno.jsonc");
-        return File.Exists(denoJsonc) ? denoJsonc : null;
+        if (!File.Exists(denoJson)) return fallback;
+        try
+        {
+            var manifest = JsonSerializer.Deserialize(
+                               File.ReadAllText(denoJson),
+                               PluginManifestJsonContext.Default.PluginManifestFile) ??
+                           throw new JsonException("The manifest is null.");
+            return manifest.Name ?? fallback;
+        }
+        catch (JsonException)
+        {
+            return fallback;
+        }
     }
 
-    private static IReadOnlyList<PluginWorkerDescriptor> ReadWorkers(JsonElement? exports, string directory)
+    private static PluginManifestPermissionSet? ReadPackagePermissions(string directory)
     {
-        if (exports is not { ValueKind: JsonValueKind.Object } exportsObject) return [];
-
-        var workers = new List<PluginWorkerDescriptor>();
-        foreach (var property in exportsObject.EnumerateObject())
+        var denoJson = Path.Combine(directory, "deno.json");
+        if (!File.Exists(denoJson)) return null;
+        try
         {
-            if (property.Name == ".") continue;
-
-            if (property.Value.ValueKind != JsonValueKind.String) continue;
-
-            var relative = property.Value.GetString();
-            if (string.IsNullOrWhiteSpace(relative)) continue;
-
-            var fullPath = Path.GetFullPath(Path.Combine(directory, relative));
-            workers.Add(new PluginWorkerDescriptor(property.Name, new Uri(fullPath).AbsoluteUri));
+            var manifest = JsonSerializer.Deserialize(
+                               File.ReadAllText(denoJson),
+                               PluginManifestJsonContext.Default.PluginManifestFile) ??
+                           throw new JsonException("The manifest is null.");
+            return manifest.Permissions?.Default;
         }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
+    /// <summary>
+    ///     Reads the worker entrypoints from maieutics.json. Each entrypoint name becomes one worker
+    ///     actor; the array lists the scripts of that worker (the first is the entry, the rest are
+    ///     same-worker helpers — they never become separate workers). Every script path must resolve
+    ///     inside the plugin directory; an escaping path (.. / symlink) is rejected for that entrypoint.
+    /// </summary>
+    private static IReadOnlyList<PluginWorkerDescriptor> ReadEntrypoints(
+        IReadOnlyDictionary<string, string[]>? entrypoints,
+        string directory)
+    {
+        if (entrypoints is null || entrypoints.Count == 0) return [];
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        var workers = new List<PluginWorkerDescriptor>();
+        foreach (var (entrypointName, scripts) in entrypoints)
+        {
+            if (string.IsNullOrWhiteSpace(entrypointName)) continue;
+            if (scripts is null || scripts.Length == 0) continue;
+
+            var entry = scripts[0];
+            if (string.IsNullOrWhiteSpace(entry)) continue;
+
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(Path.Combine(root, entry));
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                continue;
+            }
+
+            // Directory traversal protection: the resolved path must stay inside the plugin root.
+            if (!IsWithinRoot(fullPath, root)) continue;
+
+            workers.Add(new PluginWorkerDescriptor(entrypointName, new Uri(fullPath).AbsoluteUri));
+        }
         return workers;
+    }
+
+    /// <summary>Whether <paramref name="fullPath"/> stays inside <paramref name="root"/> (no `..` escape).</summary>
+    private static bool IsWithinRoot(string fullPath, string root)
+    {
+        var relative = Path.GetRelativePath(root, fullPath);
+        return !Path.IsPathRooted(relative) &&
+               relative != ".." &&
+               !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
     }
 
     private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
@@ -167,6 +223,7 @@ internal static class PluginManifest
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     AllowOutOfOrderMetadataProperties = true,
     UnmappedMemberHandling = JsonUnmappedMemberHandling.Skip)]
+[JsonSerializable(typeof(MaieuticsManifestFile))]
 [JsonSerializable(typeof(PluginManifestFile))]
 [JsonSerializable(typeof(PluginManifestPermissions))]
 [JsonSerializable(typeof(PluginManifestPermissionSet))]
@@ -174,6 +231,13 @@ internal static class PluginManifest
 [JsonSerializable(typeof(PluginManifestMaieutics))]
 internal sealed partial class PluginManifestJsonContext : JsonSerializerContext;
 
+/// <summary>The plugin declaration file (maieutics.json): worker entrypoints, dependencies, isolation.</summary>
+internal sealed record MaieuticsManifestFile(
+    IReadOnlyDictionary<string, string[]>? Entrypoints = null,
+    IReadOnlyList<string>? Dependencies = null,
+    string? Isolation = null);
+
+/// <summary>The package identity file (deno.json), read for name and permissions only.</summary>
 internal sealed record PluginManifestFile(
     string? Name = null,
     JsonElement? Exports = null,
@@ -192,6 +256,7 @@ internal sealed record PluginManifestPermissionSet(
     PluginPermissionGrant? Sys = null,
     PluginPermissionGrant? Import = null);
 
+/// <summary>Legacy deno.json <c>maieutics</c> field; retained for tolerant parsing, no longer authoritative.</summary>
 internal sealed record PluginManifestMaieutics(
     string? Isolation = null,
     IReadOnlyList<string>? Dependencies = null);

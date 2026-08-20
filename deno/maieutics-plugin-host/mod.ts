@@ -7,7 +7,7 @@
 
 import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
 import { connectBus } from "../shared/bus.ts";
-import { type ReplEnvelope } from "../shared/protocol.ts";
+import type { ReplEnvelope } from "../shared/protocol.ts";
 
 const IPC_ENV = "MAIEUTICS_REPL_IPC";
 const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";

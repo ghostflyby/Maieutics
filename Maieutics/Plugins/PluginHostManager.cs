@@ -504,11 +504,10 @@ internal sealed class PluginHostManager(
         return path;
     }
 
-    /// <summary>Canonical interop specifier of one export: `&lt;name&gt;/&lt;subpath&gt;` (`.` → bare name).</summary>
+    /// <summary>Canonical interop specifier of one worker entrypoint: `&lt;name&gt;/&lt;entrypoint&gt;`.</summary>
     private static string SpecifierOf(PluginDescriptor descriptor, string exportName)
     {
-        var name = descriptor.Name;
-        return exportName == "." ? name : $"{name}/{exportName[2..]}";
+        return $"{descriptor.Name}/{exportName}";
     }
 
     private static PluginHostConfigPermissions ToConfigPermissions(PluginPermissionGrants permissions)

@@ -353,15 +353,15 @@ export class PluginHost {
         },
       });
       this.#attachAcquireListener(worker);
-      // The worker's SDK reads its specifier and dependency specifiers from
-      // this per-worker message. It must be posted before spawn() runs the
-      // handshake: the SDK awaits the config before calling serveWorker, which
-      // is what sends the handshake frame.
+      // The worker's SDK reads its specifier and the actor-entry registry of
+      // its declared dependencies from this per-worker message. It must be
+      // posted before spawn() runs the handshake: the SDK awaits the config
+      // before calling serveWorker, which is what sends the handshake frame.
       worker.postMessage({
         type: "maieutics-config",
         payload: {
           specifier: handle.specifier,
-          dependencies: this.#dependencySpecifiers(handle),
+          actorEntries: this.#dependencyActorEntries(handle),
         },
       });
       const actor = await spawn<WorkerRpc>(worker, {
@@ -471,13 +471,24 @@ export class PluginHost {
 
   // —— Dependency graph (waves) ——
 
-  /** Canonical specifiers of the dependency workers this worker may acquire. */
-  #dependencySpecifiers(handle: WorkerHandle): string[] {
-    const result: string[] = [];
-    for (const depId of handle.plugin.dependencies ?? []) {
-      for (const candidate of this.#workers.values()) {
-        if (candidate.plugin.id === depId && candidate.specifier.length > 0) {
-          result.push(candidate.specifier);
+  /**
+   * The actor-entry registry of this worker's declared dependencies: for each
+   * dependency plugin id, the canonical specifier and the actual entry file
+   * URL of every worker that plugin runs. Both come from spawn-time known
+   * data (the plugin manifest exports), never from reading module sources.
+   * The consumer worker's load hook uses this to decide which import edges
+   * carry actor semantics and must be redirected.
+   */
+  #dependencyActorEntries(handle: WorkerHandle): Array<{
+    specifier: string;
+    entryUrl: string;
+  }> {
+    const result: Array<{ specifier: string; entryUrl: string }> = [];
+    const declared = new Set(handle.plugin.dependencies ?? []);
+    for (const candidate of this.#workers.values()) {
+      if (candidate.plugin.id !== handle.plugin.id && declared.has(candidate.plugin.id)) {
+        if (candidate.specifier.length > 0) {
+          result.push({ specifier: candidate.specifier, entryUrl: candidate.config.entryUrl });
         }
       }
     }

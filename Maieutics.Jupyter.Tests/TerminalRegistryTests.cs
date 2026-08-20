@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
@@ -17,7 +18,8 @@ public sealed class TerminalRegistryTests
                 SettleTimeout = TimeSpan.FromMilliseconds(30)
             },
             new FakeTerminalProcessFactory(process),
-            NullLogger<TerminalSession>.Instance);
+            NullLogger<TerminalSession>.Instance,
+            EffectivePolicy.Default);
     }
 
     private static async Task<TerminalRunResult> RunAsync(

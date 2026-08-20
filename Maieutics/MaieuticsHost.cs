@@ -127,6 +127,9 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(denoReplOptions);
         builder.Services.AddSingleton(terminalOptions);
         builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();
+        // Phase 5 replaces this fixed default with the layered acquisition path; for now every
+        // terminal session captures the default policy (ADR 0018 §7, decision 2: run unrestricted).
+        builder.Services.AddSingleton(EffectivePolicy.Default);
         builder.Services.AddSingleton<TerminalRegistry>();
         builder.Services.AddSingleton<TerminalFunctions>();
         builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();

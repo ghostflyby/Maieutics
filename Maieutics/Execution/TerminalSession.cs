@@ -25,6 +25,7 @@ internal sealed class TerminalSession : IAsyncDisposable
     private readonly TerminalSessionKind kind;
     private readonly string executable;
     private readonly IReadOnlyList<string> launchArguments;
+    private readonly EffectivePolicy policy;
     private readonly Lock signalGate = new();
     private readonly Lock stateGate = new();
     private readonly Lock terminalGate = new();
@@ -52,6 +53,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         TerminalSessionKind kind,
         string executable,
         IReadOnlyList<string> launchArguments,
+        EffectivePolicy policy,
         TerminalOptions options,
         ITerminalProcessFactory factory,
         ILogger<TerminalSession> logger)
@@ -63,6 +65,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         this.kind = kind;
         this.executable = executable;
         this.launchArguments = launchArguments;
+        this.policy = policy;
         this.options = options;
         this.factory = factory;
         this.logger = logger;
@@ -156,7 +159,8 @@ internal sealed class TerminalSession : IAsyncDisposable
             SetState(TerminalSessionState.Starting);
             try
             {
-                var environment = ProcessEnvironment.Capture(EffectivePolicy.Default);
+                EnsureExecutableAllowed();
+                var environment = ProcessEnvironment.Capture(policy);
                 var started = factory.Start(
                     executable,
                     launchArguments,
@@ -831,6 +835,26 @@ internal sealed class TerminalSession : IAsyncDisposable
         return new AgentToolException(
             "terminal_faulted",
             $"The terminal session '{SessionId}' is faulted and requires an explicit restart or close.");
+    }
+
+    /// <summary>Rejects the configured executable when the effective policy restricts <c>run</c>.
+    /// The default policy (and any policy without explicit run rules) grants <c>run</c> fully, so
+    /// nothing changes by default (ADR 0018 §7, decision 2); the check engages only when a layer
+    /// contributes an explicit run allowlist or deny.</summary>
+    private void EnsureExecutableAllowed()
+    {
+        var run = policy.For(PermissionKind.Run);
+        if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
+
+        foreach (var allowed in run.Allow)
+            if (allowed.Length > 0 &&
+                executable.StartsWith(allowed, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal))
+                return;
+
+        throw new AgentToolException(
+            "terminal_start_failed",
+            $"The executable '{executable}' is not permitted by the effective policy.");
     }
 
     private void ThrowIfDisposed()

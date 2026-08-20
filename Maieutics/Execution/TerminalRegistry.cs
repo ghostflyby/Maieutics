@@ -1,12 +1,14 @@
 using Maieutics.Agent;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Execution;
 
 /// <summary>Owns the terminal sessions of every Agent session. Sessions survive across turns and die with
-/// their Agent session or the process.</summary>
+/// their Agent session or the process. Each session captures the effective policy of its owning Agent
+/// session at reserve time (ADR 0018 §7); the policy never changes mid-operation.</summary>
 internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions options,
-    ITerminalProcessFactory factory, ILogger<TerminalSession> logger) : IAsyncDisposable
+    ITerminalProcessFactory factory, ILogger<TerminalSession> logger, EffectivePolicy policy) : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
 
@@ -224,6 +226,7 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
                 kind,
                 executable,
                 launchArguments,
+                policy,
                 options,
                 factory,
                 logger);

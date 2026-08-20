@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
@@ -21,7 +22,7 @@ public sealed class TerminalSessionTests
 
     private static TerminalSession CreateSession(FakeTerminalProcess process)
     {
-        return CreateSession(process, TerminalSessionKind.Persistent, "sh", []);
+        return CreateSession(process, TerminalSessionKind.Persistent, "sh", [], EffectivePolicy.Default);
     }
 
     private static TerminalSession CreateSession(
@@ -29,6 +30,25 @@ public sealed class TerminalSessionTests
         TerminalSessionKind kind,
         string executable,
         IReadOnlyList<string> launchArguments)
+    {
+        return CreateSession(process, kind, executable, launchArguments, EffectivePolicy.Default);
+    }
+
+    private static TerminalSession CreateSession(
+        FakeTerminalProcess process,
+        string executable,
+        IReadOnlyList<string> launchArguments,
+        EffectivePolicy policy)
+    {
+        return CreateSession(process, TerminalSessionKind.Persistent, executable, launchArguments, policy);
+    }
+
+    private static TerminalSession CreateSession(
+        FakeTerminalProcess process,
+        TerminalSessionKind kind,
+        string executable,
+        IReadOnlyList<string> launchArguments,
+        EffectivePolicy policy)
     {
         return new TerminalSession(
             AgentSessionId.Create(),
@@ -38,9 +58,51 @@ public sealed class TerminalSessionTests
             kind,
             executable,
             launchArguments,
+            policy,
             TestOptions(),
             new FakeTerminalProcessFactory(process),
             NullLogger<TerminalSession>.Instance);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task RestrictedRunPolicyRejectsTheConfiguredExecutable()
+    {
+        var fake = new FakeTerminalProcess();
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-shell"] }));
+        await using var session = CreateSession(fake, "sh", [], restricted);
+
+        var start = () => session.StartAsync(TestContext.Current.CancellationToken);
+
+        await start.Should().ThrowAsync<AgentToolException>()
+            .Where(static exception => exception.Code == "terminal_start_failed");
+        session.GetSnapshot().State.Should().Be("faulted");
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task DefaultPolicyAllowsTheConfiguredExecutable()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake);
+
+        await session.StartAsync(TestContext.Current.CancellationToken);
+
+        session.GetSnapshot().State.Should().Be("idle");
+    }
+
+    private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
+    {
+        return PermissionLayerStore.Build(
+            [new PermissionLayer { Kinds = kinds.ToDictionary(static entry => entry.Kind, static entry => entry.Rules) }],
+            new VariableTable(new EmptyVariableSource()));
+    }
+
+    private sealed class EmptyVariableSource : Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name)
+        {
+            return null;
+        }
     }
 
     [Fact(Timeout = 10_000)]

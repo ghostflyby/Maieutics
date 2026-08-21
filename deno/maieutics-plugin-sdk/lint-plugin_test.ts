@@ -83,12 +83,16 @@ Deno.test("entrypoint-exports: bare constant export is reported without a fix", 
   assertEquals(hit[0].fix?.length ?? 0, 0, "a constant cannot be safely auto-wrapped");
 });
 
-Deno.test("entrypoint-exports: bare function export is reported without a fix", async () => {
+Deno.test("entrypoint-exports: bare function export is reported with a defineActor fix", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
-  const diags = await lint(dir, "mod.ts", "export function helper() { return 1; }\n");
+  const diags = await lint(
+    dir,
+    "mod.ts",
+    SDK_IMPORT + "export function helper() { return 1; }\n",
+  );
   const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
   assertEquals(hit.length, 1);
-  assertEquals(hit[0].fix?.length ?? 0, 0);
+  assert((hit[0].fix?.length ?? 0) > 0, "expected a fix wrapping the function in defineActor");
 });
 
 Deno.test("entrypoint-exports: a defineActor-wrapped export passes", async () => {
@@ -105,4 +109,86 @@ Deno.test("entrypoint-exports: non-entrypoint files are not checked", async () =
   const dir = tempProject({ main: ["./mod.ts"] });
   const diags = await lint(dir, "helper.ts", "export const plain = 42;\n");
   assertEquals(diags.filter((d) => d.id === "maieutics/entrypoint-exports").length, 0);
+});
+
+Deno.test("entrypoint-exports: function fix preserves annotations and async/generator", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = SDK_IMPORT +
+    "export async function fetchIt(url: string): Promise<string> { return url; }\n";
+  const diags = await lint(dir, "mod.ts", src);
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
+  assertEquals(hit.length, 1);
+  // The fix text must contain the full function (annotations + async preserved).
+  const fixText = JSON.stringify(hit[0].fix);
+  assert(fixText.includes("async function fetchIt(url: string): Promise<string>"));
+});
+
+Deno.test("entrypoint-exports: export default is reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(dir, "mod.ts", "export default function main() { return 1; }\n");
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
+  assertEquals(hit.length, 1);
+});
+
+Deno.test("entrypoint-exports: export * from is reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(dir, "mod.ts", 'export * from "./other.ts";\n');
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
+  assertEquals(hit.length, 1);
+});
+
+Deno.test("entrypoint-exports: multi-declarator exports are each checked", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(dir, "mod.ts", "export const c = 42, d = 43;\n");
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
+  assertEquals(hit.length, 2);
+});
+
+Deno.test("entrypoint-exports: namespace import defineActor call passes", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(
+    dir,
+    "mod.ts",
+    'import * as sdk from "@maieutics/plugin-sdk";\n' +
+      "export const a = sdk.defineActor({ x() { return 1; } });\n",
+  );
+  assertEquals(diags.filter((d) => d.id === "maieutics/entrypoint-exports").length, 0);
+});
+
+Deno.test("entrypoint-exports: type exports are exempt", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(dir, "mod.ts", "export interface Shape { a: number; }\nexport type N = number;\n");
+  assertEquals(diags.filter((d) => d.id === "maieutics/entrypoint-exports").length, 0);
+});
+
+Deno.test("entrypoint-exports: no defineActor import means no fix is emitted", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(dir, "mod.ts", "export const api = { hello() { return \"hi\"; } };\n");
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
+  assertEquals(hit.length, 1);
+  assertEquals(hit[0].fix?.length ?? 0, 0, "no import of defineActor -> no fix");
+});
+
+Deno.test("entrypoint-registered: namespace import defineActor export outside entrypoints is reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(
+    dir,
+    "orphan.ts",
+    'import * as sdk from "@maieutics/plugin-sdk";\n' +
+      "export const a = sdk.defineActor({ x() { return 1; } });\n",
+  );
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-registered");
+  assertEquals(hit.length, 1);
+});
+
+Deno.test("entrypoint-registered: alias import defineActor export outside entrypoints is reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const diags = await lint(
+    dir,
+    "orphan.ts",
+    'import { defineActor as da } from "@maieutics/plugin-sdk";\n' +
+      "export const a = da({ x() { return 1; } });\n",
+  );
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-registered");
+  assertEquals(hit.length, 1);
 });

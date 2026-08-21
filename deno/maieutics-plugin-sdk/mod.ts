@@ -233,7 +233,23 @@ export type { RemoteActor };
  */
 export function defineActor<T extends Record<string, unknown>>(
   surface: T,
-): RemoteActor<T> {
+): RemoteActor<T>;
+
+/**
+ * Declares a single-function actor surface: the function becomes the `call`
+ * member of the surface, so consumers call it as `dep.<export>.call(...)`.
+ * This lets a bare function export be converted into a dedicated export.
+ */
+export function defineActor<T extends (...args: unknown[]) => unknown>(
+  fn: T,
+): RemoteActor<{ call: T }>;
+
+export function defineActor(
+  surfaceOrFn: Record<string, unknown> | ((...args: unknown[]) => unknown),
+): RemoteActor<Record<string, unknown>> {
+  const surface = typeof surfaceOrFn === "function"
+    ? { call: surfaceOrFn }
+    : surfaceOrFn;
   for (const [name, value] of Object.entries(surface)) {
     if (typeof value !== "function") {
       throw new TypeError(
@@ -246,7 +262,7 @@ export function defineActor<T extends Record<string, unknown>>(
     enumerable: false,
     configurable: false,
   });
-  return remoteActor(surface, ownSpecifier(), "actor") as RemoteActor<T>;
+  return remoteActor(surface, ownSpecifier(), "actor") as RemoteActor<Record<string, unknown>>;
 }
 
 /**

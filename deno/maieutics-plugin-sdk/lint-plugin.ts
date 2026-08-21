@@ -8,10 +8,12 @@
  *    entrypoint's script list. Without that declaration the file is never
  *    started as a worker, so the actor it defines is unreachable.
  * 2. `maieutics/entrypoint-exports` — every export of an entrypoint file must
- *    be produced by `defineActor`. A bare object-literal export whose members
- *    are all functions is auto-fixed to wrap it in `defineActor(...)`; other
- *    bare exports (constants, functions, re-exports) are reported without a
- *    fix because no semantically safe automatic rewrite exists.
+ *    be produced by `defineActor`. A bare function export is auto-fixed to a
+ *    const bound to a `defineActor(function ...)` expression; a bare
+ *    object-literal export whose members are all functions is auto-fixed to
+ *    wrap it in `defineActor(...)`; other bare exports (constants,
+ *    re-exports) are reported without a fix because no semantically safe
+ *    automatic rewrite exists.
  *
  * The plugin locates `maieutics.json` by walking up from the linted file
  * (never from `Deno.cwd()`, which is the launch directory and unreliable).
@@ -89,17 +91,37 @@ function allMembersAreFunctions(node: unknown): boolean {
   });
 }
 
+/**
+ * True if `init` is a call to a name in `names` (a defineActor binding), or a
+ * member call on a namespace import (`sdk.defineActor(...)`).
+ */
+function isDefineActorCall(
+  init: unknown,
+  names: ReadonlySet<string>,
+  namespaceNames: ReadonlySet<string>,
+): boolean {
+  const callee = (init as { callee?: { type?: string; name?: string; object?: { name?: string }; property?: { name?: string } } } | null)
+    ?.callee;
+  if (callee === undefined || callee === null) return false;
+  if (callee.type === "Identifier") return names.has(callee.name ?? "");
+  if (callee.type === "MemberExpression") {
+    return namespaceNames.has(callee.object?.name ?? "") &&
+      callee.property?.name === "defineActor";
+  }
+  return false;
+}
+
 const entrypointRegisteredRule = {
   create(context: Deno.lint.RuleContext) {
-    // The set of names that refer to defineActor in this file (resolved lazily
-    // per file from its imports).
     let defineActorNames: Set<string> | undefined;
+    let namespaceNames: Set<string> | undefined;
     let fileHasActorExport = false;
     let registeredEntrypoints: Set<string> | undefined;
 
     const ensureNames = (): void => {
       if (defineActorNames !== undefined) return;
       defineActorNames = new Set();
+      namespaceNames = new Set();
       fileHasActorExport = false;
       registeredEntrypoints = readEntrypointScriptsOrEmpty(context.filename);
     };
@@ -114,31 +136,30 @@ const entrypointRegisteredRule = {
         const specifiers = (node as { specifiers?: Array<{ type?: string; imported?: { name?: string }; local?: { name?: string } }> })
           .specifiers ?? [];
         for (const specifier of specifiers) {
-          if (specifier.type !== "ImportSpecifier") continue;
-          if (specifier.imported?.name === "defineActor") {
+          if (specifier.type === "ImportSpecifier" && specifier.imported?.name === "defineActor") {
             defineActorNames!.add(specifier.local?.name ?? "defineActor");
+          } else if (specifier.type === "ImportNamespaceSpecifier") {
+            namespaceNames!.add(specifier.local?.name ?? "");
           }
         }
       },
       ExportNamedDeclaration(node: Deno.lint.ExportNamedDeclaration) {
         ensureNames();
         const declaration = node.declaration;
-        const init = declaration?.type === "VariableDeclaration"
-          ? declaration.declarations[0]?.init
-          : undefined;
-        const callee = (init as { callee?: { name?: string } } | null)?.callee;
-        const isActorCall = callee !== undefined && callee !== null &&
-          defineActorNames!.has((callee as { name?: string }).name ?? "");
-        if (isActorCall) {
-          fileHasActorExport = true;
-          if (registeredEntrypoints !== undefined && !isEntrypoint(context.filename, registeredEntrypoints)) {
-            context.report({
-              node,
-              message:
-                "This file exports an actor via defineActor but is not declared in " +
-                "maieutics.json entrypoints; add it to an entrypoint script list so the " +
-                "worker is started.",
-            });
+        if (declaration?.type !== "VariableDeclaration") return;
+        for (const declarator of declaration.declarations) {
+          const init = declarator.init;
+          if (isDefineActorCall(init, defineActorNames!, namespaceNames!)) {
+            fileHasActorExport = true;
+            if (registeredEntrypoints !== undefined && !isEntrypoint(context.filename, registeredEntrypoints)) {
+              context.report({
+                node,
+                message:
+                  "This file exports an actor via defineActor but is not declared in " +
+                  "maieutics.json entrypoints; add it to an entrypoint script list so the " +
+                  "worker is started.",
+              });
+            }
           }
         }
       },
@@ -159,6 +180,10 @@ const entrypointExportsRule = {
   create(context: Deno.lint.RuleContext) {
     let registeredEntrypoints: Set<string> | undefined;
     let defineActorNames: Set<string> | undefined;
+    let namespaceNames: Set<string> | undefined;
+    // The file imports defineActor (or a namespace of the sdk), so a fix that
+    // emits defineActor(...) is safe. Without it, fixes are skipped.
+    let hasDefineActorImport = false;
 
     const isEntrypointFile = (): boolean => {
       if (registeredEntrypoints === undefined) {
@@ -172,6 +197,17 @@ const entrypointExportsRule = {
       return isEntrypoint(context.filename, registeredEntrypoints);
     };
 
+    const names = (): ReadonlySet<string> => defineActorNames ?? new Set<string>();
+    const namespace = (): ReadonlySet<string> => namespaceNames ?? new Set<string>();
+
+    // Type-only exports (interface/type/enum declarations) have no runtime
+    // value and are not actors; they are exempt from the defineActor rule.
+    const isTypeExport = (declaration: unknown): boolean => {
+      const type = (declaration as { type?: string } | null)?.type;
+      return type === "TSTypeAliasDeclaration" || type === "TSInterfaceDeclaration" ||
+        type === "TSEnumDeclaration" || type === "TSDeclareFunction";
+    };
+
     return {
       ImportDeclaration(node: Deno.lint.ImportDeclaration) {
         const source = (node as { source?: { value?: string } }).source?.value ?? "";
@@ -179,55 +215,112 @@ const entrypointExportsRule = {
           return;
         }
         if (defineActorNames === undefined) defineActorNames = new Set();
+        if (namespaceNames === undefined) namespaceNames = new Set();
         for (const specifier of (node as { specifiers?: Array<{ type?: string; imported?: { name?: string }; local?: { name?: string } }> })
           .specifiers ?? []) {
           if (specifier.type === "ImportSpecifier" && specifier.imported?.name === "defineActor") {
             defineActorNames.add(specifier.local?.name ?? "defineActor");
+            hasDefineActorImport = true;
+          } else if (specifier.type === "ImportNamespaceSpecifier") {
+            namespaceNames.add(specifier.local?.name ?? "");
+            hasDefineActorImport = true;
           }
         }
       },
       ExportNamedDeclaration(node: Deno.lint.ExportNamedDeclaration) {
         if (!isEntrypointFile()) return;
-        const names = defineActorNames ?? new Set<string>();
         const declaration = node.declaration;
-        if (declaration?.type === "FunctionDeclaration") {
-          // export function helper() — not an actor export.
-          context.report({
-            node,
-            message:
-              "Entrypoint exports must be produced by defineActor; wrap the surface in " +
-              "defineActor({ ... }) instead of exporting a bare function.",
-          });
-          return;
-        }
-        const init = declaration?.type === "VariableDeclaration"
-          ? declaration.declarations[0]?.init
-          : undefined;
-        const callee = (init as { callee?: { name?: string } } | null)?.callee;
-        const isActorCall = callee !== undefined && callee !== null &&
-          names.has((callee as { name?: string }).name ?? "");
-        if (isActorCall) return; // export const x = defineActor(...) — OK.
+        if (declaration === null || declaration === undefined) return; // export { x } from ... handled by ExportAllDeclaration? No: export { x } is ExportNamedDeclaration without declaration.
+        if (isTypeExport(declaration)) return;
 
-        // Bare export. If it is an object literal whose members are all functions,
-        // auto-fix by wrapping in defineActor(...).
-        if (init !== null && init !== undefined && isObjectLiteral(init) && allMembersAreFunctions(init)) {
-          const literal = context.sourceCode.getText(init);
+        if (declaration.type === "FunctionDeclaration") {
+          // export function helper(...) {...} — convert to a const bound to a
+          // defineActor-wrapped function expression, preserving the full
+          // declaration text (params, annotations, async, generator).
+          const id = declaration.id?.name;
+          const fnText = context.sourceCode.getText(declaration);
           context.report({
             node,
             message:
-              "Entrypoint exports must be produced by defineActor; wrap the surface " +
-              "in defineActor({ ... }).",
-            fix(fixer: Deno.lint.Fixer) {
-              return fixer.replaceText(init, `defineActor(${literal})`);
-            },
+              "Entrypoint exports must be produced by defineActor; wrap the function " +
+              "in defineActor(...).",
+            ...(hasDefineActorImport
+              ? {
+                fix(fixer: Deno.lint.Fixer) {
+                  const name = id ?? "fn";
+                  return fixer.replaceText(
+                    node,
+                    `export const ${name} = defineActor(${fnText});`,
+                  );
+                },
+              }
+              : {}),
           });
           return;
         }
+
+        if (declaration.type === "VariableDeclaration") {
+          // Check every declarator, not just the first.
+          for (const declarator of declaration.declarations) {
+            const init = declarator.init;
+            if (isDefineActorCall(init, names(), namespace())) continue; // defineActor(...) — OK.
+
+            if (init !== null && init !== undefined && isObjectLiteral(init) && allMembersAreFunctions(init)) {
+              const literal = context.sourceCode.getText(init);
+              context.report({
+                node,
+                message:
+                  "Entrypoint exports must be produced by defineActor; wrap the surface " +
+                  "in defineActor({ ... }).",
+                ...(hasDefineActorImport
+                  ? {
+                    fix(fixer: Deno.lint.Fixer) {
+                      return fixer.replaceText(init, `defineActor(${literal})`);
+                    },
+                  }
+                  : {}),
+              });
+              continue;
+            }
+            context.report({
+              node,
+              message:
+                "Entrypoint exports must be produced by defineActor; define this value as an " +
+                "actor surface via defineActor({ ... }) or move it out of the entrypoint file.",
+            });
+          }
+          return;
+        }
+
+        // export { x } from / export { x } — re-export without a local declaration.
         context.report({
           node,
           message:
-            "Entrypoint exports must be produced by defineActor; define this value as an " +
-            "actor surface via defineActor({ ... }) or move it out of the entrypoint file.",
+            "Entrypoint exports must be produced by defineActor; re-exports are not " +
+            "actor surfaces — define the value in this entrypoint via defineActor(...) " +
+            "or move it out.",
+        });
+      },
+      ExportDefaultDeclaration(node: Deno.lint.ExportDefaultDeclaration) {
+        if (!isEntrypointFile()) return;
+        const declaration = (node as { declaration?: unknown }).declaration;
+        const decl = declaration as { type?: string; id?: { name?: string } } | null;
+        // export default function / class / object literal — a bare default
+        // export is not a defineActor surface.
+        context.report({
+          node,
+          message:
+            "Entrypoint exports must be produced by defineActor; export default is not " +
+            "an actor surface — define it as a named export via defineActor(...).",
+        });
+      },
+      ExportAllDeclaration(node: Deno.lint.ExportAllDeclaration) {
+        if (!isEntrypointFile()) return;
+        context.report({
+          node,
+          message:
+            "Entrypoint exports must be produced by defineActor; `export * from` is not " +
+            "an actor surface — define the value in this entrypoint via defineActor(...).",
         });
       },
     };

@@ -256,11 +256,26 @@ export class PluginHost {
     return result;
   }
 
-  /** Cascade-disables one worker and every transitive dependent, then restarts topologically. */
-  async reload(pluginId: string, exportName: string): Promise<void> {
+  /** Cascade-disables one worker and every transitive dependent, then restarts topologically.
+   * When a replacement {@link PluginConfig} is supplied (permission/config change), the worker's
+   * plugin configuration is updated first so the rebuilt workers carry the new grants. */
+  async reload(
+    pluginId: string,
+    exportName: string,
+    nextConfig?: PluginConfig,
+  ): Promise<void> {
     const key = workerKey(pluginId, exportName);
     const handle = this.#workers.get(key);
     if (handle === undefined) return;
+    if (nextConfig !== undefined) {
+      handle.plugin = nextConfig;
+      // Specifier identity is the worker's canonical interop name; a config
+      // change may rename an entrypoint, so refresh the by-specifier map.
+      this.#bySpecifier.delete(handle.specifier);
+      handle.specifier = nextConfig.workers.find((w) => w.exportName === exportName)
+        ?.specifier ?? handle.specifier;
+      this.#bySpecifier.set(handle.specifier, key);
+    }
     await this.#cascade(key);
     await this.#startSubgraph([key]);
   }

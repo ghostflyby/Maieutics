@@ -82,6 +82,7 @@ internal sealed class PluginHostModule
 [JsonSerializable(typeof(PluginHostConfigPlugin))]
 [JsonSerializable(typeof(PluginHostConfigWorker))]
 [JsonSerializable(typeof(PluginHostConfigPermissions))]
+[JsonSerializable(typeof(PluginReloadPayload))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(string[]))]
 internal sealed partial class PluginHostJsonContext : JsonSerializerContext;
@@ -106,3 +107,12 @@ internal sealed record PluginHostConfigPermissions(
     JsonElement Ffi,
     JsonElement Sys,
     JsonElement Import);
+
+/// <summary>Payload for the in-process <c>plugin.reload</c> bus message: the target worker plus the
+/// plugin's full replacement config (permissions, workers, dependencies) so the host can rebuild
+/// the worker with the new grants. <see cref="Plugin"/> is null for a pure source-change reload
+/// (same config, new module text).</summary>
+internal sealed record PluginReloadPayload(
+    string PluginId,
+    string ExportName,
+    PluginHostConfigPlugin? Plugin);

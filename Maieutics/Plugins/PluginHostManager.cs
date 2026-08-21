@@ -70,12 +70,12 @@ internal sealed class PluginHostManager(
     ReplControlSessionRegistry sessionRegistry,
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
-    TimeProvider timeProvider,
-    DenoPermissionBroker broker)
+    TimeProvider timeProvider)
     : IHostedService, IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
     private readonly List<PluginDescriptor> descriptors = [];
@@ -98,6 +98,8 @@ internal sealed class PluginHostManager(
 
     private readonly List<PluginRegistration> registrations = [];
     private readonly List<PluginState> states = [];
+    private FileSystemWatcher? pluginWatcher;
+    private CancellationTokenSource? watcherDebounce;
 
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
@@ -284,13 +286,12 @@ internal sealed class PluginHostManager(
                 HostId,
                 modules.SdkUrl,
                 modules.WorkerEntryUrl,
-                modules.ConfigFile,
-                BuildProcessGrants(configPath),
-                broker),
+                modules.ConfigFile),
             logger);
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         processExitObservation = ObserveExitAsync(process, configPath);
         StartDynamicMcpCoordinator();
+        StartPluginWatcher();
     }
 
     private void StartDynamicMcpCoordinator()
@@ -301,6 +302,145 @@ internal sealed class PluginHostManager(
             logger);
         coordinator.Start();
         dynamicMcpCoordinator = coordinator;
+    }
+
+    /// <summary>Watches the plugins root for manifest/permission/source changes and reloads the
+    /// owning plugin's worker in-process with its latest config (the config file is re-resolved
+    /// per reload, so a permission change applies without restarting the host process). Changes
+    /// are debounced; only the most recent change triggers one reload.</summary>
+    private void StartPluginWatcher()
+    {
+        if (!Directory.Exists(pluginsRoot)) return;
+
+        var watcher = new FileSystemWatcher(pluginsRoot)
+        {
+            IncludeSubdirectories = true,
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName |
+                           NotifyFilters.DirectoryName | NotifyFilters.Size
+        };
+        watcher.Changed += OnPluginFileChanged;
+        watcher.Created += OnPluginFileChanged;
+        watcher.Deleted += OnPluginFileChanged;
+        watcher.Renamed += OnPluginFileChanged;
+        watcher.EnableRaisingEvents = true;
+        pluginWatcher = watcher;
+        logger.LogInformation("Watching '{PluginsRoot}' for plugin changes.", pluginsRoot);
+    }
+
+    private void StopPluginWatcher()
+    {
+        lock (gate)
+        {
+            watcherDebounce?.Cancel();
+            watcherDebounce = null;
+            pluginWatcher?.Dispose();
+            pluginWatcher = null;
+        }
+    }
+
+    private void OnPluginFileChanged(object sender, FileSystemEventArgs args)
+    {
+        // Debounce: a burst of file writes (e.g. deno fmt, git checkout) collapses into one
+        // reload. The most recent change wins; earlier pending reloads are superseded.
+        CancellationTokenSource debounce;
+        lock (gate)
+        {
+            watcherDebounce?.Cancel();
+            watcherDebounce = debounce = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(PluginReloadDebounce, debounce.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            try
+            {
+                await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException or OperationCanceledException)
+            {
+                // A deleted plugin directory, an unreadable manifest, or a shutdown-during-reload
+                // must not crash the watcher; the next change (or the next startup) re-resolves.
+                logger.LogDebug(
+                    exception,
+                    "Plugin reload for '{Path}' did not complete.",
+                    args.FullPath);
+            }
+        });
+    }
+
+    /// <summary>Locates the plugin owning a changed path and ships its fresh config to the host
+    /// via <c>plugin.reload</c>, so the host rebuilds that worker (and its dependents) with the
+    /// latest permissions. Config/dependency changes re-resolve the descriptor; pure source edits
+    /// reload with the same config so new module text is picked up.</summary>
+    private async Task ReloadChangedPluginAsync(string changedPath)
+    {
+        PluginDescriptor? owner = null;
+        lock (gate)
+        {
+            foreach (var descriptor in descriptors)
+            {
+                if (changedPath.StartsWith(descriptor.RootDirectory, StringComparison.Ordinal))
+                {
+                    owner = descriptor;
+                    break;
+                }
+            }
+        }
+
+        if (owner is null) return;
+
+        // Re-resolve the descriptor from disk so manifest/permission changes apply.
+        PluginHostConfigPlugin? replacement = null;
+        if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out _) &&
+            !RequiresProcessIsolation(reloaded))
+        {
+            var config = BuildConfig([reloaded]);
+            replacement = config.Plugins.FirstOrDefault();
+        }
+
+        foreach (var worker in owner.Workers)
+            await SendReloadAsync(owner.Id, worker.ExportName, replacement).ConfigureAwait(false);
+    }
+
+    private async Task SendReloadAsync(string pluginId, string exportName, PluginHostConfigPlugin? replacement)
+    {
+        WebSocket? socket;
+        lock (gate)
+        {
+            socket = Socket;
+        }
+
+        if (socket is not { State: WebSocketState.Open })
+        {
+            logger.LogWarning(
+                "Plugin reload for '{PluginId}/{ExportName}' skipped: host not connected.",
+                pluginId,
+                exportName);
+            return;
+        }
+
+        var payload = new PluginReloadPayload(pluginId, exportName, replacement);
+        await PushAsync(
+            socket,
+            new ReplEnvelope(
+                EnvelopeVersion,
+                ReplMessageType.PluginReload,
+                Guid.NewGuid().ToString("N"),
+                JsonSerializer.SerializeToElement(payload, PluginHostJsonContext.Default.PluginReloadPayload)),
+            lifetime.Token).ConfigureAwait(false);
+        logger.LogInformation(
+            "Plugin reload requested for '{PluginId}/{ExportName}'.",
+            pluginId,
+            exportName);
     }
 
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
@@ -394,6 +534,7 @@ internal sealed class PluginHostManager(
         FailPending("The plugin host is stopping.");
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
         RegistryChanges.Writer.TryComplete();
+        StopPluginWatcher();
 
         if (process is not null)
         {
@@ -495,7 +636,19 @@ internal sealed class PluginHostManager(
 
     private static string WriteConfigFile(IReadOnlyList<PluginDescriptor> plugins)
     {
-        var config = new PluginHostConfigFile(
+        var config = BuildConfig(plugins);
+        var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
+        var path = Path.Combine(Path.GetTempPath(), $"mc-plugins-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, json);
+        return path;
+    }
+
+    /// <summary>Builds the host config for one plugin set. A plugin's config carries the full
+    /// replacement surface (permissions, workers, dependencies) so a reload can ship a single
+    /// plugin's new config to the host without rewriting the shared file.</summary>
+    private static PluginHostConfigFile BuildConfig(IReadOnlyList<PluginDescriptor> plugins)
+    {
+        return new PluginHostConfigFile(
             plugins.Select(descriptor => new PluginHostConfigPlugin(
                 descriptor.Id,
                 descriptor.RootDirectory,
@@ -508,10 +661,6 @@ internal sealed class PluginHostManager(
                 ],
                 ToConfigPermissions(descriptor.Permissions),
                 descriptor.Dependencies.ToArray())).ToArray());
-        var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
-        var path = Path.Combine(Path.GetTempPath(), $"mc-plugins-{Guid.NewGuid():N}.json");
-        File.WriteAllText(path, json);
-        return path;
     }
 
     /// <summary>Canonical interop specifier of one worker entrypoint: `&lt;name&gt;/&lt;entrypoint&gt;`.</summary>
@@ -538,71 +687,6 @@ internal sealed class PluginHostManager(
         return grant.AllowAll
             ? JsonSerializer.SerializeToElement(true, PluginHostJsonContext.Default.Boolean)
             : JsonSerializer.SerializeToElement([.. grant.Values], PluginHostJsonContext.Default.StringArray);
-    }
-
-    private PluginHostProcessGrants BuildProcessGrants(string config)
-    {
-        PluginDescriptor[] plugins;
-        lock (gate)
-        {
-            plugins = [.. descriptors];
-        }
-
-        var read = new List<string> { config, modules.ModuleDirectory, socketPath };
-        var write = new List<string> { socketPath };
-        var net = new List<string> { "localhost", $"unix:{socketPath}" };
-        var env = new List<string>();
-        var imports = new List<string>();
-        var readAll = false;
-        var writeAll = false;
-        var netAll = false;
-        var envAll = false;
-        var importAll = false;
-        foreach (var plugin in plugins)
-        {
-            read.Add(plugin.RootDirectory);
-            Merge(plugin.Permissions.Read, read, ref readAll);
-            Merge(plugin.Permissions.Write, write, ref writeAll);
-            Merge(plugin.Permissions.Net, net, ref netAll);
-            Merge(plugin.Permissions.Env, env, ref envAll);
-            Merge(plugin.Permissions.Import, imports, ref importAll);
-        }
-
-        env.AddRange(ReplControlEnvironmentNames());
-        return new PluginHostProcessGrants(
-            readAll,
-            read,
-            writeAll,
-            write,
-            netAll,
-            net,
-            envAll,
-            env,
-            importAll,
-            imports);
-    }
-
-    private static void Merge(
-        PluginPermissionGrant grant,
-        ICollection<string> target,
-        ref bool allowAll)
-    {
-        if (grant.AllowAll)
-        {
-            allowAll = true;
-            return;
-        }
-
-        foreach (var value in grant.Values) target.Add(value);
-    }
-
-    private static IEnumerable<string> ReplControlEnvironmentNames()
-    {
-        yield return ReplControlEnvironment.IpcAddress;
-        yield return ReplControlEnvironment.PluginHostId;
-        yield return ReplControlEnvironment.PluginConfig;
-        yield return ReplControlEnvironment.PluginSdk;
-        yield return ReplControlEnvironment.PluginWorkerEntry;
     }
 
     private void HandleHostMessage(string text)

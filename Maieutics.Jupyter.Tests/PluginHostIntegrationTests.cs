@@ -38,8 +38,7 @@ public sealed class PluginHostIntegrationTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System,
-            SharedBroker);
+            TimeProvider.System);
 
         try
         {
@@ -86,8 +85,7 @@ public sealed class PluginHostIntegrationTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System,
-            SharedBroker);
+            TimeProvider.System);
 
         try
         {
@@ -127,8 +125,7 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System,
-            SharedBroker);
+            TimeProvider.System);
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -187,8 +184,7 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System,
-            SharedBroker);
+            TimeProvider.System);
         var controlHost = new ReplControlHost(
             socketPath,
             registry,

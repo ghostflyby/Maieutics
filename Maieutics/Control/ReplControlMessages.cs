@@ -79,6 +79,7 @@ internal static class ReplMessageType
     public const string ExtensionResult = "extension.result";
     public const string ExtensionError = "extension.error";
     public const string ExtensionRegistry = "extension.registry";
+    public const string PluginReload = "plugin.reload";
     public const string Error = "error";
 }
 

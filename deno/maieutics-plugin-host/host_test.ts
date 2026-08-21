@@ -225,6 +225,55 @@ Deno.test("enforces worker permission grants", async () => {
   }
 });
 
+Deno.test("reload with a replacement config rebuilds the worker with the new grants", async () => {
+  const dir = Deno.makeTempDirSync();
+  const entryPath = `${dir}/mod.ts`;
+  Deno.writeTextFileSync(
+    entryPath,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        await Deno.readTextFile("/etc/hosts");
+        return { action: "continue" as const };
+      },
+    });
+  `),
+  );
+  const original: PluginConfig = {
+    id: "test",
+    rootDir: dir,
+    permissions: { read: [dir] },
+    workers: [{
+      exportName: "./main",
+      entryUrl: pathToFileUrl(entryPath),
+      specifier: "@maieutics/test/main",
+    }],
+  };
+  const host = makeHost(original);
+  try {
+    await host.startAll();
+    // Baseline: /etc/hosts is outside the worker's read grant.
+    await assertRejects(
+      () => host.invoke("test", "./main", "ToolPreInvoke", {}),
+      Error,
+      "Requires read access",
+    );
+    // Reload with a replacement config that grants /etc/hosts; the rebuilt
+    // worker must pick up the new permission without a host restart.
+    const replacement: PluginConfig = {
+      ...original,
+      permissions: { read: [dir, "/etc/hosts"] },
+    };
+    await host.reload("test", "./main", replacement);
+    const value = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+    };
+    assertEquals(value.action, "continue");
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("rejects invocations of unregistered extension points", async () => {
   const dir = Deno.makeTempDirSync();
   const plugin = createPlugin(

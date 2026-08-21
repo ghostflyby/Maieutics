@@ -63,20 +63,25 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         ProcessStartInfo startInfo,
         InternalDenoProcessKind kind,
         ILogger logger,
-        DenoPermissionBroker broker,
-        EffectivePolicy policy,
+        DenoPermissionBroker? broker = null,
+        EffectivePolicy? policy = null,
         bool captureStandardError = false)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentNullException.ThrowIfNull(logger);
-        ArgumentNullException.ThrowIfNull(broker);
-        ArgumentNullException.ThrowIfNull(policy);
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException($"The {Describe(kind)} process could not be started.");
         // Register the policy immediately after spawn: the child can connect to the broker before
         // this call, but the broker's registration slot makes those first requests wait for the
-        // policy instead of being denied by default (ADR 0018 §9 readiness invariant).
-        broker.RegisterPolicy(process.Id, policy);
+        // policy instead of being denied by default (ADR 0018 §9 readiness invariant). A child
+        // launched without a broker (the plugin host, which runs with full Deno permissions and
+        // narrows its workers via worker options) skips registration.
+        if (broker is not null)
+        {
+            ArgumentNullException.ThrowIfNull(policy);
+            broker.RegisterPolicy(process.Id, policy);
+        }
+
         return new DenoRunProcess(
             process,
             kind,

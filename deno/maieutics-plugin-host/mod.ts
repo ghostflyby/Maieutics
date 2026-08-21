@@ -68,9 +68,14 @@ async function main(): Promise<void> {
 
   function handleMessage(envelope: ReplEnvelope): void {
     if (envelope.type === "plugin.reload") {
-      const payload = envelope.payload as { pluginId?: string; exportName?: string };
+      const payload = envelope.payload as {
+        pluginId?: string;
+        exportName?: string;
+        plugin?: PluginConfig;
+      };
       if (typeof payload?.pluginId === "string" && typeof payload.exportName === "string") {
-        void host.reload(payload.pluginId, payload.exportName).then(() => {
+        const next = payload.plugin;
+        void host.reload(payload.pluginId, payload.exportName, next).then(() => {
           bus.send({
             type: "extension.registry",
             payload: registryPayload(host.extensions, host.states()),

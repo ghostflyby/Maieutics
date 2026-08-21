@@ -446,24 +446,22 @@ internal sealed class PluginHostManager(
     {
         if (!Directory.Exists(pluginsRoot)) return [];
 
+        // pluginsRoot is itself the plugin project: its maieutics.json declares
+        // its own entrypoints, and its deno.json imports declare the installed
+        // plugins (local file/workspace packages whose directory carries a
+        // maieutics.json). jsr:/npm: imports are resolved by the Deno toolchain
+        // at install time, not by the kernel.
         var result = new List<PluginDescriptor>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var directory in Directory.EnumerateDirectories(pluginsRoot))
+        foreach (var descriptor in ScanProject(pluginsRoot))
         {
-            // A subdirectory is a plugin project: it is itself a plugin (its own
-            // maieutics.json), and its deno.json imports declare the installed
-            // plugins (local file/workspace packages whose directory carries a
-            // maieutics.json). jsr:/npm: imports are not resolved here yet.
-            foreach (var descriptor in ScanProject(directory))
+            if (seen.Add(descriptor.Id))
             {
-                if (seen.Add(descriptor.Id))
-                {
-                    result.Add(descriptor);
-                    logger.LogInformation(
-                        "Discovered Maieutics plugin '{PluginName}' with {WorkerCount} worker entrypoint(s).",
-                        descriptor.Name,
-                        descriptor.Workers.Count);
-                }
+                result.Add(descriptor);
+                logger.LogInformation(
+                    "Discovered Maieutics plugin '{PluginName}' with {WorkerCount} worker entrypoint(s).",
+                    descriptor.Name,
+                    descriptor.Workers.Count);
             }
         }
         return result;

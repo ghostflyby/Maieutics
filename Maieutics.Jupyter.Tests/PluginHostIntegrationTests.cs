@@ -299,11 +299,12 @@ public sealed class PluginHostIntegrationTests
 
     private static string CreatePluginsRoot(string pluginName)
     {
+        // The plugins root IS the plugin project: deno.json + maieutics.json +
+        // mod.ts sit directly at the root.
         var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
-        var directory = Path.Combine(root, pluginName);
-        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(root);
         File.WriteAllText(
-            Path.Combine(directory, "deno.json"),
+            Path.Combine(root, "deno.json"),
             $$"""
               {
                 "name": "@maieutics/{{pluginName}}",
@@ -313,14 +314,15 @@ public sealed class PluginHostIntegrationTests
               }
               """);
         File.WriteAllText(
-            Path.Combine(directory, "maieutics.json"),
+            Path.Combine(root, "maieutics.json"),
             """
             {
               "isolation": "auto",
               "entrypoints": { "main": ["./mod.ts"] }
             }
-            """);        File.WriteAllText(
-            Path.Combine(directory, "mod.ts"),
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mod.ts"),
             pluginName == "rejecting"
                 ? """
                   import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";

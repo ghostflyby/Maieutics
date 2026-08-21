@@ -157,15 +157,17 @@ public static class MaieuticsHost
 
         builder.Services.AddSingleton<PluginHostModule>();
         builder.Services.AddSingleton(services => new PluginHostManager(
-            Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".maieutics", "plugins"),
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Maieutics",
+                "plugins"),
             controlSocketPath,
             services.GetRequiredService<DenoReplOptions>(),
             services.GetRequiredService<PluginHostModule>(),
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
-            services.GetRequiredService<TimeProvider>(),
-            services.GetRequiredService<DenoPermissionBroker>()));
+            services.GetRequiredService<TimeProvider>()));
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,

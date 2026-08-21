@@ -34,7 +34,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 import { type BusConnection, connectBus } from "../shared/bus.ts";
-import { type ReplEnvelope } from "../shared/protocol.ts";
+import type { ReplEnvelope } from "../shared/protocol.ts";
 
 export interface ReplClientOptions {
   /** Unix-domain socket path or Windows loopback host:port of the control channel. */

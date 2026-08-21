@@ -1,13 +1,13 @@
 /**
  * Maieutics plugin host process entry. The kernel spawns this process with the
  * control channel address and a plugin configuration file; the host creates
- * permission-scoped workers per plugin export and bridges `extension.*` bus
- * messages between the kernel and the workers.
+ * permission-scoped worker actors per plugin export via worker-actor's `spawn`
+ * and bridges control messages between the kernel and the workers.
  */
 
-import { type PluginConfig, PluginHost } from "./host.ts";
+import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
 import { connectBus } from "../shared/bus.ts";
-import { type ReplEnvelope } from "../shared/protocol.ts";
+import type { ReplEnvelope } from "../shared/protocol.ts";
 
 const IPC_ENV = "MAIEUTICS_REPL_IPC";
 const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";
@@ -23,21 +23,6 @@ function requireEnv(name: string): string {
     );
   }
   return value;
-}
-
-function isExtensionInvoke(payload: unknown): payload is {
-  pluginId: string;
-  exportName: string;
-  extensionPoint: string;
-  request: unknown;
-} {
-  if (typeof payload !== "object" || payload === null) {
-    return false;
-  }
-  const candidate = payload as Record<string, unknown>;
-  return typeof candidate.pluginId === "string" &&
-    typeof candidate.exportName === "string" &&
-    typeof candidate.extensionPoint === "string";
 }
 
 async function main(): Promise<void> {
@@ -62,7 +47,10 @@ async function main(): Promise<void> {
       `${config.plugins?.length ?? 0} plugin(s).`,
   );
 
-  const bus = await connectBus({
+  // The control host (Kestrel in the composition root) may not be listening
+  // yet when this process starts, so the bus connect is retried instead of
+  // crashing the host. The first registry snapshot is sent once connected.
+  const bus = await connectBusWithRetry({
     address: ipcAddress,
     hello: {
       type: "control.hello",
@@ -72,7 +60,7 @@ async function main(): Promise<void> {
   });
   bus.send({
     type: "extension.registry",
-    payload: registryPayload(registered),
+    payload: registryPayload(registered, host.states()),
   });
 
   const shutdown = (): void => {
@@ -82,45 +70,82 @@ async function main(): Promise<void> {
   globalThis.addEventListener("unload", shutdown);
 
   function handleMessage(envelope: ReplEnvelope): void {
-    if (envelope.type !== "extension.invoke") {
+    if (envelope.type === "plugin.reload") {
+      const payload = envelope.payload as {
+        pluginId?: string;
+        exportName?: string;
+        plugin?: PluginConfig;
+      };
+      if (typeof payload?.pluginId === "string" && typeof payload.exportName === "string") {
+        const next = payload.plugin;
+        void host.reload(payload.pluginId, payload.exportName, next).then(() => {
+          bus.send({
+            type: "extension.registry",
+            payload: registryPayload(host.extensions, host.states()),
+          });
+        }).catch((error: Error) => {
+          console.error(`[plugin-host] reload of '${payload.pluginId}' failed: ${error.message}`);
+        });
+      }
       return;
     }
-    const payload = envelope.payload;
-    if (!isExtensionInvoke(payload)) {
-      bus.send({
-        type: "extension.error",
-        correlationId: envelope.correlationId,
-        payload: {
-          code: "invalid_invoke",
-          message: "The extension.invoke payload is malformed.",
-        },
-      });
+    if (envelope.type === "extension.invoke") {
+      const payload = envelope.payload as {
+        pluginId?: string;
+        exportName?: string;
+        extensionPoint?: string;
+        request?: unknown;
+      };
+      if (
+        typeof payload?.pluginId === "string" &&
+        typeof payload.exportName === "string" &&
+        typeof payload.extensionPoint === "string"
+      ) {
+        void host.invoke(
+          payload.pluginId,
+          payload.exportName,
+          payload.extensionPoint,
+          payload.request,
+        ).then((value: unknown) => {
+          bus.send({
+            type: "extension.result",
+            payload: { value },
+            correlationId: envelope.correlationId,
+          });
+        }).catch((error: Error) => {
+          bus.send({
+            type: "extension.error",
+            payload: { code: "extension_failed", message: error.message },
+            correlationId: envelope.correlationId,
+          });
+        });
+      }
       return;
     }
-    void host.invoke(
-      payload.pluginId,
-      payload.exportName,
-      payload.extensionPoint,
-      payload.request,
-    )
-      .then((value) => {
-        bus.send({
-          type: "extension.result",
-          correlationId: envelope.correlationId,
-          payload: { value },
-        });
-      })
-      .catch((error: Error) => {
-        bus.send({
-          type: "extension.error",
-          correlationId: envelope.correlationId,
-          payload: {
-            code: "extension_failed",
-            message: error.message,
-          },
-        });
-      });
   }
+}
+
+/**
+ * Opens the control bus, retrying until the control host (Kestrel in the
+ * composition root) is listening. The host process is a resident orchestration
+ * process and must tolerate the kernel's server coming up slightly later; a
+ * one-shot connect would crash the host on a startup race. Retries every
+ * 250ms up to a bounded window, then fails.
+ */
+async function connectBusWithRetry(
+  options: Parameters<typeof connectBus>[0],
+): Promise<ReturnType<typeof connectBus>> {
+  const deadline = Date.now() + 30_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await connectBus(options);
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw lastError ?? new Error("The control bus could not be opened.");
 }
 
 function registryPayload(
@@ -128,30 +153,45 @@ function registryPayload(
     pluginId: string;
     exportName: string;
     extensionPoint: string;
+    specifier: string;
   }>,
+  states: readonly PluginState[],
 ): {
   plugins: Array<
-    { pluginId: string; exportName: string; extensionPoints: string[] }
+    {
+      pluginId: string;
+      exportName: string;
+      extensionPoints: string[];
+      specifier?: string;
+    }
   >;
+  states?: readonly PluginState[];
 } {
-  const byWorker = new Map<string, Map<string, string[]>>();
+  const byWorker = new Map<string, Map<string, { points: string[]; specifier?: string }>>();
   for (const registration of registrations) {
     let workers = byWorker.get(registration.pluginId);
     if (workers === undefined) {
       workers = new Map();
       byWorker.set(registration.pluginId, workers);
     }
-    const points = workers.get(registration.exportName) ?? [];
-    points.push(registration.extensionPoint);
-    workers.set(registration.exportName, points);
+    const entry = workers.get(registration.exportName) ??
+      { points: [], specifier: registration.specifier };
+    entry.points.push(registration.extensionPoint);
+    entry.specifier ??= registration.specifier;
+    workers.set(registration.exportName, entry);
   }
   const plugins = [];
   for (const [pluginId, workers] of byWorker) {
-    for (const [exportName, extensionPoints] of workers) {
-      plugins.push({ pluginId, exportName, extensionPoints });
+    for (const [exportName, entry] of workers) {
+      plugins.push({
+        pluginId,
+        exportName,
+        extensionPoints: entry.points,
+        ...(entry.specifier === undefined ? {} : { specifier: entry.specifier }),
+      });
     }
   }
-  return { plugins };
+  return { plugins, states };
 }
 
 await main();

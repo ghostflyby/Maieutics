@@ -196,7 +196,8 @@ module, used by the current REPL and the future plugin host" — is implemented 
   stop with `Kill(true)` escalation). `DenoReplProcess` and `PluginHostProcess` become thin adapters over it.
 - **`DenoPermissionArguments`**: rendered `--allow-*` / `--deny-*` flags produced from an `EffectivePolicy` plus
   the control-channel fixed grants.
-- **`DenoPermissionBroker`**: the .NET side of the Deno permission broker (section 9).
+- **`DenoPermissionBroker`**: the .NET side of the Deno permission broker (section 9). Used by the REPL
+  child; the plugin host does not use it (resolved decision 8).
 - **`InternalDenoProcessKind`**: the "internal" marker. REPL and plugin-host children are *internal* Deno
   processes: they are not sandbox targets, because their Deno-side permissions are the full capability surface and
   their privileges come from the Deno permission system itself.
@@ -209,8 +210,10 @@ the pipe bootstrap, and those are expressed as Deno grants, not as sandbox mount
 
 ### 9. Deno permission broker: runtime policy without a prompt
 
-The REPL/plugin children resolve every permission check through a *broker* so that grants can be enforced
-at runtime. Deno 2.5+ ships the mechanism natively as the **`DENO_PERMISSION_BROKER_PATH`** broker
+The REPL child resolves every permission check through a *broker* so that grants can be enforced
+at runtime. The plugin host does not use the broker (resolved decision 8): it launches with full
+Deno permissions as trusted orchestration code and isolates each plugin worker via the worker's own
+`deno.permissions` options. Deno 2.5+ ships the mechanism natively as the **`DENO_PERMISSION_BROKER_PATH`** broker
 (unstable, `runtime/permissions/broker.rs`, versioned JSON-lines protocol over a unix socket or Windows
 named pipe — the env var carries the socket path on unix and the full named-pipe path `\\.\pipe\<name>` on
 Windows; a bare pipe name fails to connect, verified in CI):
@@ -346,11 +349,12 @@ Rules:
 
 - `DenoReplProcess` and `PluginHostProcess` shrink to adapters over `DenoRunProcess`; the drain/stop/observe
   loops exist once.
-- The REPL and plugin host get one enforcement point: the official `DENO_PERMISSION_BROKER_PATH` broker
+- The REPL child gets one enforcement point: the official `DENO_PERMISSION_BROKER_PATH` broker
   resolves every permission check against the child's `EffectivePolicy`. The broker is the single authority
   (setting the env var replaces the flag baseline), is versioned (`v:1`), supports Windows named pipes, and
   its deny reasons surface as `NotCapable` messages (verified). `--no-prompt` stays so unsolicited requests
-  deny by default.
+  deny by default. The plugin host does not use the broker (resolved decision 8): it launches with full
+  Deno permissions and isolates each plugin worker via the worker's own `deno.permissions` options.
 - Terminal starts become policy-governed: env allowlist from the policy, exec allowlist enforced for restricted
   policies, no behavior change for the default policy.
 - The REPL and plugin host keep "privileged internal Deno" semantics; sandboxing applies to general process
@@ -401,6 +405,25 @@ Rules:
 7. **Windows env/path matching is case-insensitive; net/sys keep case-sensitive matching.** On Windows the
    resolver compares env names and paths case-insensitively (matching the platform environment and
    filesystem semantics); net hosts, sys API names, and import values remain case-sensitive.
+
+## Resolved decisions (2026-08-21)
+
+8. **The plugin host does not use the broker; it runs with full Deno permissions and isolates each
+   plugin worker via its own `deno.permissions` options.** This supersedes decision 5 for the plugin
+   host only (the REPL child keeps the broker). Verified on Deno 2.9.5: when a worker declares a kind
+   the parent does not hold, `new Worker` fails with `NotCapable: Can't escalate parent thread
+   permissions`; a kind the worker does not declare is denied inside the worker even when the parent
+   holds it. So the host process is the permission ceiling and the worker options are the actual
+   isolation boundary — no per-plugin grant union is computed at launch, and the host no longer
+   registers a policy with the broker. `PluginHostProcess` launches with every `--allow-*` kind plus
+   `--no-prompt`; `DenoRunProcess.Start` makes the broker/policy arguments optional.
+9. **Plugin permission/config/source changes reload the worker in-process with the plugin's full
+   replacement config.** `PluginHostManager` runs a debounced `FileSystemWatcher` over the plugins
+   root; a change re-resolves the owning plugin's descriptor from disk and ships it over the new
+   `plugin.reload` bus message as a complete `PluginHostConfigPlugin` (permissions, workers,
+   dependencies). The host updates the worker's config and rebuilds the worker plus its transitive
+   dependents — no host-process restart is needed for a permission change. Pure source edits reload
+   with the same config so new module text is picked up.
 
 
 ## Implementation plan
@@ -485,8 +508,9 @@ by policy-rendered flags, which are identical to today's grants but now enforced
 - `LocalDenoReplSessionFactory.StartAsync` acquires `EffectivePolicy` for the session; the REPL child
   launches with the broker address in `DENO_PERMISSION_BROKER_PATH` and `--no-prompt` (the broker is the
   enforcement point, so the launch flags are the minimal baseline — the broker answers everything else).
-- `PluginHostManager.BuildProcessGrants` is replaced: each `PluginPermissionGrant` becomes a layer
-  contribution; compose, and the plugin host launches with the broker address too.
+- The plugin host does not use the broker (resolved decision 8): it launches with every `--allow-*` kind
+  plus `--no-prompt`, and each plugin worker is isolated by its own `deno.permissions` options. No
+  per-plugin grant union is computed (`BuildProcessGrants` is deleted).
 - Windows ffi baseline: **tightened** (decision 1) — `--allow-ffi=<systemRoot>\System32\kernel32.dll` at
   launch for the pipe bootstrap, then the broker gates post-bootstrap `dlopen`; unsuffixed fallback only
   if the Windows verification task disproves path grants.

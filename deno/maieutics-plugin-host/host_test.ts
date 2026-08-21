@@ -15,7 +15,11 @@ function createPlugin(dir: string, source: string): PluginConfig {
     id: "test",
     rootDir: dir,
     permissions: { read: [dir] },
-    workers: [{ exportName: "./main", entryUrl: pathToFileUrl(entryPath) }],
+    workers: [{
+      exportName: "./main",
+      entryUrl: pathToFileUrl(entryPath),
+      specifier: "@maieutics/test/main",
+    }],
   };
 }
 
@@ -215,6 +219,118 @@ Deno.test("enforces worker permission grants", async () => {
       () => host.invoke("test", "./main", "ToolPreInvoke", {}),
       Error,
       "Requires read access",
+    );
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("reload with a replacement config rebuilds the worker with the new grants", async () => {
+  const dir = Deno.makeTempDirSync();
+  const entryPath = `${dir}/mod.ts`;
+  Deno.writeTextFileSync(
+    entryPath,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        await Deno.readTextFile("/etc/hosts");
+        return { action: "continue" as const };
+      },
+    });
+  `),
+  );
+  const original: PluginConfig = {
+    id: "test",
+    rootDir: dir,
+    permissions: { read: [dir] },
+    workers: [{
+      exportName: "./main",
+      entryUrl: pathToFileUrl(entryPath),
+      specifier: "@maieutics/test/main",
+    }],
+  };
+  const host = makeHost(original);
+  try {
+    await host.startAll();
+    // Baseline: /etc/hosts is outside the worker's read grant.
+    await assertRejects(
+      () => host.invoke("test", "./main", "ToolPreInvoke", {}),
+      Error,
+      "Requires read access",
+    );
+    // Reload with a replacement config that grants /etc/hosts; the rebuilt
+    // worker must pick up the new permission without a host restart.
+    const replacement: PluginConfig = {
+      ...original,
+      permissions: { read: [dir, "/etc/hosts"] },
+    };
+    await host.reload("test", "./main", replacement);
+    const value = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+    };
+    assertEquals(value.action, "continue");
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("reload with a replacement entry URL rebuilds the worker and refreshes the registry", async () => {
+  const dir = Deno.makeTempDirSync();
+  const oldEntry = `${dir}/old.ts`;
+  const newEntry = `${dir}/new.ts`;
+  Deno.writeTextFileSync(
+    oldEntry,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", () => ({ action: "old" as const }));
+  `),
+  );
+  Deno.writeTextFileSync(
+    newEntry,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", () => ({ action: "new" as const }));
+    export const discover = defineExtensionPoint("McpDiscover", () => []);
+  `),
+  );
+  const original: PluginConfig = {
+    id: "test",
+    rootDir: dir,
+    permissions: { read: [dir] },
+    workers: [{
+      exportName: "./main",
+      entryUrl: pathToFileUrl(oldEntry),
+      specifier: "@maieutics/test/main",
+    }],
+  };
+  const host = makeHost(original);
+  try {
+    await host.startAll();
+    const before = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+    };
+    assertEquals(before.action, "old");
+    assertEquals(
+      host.extensions.map((entry) => entry.extensionPoint).sort(),
+      ["ToolPreInvoke"],
+    );
+    // The replacement points at a new entry file that also registers a new
+    // extension point; the rebuilt worker must load the new file and the
+    // public registry snapshot must refresh.
+    const replacement: PluginConfig = {
+      ...original,
+      workers: [{
+        exportName: "./main",
+        entryUrl: pathToFileUrl(newEntry),
+        specifier: "@maieutics/test/main",
+      }],
+    };
+    await host.reload("test", "./main", replacement);
+    const after = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+    };
+    assertEquals(after.action, "new");
+    assertEquals(
+      host.extensions.map((entry) => entry.extensionPoint).sort(),
+      ["McpDiscover", "ToolPreInvoke"],
     );
   } finally {
     host.dispose();

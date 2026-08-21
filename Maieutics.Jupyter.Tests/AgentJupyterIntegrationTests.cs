@@ -20,7 +20,7 @@ public sealed class AgentJupyterIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var timeProvider = new ManualTimeProvider();
         var chatClient = new ScriptedChatClient(
-            (_, token) => TimedResponseAsync(timeProvider, token),
+            (_, token) => TimedResponseAsync(token),
             (_, token) => TextResponseAsync(token, "remembered"));
         var session = new AgentSession(chatClient, new AgentSessionOptions { SystemPrompt = "Be concise." });
         var application = new MaieuticsAgentKernelApplication(
@@ -693,12 +693,10 @@ public sealed class AgentJupyterIntegrationTests
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> TimedResponseAsync(
-        ManualTimeProvider timeProvider,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         yield return new ChatResponseUpdate(ChatRole.Assistant, "A");
-        timeProvider.Advance(TimeSpan.FromMilliseconds(51));
         await Task.Yield();
         yield return new ChatResponseUpdate(ChatRole.Assistant, "B");
         yield return new ChatResponseUpdate(ChatRole.Assistant, "C");

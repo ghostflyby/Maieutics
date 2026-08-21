@@ -17,11 +17,12 @@ this keeps JSR-distributed plugins working without a registry round trip.
 
 ## Deno permissions
 
-The host process launches with **every** Deno permission kind granted (`--allow-read`, `--allow-write`,
-`--allow-net`, `--allow-env`, `--allow-run`, `--allow-ffi`, `--allow-sys`, `--allow-import`) and
-`--no-prompt`. It is trusted orchestration code that only spawns and supervises workers; it never
-runs plugin code itself. No permission broker is attached to the host, and no per-plugin grant union
-is computed — the host process is the ceiling, and each worker is the actual isolation boundary.
+The host process launches with **every** Deno permission kind granted (`--allow-read`,
+`--allow-write`, `--allow-net`, `--allow-env`, `--allow-run`, `--allow-ffi`, `--allow-sys`,
+`--allow-import`) and `--no-prompt`. It is trusted orchestration code that only spawns and
+supervises workers; it never runs plugin code itself. No permission broker is attached to the host,
+and no per-plugin grant union is computed — the host process is the ceiling, and each worker is the
+actual isolation boundary.
 
 Each worker's `deno.permissions` is mapped from the plugin's positive grants with the plugin
 directory, SDK module, and worker entry paths injected into read access. Worker grants can never

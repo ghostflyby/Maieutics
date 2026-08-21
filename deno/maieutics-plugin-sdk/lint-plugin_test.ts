@@ -83,10 +83,12 @@ Deno.test("entrypoint-exports: bare constant export is reported without a fix", 
   assertEquals(hit[0].fix?.length ?? 0, 0, "a constant cannot be safely auto-wrapped");
 });
 
-Deno.test("entrypoint-exports: a bare function export is a valid worker-actor member", async () => {
+Deno.test("entrypoint-exports: bare function export is reported without a fix", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
   const diags = await lint(dir, "mod.ts", "export function helper() { return 1; }\n");
-  assertEquals(diags.filter((d) => d.id === "maieutics/entrypoint-exports").length, 0);
+  const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
+  assertEquals(hit.length, 1);
+  assertEquals(hit[0].fix?.length ?? 0, 0);
 });
 
 Deno.test("entrypoint-exports: a defineActor-wrapped export passes", async () => {

@@ -8,12 +8,10 @@
  *    entrypoint's script list. Without that declaration the file is never
  *    started as a worker, so the actor it defines is unreachable.
  * 2. `maieutics/entrypoint-exports` — every export of an entrypoint file must
- *    be a worker-actor function member: either produced by `defineActor` or a
- *    bare function (worker-actor's rpc surface accepts function members
- *    natively). A bare object-literal export whose members are all functions is
- *    auto-fixed to wrap it in `defineActor(...)`; other bare exports
- *    (constants, re-exports) are reported without a fix because no
- *    semantically safe automatic rewrite exists.
+ *    be produced by `defineActor`. A bare object-literal export whose members
+ *    are all functions is auto-fixed to wrap it in `defineActor(...)`; other
+ *    bare exports (constants, functions, re-exports) are reported without a
+ *    fix because no semantically safe automatic rewrite exists.
  *
  * The plugin locates `maieutics.json` by walking up from the linted file
  * (never from `Deno.cwd()`, which is the launch directory and unreliable).
@@ -192,11 +190,16 @@ const entrypointExportsRule = {
         if (!isEntrypointFile()) return;
         const names = defineActorNames ?? new Set<string>();
         const declaration = node.declaration;
-        // A bare function export is a worker-actor function member (the rpc
-        // surface accepts function members natively; flattenSurface exposes it
-        // as a method). It is a valid entrypoint export — no defineActor wrap.
-        if (declaration?.type === "FunctionDeclaration") return;
-
+        if (declaration?.type === "FunctionDeclaration") {
+          // export function helper() — not an actor export.
+          context.report({
+            node,
+            message:
+              "Entrypoint exports must be produced by defineActor; wrap the surface in " +
+              "defineActor({ ... }) instead of exporting a bare function.",
+          });
+          return;
+        }
         const init = declaration?.type === "VariableDeclaration"
           ? declaration.declarations[0]?.init
           : undefined;

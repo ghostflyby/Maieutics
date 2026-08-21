@@ -86,6 +86,39 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (envelope.type === "extension.invoke") {
+      const payload = envelope.payload as {
+        pluginId?: string;
+        exportName?: string;
+        extensionPoint?: string;
+        request?: unknown;
+      };
+      if (
+        typeof payload?.pluginId === "string" &&
+        typeof payload.exportName === "string" &&
+        typeof payload.extensionPoint === "string"
+      ) {
+        void host.invoke(
+          payload.pluginId,
+          payload.exportName,
+          payload.extensionPoint,
+          payload.request,
+        ).then((value: unknown) => {
+          bus.send({
+            type: "extension.result",
+            payload: { value },
+            correlationId: envelope.correlationId,
+          });
+        }).catch((error: Error) => {
+          bus.send({
+            type: "extension.error",
+            payload: { code: "extension_failed", message: error.message },
+            correlationId: envelope.correlationId,
+          });
+        });
+      }
+      return;
+    }
   }
 }
 

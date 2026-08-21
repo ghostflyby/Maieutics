@@ -20,7 +20,7 @@ public sealed class AgentJupyterIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var timeProvider = new ManualTimeProvider();
         var chatClient = new ScriptedChatClient(
-            (_, token) => TimedResponseAsync(timeProvider, token),
+            (_, token) => TimedResponseAsync(token),
             (_, token) => TextResponseAsync(token, "remembered"));
         var session = new AgentSession(chatClient, new AgentSessionOptions { SystemPrompt = "Be concise." });
         var application = new MaieuticsAgentKernelApplication(
@@ -693,7 +693,6 @@ public sealed class AgentJupyterIntegrationTests
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> TimedResponseAsync(
-        ManualTimeProvider timeProvider,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -703,11 +702,6 @@ public sealed class AgentJupyterIntegrationTests
         yield return new ChatResponseUpdate(ChatRole.Assistant, "C");
         yield return new ChatResponseUpdate(ChatRole.Assistant, "D");
         yield return new ChatResponseUpdate(ChatRole.Assistant, "E");
-        // The clock advances only after all deltas arrive so the elapsed-time
-        // flush branch can never fire between deltas; the 2-character rule
-        // deterministically produces "A"/"ABC"/"ABCDE" regardless of scheduler
-        // timing between the Task.Yield boundaries.
-        timeProvider.Advance(TimeSpan.FromMilliseconds(51));
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> TextResponseAsync(

@@ -47,9 +47,10 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
 
 ## Permission and process rules
 
-- Every child process start flows through the permission module: `TerminalRegistry`, the Deno REPL factory, and the
-  plugin host manager all acquire an `EffectivePolicy` for their owning scope and render it before launch. No launch
-  path builds its own grant list.
+- Every child process start flows through the permission module: `TerminalRegistry` and the Deno REPL factory acquire
+  an `EffectivePolicy` for their owning scope and render it before launch. No launch path builds its own grant list.
+  The plugin host manager is the exception by design (ADR 0018 decision 8): the host launches with full Deno
+  permissions as trusted orchestration code, and each plugin worker is narrowed by its own `deno.permissions` options.
 - The effective policy is the overlay of the built-in baseline, app-wide defaults, the workspace profile, and the
   session override; denials win. Policies are captured once per owning scope and never change mid-operation.
 - Path patterns use the single-source variable table (`${env.*}`, `${var.*}`); the `var.*` keys are owned by

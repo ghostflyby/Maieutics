@@ -100,13 +100,18 @@ Every change must preserve these invariants:
 17. Unknown protocol messages cannot crash long-running receive loops.
 18. Expected tool failures remain typed and recoverable within a turn unless the runtime itself is unusable.
 19. Every child process start flows through the permission module: the process's effective policy is captured
-    once per owning scope and rendered before launch; no launch path builds its own grant list.
+    once per owning scope and rendered before launch; no launch path builds its own grant list. The plugin host
+    is an exception by design (ADR 0018 decision 8): it is trusted orchestration code that launches with full
+    Deno permissions and isolates each plugin worker via its own `deno.permissions` options; it is not a
+    sandbox target and never runs plugin handlers itself.
 20. The effective permission of a scope is the layered overlay of the built-in baseline, app-wide defaults,
     the project/workspace profile, and the session override; denials always win over grants.
 21. Permission path patterns are expressed with the single-source variable table (`${env.*}`, `${var.*}`),
     never with literal duplicated paths.
 22. Internal Deno children (REPL, plugin host) are privileged by Deno permissions and are not process-sandbox
-    targets; process sandboxes apply to general starts (terminal, MCP), never to internal Deno children.
+    targets; process sandboxes apply to general starts (terminal, MCP), never to internal Deno children. The
+    REPL's permissions come from the broker against an `EffectivePolicy`; the plugin host's come from full
+    launch-time flags with per-worker narrowing (ADR 0018 decision 8).
 23. The permission store stays Deno-shaped but is not Deno-only: kinds a process sandbox cannot express (env,
     import) are explicit and enforced by their owning layer.
 
@@ -174,7 +179,9 @@ Configuration -> Agent, Execution, Jupyter, Mcp, Plugins, Providers, Terminal
 - Execute cell text only through an explicitly selected runtime or tool.
 - Validate tool arguments and enforce filesystem, workspace, network, process, and environment policy inside tools.
 - Every child process gets its environment and permissions from the effective policy of its owning scope. No launch
-  path builds its own grant list; the built-in baseline plus the overlay renders one policy.
+  path builds its own grant list; the built-in baseline plus the overlay renders one policy. The plugin host is the
+  exception by design (ADR 0018 decision 8): it launches with full Deno permissions as trusted orchestration code and
+  isolates each plugin worker via the worker's own `deno.permissions` options.
 - Allowlist child-process environment variables.
 - Bound payloads, queues, retained logs, history, and persisted data.
 - Redact secrets before persistence where practical.

@@ -703,10 +703,10 @@ public sealed class AgentJupyterIntegrationTests
         yield return new ChatResponseUpdate(ChatRole.Assistant, "C");
         yield return new ChatResponseUpdate(ChatRole.Assistant, "D");
         yield return new ChatResponseUpdate(ChatRole.Assistant, "E");
-        // Advancing after the deltas arrive (not between them) keeps the flush
-        // timer from firing mid-stream: the 2-character rule drives the
-        // "A"/"ABC"/"ABCDE" snapshots, and a timer advance here only confirms
-        // that a completed stream does not emit an extra timed flush.
+        // The clock advances only after all deltas arrive so the elapsed-time
+        // flush branch can never fire between deltas; the 2-character rule
+        // deterministically produces "A"/"ABC"/"ABCDE" regardless of scheduler
+        // timing between the Task.Yield boundaries.
         timeProvider.Advance(TimeSpan.FromMilliseconds(51));
     }
 

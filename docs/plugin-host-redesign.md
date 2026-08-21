@@ -21,7 +21,7 @@ Implemented (see §10 for the order; deviations from the spec are marked inline)
 | 4. Extension points over `Remote<T>` | ✅ | Host calls `actor.McpDiscover(...)`; the `extension.invoke` bus path is retained for now. |
 | 5. Dependency graph + topological start | ✅ | `PluginDependencyGraph` (missing-dep/cycle exclusion, waves) on the kernel; the host re-derives waves. |
 | 6. Delete `extension.invoke` protocol | ⏳ | Deferred until the `Remote<T>` path is confirmed end-to-end by integration tests. |
-| 7. Hot reload (`plugin.reload`) | ⏳ | `plugin.reload` bus message exists in the host; watcher wiring not yet in the kernel. |
+| 7. Hot reload (`plugin.reload`) | ✅ | `plugin.reload` bus message + kernel `FileSystemWatcher`; the payload carries the plugin's full replacement config so permission changes rebuild the worker without a host restart. |
 | 8. Docs/tests | ✅ | Unit + interop tests (real deno) pass. |
 
 ### Deviations from the spec (verified against worker-actor@0.1.0)
@@ -325,7 +325,8 @@ the host is out of the data path.
 6. **Delete `extension.invoke` protocol** (messages, DTOs, payload records) after the
    `Remote<T>` path is confirmed by tests.
 7. **Hot reload**: debounced `FileSystemWatcher` → `plugin.reload` (in-process cascade rebuild) for
-   source edits; manifest/topology changes restart the host process.
+   source edits. The reload payload carries the plugin's full replacement config, so permission and
+   manifest changes also rebuild the worker in-process with the new grants — no host-process restart.
 8. **Docs/tests**: ADR 0019 update; unit + integration tests (real deno).
 
 ## 11. File inventory

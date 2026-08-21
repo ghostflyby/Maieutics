@@ -247,9 +247,7 @@ export function defineActor<T extends (...args: unknown[]) => unknown>(
 export function defineActor(
   surfaceOrFn: Record<string, unknown> | ((...args: unknown[]) => unknown),
 ): RemoteActor<Record<string, unknown>> {
-  const surface = typeof surfaceOrFn === "function"
-    ? { call: surfaceOrFn }
-    : surfaceOrFn;
+  const surface = typeof surfaceOrFn === "function" ? { call: surfaceOrFn } : surfaceOrFn;
   for (const [name, value] of Object.entries(surface)) {
     if (typeof value !== "function") {
       throw new TypeError(

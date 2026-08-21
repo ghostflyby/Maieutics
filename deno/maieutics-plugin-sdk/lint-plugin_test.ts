@@ -67,8 +67,7 @@ Deno.test("entrypoint-registered: no maieutics.json is silent", async () => {
 
 Deno.test("entrypoint-exports: bare object literal export gets a defineActor fix", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
-  const source =
-    SDK_IMPORT + "export const api = { hello() { return \"hi\"; } };\n";
+  const source = SDK_IMPORT + 'export const api = { hello() { return "hi"; } };\n';
   const diags = await lint(dir, "mod.ts", source);
   const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
   assertEquals(hit.length, 1);
@@ -157,13 +156,17 @@ Deno.test("entrypoint-exports: namespace import defineActor call passes", async 
 
 Deno.test("entrypoint-exports: type exports are exempt", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
-  const diags = await lint(dir, "mod.ts", "export interface Shape { a: number; }\nexport type N = number;\n");
+  const diags = await lint(
+    dir,
+    "mod.ts",
+    "export interface Shape { a: number; }\nexport type N = number;\n",
+  );
   assertEquals(diags.filter((d) => d.id === "maieutics/entrypoint-exports").length, 0);
 });
 
 Deno.test("entrypoint-exports: no defineActor import means no fix is emitted", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
-  const diags = await lint(dir, "mod.ts", "export const api = { hello() { return \"hi\"; } };\n");
+  const diags = await lint(dir, "mod.ts", 'export const api = { hello() { return "hi"; } };\n');
   const hit = diags.filter((d) => d.id === "maieutics/entrypoint-exports");
   assertEquals(hit.length, 1);
   assertEquals(hit[0].fix?.length ?? 0, 0, "no import of defineActor -> no fix");

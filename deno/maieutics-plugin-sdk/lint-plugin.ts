@@ -100,7 +100,14 @@ function isDefineActorCall(
   names: ReadonlySet<string>,
   namespaceNames: ReadonlySet<string>,
 ): boolean {
-  const callee = (init as { callee?: { type?: string; name?: string; object?: { name?: string }; property?: { name?: string } } } | null)
+  const callee = (init as {
+    callee?: {
+      type?: string;
+      name?: string;
+      object?: { name?: string };
+      property?: { name?: string };
+    };
+  } | null)
     ?.callee;
   if (callee === undefined || callee === null) return false;
   if (callee.type === "Identifier") return names.has(callee.name ?? "");
@@ -133,7 +140,11 @@ const entrypointRegisteredRule = {
         if (!source.includes("maieutics-plugin-sdk") && !source.includes("@maieutics/plugin-sdk")) {
           return;
         }
-        const specifiers = (node as { specifiers?: Array<{ type?: string; imported?: { name?: string }; local?: { name?: string } }> })
+        const specifiers = (node as {
+          specifiers?: Array<
+            { type?: string; imported?: { name?: string }; local?: { name?: string } }
+          >;
+        })
           .specifiers ?? [];
         for (const specifier of specifiers) {
           if (specifier.type === "ImportSpecifier" && specifier.imported?.name === "defineActor") {
@@ -151,11 +162,13 @@ const entrypointRegisteredRule = {
           const init = declarator.init;
           if (isDefineActorCall(init, defineActorNames!, namespaceNames!)) {
             fileHasActorExport = true;
-            if (registeredEntrypoints !== undefined && !isEntrypoint(context.filename, registeredEntrypoints)) {
+            if (
+              registeredEntrypoints !== undefined &&
+              !isEntrypoint(context.filename, registeredEntrypoints)
+            ) {
               context.report({
                 node,
-                message:
-                  "This file exports an actor via defineActor but is not declared in " +
+                message: "This file exports an actor via defineActor but is not declared in " +
                   "maieutics.json entrypoints; add it to an entrypoint script list so the " +
                   "worker is started.",
               });
@@ -216,8 +229,14 @@ const entrypointExportsRule = {
         }
         if (defineActorNames === undefined) defineActorNames = new Set();
         if (namespaceNames === undefined) namespaceNames = new Set();
-        for (const specifier of (node as { specifiers?: Array<{ type?: string; imported?: { name?: string }; local?: { name?: string } }> })
-          .specifiers ?? []) {
+        for (
+          const specifier of (node as {
+            specifiers?: Array<
+              { type?: string; imported?: { name?: string }; local?: { name?: string } }
+            >;
+          })
+            .specifiers ?? []
+        ) {
           if (specifier.type === "ImportSpecifier" && specifier.imported?.name === "defineActor") {
             defineActorNames.add(specifier.local?.name ?? "defineActor");
             hasDefineActorImport = true;
@@ -241,8 +260,7 @@ const entrypointExportsRule = {
           const fnText = context.sourceCode.getText(declaration);
           context.report({
             node,
-            message:
-              "Entrypoint exports must be produced by defineActor; wrap the function " +
+            message: "Entrypoint exports must be produced by defineActor; wrap the function " +
               "in defineActor(...).",
             ...(hasDefineActorImport
               ? {
@@ -265,12 +283,14 @@ const entrypointExportsRule = {
             const init = declarator.init;
             if (isDefineActorCall(init, names(), namespace())) continue; // defineActor(...) — OK.
 
-            if (init !== null && init !== undefined && isObjectLiteral(init) && allMembersAreFunctions(init)) {
+            if (
+              init !== null && init !== undefined && isObjectLiteral(init) &&
+              allMembersAreFunctions(init)
+            ) {
               const literal = context.sourceCode.getText(init);
               context.report({
                 node,
-                message:
-                  "Entrypoint exports must be produced by defineActor; wrap the surface " +
+                message: "Entrypoint exports must be produced by defineActor; wrap the surface " +
                   "in defineActor({ ... }).",
                 ...(hasDefineActorImport
                   ? {
@@ -295,8 +315,7 @@ const entrypointExportsRule = {
         // export { x } from / export { x } — re-export without a local declaration.
         context.report({
           node,
-          message:
-            "Entrypoint exports must be produced by defineActor; re-exports are not " +
+          message: "Entrypoint exports must be produced by defineActor; re-exports are not " +
             "actor surfaces — define the value in this entrypoint via defineActor(...) " +
             "or move it out.",
         });
@@ -309,8 +328,7 @@ const entrypointExportsRule = {
         // export is not a defineActor surface.
         context.report({
           node,
-          message:
-            "Entrypoint exports must be produced by defineActor; export default is not " +
+          message: "Entrypoint exports must be produced by defineActor; export default is not " +
             "an actor surface — define it as a named export via defineActor(...).",
         });
       },
@@ -318,8 +336,7 @@ const entrypointExportsRule = {
         if (!isEntrypointFile()) return;
         context.report({
           node,
-          message:
-            "Entrypoint exports must be produced by defineActor; `export * from` is not " +
+          message: "Entrypoint exports must be produced by defineActor; `export * from` is not " +
             "an actor surface — define the value in this entrypoint via defineActor(...).",
         });
       },

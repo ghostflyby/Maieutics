@@ -139,9 +139,21 @@ internal sealed class PluginHostManager(
         }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
-        return EnsureStoppedAsync().WaitAsync(cancellationToken);
+        // Stop must run to completion even if the caller's token cancels: an
+        // aborted stop would leave the host process and watcher behind, and
+        // Host.StopAsync treats a thrown TaskCanceledException as a fatal
+        // hosted-service failure. The cancellation only bounds the wait here;
+        // EnsureStoppedAsync itself is cancellation-free.
+        try
+        {
+            await EnsureStoppedAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await EnsureStoppedAsync().ConfigureAwait(false);
+        }
     }
 
     internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
@@ -252,6 +264,7 @@ internal sealed class PluginHostManager(
 
     private void Start()
     {
+        EnsurePluginsRoot();
         PluginGraphResult graph;
         lock (gate)
         {
@@ -269,13 +282,10 @@ internal sealed class PluginHostManager(
             descriptors.AddRange(graph.Enabled);
         }
 
-        if (descriptors.Count == 0)
-        {
-            StartDynamicMcpCoordinator();
-            logger.LogInformation("No Maieutics plugins found under '{PluginsRoot}'.", pluginsRoot);
-            return;
-        }
-
+        // The plugin root always exists (an empty deno project skeleton) and the
+        // host always starts, even with zero plugins: built-in functionality is
+        // planned to ship as plugins, so the host is resident and a plugin added
+        // later takes effect without a kernel restart.
         configPath = WriteConfigFile(descriptors);
         process = PluginHostProcess.Start(
             new PluginHostProcessOptions(
@@ -294,6 +304,43 @@ internal sealed class PluginHostManager(
         StartPluginWatcher();
     }
 
+    /// <summary>Creates the plugins root on first start as an empty deno project skeleton:
+    /// a <c>deno.json</c> (package identity + SDK import mapping) and a <c>maieutics.json</c>
+    /// with no entrypoints. The directory is idempotent — an existing user project is never
+    /// overwritten.</summary>
+    private void EnsurePluginsRoot()
+    {
+        if (Directory.Exists(pluginsRoot)) return;
+
+        Directory.CreateDirectory(pluginsRoot);
+        var denoJson = Path.Combine(pluginsRoot, "deno.json");
+        if (!File.Exists(denoJson))
+            File.WriteAllText(
+                denoJson,
+                """
+                {
+                  "name": "@maieutics/plugins",
+                  "version": "0.1.0",
+                  "imports": {
+                    "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.1"
+                  }
+                }
+                """);
+        var manifestPath = Path.Combine(pluginsRoot, "maieutics.json");
+        if (!File.Exists(manifestPath))
+            File.WriteAllText(
+                manifestPath,
+                """
+                {
+                  "isolation": "auto",
+                  "entrypoints": {}
+                }
+                """);
+        logger.LogInformation(
+            "Created the plugin directory '{PluginsRoot}' with an empty deno project skeleton.",
+            pluginsRoot);
+    }
+
     private void StartDynamicMcpCoordinator()
     {
         var coordinator = new PluginMcpCoordinator(
@@ -310,8 +357,8 @@ internal sealed class PluginHostManager(
     /// are debounced; only the most recent change triggers one reload.</summary>
     private void StartPluginWatcher()
     {
-        if (!Directory.Exists(pluginsRoot)) return;
-
+        // The plugins root always exists (EnsurePluginsRoot ran in Start), so the
+        // watcher always runs; a plugin added later is picked up by a reload.
         var watcher = new FileSystemWatcher(pluginsRoot)
         {
             IncludeSubdirectories = true,
@@ -618,13 +665,12 @@ internal sealed class PluginHostManager(
 
     private List<PluginDescriptor> ScanPlugins()
     {
-        if (!Directory.Exists(pluginsRoot)) return [];
-
-        // pluginsRoot is itself the plugin project: its maieutics.json declares
-        // its own entrypoints, and its deno.json imports declare the installed
-        // plugins (local file/workspace packages whose directory carries a
-        // maieutics.json). jsr:/npm: imports are resolved by the Deno toolchain
-        // at install time, not by the kernel.
+        // The plugins root always exists (EnsurePluginsRoot ran in Start): it is
+        // itself the plugin project. Its maieutics.json declares its own
+        // entrypoints (empty in the skeleton), and its deno.json imports declare
+        // the installed plugins (local file/workspace packages whose directory
+        // carries a maieutics.json). jsr:/npm: imports are resolved by the Deno
+        // toolchain at install time, not by the kernel.
         var result = new List<PluginDescriptor>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var descriptor in ScanProject(pluginsRoot))

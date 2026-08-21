@@ -30,15 +30,23 @@ public sealed class PluginHostIntegrationTests
         using var canceledWait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         var pluginsRoot = Path.Combine(Path.GetTempPath(), $"mc-empty-plugins-{Guid.NewGuid():N}");
         Directory.CreateDirectory(pluginsRoot);
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
         var manager = new PluginHostManager(
             pluginsRoot,
-            ReplControlHost.CreateSocketPath(),
+            socketPath,
             new DenoReplOptions(),
             new PluginHostModule(),
-            new ReplControlSessionRegistry(),
+            registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, deadline.Token);
 
         try
         {
@@ -52,12 +60,15 @@ public sealed class PluginHostIntegrationTests
 
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetStatus().Should().BeEquivalentTo(new PluginHostStatus(
-                PluginHostState.Ready,
-                0,
-                0,
-                false,
-                false));
+            // The host always starts, even with zero plugins: the plugins root is
+            // a resident empty deno project and built-in functionality is planned
+            // to ship as plugins. ControlConnected is not asserted because the
+            // host's control-channel attach races the status read.
+            var status = manager.GetStatus();
+            status.State.Should().Be(PluginHostState.Ready);
+            status.PluginCount.Should().Be(0);
+            status.RegistrationCount.Should().Be(0);
+            status.HostProcessRequired.Should().BeTrue();
             await Task.WhenAll(
                 manager.StopAsync(deadline.Token),
                 manager.DisposeAsync().AsTask());
@@ -67,7 +78,46 @@ public sealed class PluginHostIntegrationTests
         finally
         {
             await manager.DisposeAsync();
+            await application.DisposeAsync();
             Directory.Delete(pluginsRoot, true);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task StartCreatesTheEmptyDenoProjectSkeletonAndRunsTheHost()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var pluginsRoot = Path.Combine(Path.GetTempPath(), $"mc-scaffold-{Guid.NewGuid():N}");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions(),
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+
+        try
+        {
+            Directory.Exists(pluginsRoot).Should().BeFalse();
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+
+            // The skeleton is an empty deno project: deno.json + maieutics.json
+            // with no entrypoints, so the root project carries zero workers.
+            Directory.Exists(pluginsRoot).Should().BeTrue();
+            File.Exists(Path.Combine(pluginsRoot, "deno.json")).Should().BeTrue();
+            File.Exists(Path.Combine(pluginsRoot, "maieutics.json")).Should().BeTrue();
+            manager.GetStatus().PluginCount.Should().Be(1); // the skeleton project itself
+            manager.GetStatus().RegistrationCount.Should().Be(0);
+            manager.GetStatus().HostProcessRequired.Should().BeTrue();
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
         }
     }
 

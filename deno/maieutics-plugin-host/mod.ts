@@ -47,7 +47,10 @@ async function main(): Promise<void> {
       `${config.plugins?.length ?? 0} plugin(s).`,
   );
 
-  const bus = await connectBus({
+  // The control host (Kestrel in the composition root) may not be listening
+  // yet when this process starts, so the bus connect is retried instead of
+  // crashing the host. The first registry snapshot is sent once connected.
+  const bus = await connectBusWithRetry({
     address: ipcAddress,
     hello: {
       type: "control.hello",
@@ -120,6 +123,29 @@ async function main(): Promise<void> {
       return;
     }
   }
+}
+
+/**
+ * Opens the control bus, retrying until the control host (Kestrel in the
+ * composition root) is listening. The host process is a resident orchestration
+ * process and must tolerate the kernel's server coming up slightly later; a
+ * one-shot connect would crash the host on a startup race. Retries every
+ * 250ms up to a bounded window, then fails.
+ */
+async function connectBusWithRetry(
+  options: Parameters<typeof connectBus>[0],
+): Promise<ReturnType<typeof connectBus>> {
+  const deadline = Date.now() + 30_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await connectBus(options);
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw lastError ?? new Error("The control bus could not be opened.");
 }
 
 function registryPayload(

@@ -351,6 +351,8 @@ internal sealed class PluginHostManager(
 
         _ = Task.Run(async () =>
         {
+            if (lifetime.IsCancellationRequested) return;
+
             try
             {
                 await Task.Delay(PluginReloadDebounce, debounce.Token).ConfigureAwait(false);
@@ -365,10 +367,12 @@ internal sealed class PluginHostManager(
                 await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
             }
             catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException or OperationCanceledException)
+                exception is IOException or UnauthorizedAccessException or OperationCanceledException
+                    or WebSocketException or ObjectDisposedException)
             {
-                // A deleted plugin directory, an unreadable manifest, or a shutdown-during-reload
-                // must not crash the watcher; the next change (or the next startup) re-resolves.
+                // A deleted plugin directory, an unreadable manifest, a host socket that closed
+                // mid-send, or a shutdown-during-reload must not crash the watcher; the next
+                // change (or the next startup) re-resolves.
                 logger.LogDebug(
                     exception,
                     "Plugin reload for '{Path}' did not complete.",
@@ -383,15 +387,24 @@ internal sealed class PluginHostManager(
     /// reload with the same config so new module text is picked up.</summary>
     private async Task ReloadChangedPluginAsync(string changedPath)
     {
+        // Find the most specific owning plugin: the longest root directory that
+        // contains the changed path, with a path-segment boundary so a plugin
+        // named "foo" never claims "foo-bar/...". Without the longest-match
+        // rule the plugins-root descriptor (whose RootDirectory equals the
+        // plugins root itself) would swallow every nested-plugin event.
         PluginDescriptor? owner = null;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
         lock (gate)
         {
             foreach (var descriptor in descriptors)
             {
-                if (changedPath.StartsWith(descriptor.RootDirectory, StringComparison.Ordinal))
+                if (!IsWithin(changedPath, descriptor.RootDirectory, comparison)) continue;
+                if (owner is null ||
+                    descriptor.RootDirectory.Length > owner.RootDirectory.Length)
                 {
                     owner = descriptor;
-                    break;
                 }
             }
         }
@@ -400,15 +413,35 @@ internal sealed class PluginHostManager(
 
         // Re-resolve the descriptor from disk so manifest/permission changes apply.
         PluginHostConfigPlugin? replacement = null;
-        if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out _) &&
-            !RequiresProcessIsolation(reloaded))
+        if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out _))
         {
-            var config = BuildConfig([reloaded]);
-            replacement = config.Plugins.FirstOrDefault();
+            if (RequiresProcessIsolation(reloaded))
+            {
+                // A plugin that newly declares run/ffi (or switches to process
+                // isolation) cannot take effect through an in-process worker
+                // reload — that would require a host-process restart. Keep the
+                // previous grants and surface the gap instead of silently
+                // reloading with stale permissions.
+                logger.LogWarning(
+                    "Plugin '{PluginId}' now requires process isolation (run/ffi grants or isolation=process); " +
+                    "an in-process reload cannot apply it. Restart the host process to pick up the change.",
+                    owner.Id);
+            }
+            else
+            {
+                var config = BuildConfig([reloaded]);
+                replacement = config.Plugins.FirstOrDefault();
+            }
         }
 
         foreach (var worker in owner.Workers)
             await SendReloadAsync(owner.Id, worker.ExportName, replacement).ConfigureAwait(false);
+    }
+
+    private static bool IsWithin(string path, string root, StringComparison comparison)
+    {
+        if (path.Equals(root, comparison)) return true;
+        return path.StartsWith(root + Path.DirectorySeparatorChar, comparison);
     }
 
     private async Task SendReloadAsync(string pluginId, string exportName, PluginHostConfigPlugin? replacement)

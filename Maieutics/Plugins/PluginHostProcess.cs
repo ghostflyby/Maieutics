@@ -98,6 +98,11 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("--no-prompt");
         startInfo.ArgumentList.Add(options.HostModuleUrl);
 
+        // The host runs with --allow-env, so the child environment must be
+        // explicitly allowlisted (like the REPL child): without Clear() the
+        // child inherits the parent's full environment, and --allow-env would
+        // expose provider secrets and credentials to the host process.
+        startInfo.Environment.Clear();
         startInfo.EnvironmentVariables[ReplControlEnvironment.IpcAddress] = options.SocketPath;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginHostId] = options.HostId;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginConfig] = options.ConfigPath;

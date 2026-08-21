@@ -193,24 +193,18 @@ export class PluginHost {
   /** Starts every worker in topological waves (dependencies first) and collects the registry. */
   async startAll(): Promise<readonly RegisteredExtension[]> {
     const waves = this.#computeStartWaves();
-    const registrations: RegisteredExtension[] = [];
     for (const wave of waves) {
       await Promise.all(wave.map((key) => this.#startWorker(key)));
     }
-    for (const key of this.#workers.keys()) {
-      const handle = this.#requireHandle(key);
-      for (const name of handle.extensionPoints) {
-        registrations.push({
-          pluginId: handle.plugin.id,
-          exportName: handle.config.exportName,
-          extensionPoint: name,
-          specifier: handle.specifier,
-        });
-      }
-    }
+    const registrations = this.#collectExtensions();
+    this.#refreshExtensions(registrations);
+    return registrations;
+  }
+
+  /** Replaces the public registry snapshot with the current per-worker extension points. */
+  #refreshExtensions(registrations: RegisteredExtension[]): void {
     this.extensions.length = 0;
     this.extensions.push(...registrations);
-    return registrations;
   }
 
   /** Invokes one extension point on the targeted plugin worker. */
@@ -267,17 +261,43 @@ export class PluginHost {
     const key = workerKey(pluginId, exportName);
     const handle = this.#workers.get(key);
     if (handle === undefined) return;
-    if (nextConfig !== undefined) {
+    if (nextConfig !== undefined && nextConfig !== null) {
       handle.plugin = nextConfig;
+      const nextWorker = nextConfig.workers.find((w) => w.exportName === exportName);
+      if (nextWorker !== undefined) {
+        // The rebuilt worker must load the replacement entry URL, not the
+        // stale one from the pre-reload config.
+        handle.config = { ...handle.config, ...nextWorker };
+      }
       // Specifier identity is the worker's canonical interop name; a config
       // change may rename an entrypoint, so refresh the by-specifier map.
       this.#bySpecifier.delete(handle.specifier);
-      handle.specifier = nextConfig.workers.find((w) => w.exportName === exportName)
-        ?.specifier ?? handle.specifier;
+      handle.specifier = nextWorker?.specifier ?? handle.specifier;
       this.#bySpecifier.set(handle.specifier, key);
     }
     await this.#cascade(key);
-    await this.#startSubgraph([key]);
+    // Restart the whole cascaded closure (the worker plus its transitive
+    // dependents) in topological waves; restarting only the target would leave
+    // dependents permanently Stopped until the next host-process restart.
+    await this.#startSubgraph(this.#dependencyClosure(key));
+    this.#refreshExtensions(this.#collectExtensions());
+  }
+
+  /** Collects the current registry snapshot from every worker's extension points. */
+  #collectExtensions(): RegisteredExtension[] {
+    const registrations: RegisteredExtension[] = [];
+    for (const key of this.#workers.keys()) {
+      const handle = this.#requireHandle(key);
+      for (const name of handle.extensionPoints) {
+        registrations.push({
+          pluginId: handle.plugin.id,
+          exportName: handle.config.exportName,
+          extensionPoint: name,
+          specifier: handle.specifier,
+        });
+      }
+    }
+    return registrations;
   }
 
   dispose(): void {

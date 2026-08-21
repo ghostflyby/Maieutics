@@ -12,6 +12,8 @@ internal sealed class PluginHostModule
     private static readonly (string Resource, string RelativePath)[] Entries =
     [
         ("Maieutics.Deno.PluginSdk.ts", "maieutics-plugin-sdk/mod.ts"),
+        ("Maieutics.Deno.PluginSdkActorRef.ts", "maieutics-plugin-sdk/actor_ref.ts"),
+        ("Maieutics.Deno.PluginSdkLint.ts", "maieutics-plugin-sdk/lint-plugin.ts"),
         ("Maieutics.Deno.PluginHost.ts", "maieutics-plugin-host/mod.ts"),
         ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),
         ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
@@ -34,7 +36,19 @@ internal sealed class PluginHostModule
             Path.Combine(ModuleDirectory, "maieutics-plugin-host/worker_entry.ts")).AbsoluteUri;
         var sdkDirectory = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-sdk")).AbsoluteUri;
         ConfigFile = Path.Combine(ModuleDirectory, "deno.json");
-        File.WriteAllText(ConfigFile, $"{{\"links\": [\"{sdkDirectory}\"]}}");
+        // The materialized host imports @ghostflyby/worker-actor; the root
+        // config must map it (and the sdk subpath) so the host process and its
+        // workers resolve without a registry round trip.
+        File.WriteAllText(
+            ConfigFile,
+            $$"""
+              {
+                "imports": {
+                  "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0"
+                },
+                "links": ["{{sdkDirectory}}"]
+              }
+              """);
     }
 
     public string SdkUrl { get; }

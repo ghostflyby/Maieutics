@@ -110,10 +110,10 @@ function buildWorkerPermissions(
     entries.add(plugin.rootDir);
     entries.add(filePathOf(options.sdkUrl));
     entries.add(filePathOf(options.workerEntryUrl));
-    // The SDK imports @ghostflyby/worker-actor from the local Deno cache; the
-    // worker must be able to read it.
-    const denoDir = Deno.env.get("DENO_DIR") ?? defaultDenoDir();
-    if (denoDir !== undefined) entries.add(denoDir);
+    // No DENO_DIR read grant is needed: Deno resolves jsr:/npm: modules
+    // internally without a filesystem read permission (the cache is not a
+    // user-facing read target), and reading DENO_DIR/HOME here would require
+    // env access the broker does not grant.
     return [...entries];
   })();
   return {
@@ -126,14 +126,6 @@ function buildWorkerPermissions(
     sys: normalize(plugin.permissions.sys),
     import: normalize(plugin.permissions.import),
   };
-}
-
-function defaultDenoDir(): string | undefined {
-  const home = Deno.env.get("HOME");
-  if (home === undefined) return undefined;
-  if (Deno.build.os === "darwin") return `${home}/Library/Caches/deno`;
-  if (Deno.build.os === "linux") return `${home}/.cache/deno`;
-  return `${Deno.env.get("LOCALAPPDATA") ?? home}/deno`;
 }
 
 /** The worker's RPC surface as seen by the host: extension points by name. */

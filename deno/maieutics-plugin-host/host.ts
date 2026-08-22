@@ -133,6 +133,15 @@ interface WorkerRpc {
   [method: string]: (payload: unknown) => Promise<unknown>;
 }
 
+/** One contract identity exported by a worker's entry module: the export key
+ * (what a dependency imports), the extension point name (what providers
+ * address), and the defining module URL (the identity's owner). */
+interface ContractExportIdentity {
+  readonly exportName: string;
+  readonly name: string;
+  readonly owner: string;
+}
+
 /** Identity + runtime handle of one spawned worker. */
 interface WorkerHandle {
   plugin: PluginConfig;
@@ -144,6 +153,8 @@ interface WorkerHandle {
   state: "starting" | "running" | "stopping" | "stopped" | "failed" | "disabled" | "crashed";
   failure?: string;
   extensionPoints: Set<string>;
+  /** Contract identities (extension points) this worker's entry exports. */
+  contractIdentities: ContractExportIdentity[];
   restarts: number;
 }
 
@@ -182,6 +193,7 @@ export class PluginHost {
           worker: undefined as never,
           state: State.Stopped,
           extensionPoints: new Set(),
+          contractIdentities: [],
           restarts: 0,
         });
         this.#bySpecifier.set(workerConfig.specifier, key);
@@ -433,10 +445,16 @@ export class PluginHost {
       // addEventListener coexists with spawn's onmessage property (which owns
       // the RPC response channel); the ready/init-error frames are host-side.
       const onMessage = (event: MessageEvent): void => {
-        const frame = event.data as { type?: string; extensionPoints?: string[]; message?: string };
+        const frame = event.data as {
+          type?: string;
+          extensionPoints?: string[];
+          contractIdentities?: ContractExportIdentity[];
+          message?: string;
+        };
         if (frame?.type === "ready") {
           handle.worker.removeEventListener("message", onMessage);
           for (const name of frame.extensionPoints ?? []) handle.extensionPoints.add(name);
+          handle.contractIdentities = frame.contractIdentities ?? [];
           clearTimeout(timeout);
           resolve();
         } else if (frame?.type === "init-error") {
@@ -490,6 +508,7 @@ export class PluginHost {
     await stopped;
     handle.state = State.Stopped;
     handle.extensionPoints.clear();
+    handle.contractIdentities = [];
   }
 
   async #startSubgraph(keys: string[]): Promise<void> {
@@ -514,18 +533,31 @@ export class PluginHost {
    * URL of every worker that plugin runs. Both come from spawn-time known
    * data (the plugin manifest exports), never from reading module sources.
    * The consumer worker's load hook uses this to decide which import edges
-   * carry actor semantics and must be redirected.
+   * carry actor semantics and must be redirected. The dependency worker's
+   * contract identities ride along so the consumer can synthesize stub
+   * identity exports for them.
    */
   #dependencyActorEntries(handle: WorkerHandle): Array<{
     specifier: string;
     entryUrl: string;
+    identities?: ContractExportIdentity[];
   }> {
-    const result: Array<{ specifier: string; entryUrl: string }> = [];
+    const result: Array<{
+      specifier: string;
+      entryUrl: string;
+      identities?: ContractExportIdentity[];
+    }> = [];
     const declared = new Set(handle.plugin.dependencies ?? []);
     for (const candidate of this.#workers.values()) {
       if (candidate.plugin.id !== handle.plugin.id && declared.has(candidate.plugin.id)) {
         if (candidate.specifier.length > 0) {
-          result.push({ specifier: candidate.specifier, entryUrl: candidate.config.entryUrl });
+          result.push({
+            specifier: candidate.specifier,
+            entryUrl: candidate.config.entryUrl,
+            ...(candidate.contractIdentities.length === 0
+              ? {}
+              : { identities: candidate.contractIdentities }),
+          });
         }
       }
     }

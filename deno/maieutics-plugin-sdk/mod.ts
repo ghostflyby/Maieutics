@@ -40,10 +40,13 @@ import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/wo
 import {
   bindDefiningWorker,
   collection,
+  createRemoteIdentity,
   CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
   type ExtensionPointIdentity,
   isExtensionPoint,
+  isLocalExtensionPoint,
+  isRemoteExtensionPoint,
   provide,
   providerCount,
   type ProviderRegistration,
@@ -345,7 +348,17 @@ interface WorkerInitConfig {
    * and entry file URL of each dependency worker this plugin may call. The
    * load hook redirects only import edges that resolve to one of these.
    */
-  actorEntries: readonly { specifier: string; entryUrl: string }[];
+  actorEntries: readonly {
+    specifier: string;
+    entryUrl: string;
+    /**
+     * Contract identities (extension points) the dependency worker exports,
+     * reported by the host from its ready frame. The load hook synthesizes
+     * stub exports for these, so `import { ep } from "contract"` yields a
+     * remote identity carrying the defining worker's specifier.
+     */
+    identities?: readonly { exportName: string; name: string; owner: string }[];
+  }[];
 }
 
 let ownSpecifierValue = "";
@@ -479,12 +492,17 @@ async function initialize(entryUrl: string): Promise<void> {
     type: "ready",
     specifier: ownSpecifierValue,
     extensionPoints: [...extensionPoints.keys()],
+    // Contract identities (export key + extension point name + defining module
+    // URL) are reported to the host so dependency workers can synthesize stub
+    // identity exports for them (stub identity replacement).
+    contractIdentities: [...contractExportIdentities],
   });
 }
 
 function scanExports(namespace: Record<string, unknown>): void {
   const extensions = new Map<string, unknown>();
   const actors = new Map<string, object>();
+  const contractExports: ContractExportIdentity[] = [];
   for (const [name, value] of Object.entries(namespace)) {
     if (typeof value === "function" || (typeof value === "object" && value !== null)) {
       for (
@@ -506,12 +524,14 @@ function scanExports(namespace: Record<string, unknown>): void {
         bindDefiningWorker(value, ownSpecifierValue);
         const identityName = value.name;
         extensionPointIdentities.set(identityName, value);
+        contractExports.push({ exportName: name, name: identityName, owner: value.owner });
         registerActorExport(identityName, ownSpecifierValue, collectionActorSurface(identityName));
       }
       if ((value as Record<symbol, unknown>)[ACTOR_MARKER] === true) actors.set(name, value);
     }
   }
   extensionPoints = extensions;
+  contractExportIdentities = contractExports;
   for (const [name, surface] of actors) {
     // The defineActor proxy exposes the real surface via __surface so the
     // owner can flatten it (a Proxy cannot be Object.entries-enumerated).
@@ -611,10 +631,23 @@ async function remoteProvideImpl(
 let extensionPoints = new Map<string, unknown>();
 const extensionPointIdentities = new Map<string, ExtensionPointIdentity>();
 
+/** One contract identity exported by this worker's entry module: the export
+ * key (what a dependency imports), the extension point name (what providers
+ * address), and the defining module URL (the identity's owner). */
+interface ContractExportIdentity {
+  readonly exportName: string;
+  readonly name: string;
+  readonly owner: string;
+}
+
+/** Contract identities reported in the ready frame; cleared on dispose. */
+let contractExportIdentities: ContractExportIdentity[] = [];
+
 function disposePlugin(): void {
   clearActorExports();
   extensionPoints.clear();
   extensionPointIdentities.clear();
+  contractExportIdentities = [];
   linkedSurface = {};
   for (const close of closeHandlers) close();
   closeHandlers.length = 0;
@@ -895,13 +928,24 @@ function createRefProxyForStub(
  *     equals a registry entry URL (import-map aliases, relative paths, ...).
  */
 function installDependencyLoadHook(
-  actorEntries: readonly { specifier: string; entryUrl: string }[],
+  actorEntries: readonly {
+    specifier: string;
+    entryUrl: string;
+    identities?: readonly { exportName: string; name: string; owner: string }[];
+  }[],
 ): void {
   const canonical = new Map(
     actorEntries.map((entry) => [normalizeSpecifier(entry.specifier), entry.specifier]),
   );
   const entryUrls = new Map(
     actorEntries.map((entry) => [normalizeFileUrl(entry.entryUrl), entry.specifier]),
+  );
+  // Contract identities per dependency specifier, used to synthesize stub
+  // identity exports (stub identity replacement).
+  const identitiesBySpecifier = new Map(
+    actorEntries
+      .filter((entry) => (entry.identities?.length ?? 0) > 0)
+      .map((entry) => [entry.specifier, entry.identities!]),
   );
   // node:module is CJS; registerHooks is Deno's implemented (sync) form of
   // Node's registerHooks. `import` is hoisted to module top level (fine: the
@@ -933,7 +977,7 @@ function installDependencyLoadHook(
         const specifier = decodeURIComponent(url.slice(STUB_SCHEME.length));
         return {
           format: "module",
-          source: stubSource(specifier),
+          source: stubSource(specifier, identitiesBySpecifier.get(specifier)),
           shortCircuit: true,
         };
       }
@@ -987,15 +1031,28 @@ function importNodeModuleHooks(): { registerHooks(hooks: unknown): void } {
   return nodeModule as { registerHooks(hooks: unknown): void };
 }
 
-function stubSource(specifier: string): string {
+function stubSource(
+  specifier: string,
+  identities?: readonly { exportName: string; name: string; owner: string }[],
+): string {
   // The stub imports the SDK entry module for the acquire machinery: the
   // plugin module graph shares the SDK instance with the worker entry (Deno
   // caches modules by URL per worker), so no re-initialization occurs, and the
   // load hook is installed in this same graph, so the SDK import resolves
-  // normally. The default export is the single lazy surface.
+  // normally. The default export is the single lazy surface; contract
+  // identities of the dependency are exported by their export name as remote
+  // identities (stub identity replacement), so `import { ep } from "contract"`
+  // yields the identity with the defining worker's specifier.
+  const identityExports = (identities ?? []).map((identity) => {
+    const value = `createRemoteIdentity(${JSON.stringify(identity.name)}, ${
+      JSON.stringify(identity.owner)
+    }, ${JSON.stringify(specifier)})`;
+    return `export const ${identity.exportName} = ${value};`;
+  });
   return `
-import { createDependencyStub } from ${JSON.stringify(SDK_ENTRY_URL)};
+import { createDependencyStub, createRemoteIdentity } from ${JSON.stringify(SDK_ENTRY_URL)};
 export default createDependencyStub(${JSON.stringify(specifier)});
+${identityExports.join("\n")}
 `;
 }
 
@@ -1011,9 +1068,12 @@ export { flattenSurface };
 
 export {
   collection,
+  createRemoteIdentity,
   CURRENT_MODULE,
   defineReactiveExtensionPoint,
   isExtensionPoint,
+  isLocalExtensionPoint,
+  isRemoteExtensionPoint,
   provide,
   providerCount,
   snapshot,

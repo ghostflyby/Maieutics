@@ -55,24 +55,6 @@ function sdkImport(): string {
   return `import { defineActor, defineExtensionPoint } from ${JSON.stringify(SDK_URL)};`;
 }
 
-/** The identity brand the SDK attaches to contract identities (Symbol.for global). */
-const IDENTITY_BRAND = "maieutics/extensionPoint/v1/identity";
-
-/**
- * A remote contract identity as a provider worker would hold it after the
- * dependency-stub identity replacement lands. The stub replacement is a later
- * step; this builds the same `{ name, owner, defSpecifier, brand }` shape the
- * SDK attaches so the remote provide path can be verified end-to-end.
- */
-function remoteIdentitySource(name: string, defSpecifier: string, owner: string): string {
-  return `{
-    name: ${JSON.stringify(name)},
-    owner: ${JSON.stringify(owner)},
-    defSpecifier: ${JSON.stringify(defSpecifier)},
-    [Symbol.for(${JSON.stringify(IDENTITY_BRAND)})]: true,
-  }`;
-}
-
 /** Polls the definer's collection snapshot until `predicate` holds or the timeout elapses. */
 async function waitForCollectionSnapshot(
   host: PluginHost,
@@ -363,6 +345,65 @@ Deno.test("a consumer subscribes to a provider's reactive extension point across
   }
 });
 
+Deno.test("an imported contract identity is a remote identity carrying the definer's specifier", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    export const ep = defineExtensionPoint<number>("sample.metric");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+  );
+
+  // The consumer imports the contract identity through the load hook; the
+  // stub synthesizes a remote identity. The handler reports its shape so the
+  // test can assert defSpecifier and the remote/local classification.
+  const consumer = writePlugin(
+    root,
+    "consumer",
+    `${sdkImport()}
+    import { isRemoteExtensionPoint } from ${JSON.stringify(SDK_URL)};
+    import { ep } from "@maieutics/definer/main";
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({
+        action: "continue" as const,
+        name: ep.name,
+        owner: ep.owner,
+        defSpecifier: ep.defSpecifier,
+        remote: isRemoteExtensionPoint(ep),
+      }),
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(consumer)],
+  });
+  try {
+    await host.startAll();
+    const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      name?: string;
+      owner?: string;
+      defSpecifier?: string;
+      remote?: boolean;
+    };
+    assertEquals(value.action, "continue");
+    assertEquals(value.name, "sample.metric");
+    assertEquals(value.defSpecifier, "@maieutics/definer/main");
+    assertEquals(value.remote, true);
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("a provider contributes to a defining worker's collection across workers", async () => {
   const root = Deno.makeTempDirSync();
 
@@ -380,21 +421,17 @@ Deno.test("a provider contributes to a defining worker's collection across worke
     `,
   );
 
-  // The provider holds a remote identity (defSpecifier = definer's specifier)
-  // and contributes a signal; the SDK routes the contribution to the definer's
+  // The provider imports the contract identity from the definer's export
+  // module; the load hook redirects the import to a stub that synthesizes a
+  // remote identity carrying the definer's specifier (stub identity
+  // replacement). provide() routes the contribution to the definer's remote
   // collection through the name-addressed acquire.
   const provider = writePlugin(
     root,
     "provider",
     `${sdkImport()}
     import { provide, signal } from ${JSON.stringify(SDK_URL)};
-    const ep = ${
-      remoteIdentitySource(
-        "sample.metric",
-        "@maieutics/definer/main",
-        "file:///contract/sample.metric",
-      )
-    };
+    import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(1);
     provide(ep, value);
     export const pre = defineExtensionPoint("ToolPreInvoke", {
@@ -454,13 +491,7 @@ Deno.test("multiple provider workers aggregate into the defining worker's collec
   const providerSource = (pluginName: string, value: number): string =>
     `${sdkImport()}
     import { provide, signal } from ${JSON.stringify(SDK_URL)};
-    const ep = ${
-      remoteIdentitySource(
-        "shared.metric",
-        "@maieutics/definer/main",
-        "file:///contract/shared.metric",
-      )
-    };
+    import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(${value});
     provide(ep, value);
     export const pre = defineExtensionPoint("ToolPreInvoke", {

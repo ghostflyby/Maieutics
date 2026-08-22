@@ -129,6 +129,26 @@ export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointI
   } as ExtensionPointIdentity<T>;
 }
 
+/**
+ * Builds the remote identity value a dependency stub exports for a contract
+ * module: the same brand and fields as a locally-declared identity, with the
+ * defining worker's specifier filled in. `provide(ep, ...)` on this value
+ * routes to the defining worker's remote collection. Only the SDK's stub
+ * synthesis calls this; a plugin never constructs it directly.
+ */
+export function createRemoteIdentity<T = unknown>(
+  name: string,
+  owner: string,
+  defSpecifier: string,
+): ExtensionPointIdentity<T> {
+  return {
+    name,
+    owner,
+    defSpecifier,
+    [EXTENSION_POINT_BRAND]: true,
+  } as ExtensionPointIdentity<T>;
+}
+
 /** Mutable view of an identity used by the SDK to attach the defining worker
  * specifier after init. */
 export interface MutableExtensionPointIdentity<T = unknown> {

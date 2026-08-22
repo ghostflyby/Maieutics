@@ -329,18 +329,20 @@ export class PluginHost {
         type?: string;
         specifier?: unknown;
         refId?: unknown;
+        name?: unknown;
       };
       if (frame?.type !== "__acquire-actor") return;
       const specifier = frame.specifier;
       const refId = frame.refId;
       if (typeof specifier !== "string" || typeof refId !== "string") return;
       const requester = event.currentTarget as Worker;
-      this.#routeAcquire(requester, specifier, refId);
+      const name = typeof frame.name === "string" ? frame.name : undefined;
+      this.#routeAcquire(requester, specifier, refId, name);
     });
   }
 
   /** Bootstraps the owner↔holder channel for a specifier acquire. */
-  #routeAcquire(requester: Worker, specifier: string, refId: string): void {
+  #routeAcquire(requester: Worker, specifier: string, refId: string, name?: string): void {
     const key = this.#bySpecifier.get(specifier);
     if (key === undefined) {
       return;
@@ -354,9 +356,17 @@ export class PluginHost {
     }
     const { port1, port2 } = new MessageChannel();
     // serveWorker dispatches __serve-ref / __ref-acquired; the specifier rides
-    // on the serve frame so the owner serves the right surface.
+    // on the serve frame so the owner serves the right surface. The optional
+    // name addresses a specific surface (a remote collection) when present;
+    // the host stays agnostic and forwards it unchanged.
     owner.worker.postMessage(
-      { type: "__serve-ref", refId, specifier, port: port1 },
+      {
+        type: "__serve-ref",
+        refId,
+        specifier,
+        ...(name === undefined ? {} : { name }),
+        port: port1,
+      },
       { transfer: [port1] },
     );
     requester.postMessage(

@@ -94,6 +94,8 @@ setMainAcquire(() => {});
 
 interface AcquireActorFrame extends ControlFrame {
   specifier: string;
+  /** Optional surface name for name-addressed acquire (remote collections). */
+  name?: string;
 }
 
 registerControlHandler("__acquire-actor", () => {
@@ -138,13 +140,37 @@ export function clearActorExports(): void {
   specifierBySurface.clear();
 }
 
+/** Marker on remote-collection surfaces (set by the SDK entry); the acquire
+ * router prefers ordinary actor surfaces when both share a specifier. */
+const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
+
 function findSurfaceBySpecifier(
   specifier: string,
+  name?: string,
 ): { name: string; surface: object } | undefined {
-  for (const [name, surface] of surfaces) {
-    if (specifierBySurface.get(name) === specifier) return { name, surface };
+  // Name-addressed acquire (remote collections): resolve the exact named
+  // surface this worker serves under the specifier, ordinary or collection.
+  if (name !== undefined) {
+    const surface = surfaces.get(name);
+    if (surface !== undefined && specifierBySurface.get(name) === specifier) {
+      return { name, surface };
+    }
+    return undefined;
   }
-  return undefined;
+  // Specifier-only acquire (actor interop): prefer an ordinary actor surface
+  // over a remote-collection surface when a worker exports both under the
+  // same specifier (the collection is addressed by extension-point name, not
+  // by this acquire path).
+  let collection: { name: string; surface: object } | undefined;
+  for (const [surfaceName, surface] of surfaces) {
+    if (specifierBySurface.get(surfaceName) !== specifier) continue;
+    if ((surface as Record<symbol, unknown>)[COLLECTION_SURFACE_MARKER] === true) {
+      collection ??= { name: surfaceName, surface };
+      continue;
+    }
+    return { name: surfaceName, surface };
+  }
+  return collection;
 }
 
 /**
@@ -287,10 +313,14 @@ function serveRefOwner(
       return;
     }
     if (frame.type !== "call") return;
+    // makeRpcHandler decodes the args itself (its signature takes the encoded
+    // request). Passing already-decoded args would decode twice: plain values
+    // survive, but a codec value like an AsyncIterable placeholder loses its
+    // symbol-keyed methods on the second plain-object pass and becomes {}.
     const result = await handler({
       id: frame.id,
       method: frame.method,
-      args: registry.decode(frame.args) as unknown[],
+      args: frame.args,
     });
     if (result.ok) {
       // makeRpcHandler already encoded the value and collected the transferable
@@ -553,9 +583,11 @@ registerControlHandler("__serve-ref", (frame: ControlFrame) => {
   if (frame.port === undefined) return;
   const registry = getActiveRegistry();
   if (!registry) return;
-  const specifier = (frame as AcquireActorFrame).specifier;
+  const acquire = frame as AcquireActorFrame;
+  const specifier = acquire.specifier;
   if (typeof specifier !== "string") return;
-  const found = findSurfaceBySpecifier(specifier);
+  const name = typeof acquire.name === "string" ? acquire.name : undefined;
+  const found = findSurfaceBySpecifier(specifier, name);
   if (found === undefined) {
     frame.port.close();
     return;

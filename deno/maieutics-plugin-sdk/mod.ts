@@ -38,6 +38,7 @@ import {
 } from "@ghostflyby/worker-actor/codec";
 import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import {
+  bindDefiningWorker,
   collection,
   CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
@@ -47,6 +48,9 @@ import {
   providerCount,
   type ProviderRegistration,
   type ReactiveValue,
+  setRemoteProvide,
+  setWorkerSpecifier,
+  signal,
   snapshot,
   subscribe,
   unprovide,
@@ -397,6 +401,8 @@ export async function initPluginWorker(): Promise<void> {
 
   const config = await awaitConfig();
   ownSpecifierValue = config.specifier;
+  setWorkerSpecifier(config.specifier);
+  setRemoteProvide(remoteProvideImpl);
 
   // The dependency stubs need this worker's id to build routeable refIds;
   // expose the worker-actor runtime's registry to them via the global slot.
@@ -488,6 +494,20 @@ function scanExports(namespace: Record<string, unknown>): void {
           extensions.set(extensionName, value);
         }
       }
+      // Reactive (contract-mode) extension point identities: bind the defining
+      // worker specifier and register a remote collection actor under the
+      // extension point's name so providers in other workers can route their
+      // contributions to this worker's collection. Identities are not host
+      // callable, so they stay out of extensionPoints (the servingApi surface).
+      // The surface is keyed by the identity name (what providers address), not
+      // the export key, so `provide(ep, ...)` on an imported identity routes
+      // here regardless of the local export spelling.
+      if (isExtensionPoint(value)) {
+        bindDefiningWorker(value, ownSpecifierValue);
+        const identityName = value.name;
+        extensionPointIdentities.set(identityName, value);
+        registerActorExport(identityName, ownSpecifierValue, collectionActorSurface(identityName));
+      }
       if ((value as Record<symbol, unknown>)[ACTOR_MARKER] === true) actors.set(name, value);
     }
   }
@@ -500,11 +520,101 @@ function scanExports(namespace: Record<string, unknown>): void {
   }
 }
 
+/**
+ * The remote collection actor surface exposed by the defining worker for one
+ * extension point. Providers in other workers acquire this surface (via the
+ * dependency stub under the extension point's name) and call `add` to
+ * contribute; `changes` streams the aggregated collection snapshots.
+ *
+ * The surface carries a marker so the acquire router prefers ordinary actor
+ * surfaces when a worker exports both an actor and a collection under the
+ * same specifier.
+ */
+const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
+
+function collectionActorSurface(name: string): object {
+  return {
+    [COLLECTION_SURFACE_MARKER]: true,
+    add(initial: unknown, changes: AsyncIterable<unknown>): Promise<void> {
+      const ep = lookupIdentity(name);
+      if (ep === undefined) return Promise.resolve();
+      void applyRemoteContribution(ep, initial, changes);
+      return Promise.resolve();
+    },
+    changes(): AsyncIterable<unknown[]> {
+      const ep = lookupIdentity(name);
+      return ep === undefined ? emptyAsyncIterable() : subscribe(ep) as AsyncIterable<unknown[]>;
+    },
+  };
+}
+
+/** True when a registered surface is a remote collection actor. */
+export function isCollectionSurface(surface: object): boolean {
+  return (surface as Record<symbol, unknown>)[COLLECTION_SURFACE_MARKER] === true;
+}
+
+function lookupIdentity(name: string): ExtensionPointIdentity | undefined {
+  return extensionPointIdentities.get(name);
+}
+
+function emptyAsyncIterable<T>(): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<T> {
+      // never yields
+    },
+  };
+}
+
+/** Applies a remote provider's contribution to the local collection: register
+ * the initial value, then keep pulling the change stream and updating the
+ * signal. The pull loop runs independently of any consumer so the producer's
+ * values stream continuously; the signal stays registered until the provider's
+ * stream ends (undefined values simply drop the contribution from snapshots).
+ *
+ * The loop must never throw outward: a failed/ended stream keeps the last value
+ * and stops the pull (the provider is gone or the channel closed). */
+function applyRemoteContribution(
+  extensionPoint: ExtensionPointIdentity,
+  initial: unknown,
+  changes: AsyncIterable<unknown>,
+): void {
+  const value = signal<unknown | undefined>(initial as unknown | undefined);
+  provide(extensionPoint, value as ReactiveValue<unknown | undefined>);
+  void (async () => {
+    try {
+      const iterator = changes[Symbol.asyncIterator]();
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) return;
+        value.value = next.value as unknown | undefined;
+      }
+    } catch {
+      // The provider's stream ended or was abandoned; keep the last value.
+    }
+  })();
+}
+
+/** Routes provide() to the defining worker's remote collection. */
+async function remoteProvideImpl(
+  specifier: string,
+  name: string,
+  initial: unknown,
+  changes: AsyncIterable<unknown>,
+): Promise<void> {
+  const stub = createDependencyStub(specifier, name);
+  const collection = (stub as unknown as Record<string, unknown>)[name] as {
+    add(initial: unknown, changes: AsyncIterable<unknown>): Promise<void>;
+  };
+  await collection.add(initial, changes);
+}
+
 let extensionPoints = new Map<string, unknown>();
+const extensionPointIdentities = new Map<string, ExtensionPointIdentity>();
 
 function disposePlugin(): void {
   clearActorExports();
   extensionPoints.clear();
+  extensionPointIdentities.clear();
   linkedSurface = {};
   for (const close of closeHandlers) close();
   closeHandlers.length = 0;
@@ -532,8 +642,25 @@ const stubBySpecifier = new Map<string, RemoteActor<Record<string, unknown>>>();
  */
 export function createDependencyStub(
   specifier: string,
+): RemoteActor<Record<string, unknown>>;
+/**
+ * Internal: a stub whose acquire targets a specific named surface of the
+ * dependency worker (the remote collection of one extension point) instead of
+ * its default actor surface. The name rides on the acquire frame so the owner
+ * serves exactly that surface. Each named stub is cached independently, so a
+ * worker can hold both the default surface and one named collection per
+ * extension point.
+ */
+export function createDependencyStub(
+  specifier: string,
+  surfaceName: string,
+): RemoteActor<Record<string, unknown>>;
+export function createDependencyStub(
+  specifier: string,
+  surfaceName?: string,
 ): RemoteActor<Record<string, unknown>> {
-  const existing = stubBySpecifier.get(specifier);
+  const cacheKey = surfaceName === undefined ? specifier : `${specifier}\u0000${surfaceName}`;
+  const existing = stubBySpecifier.get(cacheKey);
   if (existing) return existing;
 
   let workerIdPrefix = globalWorkerId();
@@ -560,7 +687,7 @@ export function createDependencyStub(
     if (refId.length === 0) {
       refId = `${workerIdPrefix}:${specifier}:${++dependencyCallCount}`;
     }
-    postAcquireActor(specifier, refId);
+    postAcquireActor(specifier, refId, surfaceName);
     return new Promise<unknown>((resolve, reject) => {
       queue.push({ method, args, resolve, reject });
     });
@@ -571,7 +698,7 @@ export function createDependencyStub(
       if (prop === "then") return undefined;
       if (prop === "dispose") {
         return () => {
-          stubBySpecifier.delete(specifier);
+          stubBySpecifier.delete(cacheKey);
           (materialized as { dispose?(): Promise<void> } | undefined)?.dispose?.();
           return Promise.resolve();
         };
@@ -607,7 +734,7 @@ export function createDependencyStub(
       return undefined;
     },
   });
-  stubBySpecifier.set(specifier, surface);
+  stubBySpecifier.set(cacheKey, surface);
 
   // The worker id arrives via the standard worker-actor frame; the surface's
   // first call before that would use the placeholder prefix, so re-route any
@@ -654,12 +781,15 @@ function globalWorkerId(): string {
     "w?";
 }
 
-/** Posts the Maieutics acquire request; the host's router answers with __serve-actor/__ref-acquired. */
-function postAcquireActor(specifier: string, refId: string): void {
+/** Posts the Maieutics acquire request; the host's router answers with __serve-actor/__ref-acquired.
+ * An optional name addresses a specific surface (a remote collection) instead
+ * of the worker's default actor surface. */
+function postAcquireActor(specifier: string, refId: string, name?: string): void {
   (self as unknown as { postMessage(m: unknown): void }).postMessage({
     type: "__acquire-actor",
     specifier,
     refId,
+    ...(name === undefined ? {} : { name }),
   });
 }
 

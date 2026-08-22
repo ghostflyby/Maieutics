@@ -39,11 +39,19 @@ const EXTENSION_POINT_BRAND = Symbol.for("maieutics/extensionPoint/v1/identity")
  * extension point when they carry the same owner (defining module URL) and
  * name; the registry keys on a symbol derived from both, so providers that
  * import the same contract module join the same collection.
+ *
+ * `defSpecifier` is the canonical specifier of the defining worker (the worker
+ * whose entry module contains the contract). It is filled in by the SDK during
+ * worker init (scanExports) for locally-defined identities, and by the
+ * dependency stub for identities imported from another worker. It is the
+ * routeable address used to reach the defining worker's remote collection.
  */
 export interface ExtensionPointIdentity<T = unknown> {
   readonly name: string;
   /** URL of the module that declared this identity (`import.meta.url`). */
   readonly owner: string;
+  /** Canonical specifier of the defining worker; set after init. */
+  readonly defSpecifier?: string;
   readonly [EXTENSION_POINT_BRAND]: true;
 }
 
@@ -121,11 +129,127 @@ export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointI
   } as ExtensionPointIdentity<T>;
 }
 
+/** Mutable view of an identity used by the SDK to attach the defining worker
+ * specifier after init. */
+export interface MutableExtensionPointIdentity<T = unknown> {
+  name: string;
+  owner: string;
+  defSpecifier?: string;
+}
+
+/** Sets the defining worker's canonical specifier on a locally-declared identity. */
+export function bindDefiningWorker<T>(
+  extensionPoint: ExtensionPointIdentity<T>,
+  specifier: string,
+): void {
+  (extensionPoint as unknown as MutableExtensionPointIdentity<T>).defSpecifier = specifier;
+}
+
+// —— Remote routing (injected by mod.ts to avoid a reactive→actor_ref cycle) ——
+
+/** Remote-provide hook: contributes a reactive value to a defining worker's
+ * remote collection. Set by the SDK entry; undefined means remote routing is
+ * unavailable (host process or pre-init). */
+export interface RemoteProvideFn {
+  (
+    specifier: string,
+    name: string,
+    initial: unknown,
+    changes: AsyncIterable<unknown>,
+  ): Promise<void>;
+}
+
+let remoteProvide: RemoteProvideFn | undefined;
+
+/** Installed by mod.ts: routes provide() to a defining worker's collection. */
+export function setRemoteProvide(fn: RemoteProvideFn | undefined): void {
+  remoteProvide = fn;
+}
+
+/** True when the identity's defining worker is not this worker (remote). */
+export function isRemoteExtensionPoint(extensionPoint: ExtensionPointIdentity): boolean {
+  const def = extensionPoint.defSpecifier;
+  if (def === undefined) return false;
+  return def !== currentWorkerSpecifier();
+}
+
+let currentWorkerSpecifierValue = "";
+
+/** Set by mod.ts during init: this worker's canonical specifier. */
+export function setWorkerSpecifier(specifier: string): void {
+  currentWorkerSpecifierValue = specifier;
+}
+
+function currentWorkerSpecifier(): string {
+  return currentWorkerSpecifierValue;
+}
+
+/** True when the identity's defining worker is this worker (local). */
+export function isLocalExtensionPoint(extensionPoint: ExtensionPointIdentity): boolean {
+  const def = extensionPoint.defSpecifier;
+  return def === undefined || def === currentWorkerSpecifier();
+}
+
+/**
+ * An AsyncIterable of a signal's subsequent changes (excluding the current
+ * value, which travels as the initial value). Used to transmit a reactive
+ * value to a remote collection: the consumer observes the initial value, then
+ * each change as it happens. Returning (abandoning) the iteration stops the
+ * subscription.
+ */
+export function changesOf<T>(value: ReactiveValue<T | undefined>): AsyncIterable<T | undefined> {
+  return {
+    [Symbol.asyncIterator]() {
+      let stopped = false;
+      let pending: ((v: T | undefined) => void) | undefined;
+      let queue: (T | undefined)[] = [];
+      // The initial value travels separately; the effect's first run must not
+      // enqueue it again.
+      let first = true;
+      const stop = effect(() => {
+        const current = value.value;
+        if (first) {
+          first = false;
+          return;
+        }
+        if (pending !== undefined) {
+          const resolve = pending;
+          pending = undefined;
+          resolve(current);
+        } else {
+          queue.push(current);
+        }
+      });
+      return {
+        next(): Promise<IteratorResult<T | undefined>> {
+          if (stopped) return Promise.resolve({ done: true, value: undefined });
+          if (queue.length > 0) {
+            return Promise.resolve({ done: false, value: queue.shift()! });
+          }
+          return new Promise<IteratorResult<T | undefined>>((resolve) => {
+            pending = (v: T | undefined) => resolve({ done: false, value: v });
+          });
+        },
+        return(): Promise<IteratorResult<T | undefined>> {
+          stopped = true;
+          stop();
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      };
+    },
+  };
+}
+
 /**
  * Contributes a reactive value to an extension point from the current worker.
  * The provider joins the extension point's collection; while its value is
  * `undefined` it does not contribute. Returns a handle that can be passed to
  * {@link unprovide} to withdraw the contribution.
+ *
+ * When the extension point is owned by another worker (`defSpecifier` points
+ * elsewhere), the contribution is routed to that worker's remote collection:
+ * the signal is transmitted as its current value plus an AsyncIterable of
+ * changes, and the defining worker aggregates it with its local providers.
  */
 export function provide<T>(
   extensionPoint: ExtensionPointIdentity<T>,
@@ -133,6 +257,25 @@ export function provide<T>(
 ): ProviderRegistration<T> {
   if (!isExtensionPoint(extensionPoint)) {
     throw new TypeError("provide() expects an extension point identity.");
+  }
+
+  // Remote identity: route to the defining worker's collection.
+  if (isRemoteExtensionPoint(extensionPoint) && remoteProvide !== undefined) {
+    const specifier = extensionPoint.defSpecifier!;
+    void remoteProvide(
+      specifier,
+      extensionPoint.name,
+      value.value,
+      changesOf(value),
+    ).catch((error: unknown) => {
+      // The contribution failed to reach the defining worker; log instead of
+      // surfacing an unhandled rejection in this worker.
+      console.error(
+        `[plugin-sdk] remote provide to '${specifier}/${extensionPoint.name}' failed: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    return { extensionPoint, value, providerId: `remote:${specifier}:${extensionPoint.name}` };
   }
 
   const symbol = symbolFor(extensionPoint.owner, extensionPoint.name);

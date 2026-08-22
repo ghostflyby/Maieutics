@@ -55,6 +55,44 @@ function sdkImport(): string {
   return `import { defineActor, defineExtensionPoint } from ${JSON.stringify(SDK_URL)};`;
 }
 
+/** The identity brand the SDK attaches to contract identities (Symbol.for global). */
+const IDENTITY_BRAND = "maieutics/extensionPoint/v1/identity";
+
+/**
+ * A remote contract identity as a provider worker would hold it after the
+ * dependency-stub identity replacement lands. The stub replacement is a later
+ * step; this builds the same `{ name, owner, defSpecifier, brand }` shape the
+ * SDK attaches so the remote provide path can be verified end-to-end.
+ */
+function remoteIdentitySource(name: string, defSpecifier: string, owner: string): string {
+  return `{
+    name: ${JSON.stringify(name)},
+    owner: ${JSON.stringify(owner)},
+    defSpecifier: ${JSON.stringify(defSpecifier)},
+    [Symbol.for(${JSON.stringify(IDENTITY_BRAND)})]: true,
+  }`;
+}
+
+/** Polls the definer's collection snapshot until `predicate` holds or the timeout elapses. */
+async function waitForCollectionSnapshot(
+  host: PluginHost,
+  predicate: (snapshots: number[]) => boolean,
+  timeoutMs = 3_000,
+): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  let last: number[] = [];
+  while (Date.now() < deadline) {
+    const value = await host.invoke("definer", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      snapshots?: number[];
+    };
+    last = value.snapshots ?? [];
+    if (predicate(last)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return last;
+}
+
 Deno.test("a consumer plugin calls a dependency actor across workers", async () => {
   const root = Deno.makeTempDirSync();
 
@@ -320,6 +358,129 @@ Deno.test("a consumer subscribes to a provider's reactive extension point across
     // The consumer received at least the initial collection snapshot [1].
     assert(value.snapshots !== undefined && value.snapshots.length >= 1);
     assertEquals(value.snapshots[0], [1]);
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("a provider contributes to a defining worker's collection across workers", async () => {
+  const root = Deno.makeTempDirSync();
+
+  // The definer owns the extension point identity and the collection. Its
+  // ToolPreInvoke handler reports the current collection snapshot.
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<number>("sample.metric");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
+    });
+    `,
+  );
+
+  // The provider holds a remote identity (defSpecifier = definer's specifier)
+  // and contributes a signal; the SDK routes the contribution to the definer's
+  // collection through the name-addressed acquire.
+  const provider = writePlugin(
+    root,
+    "provider",
+    `${sdkImport()}
+    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    const ep = ${
+      remoteIdentitySource(
+        "sample.metric",
+        "@maieutics/definer/main",
+        "file:///contract/sample.metric",
+      )
+    };
+    const value = signal<number | undefined>(1);
+    provide(ep, value);
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: (context: { arguments?: { step?: string } }) => {
+        if (context.arguments?.step === "set-two") value.value = 2;
+        if (context.arguments?.step === "clear") value.value = undefined;
+        return { action: "continue" as const };
+      },
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(provider)],
+  });
+  try {
+    await host.startAll();
+    // The provider's top-level provide lands asynchronously; poll for it.
+    const initial = await waitForCollectionSnapshot(host, (snapshots) => snapshots.length === 1);
+    assertEquals(initial, [1]);
+
+    // A change on the provider's signal streams to the definer's collection.
+    await host.invoke("provider", "./main", "ToolPreInvoke", { arguments: { step: "set-two" } });
+    const updated = await waitForCollectionSnapshot(
+      host,
+      (snapshots) => snapshots.length === 1 && snapshots[0] === 2,
+    );
+    assertEquals(updated, [2]);
+
+    // undefined drops the contribution (the "not currently providing" convention).
+    await host.invoke("provider", "./main", "ToolPreInvoke", { arguments: { step: "clear" } });
+    const cleared = await waitForCollectionSnapshot(host, (snapshots) => snapshots.length === 0);
+    assertEquals(cleared, []);
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("multiple provider workers aggregate into the defining worker's collection", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<number>("shared.metric");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
+    });
+    `,
+  );
+
+  const providerSource = (pluginName: string, value: number): string =>
+    `${sdkImport()}
+    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    const ep = ${
+      remoteIdentitySource(
+        "shared.metric",
+        "@maieutics/definer/main",
+        "file:///contract/shared.metric",
+      )
+    };
+    const value = signal<number | undefined>(${value});
+    provide(ep, value);
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `;
+  const providerA = writePlugin(root, "provider-a", providerSource("provider-a", 1), ["definer"]);
+  const providerB = writePlugin(root, "provider-b", providerSource("provider-b", 2), ["definer"]);
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(providerA), pluginConfig(providerB)],
+  });
+  try {
+    await host.startAll();
+    // Both contributions land; registration order is arrival order, so compare
+    // the values as a set.
+    const snapshots = await waitForCollectionSnapshot(host, (s) => s.length === 2);
+    assertEquals([...snapshots].sort(), [1, 2]);
   } finally {
     host.dispose();
   }

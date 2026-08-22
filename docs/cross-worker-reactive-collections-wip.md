@@ -1,13 +1,15 @@
 # Cross-Worker Reactive Collections — WIP Design
 
-Status: **In progress, uncommitted.** The SDK-side remote-routing groundwork exists in the
-worktree (reactive.ts / mod.ts / actor_ref.ts, ~250 added lines) but the minimal end-to-end
-loop is **not closed**: the collection surface is registered and the remote `provide` route is
-wired, yet the acquire protocol cannot address the collection surface distinctly from ordinary
-actor surfaces, so `remoteProvideImpl` cannot yet reach a defining worker's collection.
+Status: **In progress.** The minimal end-to-end loop is **closed and verified**:
+a provider in one worker contributes a reactive value to an extension point
+owned by another worker, the defining worker aggregates it into its local
+collection, and consumers observe the aggregate. Two integration tests cover
+the single-provider and multi-provider cases.
 
-This document records (a) the current uncommitted state, (b) the agreed design, (c) the exact
-remaining work, so the feature can be finished in a focused pass.
+Remaining (designed but not implemented): stub identity replacement so a
+provider's `import { ep } from "contract"` carries the real identity instead of
+a hand-built substitute, remote `snapshot`/`unprovide` round-trips, and
+lifecycle cleanup for remote contributions.
 
 ## Background
 
@@ -20,7 +22,7 @@ The plugin SDK has contract-mode reactive extension points (already committed):
 - Cross-worker streaming of `AsyncIterable` RPC results works (dependency-stub proxy decodes
   result frames through the worker-actor registry; committed in `3b44b8e`).
 
-What is missing is **cross-worker aggregation**: providers in other workers contributing to a
+What was missing is **cross-worker aggregation**: providers in other workers contributing to a
 collection owned by the defining worker, and consumers observing the aggregate.
 
 ## Agreed design (from discussion)
@@ -43,110 +45,96 @@ collection owned by the defining worker, and consumers observing the aggregate.
    local implementations are synchronous (current), remote ones go through the framework's
    acquire machinery.
 
-## Current uncommitted state
+## Implemented: the closed loop
 
-### `deno/maieutics-plugin-sdk/reactive.ts` (+136 lines)
+### Acquire protocol: address by (specifier, name)
 
-- `ExtensionPointIdentity` gains `defSpecifier?: string` — canonical specifier of the defining
-  worker (filled by the SDK during init; carried by the dependency stub for imported
-  identities). This is the routeable address of the defining worker.
-- `MutableExtensionPointIdentity` + `bindDefiningWorker(ep, specifier)` — SDK attaches the
-  defining worker specifier to locally-declared identities.
-- `setWorkerSpecifier(specifier)` / `setRemoteProvide(fn)` — injected by mod.ts (avoids a
-  reactive → actor_ref import cycle).
-- `isRemoteExtensionPoint(ep)` / `isLocalExtensionPoint(ep)` — local vs remote by comparing
-  `defSpecifier` against the current worker specifier.
-- `changesOf(signal)` — an `AsyncIterable` of a signal's **subsequent** changes (initial value
-  excluded; it travels as the separate initial argument). `return()` stops the effect.
-- `provide(ep, signal)` — when the identity is remote and `remoteProvide` is installed, routes
-  to `remoteProvide(defSpecifier, name, initialValue, changesOf(signal))` instead of the local
-  registry, returning a `remote:`-prefixed registration.
+The remote collection is addressed by the extension point's name, not by the worker's
+default actor surface. The acquire protocol gained an optional `name` field:
 
-### `deno/maieutics-plugin-sdk/mod.ts` (+99 lines)
+- `AcquireActorFrame` (`actor_ref.ts`) has `name?: string`.
+- `createDependencyStub(specifier, surfaceName?)` — when `surfaceName` is given, the acquire
+  carries the name and the owner serves exactly that named surface. Named stubs are cached
+  independently (cache key `specifier\0name`), so a worker can hold both the default actor
+  surface and one named collection per extension point. When `surfaceName` is absent the
+  behavior is unchanged (backward compatible).
+- `findSurfaceBySpecifier(specifier, name?)` — with `name`, resolves the exact named surface
+  (ordinary actor or collection); without it, keeps the specifier-first behavior that prefers
+  an ordinary actor over a collection sharing the specifier.
+- Host `#routeAcquire` forwards the optional `name` on the `__serve-ref` frame; the host stays
+  agnostic to extension points (pure distributed).
 
-- `initPluginWorker`: after `ownSpecifierValue = config.specifier`, calls
-  `setWorkerSpecifier(config.specifier)` and `setRemoteProvide(remoteProvideImpl)`.
-- `scanExports`: for contract-mode identities (`isExtensionPoint(value)`):
-  - `bindDefiningWorker(value, ownSpecifierValue)`
-  - registers `extensionPointIdentities.set(name, value)` (separate from `extensionPoints`,
-    which stays host-callable-handler-only — identities are not `servingApi` methods)
-  - `registerActorExport(name, ownSpecifierValue, collectionActorSurface(name))`
-- `collectionActorSurface(name)` — the remote collection surface:
-  - `add(initial, changes: AsyncIterable)` → `applyRemoteContribution`
-  - `changes()` → `subscribe(ep)` (aggregated snapshots)
-  - carries `COLLECTION_SURFACE_MARKER`
-- `applyRemoteContribution(ep, initial, changes)` — creates a local signal from `initial`,
-  `provide`s it, then `for await` over `changes` updating the signal (undefined drops the
-  provider from snapshots via the existing collection semantics).
-- `remoteProvideImpl(specifier, name, initial, changes)` — **intended** to acquire the defining
-  worker's collection surface via `createDependencyStub(specifier)` and call `add`. **Not
-  working yet** (see blocker).
-- `extensionPointIdentities` map, cleared on dispose.
+### Collection surface on the defining worker
 
-### `deno/maieutics-plugin-sdk/actor_ref.ts` (+17 lines)
+`scanExports` registers, for each contract-mode identity, a collection actor surface under the
+**identity's name** (not the export key, so `provide(ep, ...)` on an imported identity routes
+here regardless of local export spelling):
 
-- `COLLECTION_SURFACE_MARKER` symbol.
-- `findSurfaceBySpecifier(specifier)` now prefers an ordinary actor surface over a
-  collection surface when both share a specifier (a worker can export both an actor and a
-  collection). This keeps the existing cross-worker actor test green while the collection
-  surface exists.
+- `add(initial, changes)` → `applyRemoteContribution`
+- `changes()` → `subscribe(ep)` (aggregated snapshots)
+- carries `COLLECTION_SURFACE_MARKER`
 
-## The blocker: collection surface addressing
+### Remote provide
 
-`remoteProvideImpl` currently does `createDependencyStub(defSpecifier)` then `[name].add(...)`.
-The acquire protocol (`__acquire-actor { specifier, refId }`) routes **by specifier only** and
-the owner side serves the first surface matching that specifier. With
-`findSurfaceBySpecifier` preferring ordinary actors, a provider's collection `add` either hits
-the wrong surface or is shadowed by an ordinary actor of the same worker.
+`provide(ep, signal)` on a remote identity (`defSpecifier` differs from the current worker)
+routes to `remoteProvideImpl(specifier, name, initial, changesOf(signal))`: it acquires the
+defining worker's collection surface via the named stub and calls `add(initial, changes)`.
+`changesOf(signal)` is an `AsyncIterable` of the signal's subsequent changes (initial excluded;
+it travels as the separate initial argument); `return()` stops the effect.
 
-The collection surface therefore needs **name-addressed acquisition**: acquire a specific
-surface by `(specifier, name)` rather than by specifier alone.
+`applyRemoteContribution` registers a local signal with the initial value, then runs a
+continuous pull loop over the change stream, updating the signal as values arrive (`undefined`
+drops the contribution from snapshots via the existing collection semantics). The pull loop
+must run independently of any consumer so the producer's values stream continuously; a failed
+or ended stream keeps the last value.
 
-## Remaining work (to close the minimal loop)
+### Key bug found and fixed: double decode of AsyncIterable args
 
-1. **Acquire protocol extension — address by (specifier, name).**
-   - `AcquireActorFrame` gains an optional `name` field.
-   - `createDependencyStub` / the acquire post in mod.ts passes `name` when the caller wants a
-     specific surface (the collection).
-   - `findSurfaceBySpecifier(specifier, name?)` returns the exact named surface when `name` is
-     given; otherwise keeps the current specifier-first behavior (backward compatible for
-     existing actor interop).
-   - Host `#routeAcquire` transparently forwards the `name` field (host stays agnostic to
-     extension points — pure distributed).
-2. **Verify `remoteProvideImpl` end-to-end** once name-addressed acquire works:
-   `provide(ep, signal)` in a provider worker reaches the defining worker's `collectionActorSurface.add`,
-   `applyRemoteContribution` updates the defining worker's local signal, and the defining
-   worker's `subscribe(ep)` / `snapshot(ep)` include the remote provider's value.
-3. **Tests.**
-   - Cross-worker single provider: provider `provide(ep, signal)`, defining worker
-     `subscribe(ep)` sees `[initial]` then updates as the provider's signal changes
-     (including `undefined` dropping the contribution).
-   - Cross-worker multiple providers: two provider workers contribute, defining worker
-     aggregates both.
-   - Backward compatibility: existing actor interop (consumer `depActor` over an ordinary
-     actor) still resolves to the ordinary surface.
-   - In-process behavior unchanged (existing `reactive_test.ts` stays green).
-4. **Cleanup decisions (design still open):**
-   - `remoteProvideImpl` currently uses the dependency stub; after name-addressed acquire this
-     may be simplified to a direct acquire post + channel call.
-   - Lifecycle: provider worker exit should drop its contribution (worker-actor liveness or an
-     explicit `unprovide` round-trip). Not designed yet.
-   - `snapshot` remote: async-first API — a remote `snapshot` is a request to the defining
-     worker; may be added to the collection surface.
+The change stream initially arrived at the defining worker as `{}` — `changes[Symbol.asyncIterator]
+is not a function`. Root cause: `serveRefOwner` decoded `frame.args` once, then handed the
+decoded array to `makeRpcHandler`, which **decodes again**. Plain values survive a second
+decode, but a codec value like an AsyncIterable placeholder becomes a plain object on the
+second pass: the placeholder is already a real object, so the walker's `isPlainObject`
+branch copies only string keys and drops the symbol-keyed `[Symbol.asyncIterator]`.
 
-## Files touched in the WIP
+Fix: `serveRefOwner` passes the original `frame.args` (still encoded) to `makeRpcHandler` and
+lets it decode once — matching the library's own `ref_codec` example, which decodes once and
+invokes the function directly.
 
-| File | Change |
-|---|---|
-| `deno/maieutics-plugin-sdk/reactive.ts` | remote routing groundwork (defSpecifier, changesOf, isRemote, provide branch) |
-| `deno/maieutics-plugin-sdk/mod.ts` | collection actor surface, applyRemoteContribution, remoteProvideImpl, init wiring |
-| `deno/maieutics-plugin-sdk/actor_ref.ts` | collection-surface marker + findSurfaceBySpecifier preference |
-| `deno/maieutics-plugin-host/host.ts` | (planned) forward `name` in `#routeAcquire` |
-| `deno/maieutics-plugin-host/interop_test.ts` | (planned) cross-worker aggregation tests |
+### Tests (interop_test.ts)
+
+- Cross-worker single provider: provider contributes `[1]`, definer's snapshot reports it;
+  a signal change streams `[2]`; `undefined` drops the contribution.
+- Cross-worker multiple providers: two provider workers contribute, definer aggregates both.
+- Backward compatibility: the existing actor-interop tests (depActor over an ordinary actor,
+  default-import redirect, jsr:-prefixed specifier, plain-module pass-through, reactive
+  subscribe across workers) all stay green.
+
+The tests hand-build a remote identity (`{ name, owner, defSpecifier, brand }`) because stub
+identity replacement is not yet implemented; see below.
+
+## Remaining work
+
+1. **Stub identity replacement.** The load-hook stub currently serves a default acquire
+   surface; `import { ep } from "@contract/main"` does not yet yield the real identity value
+   with `defSpecifier` filled. The hand-built identity in the tests must become automatic: the
+   stub should provide an identity substitute carrying `{ name, owner, defSpecifier, brand }`
+   for contract-module exports. `flattenSurface` cannot currently reach constant/identity
+   exports, so this needs either a stub-side export table or a marker-based pass-through.
+2. **Remote `snapshot`.** A remote `snapshot(ep)` is a request to the defining worker; add it
+   to the collection surface (currently only `add` and `changes`).
+3. **Remote `unprovide` / lifecycle.** Provider worker exit should drop its contribution
+   (worker-actor liveness or an explicit `unprovide` round-trip). Currently a dead provider's
+   value lingers in the definer's collection.
+4. **`defSpecifier` provenance.** The hand-built test identity sets `owner` to a contract URL
+   that does not match the defining worker's actual module URL. The real stub replacement will
+   carry the true owner; the tests should then assert on the real identity rather than the
+   substitute.
 
 ## Verification baseline
 
-- Current worktree (WIP): deno tests 53 passed / 0 failed, REPL 10 passed — the WIP does not
-  regress existing behavior. `git stash` can restore the clean committed state.
-- Feature gate: new cross-worker aggregation tests green; `deno fmt --check`, `deno task check`,
-  full `dotnet test Maieutics.slnx` clean.
+- Current worktree: deno workspace tests 55 passed / 0 failed (SDK + host), REPL 10 passed —
+  no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
+- Feature gate: the two new cross-worker aggregation tests are green.
+- Full repository acceptance still to run: `dotnet test Maieutics.slnx`,
+  `dotnet build Maieutics.slnx --no-restore -warnaserror`, `git diff --check`.

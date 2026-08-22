@@ -100,6 +100,29 @@ function isDefineActorCall(
   names: ReadonlySet<string>,
   namespaceNames: ReadonlySet<string>,
 ): boolean {
+  return isCallTo(init, names, namespaceNames, "defineActor");
+}
+
+/**
+ * True if `init` is a call to `defineExtensionPoint` (either the identity
+ * single-argument form or the legacy handler form). Extension point exports
+ * are legitimate entrypoint exports and must not be reported by the
+ * entrypoint-exports rule.
+ */
+function isDefineExtensionPointCall(
+  init: unknown,
+  names: ReadonlySet<string>,
+  namespaceNames: ReadonlySet<string>,
+): boolean {
+  return isCallTo(init, names, namespaceNames, "defineExtensionPoint");
+}
+
+function isCallTo(
+  init: unknown,
+  names: ReadonlySet<string>,
+  namespaceNames: ReadonlySet<string>,
+  target: string,
+): boolean {
   const callee = (init as {
     callee?: {
       type?: string;
@@ -113,7 +136,7 @@ function isDefineActorCall(
   if (callee.type === "Identifier") return names.has(callee.name ?? "");
   if (callee.type === "MemberExpression") {
     return namespaceNames.has(callee.object?.name ?? "") &&
-      callee.property?.name === "defineActor";
+      callee.property?.name === target;
   }
   return false;
 }
@@ -282,6 +305,7 @@ const entrypointExportsRule = {
           for (const declarator of declaration.declarations) {
             const init = declarator.init;
             if (isDefineActorCall(init, names(), namespace())) continue; // defineActor(...) — OK.
+            if (isDefineExtensionPointCall(init, names(), namespace())) continue; // extension point — OK.
 
             if (
               init !== null && init !== undefined && isObjectLiteral(init) &&

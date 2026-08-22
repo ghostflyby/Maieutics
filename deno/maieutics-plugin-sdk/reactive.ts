@@ -79,31 +79,44 @@ export function isExtensionPoint(value: unknown): value is ExtensionPointIdentit
 }
 
 /**
+ * Global key under which the worker's load hook records the URL of the module
+ * currently being evaluated. The SDK's `initPluginWorker` installs a load hook
+ * that sets `globalThis[CURRENT_MODULE]` to each module's URL before its
+ * top-level code runs, so `defineExtensionPoint` can read the defining module's
+ * URL from the loader — objective and unforgeable. `Symbol.for` keeps the key
+ * shared between the SDK (writer) and any module (reader) across isolates.
+ */
+export const CURRENT_MODULE = Symbol.for("maieutics/extensionPoint/v1/currentModule");
+
+/** Reads the currently-evaluating module URL, or a fallback when no load hook
+ * is installed (host process, modules imported before init). */
+function currentModuleUrl(): string {
+  const url = (globalThis as Record<symbol, unknown>)[CURRENT_MODULE];
+  return typeof url === "string" && url.length > 0 ? url : import.meta.url;
+}
+
+/**
  * Declares an extension-point identity owned by the calling module. This is a
  * pure contract value: it carries no implementation. Any worker that imports
  * this module can later `provide(ep, value)` to contribute to the extension
  * point's collection; a worker declaring the same name in a different module
  * gets a different identity and does not join this collection.
  *
- * `owner` is the defining module's URL; a contract module passes its own
- * `import.meta.url` so every worker importing the contract resolves the same
- * identity. `defineExtensionPoint` cannot read the caller's `import.meta.url`
- * itself (it lives in the SDK module), so the owner is explicit.
+ * `owner` is the defining module's URL, taken from the loader via
+ * {@link CURRENT_MODULE}: the load hook records each module's URL before its
+ * top-level code runs, so the owner is the module that actually declared the
+ * identity and cannot be forged by the caller. When no load hook is installed
+ * (the host process, or modules loaded before worker init) the owner falls
+ * back to the SDK module's URL.
  */
-export function defineExtensionPoint<T = unknown>(
-  name: string,
-  owner: string = import.meta.url,
-): ExtensionPointIdentity<T> {
+export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T> {
   if (typeof name !== "string" || name.length === 0) {
     throw new TypeError("An extension point name must be a non-empty string.");
-  }
-  if (typeof owner !== "string" || owner.length === 0) {
-    throw new TypeError("An extension point owner must be a non-empty string.");
   }
 
   return {
     name,
-    owner,
+    owner: currentModuleUrl(),
     [EXTENSION_POINT_BRAND]: true,
   } as ExtensionPointIdentity<T>;
 }

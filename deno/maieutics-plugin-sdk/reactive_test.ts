@@ -1,6 +1,7 @@
 import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import { signal } from "@preact/signals-core";
 import {
+  CURRENT_MODULE,
   defineExtensionPoint,
   isExtensionPoint,
   provide,
@@ -30,19 +31,23 @@ Deno.test("same-name identities are the same extension point", () => {
 Deno.test("identities from different modules with the same name do not merge", async () => {
   // Two contract modules declare the same extension-point name. Contract mode
   // keys on (owner = module URL, name), so they are different identities and
-  // providers do not join each other's collections.
+  // providers do not join each other's collections. The test modules set
+  // CURRENT_MODULE themselves, mimicking the worker load hook that records
+  // each module's URL before its top-level code runs.
   const moduleA = `${Deno.makeTempDirSync()}/contract-a.ts`;
   const moduleB = `${Deno.makeTempDirSync()}/contract-b.ts`;
   const sdkUrl = new URL("./mod.ts", import.meta.url).href;
   Deno.writeTextFileSync(
     moduleA,
-    `import { defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +
-      `export const ep = defineExtensionPoint<number>("same.name", import.meta.url);\n`,
+    `import { CURRENT_MODULE, defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +
+      `(globalThis as Record<symbol, unknown>)[CURRENT_MODULE] = import.meta.url;\n` +
+      `export const ep = defineExtensionPoint<number>("same.name");\n`,
   );
   Deno.writeTextFileSync(
     moduleB,
-    `import { defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +
-      `export const ep = defineExtensionPoint<number>("same.name", import.meta.url);\n`,
+    `import { CURRENT_MODULE, defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +
+      `(globalThis as Record<symbol, unknown>)[CURRENT_MODULE] = import.meta.url;\n` +
+      `export const ep = defineExtensionPoint<number>("same.name");\n`,
   );
 
   const { ep: epA } = await import(moduleA);
@@ -54,6 +59,15 @@ Deno.test("identities from different modules with the same name do not merge", a
   provide(epA, s);
   assertEquals(snapshot(epA), [7]);
   assertEquals(snapshot(epB), []); // different module → different collection
+});
+
+Deno.test("owner falls back to the SDK module when no loader is installed", () => {
+  // Without a load hook (plain process context), CURRENT_MODULE is unset and
+  // the owner falls back to the SDK's own module URL — all such identities
+  // share the fallback owner but still work.
+  delete (globalThis as Record<symbol, unknown>)[CURRENT_MODULE];
+  const ep = defineExtensionPoint<number>("fallback.ep");
+  assertEquals(ep.owner, new URL("./reactive.ts", import.meta.url).href);
 });
 
 Deno.test("provide contributes to the collection; undefined does not", () => {

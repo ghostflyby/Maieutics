@@ -37,6 +37,7 @@ import {
 import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import {
   collection,
+  CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
   type ExtensionPointIdentity,
   isExtensionPoint,
@@ -210,18 +211,17 @@ export function defineExtensionPoint<K extends ExtensionPointName>(
  * owned by the module that declares it, and sharing it requires importing the
  * contract module that exports it.
  */
-export function defineExtensionPoint<T = unknown>(
-  name: string,
-  owner?: string,
-): ExtensionPointIdentity<T>;
+export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T>;
 export function defineExtensionPoint(
   name: string,
   implOrOwner?: unknown,
 ): ExtensionPointIdentity | ExtensionPointImpl<ExtensionPointName> {
-  // A string second argument is the contract-mode owner; anything else
-  // (function or handler object) is the legacy two-argument handler form.
+  // The owner is taken from the loader (CURRENT_MODULE), not from an argument:
+  // a string second argument was the pre-loader contract-mode owner and is
+  // accepted for compatibility but ignored. A function/object second argument
+  // is the legacy two-argument handler form.
   if (typeof implOrOwner === "string" || implOrOwner === undefined) {
-    return defineReactiveExtensionPoint(name, implOrOwner as string | undefined);
+    return defineReactiveExtensionPoint(name);
   }
 
   const symbol = ExtensionPoint[name as ExtensionPointName];
@@ -769,7 +769,6 @@ function createRefProxyForStub(
 function installDependencyLoadHook(
   actorEntries: readonly { specifier: string; entryUrl: string }[],
 ): void {
-  if (actorEntries.length === 0) return;
   const canonical = new Map(
     actorEntries.map((entry) => [normalizeSpecifier(entry.specifier), entry.specifier]),
   );
@@ -797,6 +796,11 @@ function installDependencyLoadHook(
       return resolved;
     },
     load(url: string, context: unknown, nextLoad: (u: string, c: unknown) => unknown) {
+      // Record the module URL before its top-level code runs so
+      // defineExtensionPoint can read the defining module from the loader
+      // (CURRENT_MODULE). This runs for every module, even with no actor
+      // entries, which is why the hook installs unconditionally.
+      (globalThis as Record<symbol, unknown>)[CURRENT_MODULE] = url;
       if (url.startsWith(STUB_SCHEME)) {
         const specifier = decodeURIComponent(url.slice(STUB_SCHEME.length));
         return {
@@ -879,6 +883,7 @@ export { flattenSurface };
 
 export {
   collection,
+  CURRENT_MODULE,
   defineReactiveExtensionPoint,
   isExtensionPoint,
   provide,

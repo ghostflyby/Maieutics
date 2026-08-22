@@ -3,13 +3,14 @@
 Status: **In progress.** The minimal end-to-end loop is **closed and verified**:
 a provider in one worker contributes a reactive value to an extension point
 owned by another worker, the defining worker aggregates it into its local
-collection, and consumers observe the aggregate. Two integration tests cover
-the single-provider and multi-provider cases.
+collection, consumers observe the aggregate, and the contribution can be
+withdrawn (explicit `unprovide` or stream end). Stub identity replacement means
+`import { ep } from "contract"` yields the real remote identity. Integration
+tests cover single/multi-provider aggregation, imported identity shape, and
+remote unprovide.
 
-Remaining (designed but not implemented): stub identity replacement so a
-provider's `import { ep } from "contract"` carries the real identity instead of
-a hand-built substitute, remote `snapshot`/`unprovide` round-trips, and
-lifecycle cleanup for remote contributions.
+Remaining (designed but not implemented): hard-crash cleanup for dead providers
+(no liveness plane today), remote `snapshot`, and duplicate-provide semantics.
 
 ## Background
 
@@ -101,40 +102,60 @@ Fix: `serveRefOwner` passes the original `frame.args` (still encoded) to `makeRp
 lets it decode once — matching the library's own `ref_codec` example, which decodes once and
 invokes the function directly.
 
+### Stub identity replacement
+
+The load-hook stub for a contract module synthesizes `createRemoteIdentity(name,
+owner, defSpecifier)` exports for each contract identity the dependency worker
+reported in its ready frame (host stores them per worker and passes them via
+`maieutics-config` `actorEntries[].identities`). `import { ep } from "contract"`
+therefore yields the real branded identity with `defSpecifier` filled, and
+`provide(ep, signal)` routes to the defining worker's remote collection without
+any hand-built substitute.
+
+### Remote unprovide / lifecycle
+
+- The collection surface gained `remove(providerKey?)` (with no key: remove all
+  contributions of that extension point).
+- `provide` on a remote identity generates a `providerKey` (UUID) carried on the
+  registration; `unprovide(registration)` routes `remove(providerKey)` back to
+  the defining worker, which stops the pull loop and unregisters the signal.
+- `applyRemoteContribution` is idempotent per provider key: a repeated `add`
+  with the same key replaces the previous contribution instead of stacking
+  duplicates.
+- Stream-end (done) or stream-error withdraws the contribution (the provider is
+  gone or the channel closed); `disposePlugin` stops every pull loop.
+- Hard-crash cleanup (provider process dies without closing its stream) is not
+  covered: Maieutics deliberately has no liveness plane, so the definer's pull
+  loop cannot observe the death. That remains future work.
+
 ### Tests (interop_test.ts)
 
 - Cross-worker single provider: provider contributes `[1]`, definer's snapshot reports it;
   a signal change streams `[2]`; `undefined` drops the contribution.
 - Cross-worker multiple providers: two provider workers contribute, definer aggregates both.
+- Imported contract identity: `import { ep }` yields `defSpecifier` = the definer's specifier
+  and classifies as remote (`isRemoteExtensionPoint`).
+- Remote unprovide: `unprovide(registration)` withdraws the contribution.
 - Backward compatibility: the existing actor-interop tests (depActor over an ordinary actor,
   default-import redirect, jsr:-prefixed specifier, plain-module pass-through, reactive
   subscribe across workers) all stay green.
 
-The tests hand-build a remote identity (`{ name, owner, defSpecifier, brand }`) because stub
-identity replacement is not yet implemented; see below.
-
 ## Remaining work
 
-1. **Stub identity replacement.** The load-hook stub currently serves a default acquire
-   surface; `import { ep } from "@contract/main"` does not yet yield the real identity value
-   with `defSpecifier` filled. The hand-built identity in the tests must become automatic: the
-   stub should provide an identity substitute carrying `{ name, owner, defSpecifier, brand }`
-   for contract-module exports. `flattenSurface` cannot currently reach constant/identity
-   exports, so this needs either a stub-side export table or a marker-based pass-through.
+1. **Hard-crash cleanup.** Provider worker exit without an explicit `unprovide` or stream
+   close leaves its contribution in the definer's collection (no liveness plane today). Needs
+   worker-actor liveness or a host-side cascade that calls `remove` on the definer.
 2. **Remote `snapshot`.** A remote `snapshot(ep)` is a request to the defining worker; add it
-   to the collection surface (currently only `add` and `changes`).
-3. **Remote `unprovide` / lifecycle.** Provider worker exit should drop its contribution
-   (worker-actor liveness or an explicit `unprovide` round-trip). Currently a dead provider's
-   value lingers in the definer's collection.
-4. **`defSpecifier` provenance.** The hand-built test identity sets `owner` to a contract URL
-   that does not match the defining worker's actual module URL. The real stub replacement will
-   carry the true owner; the tests should then assert on the real identity rather than the
-   substitute.
+   to the collection surface (currently `add`, `remove`, `changes`).
+3. **Duplicate-provide semantics.** Repeated `provide` of the same signal by the same worker
+   currently registers two independent contributions (each with its own provider key); decide
+   whether that should coalesce per (specifier, name).
 
 ## Verification baseline
 
-- Current worktree: deno workspace tests 55 passed / 0 failed (SDK + host), REPL 10 passed —
+- Current worktree: deno workspace tests 57 passed / 0 failed (SDK + host), REPL 10 passed —
   no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
-- Feature gate: the two new cross-worker aggregation tests are green.
-- Full repository acceptance still to run: `dotnet test Maieutics.slnx`,
-  `dotnet build Maieutics.slnx --no-restore -warnaserror`, `git diff --check`.
+- Feature gates: cross-worker aggregation (single/multi provider), imported contract
+  identity, and remote unprovide tests are green.
+- Full repository acceptance: `dotnet test Maieutics.slnx` and
+  `git diff --check` clean (dotnet build with -warnaserror verified on the earlier pass).

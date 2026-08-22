@@ -61,6 +61,11 @@ export interface ProviderRegistration<T> {
   readonly value: ReactiveValue<T | undefined>;
   /** Local identity of this provider within its owning worker. */
   readonly providerId: string;
+  /** Remote registrations additionally carry the defining worker specifier,
+   * so {@link unprovide} can route the withdrawal back to it. */
+  readonly remoteSpecifier?: string;
+  /** The contribution key the defining worker tracks (remote registrations). */
+  readonly remoteKey?: string;
 }
 
 const providersByPoint = new Map<
@@ -176,14 +181,29 @@ export interface RemoteProvideFn {
     name: string,
     initial: unknown,
     changes: AsyncIterable<unknown>,
+    providerKey: string,
   ): Promise<void>;
 }
 
+/** Remote-unprovide hook: withdraws a remote contribution from a defining
+ * worker's collection. Set by the SDK entry alongside {@link RemoteProvideFn}. */
+export type RemoteUnprovideFn = (
+  specifier: string,
+  name: string,
+  providerKey: string,
+) => Promise<void>;
+
 let remoteProvide: RemoteProvideFn | undefined;
+let remoteUnprovide: RemoteUnprovideFn | undefined;
 
 /** Installed by mod.ts: routes provide() to a defining worker's collection. */
 export function setRemoteProvide(fn: RemoteProvideFn | undefined): void {
   remoteProvide = fn;
+}
+
+/** Installed by mod.ts: routes unprovide() of a remote contribution. */
+export function setRemoteUnprovide(fn: RemoteUnprovideFn | undefined): void {
+  remoteUnprovide = fn;
 }
 
 /** True when the identity's defining worker is not this worker (remote). */
@@ -279,14 +299,18 @@ export function provide<T>(
     throw new TypeError("provide() expects an extension point identity.");
   }
 
-  // Remote identity: route to the defining worker's collection.
+  // Remote identity: route to the defining worker's collection. The providerKey
+  // (generated here) identifies this contribution so a later unprovide can
+  // withdraw exactly it from the defining worker.
   if (isRemoteExtensionPoint(extensionPoint) && remoteProvide !== undefined) {
     const specifier = extensionPoint.defSpecifier!;
+    const providerKey = crypto.randomUUID();
     void remoteProvide(
       specifier,
       extensionPoint.name,
       value.value,
       changesOf(value),
+      providerKey,
     ).catch((error: unknown) => {
       // The contribution failed to reach the defining worker; log instead of
       // surfacing an unhandled rejection in this worker.
@@ -295,7 +319,13 @@ export function provide<T>(
           `${error instanceof Error ? error.message : String(error)}`,
       );
     });
-    return { extensionPoint, value, providerId: `remote:${specifier}:${extensionPoint.name}` };
+    return {
+      extensionPoint,
+      value,
+      providerId: `remote:${specifier}:${extensionPoint.name}:${providerKey}`,
+      remoteSpecifier: specifier,
+      remoteKey: providerKey,
+    };
   }
 
   const symbol = symbolFor(extensionPoint.owner, extensionPoint.name);
@@ -311,8 +341,28 @@ export function provide<T>(
   return { extensionPoint, value, providerId };
 }
 
-/** Withdraws a provider contribution made by {@link provide}. */
+/** Withdraws a provider contribution made by {@link provide}. For a remote
+ * registration the withdrawal is routed back to the defining worker, which
+ * unregisters its local contribution and stops the change stream. */
 export function unprovide<T>(registration: ProviderRegistration<T>): void {
+  if (
+    registration.remoteSpecifier !== undefined &&
+    registration.remoteKey !== undefined &&
+    remoteUnprovide !== undefined
+  ) {
+    void remoteUnprovide(
+      registration.remoteSpecifier,
+      registration.extensionPoint.name,
+      registration.remoteKey,
+    ).catch((error: unknown) => {
+      console.error(
+        `[plugin-sdk] remote unprovide of '${registration.remoteSpecifier}/` +
+          `${registration.extensionPoint.name}' failed: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    return;
+  }
   const symbol = symbolFor(registration.extensionPoint.owner, registration.extensionPoint.name);
   const providers = providersByPoint.get(symbol);
   providers?.delete(registration.providerId);

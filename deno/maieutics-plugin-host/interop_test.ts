@@ -473,6 +473,66 @@ Deno.test("a provider contributes to a defining worker's collection across worke
   }
 });
 
+Deno.test("a provider's unprovide withdraws its remote contribution", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<number>("sample.metric");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
+    });
+    `,
+  );
+
+  // The provider registers the contribution and exposes an unprovide step in
+  // its handler; unprovide() routes the withdrawal back to the definer.
+  const provider = writePlugin(
+    root,
+    "provider",
+    `${sdkImport()}
+    import { provide, signal, unprovide, type ProviderRegistration } from ${
+      JSON.stringify(SDK_URL)
+    };
+    import { ep } from "@maieutics/definer/main";
+    const value = signal<number | undefined>(1);
+    let registration: ProviderRegistration<number> | undefined;
+    registration = provide(ep, value);
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: (context: { arguments?: { step?: string } }) => {
+        if (context.arguments?.step === "unprovide" && registration) {
+          unprovide(registration);
+          registration = undefined;
+        }
+        return { action: "continue" as const };
+      },
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(provider)],
+  });
+  try {
+    await host.startAll();
+    const initial = await waitForCollectionSnapshot(host, (snapshots) => snapshots.length === 1);
+    assertEquals(initial, [1]);
+
+    // Explicit unprovide withdraws the remote contribution.
+    await host.invoke("provider", "./main", "ToolPreInvoke", { arguments: { step: "unprovide" } });
+    const withdrawn = await waitForCollectionSnapshot(host, (snapshots) => snapshots.length === 0);
+    assertEquals(withdrawn, []);
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("multiple provider workers aggregate into the defining worker's collection", async () => {
   const root = Deno.makeTempDirSync();
 

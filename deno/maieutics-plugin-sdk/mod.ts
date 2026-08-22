@@ -52,6 +52,7 @@ import {
   type ProviderRegistration,
   type ReactiveValue,
   setRemoteProvide,
+  setRemoteUnprovide,
   setWorkerSpecifier,
   signal,
   snapshot,
@@ -416,6 +417,7 @@ export async function initPluginWorker(): Promise<void> {
   ownSpecifierValue = config.specifier;
   setWorkerSpecifier(config.specifier);
   setRemoteProvide(remoteProvideImpl);
+  setRemoteUnprovide(remoteUnprovideImpl);
 
   // The dependency stubs need this worker's id to build routeable refIds;
   // expose the worker-actor runtime's registry to them via the global slot.
@@ -552,13 +554,44 @@ function scanExports(namespace: Record<string, unknown>): void {
  */
 const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
 
+/** One remote contribution tracked by the defining worker: the local signal
+ * plus the pull-loop stop, so `remove`/dispose can withdraw it. */
+interface RemoteContribution {
+  registration: ProviderRegistration<unknown>;
+  stop: () => void;
+}
+
+/** Remote contributions by extension point name, keyed by provider identity
+ * (the acquiring worker's refId prefix serves as the per-provider key; one
+ * provider contributes once per extension point). */
+const remoteContributions = new Map<string, Map<string, RemoteContribution>>();
+
+/** The provider identity of an incoming contribution: the caller's worker id
+ * prefix from the acquire refId (rewritten by the host to the owner id, but
+ * the original holder prefix survives in the frame's refId — see below). */
+let remoteContributionCounter = 0;
+
 function collectionActorSurface(name: string): object {
   return {
     [COLLECTION_SURFACE_MARKER]: true,
-    add(initial: unknown, changes: AsyncIterable<unknown>): Promise<void> {
+    add(
+      initial: unknown,
+      changes: AsyncIterable<unknown>,
+      providerKey?: string,
+    ): Promise<void> {
       const ep = lookupIdentity(name);
       if (ep === undefined) return Promise.resolve();
-      void applyRemoteContribution(ep, initial, changes);
+      applyRemoteContribution(ep, initial, changes, providerKey);
+      return Promise.resolve();
+    },
+    remove(providerKey?: string): Promise<void> {
+      const ep = lookupIdentity(name);
+      if (ep === undefined) return Promise.resolve();
+      if (providerKey === undefined) {
+        removeAllRemoteContributions(name);
+      } else {
+        removeRemoteContribution(name, providerKey);
+      }
       return Promise.resolve();
     },
     changes(): AsyncIterable<unknown[]> {
@@ -591,41 +624,103 @@ function emptyAsyncIterable<T>(): AsyncIterable<T> {
  * values stream continuously; the signal stays registered until the provider's
  * stream ends (undefined values simply drop the contribution from snapshots).
  *
- * The loop must never throw outward: a failed/ended stream keeps the last value
- * and stops the pull (the provider is gone or the channel closed). */
+ * `providerKey` identifies the contributing provider (a client-generated id)
+ * so a later `remove`/`unprovide` can withdraw exactly this contribution and a
+ * repeated `add` with the same key replaces the previous contribution instead
+ * of stacking duplicates.
+ *
+ * The loop must never throw outward: a failed/ended stream unregisters the
+ * contribution (the provider is gone or the channel closed). */
 function applyRemoteContribution(
   extensionPoint: ExtensionPointIdentity,
   initial: unknown,
   changes: AsyncIterable<unknown>,
+  providerKey?: string,
 ): void {
+  const name = extensionPoint.name;
+  const key = providerKey ?? `remote:${++remoteContributionCounter}`;
+  // Replace a previous contribution from the same provider (idempotent add).
+  removeRemoteContribution(name, key);
+
   const value = signal<unknown | undefined>(initial as unknown | undefined);
-  provide(extensionPoint, value as ReactiveValue<unknown | undefined>);
+  const registration = provide(extensionPoint, value as ReactiveValue<unknown | undefined>);
+  let stopped = false;
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    unprovide(registration);
+    const byName = remoteContributions.get(name);
+    if (byName?.get(key)?.registration === registration) {
+      byName.delete(key);
+      if (byName.size === 0) remoteContributions.delete(name);
+    }
+  };
+  remoteContributions.set(name, new Map([[key, { registration, stop }]]));
+
   void (async () => {
     try {
       const iterator = changes[Symbol.asyncIterator]();
-      while (true) {
+      while (!stopped) {
         const next = await iterator.next();
-        if (next.done) return;
+        if (stopped) return;
+        if (next.done) return stop();
         value.value = next.value as unknown | undefined;
       }
     } catch {
-      // The provider's stream ended or was abandoned; keep the last value.
+      // The provider's stream ended or was abandoned; withdraw the contribution.
+      stop();
     }
   })();
 }
 
-/** Routes provide() to the defining worker's remote collection. */
+/** Withdraws the remote contribution identified by `providerKey`, stopping its
+ * pull loop and unregistering its signal from the collection. */
+function removeRemoteContribution(name: string, providerKey: string): void {
+  const byName = remoteContributions.get(name);
+  if (byName === undefined) return;
+  byName.get(providerKey)?.stop();
+}
+
+/** Withdraws every remote contribution of one extension point. */
+function removeAllRemoteContributions(name: string): void {
+  const byName = remoteContributions.get(name);
+  if (byName === undefined) return;
+  for (const contribution of byName.values()) contribution.stop();
+}
+
+/** Routes provide() to the defining worker's remote collection. The providerKey
+ * (generated on the providing side) identifies this contribution so a later
+ * unprovide can withdraw exactly it. */
 async function remoteProvideImpl(
   specifier: string,
   name: string,
   initial: unknown,
   changes: AsyncIterable<unknown>,
+  providerKey: string,
 ): Promise<void> {
   const stub = createDependencyStub(specifier, name);
   const collection = (stub as unknown as Record<string, unknown>)[name] as {
-    add(initial: unknown, changes: AsyncIterable<unknown>): Promise<void>;
+    add(
+      initial: unknown,
+      changes: AsyncIterable<unknown>,
+      providerKey: string,
+    ): Promise<void>;
   };
-  await collection.add(initial, changes);
+  await collection.add(initial, changes, providerKey);
+}
+
+/** Routes unprovide() of a remote contribution back to the defining worker,
+ * which withdraws the contribution by providerKey. */
+async function remoteUnprovideImpl(
+  specifier: string,
+  name: string,
+  providerKey: string,
+): Promise<void> {
+  const stub = createDependencyStub(specifier, name);
+  const collection = (stub as unknown as Record<string, unknown>)[name] as {
+    remove(providerKey: string): Promise<void>;
+  };
+  await collection.remove(providerKey);
 }
 
 let extensionPoints = new Map<string, unknown>();
@@ -644,6 +739,11 @@ interface ContractExportIdentity {
 let contractExportIdentities: ContractExportIdentity[] = [];
 
 function disposePlugin(): void {
+  // Stop every remote pull loop; each stop unregisters its contribution.
+  for (const byName of remoteContributions.values()) {
+    for (const contribution of byName.values()) contribution.stop();
+  }
+  remoteContributions.clear();
   clearActorExports();
   extensionPoints.clear();
   extensionPointIdentities.clear();

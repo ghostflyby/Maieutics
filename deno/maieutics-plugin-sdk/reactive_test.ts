@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import { signal } from "@preact/signals-core";
 import {
   defineExtensionPoint,
@@ -20,10 +20,40 @@ Deno.test("same-name identities are the same extension point", () => {
   const a = defineExtensionPoint<number>("shared.ep");
   const b = defineExtensionPoint<number>("shared.ep");
   assertEquals(a.name, b.name);
-  // The registry keys on the name symbol, so both join the same collection.
+  assertEquals(a.owner, b.owner);
+  // Same module + same name → same identity; both join the same collection.
   const s = signal(1);
   provide(a, s);
   assertEquals(snapshot(b), [1]);
+});
+
+Deno.test("identities from different modules with the same name do not merge", async () => {
+  // Two contract modules declare the same extension-point name. Contract mode
+  // keys on (owner = module URL, name), so they are different identities and
+  // providers do not join each other's collections.
+  const moduleA = `${Deno.makeTempDirSync()}/contract-a.ts`;
+  const moduleB = `${Deno.makeTempDirSync()}/contract-b.ts`;
+  const sdkUrl = new URL("./mod.ts", import.meta.url).href;
+  Deno.writeTextFileSync(
+    moduleA,
+    `import { defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +
+      `export const ep = defineExtensionPoint<number>("same.name", import.meta.url);\n`,
+  );
+  Deno.writeTextFileSync(
+    moduleB,
+    `import { defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +
+      `export const ep = defineExtensionPoint<number>("same.name", import.meta.url);\n`,
+  );
+
+  const { ep: epA } = await import(moduleA);
+  const { ep: epB } = await import(moduleB);
+  assertEquals(epA.name, epB.name);
+  assertNotEquals(epA.owner, epB.owner);
+
+  const s = signal(7);
+  provide(epA, s);
+  assertEquals(snapshot(epA), [7]);
+  assertEquals(snapshot(epB), []); // different module → different collection
 });
 
 Deno.test("provide contributes to the collection; undefined does not", () => {

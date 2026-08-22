@@ -203,21 +203,29 @@ export function defineExtensionPoint<K extends ExtensionPointName>(
   impl: ExtensionPointInput<K>,
 ): ExtensionPointImpl<K>;
 /**
- * Declares a reactive extension-point identity (single-argument form). The
- * value is a pure identity with no implementation; any worker can contribute
- * a reactive value to it with {@link provide}. This is the open extension
- * point model: the name is not part of a closed SDK union.
+ * Declares a reactive extension-point identity (single-argument form, with an
+ * optional owner module URL). The value is a pure identity with no
+ * implementation; any worker can contribute a reactive value to it with
+ * {@link provide}. This is the contract extension point model: the identity is
+ * owned by the module that declares it, and sharing it requires importing the
+ * contract module that exports it.
  */
-export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T>;
+export function defineExtensionPoint<T = unknown>(
+  name: string,
+  owner?: string,
+): ExtensionPointIdentity<T>;
 export function defineExtensionPoint(
   name: string,
-  impl?: unknown,
+  implOrOwner?: unknown,
 ): ExtensionPointIdentity | ExtensionPointImpl<ExtensionPointName> {
-  if (impl === undefined) {
-    return defineReactiveExtensionPoint(name);
+  // A string second argument is the contract-mode owner; anything else
+  // (function or handler object) is the legacy two-argument handler form.
+  if (typeof implOrOwner === "string" || implOrOwner === undefined) {
+    return defineReactiveExtensionPoint(name, implOrOwner as string | undefined);
   }
 
   const symbol = ExtensionPoint[name as ExtensionPointName];
+  const impl = implOrOwner;
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {

@@ -31,6 +31,8 @@ import {
 } from "./actor_ref.ts";
 import {
   connectChannel,
+  type DecodeContext,
+  getActiveRegistry,
   type PeerRpc,
   registerControlHandler,
 } from "@ghostflyby/worker-actor/codec";
@@ -49,14 +51,6 @@ import {
   subscribe,
   unprovide,
 } from "./reactive.ts";
-
-// The worker-side registry lives in the worker-actor runtime module; the SDK
-// shares the worker context, so the control-plane accessor resolves the same
-// instance. Exposed here for the dependency stubs' channel cleanup.
-declare global {
-  // deno-lint-ignore no-explicit-any
-  var __workerActorRegistry: any;
-}
 
 const NAMESPACE = "maieutics/extensionPoint/v1";
 
@@ -634,9 +628,9 @@ export function createDependencyStub(
       return;
     }
     const channel = connectChannel(frame.port);
-    const registry = activeRegistry();
+    const registry = getActiveRegistry();
     if (registry) registry.registerChannel(channel);
-    const real = createRefProxyForStub(channel, refId, registry);
+    const real = createRefProxyForStub(channel, registry);
     materialized = real;
     // Defer the flush one microtask: the owner's __serve-ref handler binds its
     // channel in the same message-dispatch turn; a same-turn send on the fresh
@@ -672,19 +666,9 @@ function postAcquireActor(specifier: string, refId: string): void {
 let dependencyCallCount = 0;
 
 /** The stub's received channels must join the worker's registry for failAll cleanup. */
-function activeRegistry(): { registerChannel(channel: unknown): void } | undefined {
-  // The worker-actor runtime registers its per-worker registry on the worker
-  // context; the SDK entry shares that context, so the accessor returns the
-  // same instance the serveWorker runtime uses.
-  return (globalThis as unknown as {
-    __workerActorRegistry?: { registerChannel(channel: unknown): void };
-  }).__workerActorRegistry;
-}
-
 function createRefProxyForStub(
   channel: ReturnType<typeof connectChannel>,
-  refId: string,
-  registry: { registerChannel(channel: unknown): void } | undefined,
+  registry: DecodeContext["registry"] | undefined,
 ): RemoteActor<Record<string, unknown>> {
   const pending = new Map<number, {
     resolve: (value: unknown) => void;
@@ -704,8 +688,15 @@ function createRefProxyForStub(
     const call = pending.get(frame.id ?? -1);
     if (!call) return;
     pending.delete(frame.id ?? -1);
-    if (frame.ok) call.resolve(frame.value);
-    else call.reject(new Error(frame.error?.message ?? "Actor call failed"));
+    if (frame.ok) {
+      // The value arrives encoded (an AsyncIterable return travels as an
+      // iterable-codec placeholder with a MessagePort); decode it through the
+      // worker-actor registry so the caller gets a real local stream, exactly
+      // like actor_ref's createRefProxy does.
+      call.resolve(registry ? registry.decode(frame.value) : frame.value);
+    } else {
+      call.reject(new Error(frame.error?.message ?? "Actor call failed"));
+    }
   });
   const proxy = new Proxy({} as RemoteActor<Record<string, unknown>>, {
     get(_target, prop) {
@@ -728,7 +719,16 @@ function createRefProxyForStub(
             const id = nextCallId++;
             pending.set(id, { resolve, reject });
             try {
-              channel.send({ type: "call", id, method: prop, args });
+              const transfer: Transferable[] = [];
+              channel.send(
+                {
+                  type: "call",
+                  id,
+                  method: prop,
+                  args: registry ? registry.encode(args, transfer) as unknown[] : args,
+                },
+                transfer,
+              );
             } catch (error) {
               reject(error);
             }
@@ -738,8 +738,6 @@ function createRefProxyForStub(
       return undefined;
     },
   });
-  void refId;
-  void registry;
   return proxy;
 }
 

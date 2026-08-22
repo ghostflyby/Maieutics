@@ -6,7 +6,8 @@
     "./lint": "./lint-plugin.ts"
   },
   "imports": {
-    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0"
+    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0",
+    "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
   },
   "tasks": {
     "check": "deno check mod.ts mod_test.ts actor_ref.ts lint-plugin.ts lint-plugin_test.ts",

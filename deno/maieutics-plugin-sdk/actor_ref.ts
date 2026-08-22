@@ -57,9 +57,16 @@ export const ACTOR_BRAND = Symbol.for("maieutics/actor/v1/surface");
 const REF_TOKEN_BRAND = Symbol.for("maieutics/actor/v1/ref-token");
 const REF_PROXY_BRAND = Symbol.for("maieutics/actor/v1/ref-proxy");
 
-/** The proxy type: every method returns a Promise; non-functions are `never`. */
+/**
+ * The proxy type: methods returning an AsyncIterable keep it lazy (matching
+ * worker-actor's `Remote<T>` projection, so streaming methods transport over
+ * the iterable codec); other methods return a Promise; non-functions are
+ * `never`.
+ */
 export type RemoteActor<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>>
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R
+    ? R extends AsyncIterable<infer E> ? (...args: A) => AsyncIterable<E>
+    : (...args: A) => Promise<Awaited<R>>
     : never;
 };
 
@@ -286,10 +293,13 @@ function serveRefOwner(
       args: registry.decode(frame.args) as unknown[],
     });
     if (result.ok) {
-      const transfer: Transferable[] = [];
+      // makeRpcHandler already encoded the value and collected the transferable
+      // ports (an AsyncIterable return travels over an iterable-codec channel).
+      // Re-encoding would turn the placeholder back into a plain object and drop
+      // the ports, so send the handler's own value and transfer list.
       channel.send(
-        { type: "result", id: result.id, ok: true, value: registry.encode(result.value, transfer) },
-        transfer,
+        { type: "result", id: result.id, ok: true, value: result.value },
+        result.transfer,
       );
     } else {
       channel.send({ type: "result", id: result.id, ok: false, error: result.error });

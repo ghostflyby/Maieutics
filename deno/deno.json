@@ -12,6 +12,7 @@
   "imports": {
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0",
+    "@preact/signals-core": "npm:@preact/signals-core@1.14.4",
     "@std/assert": "jsr:@std/assert@^1.0.19"
   },
   "tasks": {

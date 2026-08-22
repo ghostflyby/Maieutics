@@ -34,7 +34,20 @@ import {
   type PeerRpc,
   registerControlHandler,
 } from "@ghostflyby/worker-actor/codec";
-import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import {
+  collection,
+  defineExtensionPoint as defineReactiveExtensionPoint,
+  type ExtensionPointIdentity,
+  isExtensionPoint,
+  provide,
+  providerCount,
+  type ProviderRegistration,
+  type ReactiveValue,
+  snapshot,
+  subscribe,
+  unprovide,
+} from "./reactive.ts";
 
 // The worker-side registry lives in the worker-actor runtime module; the SDK
 // shares the worker context, so the control-plane accessor resolves the same
@@ -188,8 +201,23 @@ export type ExtensionPointImpl<K extends ExtensionPointName> = ExtensionPointSha
 export function defineExtensionPoint<K extends ExtensionPointName>(
   name: K,
   impl: ExtensionPointInput<K>,
-): ExtensionPointImpl<K> {
-  const symbol = ExtensionPoint[name];
+): ExtensionPointImpl<K>;
+/**
+ * Declares a reactive extension-point identity (single-argument form). The
+ * value is a pure identity with no implementation; any worker can contribute
+ * a reactive value to it with {@link provide}. This is the open extension
+ * point model: the name is not part of a closed SDK union.
+ */
+export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T>;
+export function defineExtensionPoint(
+  name: string,
+  impl?: unknown,
+): ExtensionPointIdentity | ExtensionPointImpl<ExtensionPointName> {
+  if (impl === undefined) {
+    return defineReactiveExtensionPoint(name);
+  }
+
+  const symbol = ExtensionPoint[name as ExtensionPointName];
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {
@@ -215,7 +243,7 @@ export function defineExtensionPoint<K extends ExtensionPointName>(
       `Extension point '${name}' marker could not be attached.`,
     );
   }
-  return impl as ExtensionPointImpl<K>;
+  return impl as ExtensionPointImpl<ExtensionPointName>;
 }
 
 // —— Actor surfaces (cross-plugin interop) ——
@@ -427,11 +455,15 @@ async function initialize(entryUrl: string): Promise<void> {
   // extension points are known only after init, so repopulate the object now.
   for (const key of Object.keys(servingApi)) delete servingApi[key];
   for (const [name, impl] of extensionPoints) {
-    const invoke = async (request: unknown): Promise<unknown> => {
-      const value = typeof impl === "function"
-        ? await (impl as (context: unknown) => unknown)(request)
-        : await (impl as { handler(context: unknown): unknown }).handler(request);
-      return value;
+    const invoke = (request: unknown): unknown => {
+      const raw = typeof impl === "function"
+        ? (impl as (context: unknown) => unknown)(request)
+        : (impl as { handler(context: unknown): unknown }).handler(request);
+      // A handler returning an AsyncIterable must be passed through untouched:
+      // awaiting it would flatten the stream into an object and break the
+      // worker-actor iterable codec. Only promise values are awaited.
+      if (raw instanceof Promise) return raw;
+      return raw;
     };
     servingApi[name] = invoke;
   }
@@ -554,7 +586,16 @@ export function createDependencyStub(
               return () => acquireAndCall(`${String(prop)}.dispose`, []);
             }
             if (typeof method === "string") {
-              return (...args: unknown[]) => acquireAndCall(`${String(prop)}.${method}`, args);
+              return (...args: unknown[]) => {
+                const p = acquireAndCall(`${String(prop)}.${method}`, args);
+                // A method may return an AsyncIterable over the wire; attach a
+                // lazy iterator so `for await` works exactly like worker-actor's
+                // Remote<T> projection (the first next() awaits the acquire and
+                // iterates the resolved stream). Ordinary single-value methods
+                // are unaffected: nobody for-await's them.
+                attachLazyIterator(p);
+                return p;
+              };
             }
             return undefined;
           },
@@ -825,3 +866,18 @@ function scopePostMessage(message: unknown): void {
 // —— Link peer surface (flattened namespace) ——
 
 export { flattenSurface };
+
+// —— Reactive extension points ——
+
+export {
+  collection,
+  defineReactiveExtensionPoint,
+  isExtensionPoint,
+  provide,
+  providerCount,
+  snapshot,
+  subscribe,
+  unprovide,
+};
+export type { ExtensionPointIdentity, ProviderRegistration, ReactiveValue };
+export { computed, effect, signal } from "./reactive.ts";

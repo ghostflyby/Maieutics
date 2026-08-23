@@ -129,9 +129,12 @@ any hand-built substitute.
   duplicates.
 - Stream-end (done) or stream-error withdraws the contribution (the provider is
   gone or the channel closed); `disposePlugin` stops every pull loop.
-- Hard-crash cleanup (provider process dies without closing its stream) is not
-  covered: Maieutics deliberately has no liveness plane, so the definer's pull
-  loop cannot observe the death. That remains future work.
+- Hard-crash cleanup: the host is the lifecycle authority. Before stopping a
+  worker, `#stopWorker` notifies every worker it contributes to (its declared
+  dependencies) with a `__provider-dead` frame; the definer drops each
+  contribution whose providerKey carries the dead provider's specifier (the
+  providerKey embeds the provider's specifier at provide time). This covers
+  crashes where no stream end is observable.
 
 ### Tests (interop_test.ts)
 
@@ -177,32 +180,26 @@ Design notes:
 
 ## Remaining work
 
-1. **Hard-crash cleanup.** Provider worker exit without an explicit `unprovide` or stream
-   close leaves its contribution in the definer's collection. The host is the lifecycle
-   authority and now covers this: `#stopWorker` notifies each dependency of the stopped
-   provider via a `__provider-dead` frame, and the definer's SDK drops every contribution
-   whose providerKey carries the provider's specifier. The providerKey embeds the provider
-   specifier prefix at provide time. A graceful reload also cleans up via the stream-end
-   path (the producer channel closes, the pull loop ends, `stop()` unregisters); the
-   `__provider-dead` frame is the fast path that also covers hard crashes where no stream
-   end is observable. The end-to-end reload test asserts the definer shows exactly one
-   value after a provider reload (not a stale + fresh duplicate). A true hard-crash
-   (worker process dies) test is not written because Deno's test runner reports the
-   worker's uncaught error as a module failure.
-2. **Remote `snapshot`.** A remote `snapshot(ep)` is a request to the defining worker; add it
+1. **Remote `snapshot`.** A remote `snapshot(ep)` is a request to the defining worker; add it
    to the collection surface (currently `add`, `remove`, `changes`). Note: remote snapshot
    races with live changes; `subscribe`'s first element is the honest "current" primitive.
    Likely not worth adding.
-3. **Duplicate-provide semantics.** Repeated `provide` of the same signal by the same worker
-   currently registers two independent contributions (each with its own provider key); decide
-   whether that should coalesce per (specifier, name).
+2. ~~Duplicate-provide semantics~~ **Resolved: independent contributions + lint rule.**
+   Repeated `provide` of the same signal stays two independent contributions (each with its
+   own provider key) — the runtime does not guess the caller's intent. The accidental
+   duplicate case (same signal provided twice) is caught statically by the
+   `maieutics/provide-once` lint rule, which reports a signal identifier provided more than
+   once in one file. The lint rule's scope is deliberately narrow (same file, same
+   identifier); cross-file and dynamic signals are out of scope, and the runtime still
+   allows independent contributions.
 
 ## Verification baseline
 
-- Current worktree: deno workspace tests 63 passed / 0 failed (SDK + host), REPL 10 passed —
+- Current worktree: deno workspace tests 68 passed / 0 failed (SDK + host), REPL 10 passed —
   no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
 - Feature gates: cross-worker aggregation (single/multi provider), imported contract
   identity, remote unprovide, cascade-stop stream settlement, the `values` stream
-  combinators, and provider-reload contribution cleanup are green.
+  combinators, provider-reload contribution cleanup, and the `provide-once` lint rule
+  are green.
 - Full repository acceptance: `dotnet test Maieutics.slnx` and
   `git diff --check` clean (dotnet build with -warnaserror verified on the earlier pass).

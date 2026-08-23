@@ -122,6 +122,69 @@ Deno.test("entrypoint-exports: function fix preserves annotations and async/gene
   assert(fixText.includes("async function fetchIt(url: string): Promise<string>"));
 });
 
+// —— provide-once ——
+
+const REACTIVE_IMPORT = 'import { provide, signal } from "@maieutics/plugin-sdk";\n';
+
+Deno.test("provide-once: the same signal provided twice is reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const s = signal(1);\n" +
+    "provide(ep, s);\n" +
+    "provide(ep, s);\n";
+  const diags = await lint(dir, "mod.ts", src);
+  const hit = diags.filter((d) => d.id === "maieutics/provide-once");
+  assertEquals(hit.length, 1);
+  assert(hit[0].message.includes("s"));
+});
+
+Deno.test("provide-once: distinct signals are not reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const a = signal(1);\n" +
+    "const b = signal(2);\n" +
+    "provide(ep, a);\n" +
+    "provide(ep, b);\n";
+  const diags = await lint(dir, "mod.ts", src);
+  assertEquals(diags.filter((d) => d.id === "maieutics/provide-once").length, 0);
+});
+
+Deno.test("provide-once: namespace import form is tracked", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = 'import * as sdk from "@maieutics/plugin-sdk";\n' +
+    'export const ep = sdk.defineExtensionPoint<number>("m");\n' +
+    "const s = sdk.signal(1);\n" +
+    "sdk.provide(ep, s);\n" +
+    "sdk.provide(ep, s);\n";
+  const diags = await lint(dir, "mod.ts", src);
+  const hit = diags.filter((d) => d.id === "maieutics/provide-once");
+  assertEquals(hit.length, 1);
+});
+
+Deno.test("provide-once: an imported alias of provide is tracked", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = 'import { provide as contribute, signal } from "@maieutics/plugin-sdk";\n' +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const s = signal(1);\n" +
+    "contribute(ep, s);\n" +
+    "contribute(ep, s);\n";
+  const diags = await lint(dir, "mod.ts", src);
+  const hit = diags.filter((d) => d.id === "maieutics/provide-once");
+  assertEquals(hit.length, 1);
+});
+
+Deno.test("provide-once: a non-identifier signal argument is not tracked", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "provide(ep, signal(1));\n" +
+    "provide(ep, signal(2));\n";
+  const diags = await lint(dir, "mod.ts", src);
+  assertEquals(diags.filter((d) => d.id === "maieutics/provide-once").length, 0);
+});
+
 Deno.test("entrypoint-exports: export default is reported", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
   const diags = await lint(dir, "mod.ts", "export default function main() { return 1; }\n");

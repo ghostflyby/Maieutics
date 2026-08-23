@@ -52,6 +52,13 @@ export interface ExtensionPointIdentity<T = unknown> {
   readonly owner: string;
   /** Canonical specifier of the defining worker; set after init. */
   readonly defSpecifier?: string;
+  /**
+   * Element kind: "data" (values are structured-cloned as-is) or "service"
+   * (values are remote references; consumers receive `Remote<T>` proxies).
+   * Set by the declaring function: {@link defineDataExtensionPoint} /
+   * {@link defineServiceExtensionPoint}.
+   */
+  readonly serviceKind: "data" | "service";
   readonly [EXTENSION_POINT_BRAND]: true;
 }
 
@@ -123,6 +130,27 @@ function currentModuleUrl(): string {
  * back to the SDK module's URL.
  */
 export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T> {
+  return definePoint(name, "data");
+}
+
+/**
+ * Declares a service extension-point identity. The element type `T` is the
+ * service's original type; a provider contributes a live service instance and
+ * consumers receive a `Remote<T>` proxy (every method becomes a
+ * Promise-returning callable). Provided values are converted to remote
+ * references automatically (see {@link setValueTransformer}); `defineService`
+ * marking is optional on a service extension point.
+ */
+export function defineServiceExtensionPoint<T = unknown>(
+  name: string,
+): ExtensionPointIdentity<T> {
+  return definePoint(name, "service");
+}
+
+function definePoint<T = unknown>(
+  name: string,
+  serviceKind: "data" | "service",
+): ExtensionPointIdentity<T> {
   if (typeof name !== "string" || name.length === 0) {
     throw new TypeError("An extension point name must be a non-empty string.");
   }
@@ -130,6 +158,7 @@ export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointI
   return {
     name,
     owner: currentModuleUrl(),
+    serviceKind,
     [EXTENSION_POINT_BRAND]: true,
   } as ExtensionPointIdentity<T>;
 }
@@ -145,11 +174,13 @@ export function createRemoteIdentity<T = unknown>(
   name: string,
   owner: string,
   defSpecifier: string,
+  serviceKind: "data" | "service" = "data",
 ): ExtensionPointIdentity<T> {
   return {
     name,
     owner,
     defSpecifier,
+    serviceKind,
     [EXTENSION_POINT_BRAND]: true,
   } as ExtensionPointIdentity<T>;
 }
@@ -160,6 +191,7 @@ export interface MutableExtensionPointIdentity<T = unknown> {
   name: string;
   owner: string;
   defSpecifier?: string;
+  serviceKind: "data" | "service";
 }
 
 /** Sets the defining worker's canonical specifier on a locally-declared identity. */
@@ -192,6 +224,43 @@ export type RemoteUnprovideFn = (
   name: string,
   providerKey: string,
 ) => Promise<void>;
+
+/**
+ * Value transformer: converts a provided value before it enters a collection.
+ * The SDK entry installs one that turns a `defineService`-marked object into a
+ * remote actor reference (a cloneable token), so services travel across workers
+ * as references and consumers receive `Remote<T>` proxies. Plain data passes
+ * through unchanged.
+ */
+export type ValueTransformer = (value: unknown) => unknown;
+
+let valueTransformer: ValueTransformer | undefined;
+
+/** Installed by mod.ts: converts service values to remote references. */
+export function setValueTransformer(fn: ValueTransformer | undefined): void {
+  valueTransformer = fn;
+}
+
+/**
+ * Value untransformer: converts a received collection element back to its
+ * consumer-side form. The SDK entry installs one that decodes actor reference
+ * placeholders (a service contributed by another worker) into a `Remote<T>`
+ * proxy. Plain data passes through unchanged.
+ */
+export type ValueUntransformer = (value: unknown) => unknown;
+
+let valueUntransformer: ValueUntransformer | undefined;
+
+/** Installed by mod.ts: decodes received actor reference placeholders. */
+export function setValueUntransformer(fn: ValueUntransformer | undefined): void {
+  valueUntransformer = fn;
+}
+
+/** Applies the untransformer to a single value (no-op when not installed). */
+function untransformValue(value: unknown): unknown {
+  const untransform = valueUntransformer;
+  return untransform === undefined ? value : untransform(value);
+}
 
 let remoteProvide: RemoteProvideFn | undefined;
 let remoteUnprovide: RemoteUnprovideFn | undefined;
@@ -283,6 +352,24 @@ export function changesOf<T>(value: ReactiveValue<T | undefined>): AsyncIterable
 }
 
 /**
+ * Maps every element of an async source through `transform` lazily. Used for
+ * service extension points so each transmitted change is converted to a remote
+ * reference placeholder before it leaves this worker — the same conversion the
+ * local provide path applies, keeping the wire shape identical whether the
+ * defining worker is local or remote.
+ */
+function transformChanges(
+  source: AsyncIterable<unknown>,
+  transform: (value: unknown) => unknown,
+): AsyncIterable<unknown> {
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<unknown> {
+      for await (const value of source) yield transform(value);
+    },
+  };
+}
+
+/**
  * Contributes a reactive value to an extension point from the current worker.
  * The provider joins the extension point's collection; while its value is
  * `undefined` it does not contribute. Returns a handle that can be passed to
@@ -317,11 +404,22 @@ export function provide<T>(
     }
     const specifier = defSpecifier;
     const providerKey = `${currentWorkerSpecifier()}:${crypto.randomUUID()}`;
+    // Service extension points convert each value to a remote actor reference
+    // placeholder here, in the providing worker — exactly like the local path —
+    // so a service contributed across workers travels as a reference (with the
+    // provider's specifier), never as raw data that would trip the callback
+    // codec or leave the definer holding an untransmittable object.
+    const transform = valueTransformer;
+    const isServicePoint = extensionPoint.serviceKind === "service" && transform !== undefined;
+    const initial = isServicePoint ? transform(value.value) : value.value;
+    const changes = isServicePoint
+      ? transformChanges(changesOf(value), transform)
+      : changesOf(value);
     void remoteProvide(
       specifier,
       extensionPoint.name,
-      value.value,
-      changesOf(value),
+      initial,
+      changes,
       providerKey,
     ).catch((error: unknown) => {
       // The contribution failed to reach the defining worker; log instead of
@@ -348,7 +446,20 @@ export function provide<T>(
   }
 
   const providerId = crypto.randomUUID();
-  providers.set(providerId, value as ReactiveValue<unknown>);
+  // A service extension point converts each value to a remote actor reference
+  // (cloneable placeholder) before entering the collection, so it travels
+  // across workers and consumers decode it to a Remote<T> proxy. A data
+  // extension point stores values as-is (structured clone). The transformer is
+  // applied on every read so a signal changing value is handled consistently.
+  const stored = extensionPoint.serviceKind === "service" &&
+      valueTransformer !== undefined
+    ? (() => {
+      const transform = valueTransformer;
+      if (transform === undefined) return value;
+      return computed(() => transform(value.value));
+    })()
+    : value;
+  providers.set(providerId, stored as ReactiveValue<unknown>);
   registryVersion.value += 1;
   return { extensionPoint, value, providerId };
 }
@@ -387,6 +498,11 @@ export function unprovide<T>(registration: ProviderRegistration<T>): void {
 /**
  * The current collection snapshot of an extension point: every provider value
  * that is not `undefined`, in registration order. Non-reactive read.
+ *
+ * Values are returned as stored: a service contribution is a cloneable actor
+ * reference placeholder (see {@link provide}); consumers decode it with the
+ * untransformer, while the provider's own snapshot keeps the placeholder so it
+ * can travel across workers.
  */
 export function snapshot<T>(extensionPoint: ExtensionPointIdentity<T>): T[] {
   const providers = providersByPoint.get(symbolFor(extensionPoint.owner, extensionPoint.name));
@@ -541,12 +657,15 @@ function valueChanges<T>(
             !lastByProvider.has(providerId) ||
             lastByProvider.get(providerId) !== value
           ) {
+            // Service extension points decode each value on consume (Remote<T>
+            // proxy); data extension points pass values through unchanged.
+            const out = extensionPoint.serviceKind === "service" ? untransformValue(value) : value;
             if (pending !== undefined) {
               const resolve = pending;
               pending = undefined;
-              resolve({ done: false, value: value as T });
+              resolve({ done: false, value: out as T });
             } else {
-              queue.push(value as T);
+              queue.push(out as T);
             }
           }
         }
@@ -582,12 +701,32 @@ function valueChanges<T>(
 }
 
 /**
+ * The consumer-side projection of a service extension point's element: every
+ * method becomes a Promise-returning callable, matching `RemoteActor<T>` and
+ * worker-actor's `Remote<T>`. Non-function members project to `never`.
+ */
+export type Remote<T> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>>
+    : never;
+};
+
+/** The consumer-side element type of an extension point: for a service
+ * extension point it is `Remote<T>`; for a data extension point it is `T`. */
+export type CollectionValue<T, K extends "data" | "service"> = K extends "service" ? Remote<T> : T;
+
+/**
  * Subscribes to an extension point's collection as a stream of individual
  * values. The stream emits the current values, then each changed value as it
- * happens. See {@link CollectionStream} for the combinator API.
+ * happens. See {@link CollectionStream} for the combinator API. For a service
+ * extension point the stream's element type is `Remote<T>` (methods become
+ * Promise-returning); for a data extension point it is `T` unchanged.
  */
-export function values<T>(extensionPoint: ExtensionPointIdentity<T>): CollectionStream<T> {
-  return new CollectionStreamImpl(valueChanges(extensionPoint));
+export function values<T>(
+  extensionPoint: ExtensionPointIdentity<T>,
+): CollectionStream<CollectionValue<T, typeof extensionPoint.serviceKind>> {
+  return new CollectionStreamImpl(
+    valueChanges(extensionPoint),
+  ) as CollectionStream<CollectionValue<T, typeof extensionPoint.serviceKind>>;
 }
 
 class CollectionStreamImpl<T> implements CollectionStream<T> {

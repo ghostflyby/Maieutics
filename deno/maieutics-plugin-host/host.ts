@@ -15,6 +15,7 @@
 
 import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
 import { actorRefCodec } from "../maieutics-plugin-sdk/actor_ref.ts";
+import { collectionStreamCodec } from "../maieutics-plugin-sdk/collection_stream.ts";
 
 /** Positive permission grant: `true` allows all, `false` denies, a list allows those entries. */
 export type PermissionGrant = boolean | readonly string[];
@@ -135,11 +136,13 @@ interface WorkerRpc {
 
 /** One contract identity exported by a worker's entry module: the export key
  * (what a dependency imports), the extension point name (what providers
- * address), and the defining module URL (the identity's owner). */
+ * address), the defining module URL (the identity's owner), and the element
+ * kind (data or service). */
 interface ContractExportIdentity {
   readonly exportName: string;
   readonly name: string;
   readonly owner: string;
+  readonly serviceKind: "data" | "service";
 }
 
 /** Identity + runtime handle of one spawned worker. */
@@ -414,7 +417,7 @@ export class PluginHost {
         },
       });
       const actor = await spawn<WorkerRpc>(worker, {
-        codecs: [actorRefCodec],
+        codecs: [actorRefCodec, collectionStreamCodec],
         signal: AbortSignal.timeout(this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS),
         onDeath: (reason) => this.#handleDeath(key, reason),
       });

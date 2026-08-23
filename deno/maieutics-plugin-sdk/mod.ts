@@ -22,14 +22,22 @@
  */
 
 import {
+  ACTOR_CODEC_TAG,
   actorRefCodec,
   clearActorExports,
+  clearNamespaceSurface,
+  decodeActorValue,
+  encodeActorValue,
   flattenSurface,
+  REF_PROXY_BRAND,
   registerActorExport,
   type RemoteActor,
   remoteActor,
+  setNamespaceSurface,
+  setSpecifierAcquire,
 } from "./actor_ref.ts";
 import {
+  CODEC_PLACEHOLDER_KEY,
   connectChannel,
   type DecodeContext,
   getActiveRegistry,
@@ -37,13 +45,16 @@ import {
   registerControlHandler,
 } from "@ghostflyby/worker-actor/codec";
 import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 import {
   bindDefiningWorker,
   collection,
   type CollectionStream,
+  type CollectionValue,
   createRemoteIdentity,
   CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
+  defineServiceExtensionPoint as defineServiceExtensionPointReactive,
   type ExtensionPointIdentity,
   isExtensionPoint,
   isLocalExtensionPoint,
@@ -52,8 +63,11 @@ import {
   providerCount,
   type ProviderRegistration,
   type ReactiveValue,
+  type Remote,
   setRemoteProvide,
   setRemoteUnprovide,
+  setValueTransformer,
+  setValueUntransformer,
   setWorkerSpecifier,
   signal,
   snapshot,
@@ -258,6 +272,26 @@ export function defineExtensionPoint(
   return impl as ExtensionPointImpl<ExtensionPointName>;
 }
 
+/**
+ * Declares a service extension-point identity. The element type `T` is the
+ * service's original type; a provider contributes a live service instance
+ * (no export, no handle) and consumers receive a `Remote<T>` proxy — every
+ * method becomes a Promise-returning callable. Provided values are converted
+ * to remote references automatically, whether the provider and the defining
+ * worker are the same worker or different workers.
+ *
+ * ```ts
+ * const services = defineServiceExtensionPoint<{ hello(): string }>("services");
+ * provide(services, signal({ hello() { return "hi"; } }));
+ * // consumer: for await (const svc of values(services)) await svc.hello();
+ * ```
+ */
+export function defineServiceExtensionPoint<T = unknown>(
+  name: string,
+): ExtensionPointIdentity<T> {
+  return defineServiceExtensionPointReactive<T>(name);
+}
+
 // —— Actor surfaces (cross-plugin interop) ——
 
 const ACTOR_MARKER = Symbol.for("maieutics/actor/v1/surface");
@@ -301,6 +335,85 @@ export function defineActor(
     configurable: false,
   });
   return remoteActor(surface, ownSpecifier(), "actor") as RemoteActor<Record<string, unknown>>;
+}
+
+// —— Transparent services (original-type instances in collections) ——
+
+// The service brand is an explicit marker: a `defineService`-marked value is
+// converted to a remote actor reference placeholder before it enters a service
+// extension point's collection. The conversion is NOT gated on the brand — a
+// service extension point converts every provided value (see
+// convertServiceValue) — but marking makes the intent explicit and lets a
+// provider opt a value into reference semantics on a data extension point too.
+const SERVICE_BRAND = "maieutics/service/v1";
+
+/**
+ * Marks an object as a service: a live instance that should be exposed across
+ * workers as a remote reference rather than serialized as data. The returned
+ * value is the same object (type `T` unchanged).
+ *
+ * On a service extension point (`defineServiceExtensionPoint`) the conversion
+ * happens automatically for every provided value, so `defineService` is
+ * optional there. On a data extension point it has no effect: values are
+ * structured-cloned as-is.
+ *
+ * ```ts
+ * const service = { hello(): string { return "hi"; } };
+ * provide(ep, signal(defineService(service))); // original instance, no export
+ * ```
+ */
+export function defineService<T extends object>(service: T): T {
+  if (typeof service !== "object" || service === null) {
+    throw new TypeError("defineService() expects an object.");
+  }
+  (service as Record<string, unknown>)[SERVICE_BRAND] = true;
+  return service;
+}
+
+/** True when `value` is a service marked with {@link defineService}. */
+export function isService(value: unknown): value is object {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>)[SERVICE_BRAND] === true
+  );
+}
+
+let serviceRefCount = 0;
+
+/** Service object → its transmittable placeholder. Each service instance is
+ * converted once and registered under one service surface name; repeated
+ * provide/snapshot reads reuse the same placeholder instead of growing the
+ * surface registry. */
+let servicePlaceholderByObject = new WeakMap<object, unknown>();
+
+/** Converts a service value to a transmittable remote reference: the service
+ * becomes an actor proxy registered under a service surface name, so a
+ * consumer's specifier-based acquire resolves it. Already-converted values
+ * (placeholders, including services forwarded from another worker) pass
+ * through unchanged; plain data also passes through unchanged. Called only for
+ * service extension points, whose values are live instances by contract. */
+function convertServiceValue(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  if ((value as Record<string, unknown>)[CODEC_PLACEHOLDER_KEY] === ACTOR_CODEC_TAG) {
+    return value;
+  }
+  // A received reference proxy (a service forwarded from another worker,
+  // decoded at an RPC boundary) is already a remote reference — keep it as-is;
+  // re-registering it under a new surface would orphan the routing identity.
+  if ((value as Record<symbol, unknown>)[REF_PROXY_BRAND] === true) {
+    return value;
+  }
+  const cached = servicePlaceholderByObject.get(value as object);
+  if (cached !== undefined) return cached;
+  const name = `__svc:${++serviceRefCount}`;
+  // Register the service so a consumer's acquire (specifier + name) can serve
+  // it; the surface is the service object itself.
+  registerActorExport(name, ownSpecifier(), value);
+  const proxy = remoteActor(value, ownSpecifier(), name);
+  const placeholder = encodeActorValue(proxy);
+  servicePlaceholderByObject.set(value as object, placeholder);
+  return placeholder;
 }
 
 /**
@@ -420,6 +533,14 @@ export async function initPluginWorker(): Promise<void> {
   setWorkerSpecifier(config.specifier);
   setRemoteProvide(remoteProvideImpl);
   setRemoteUnprovide(remoteUnprovideImpl);
+  // Specifier-addressed acquires (decoded service references in collections)
+  // route through the host's __acquire-actor frame.
+  setSpecifierAcquire(postAcquireActor);
+  // Service values (defineService-marked) become remote actor references; the
+  // actorRefCodec encodes them to cloneable placeholders on the wire. Received
+  // placeholders decode back to Remote<T> proxies.
+  setValueTransformer(convertServiceValue);
+  setValueUntransformer(decodeActorValue);
 
   // The dependency stubs need this worker's id to build routeable refIds;
   // expose the worker-actor runtime's registry to them via the global slot.
@@ -431,7 +552,7 @@ export async function initPluginWorker(): Promise<void> {
   installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
-    codecs: [actorRefCodec],
+    codecs: [actorRefCodec, collectionStreamCodec],
     onLink(link: LinkHandle): void {
       // A peer linked directly (host or another worker). Expose the flattened
       // plugin namespace over the link; the peer calls through link.rpc.
@@ -475,6 +596,7 @@ async function initialize(entryUrl: string): Promise<void> {
   }
   const namespace = (await import(entryUrl)) as Record<string, unknown>;
   linkedSurface = namespace;
+  setNamespaceSurface(namespace);
   scanExports(namespace);
   // serveWorker resolved methods at call time through the api object; the
   // extension points are known only after init, so repopulate the object now.
@@ -536,7 +658,12 @@ function scanExports(namespace: Record<string, unknown>): void {
         bindDefiningWorker(value, ownSpecifierValue);
         const identityName = value.name;
         extensionPointIdentities.set(identityName, value);
-        contractExports.push({ exportName: name, name: identityName, owner: value.owner });
+        contractExports.push({
+          exportName: name,
+          name: identityName,
+          owner: value.owner,
+          serviceKind: value.serviceKind,
+        });
         registerActorExport(identityName, ownSpecifierValue, collectionActorSurface(identityName));
       }
       if ((value as Record<symbol, unknown>)[ACTOR_MARKER] === true) actors.set(name, value);
@@ -606,7 +733,12 @@ function collectionActorSurface(name: string): object {
     },
     changes(): AsyncIterable<unknown[]> {
       const ep = lookupIdentity(name);
-      return ep === undefined ? emptyAsyncIterable() : subscribe(ep) as AsyncIterable<unknown[]>;
+      // Mark the stream so the collection-stream codec transports its elements
+      // through the registry (services arrive as Remote<T> proxies, not
+      // structured-clone failures).
+      return ep === undefined
+        ? emptyAsyncIterable()
+        : markCollectionStream(subscribe(ep) as AsyncIterable<unknown[]>);
     },
   };
 }
@@ -754,11 +886,13 @@ const extensionPointIdentities = new Map<string, ExtensionPointIdentity>();
 
 /** One contract identity exported by this worker's entry module: the export
  * key (what a dependency imports), the extension point name (what providers
- * address), and the defining module URL (the identity's owner). */
+ * address), the defining module URL (the identity's owner), and the element
+ * kind (data or service) so imported identities carry the same category. */
 interface ContractExportIdentity {
   readonly exportName: string;
   readonly name: string;
   readonly owner: string;
+  readonly serviceKind: "data" | "service";
 }
 
 /** Contract identities reported in the ready frame; cleared on dispose. */
@@ -771,10 +905,15 @@ function disposePlugin(): void {
   }
   remoteContributions.clear();
   clearActorExports();
+  // Forget converted service placeholders: their surfaces were just cleared,
+  // so a re-init must convert fresh (the previous placeholders would route to
+  // surfaces that no longer exist).
+  servicePlaceholderByObject = new WeakMap();
   extensionPoints.clear();
   extensionPointIdentities.clear();
   contractExportIdentities = [];
   linkedSurface = {};
+  clearNamespaceSurface();
   for (const close of closeHandlers) close();
   closeHandlers.length = 0;
 }
@@ -1159,7 +1298,12 @@ function importNodeModuleHooks(): { registerHooks(hooks: unknown): void } {
 
 function stubSource(
   specifier: string,
-  identities?: readonly { exportName: string; name: string; owner: string }[],
+  identities?: readonly {
+    exportName: string;
+    name: string;
+    owner: string;
+    serviceKind?: "data" | "service";
+  }[],
 ): string {
   // The stub imports the SDK entry module for the acquire machinery: the
   // plugin module graph shares the SDK instance with the worker entry (Deno
@@ -1172,7 +1316,7 @@ function stubSource(
   const identityExports = (identities ?? []).map((identity) => {
     const value = `createRemoteIdentity(${JSON.stringify(identity.name)}, ${
       JSON.stringify(identity.owner)
-    }, ${JSON.stringify(specifier)})`;
+    }, ${JSON.stringify(specifier)}, ${JSON.stringify(identity.serviceKind ?? "data")})`;
     return `export const ${identity.exportName} = ${value};`;
   });
   return `
@@ -1189,6 +1333,10 @@ function scopePostMessage(message: unknown): void {
 // —— Link peer surface (flattened namespace) ——
 
 export { flattenSurface };
+
+// —— Collection stream transport ——
+
+export { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 
 // —— Reactive extension points ——
 
@@ -1207,5 +1355,12 @@ export {
   unprovide,
   values,
 };
-export type { CollectionStream, ExtensionPointIdentity, ProviderRegistration, ReactiveValue };
+export type {
+  CollectionStream,
+  CollectionValue,
+  ExtensionPointIdentity,
+  ProviderRegistration,
+  ReactiveValue,
+  Remote,
+};
 export { computed, effect, signal } from "./reactive.ts";

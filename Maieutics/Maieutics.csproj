@@ -45,6 +45,7 @@
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts" LogicalName="Maieutics.Deno.PluginSdk.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\actor_ref.ts" LogicalName="Maieutics.Deno.PluginSdkActorRef.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\reactive.ts" LogicalName="Maieutics.Deno.PluginSdkReactive.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\collection_stream.ts" LogicalName="Maieutics.Deno.PluginSdkCollectionStream.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\lint-plugin.ts" LogicalName="Maieutics.Deno.PluginSdkLint.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\mod.ts" LogicalName="Maieutics.Deno.PluginHost.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host.ts" LogicalName="Maieutics.Deno.PluginHostImpl.ts" />

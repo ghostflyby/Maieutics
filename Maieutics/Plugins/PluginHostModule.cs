@@ -14,6 +14,7 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginSdk.ts", "maieutics-plugin-sdk/mod.ts"),
         ("Maieutics.Deno.PluginSdkActorRef.ts", "maieutics-plugin-sdk/actor_ref.ts"),
         ("Maieutics.Deno.PluginSdkReactive.ts", "maieutics-plugin-sdk/reactive.ts"),
+        ("Maieutics.Deno.PluginSdkCollectionStream.ts", "maieutics-plugin-sdk/collection_stream.ts"),
         ("Maieutics.Deno.PluginSdkLint.ts", "maieutics-plugin-sdk/lint-plugin.ts"),
         ("Maieutics.Deno.PluginHost.ts", "maieutics-plugin-host/mod.ts"),
         ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),

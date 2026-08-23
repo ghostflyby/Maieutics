@@ -44,6 +44,7 @@ Deno.test("the sdk module imports only worker-actor, signals-core and its local 
   for (const specifier of imports) {
     assert(
       specifier === "./actor_ref.ts" ||
+        specifier === "./collection_stream.ts" ||
         specifier === "./reactive.ts" ||
         specifier === "@ghostflyby/worker-actor" ||
         specifier.startsWith("@ghostflyby/worker-actor/") ||

@@ -764,3 +764,79 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
     host.dispose();
   }
 });
+
+Deno.test("a service handle travels through a collection and resolves to a remote actor", async () => {
+  const root = Deno.makeTempDirSync();
+
+  // The definer owns an actor (service) and contributes its handle to the
+  // collection. The handle is plain data, so it survives structured clone.
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { signal, provide, createServiceHandle, subscribe } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<unknown>("sample.services");
+    export const svc = defineActor({
+      hello(): string { return "hi-from-service"; },
+      add(a: number, b: number): number { return a + b; },
+    });
+    const handle = createServiceHandle("svc");
+    const value = signal<unknown | undefined>(handle);
+    provide(ep, value);
+    export const metrics = defineActor({
+      changes(): AsyncIterable<unknown[]> { return subscribe(ep); },
+    });
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+  );
+
+  // The consumer receives the handle via the changes stream, resolves it, and
+  // calls the remote service.
+  const consumer = writePlugin(
+    root,
+    "consumer",
+    `${sdkImport()}
+    import { depActor, resolveService, isServiceHandle } from ${JSON.stringify(SDK_URL)};
+    import type { metrics as MetricsSurface } from "@maieutics/definer/main";
+    import type { svc as SvcSurface } from "@maieutics/definer/main";
+    const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const changes = metrics.changes();
+        const iter = changes[Symbol.asyncIterator]();
+        const first = await iter.next();
+        const handle = (first.value as unknown[])[0];
+        const isHandle = isServiceHandle(handle);
+        const svc = resolveService<typeof SvcSurface>(handle as never);
+        const hello = await svc.hello();
+        const sum = await svc.add(2, 3);
+        return { action: "continue" as const, isHandle, hello, sum };
+      },
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(consumer)],
+  });
+  try {
+    await host.startAll();
+    const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      isHandle?: boolean;
+      hello?: string;
+      sum?: number;
+    };
+    assertEquals(value.action, "continue");
+    assertEquals(value.isHandle, true);
+    assertEquals(value.hello, "hi-from-service");
+    assertEquals(value.sum, 5);
+  } finally {
+    host.dispose();
+  }
+});

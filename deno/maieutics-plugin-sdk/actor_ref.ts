@@ -140,6 +140,21 @@ export function clearActorExports(): void {
   specifierBySurface.clear();
 }
 
+/** The worker's entry-module namespace, set by the SDK after init. Served to
+ * dependency acquires so every actor export's methods are reachable (nested
+ * `exportName.method`), not just the first surface matching a specifier. */
+let namespaceSurface: Record<string, unknown> = {};
+
+/** Sets the namespace surface served to acquiring peers. */
+export function setNamespaceSurface(surface: Record<string, unknown>): void {
+  namespaceSurface = surface;
+}
+
+/** Clears the namespace surface (dispose/re-init). */
+export function clearNamespaceSurface(): void {
+  namespaceSurface = {};
+}
+
 /** Marker on remote-collection surfaces (set by the SDK entry); the acquire
  * router prefers ordinary actor surfaces when both share a specifier. */
 const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
@@ -189,7 +204,11 @@ export function flattenSurface(
     }
     if (typeof value !== "object" || value === null) continue;
     if (isActorSurface(value)) {
-      for (const [method, fn] of Object.entries(value)) {
+      // The defineActor value is a proxy (its get trap answers method calls);
+      // Object.entries on the proxy is empty, so unwrap the real surface via
+      // __surface before enumerating its methods.
+      const real = (value as { __surface?: object }).__surface ?? value;
+      for (const [method, fn] of Object.entries(real)) {
         if (typeof fn === "function") {
           flat[`${key}.${method}`] = fn as (...args: unknown[]) => unknown;
         }
@@ -596,10 +615,15 @@ registerControlHandler("__serve-ref", (frame: ControlFrame) => {
   try {
     const channel = connectChannel(frame.port);
     registry.registerChannel(channel);
-    const handler = makeRpcHandler(
-      flattenActorSurface(found.name, found.surface),
-      registry,
-    );
+    // Name-addressed acquires (remote collections) serve exactly the named
+    // surface. Specifier-only acquires (actor interop) serve the whole
+    // namespace — every actor export's methods nested as `exportName.method` —
+    // so all of a worker's actor surfaces are reachable, not just the first
+    // matching one.
+    const api = name !== undefined
+      ? flattenActorSurface(found.name, found.surface)
+      : flattenSurface(namespaceSurface);
+    const handler = makeRpcHandler(api, registry);
     serveRefOwner(channel, frame.refId, handler, registry);
   } catch (error) {
   }

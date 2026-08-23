@@ -47,9 +47,11 @@ import {
   bindDefiningWorker,
   collection,
   type CollectionStream,
+  type CollectionValue,
   createRemoteIdentity,
   CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
+  defineServiceExtensionPoint as defineServiceExtensionPointReactive,
   type ExtensionPointIdentity,
   isExtensionPoint,
   isLocalExtensionPoint,
@@ -58,6 +60,7 @@ import {
   providerCount,
   type ProviderRegistration,
   type ReactiveValue,
+  type Remote,
   setRemoteProvide,
   setRemoteUnprovide,
   setValueTransformer,
@@ -264,6 +267,24 @@ export function defineExtensionPoint(
     );
   }
   return impl as ExtensionPointImpl<ExtensionPointName>;
+}
+
+/**
+ * Declares a service extension-point identity. The element type `T` is the
+ * service's original type; a provider contributes a live service instance
+ * (no export, no handle) and consumers receive a `Remote<T>` proxy — every
+ * method becomes a Promise-returning callable.
+ *
+ * ```ts
+ * const services = defineServiceExtensionPoint<{ hello(): string }>("services");
+ * provide(services, signal({ hello() { return "hi"; } }));
+ * // consumer: for await (const svc of values(services)) await svc.hello();
+ * ```
+ */
+export function defineServiceExtensionPoint<T = unknown>(
+  name: string,
+): ExtensionPointIdentity<T> {
+  return defineServiceExtensionPointReactive<T>(name);
 }
 
 // —— Actor surfaces (cross-plugin interop) ——
@@ -606,7 +627,12 @@ function scanExports(namespace: Record<string, unknown>): void {
         bindDefiningWorker(value, ownSpecifierValue);
         const identityName = value.name;
         extensionPointIdentities.set(identityName, value);
-        contractExports.push({ exportName: name, name: identityName, owner: value.owner });
+        contractExports.push({
+          exportName: name,
+          name: identityName,
+          owner: value.owner,
+          serviceKind: value.serviceKind,
+        });
         registerActorExport(identityName, ownSpecifierValue, collectionActorSurface(identityName));
       }
       if ((value as Record<symbol, unknown>)[ACTOR_MARKER] === true) actors.set(name, value);
@@ -829,11 +855,13 @@ const extensionPointIdentities = new Map<string, ExtensionPointIdentity>();
 
 /** One contract identity exported by this worker's entry module: the export
  * key (what a dependency imports), the extension point name (what providers
- * address), and the defining module URL (the identity's owner). */
+ * address), the defining module URL (the identity's owner), and the element
+ * kind (data or service) so imported identities carry the same category. */
 interface ContractExportIdentity {
   readonly exportName: string;
   readonly name: string;
   readonly owner: string;
+  readonly serviceKind: "data" | "service";
 }
 
 /** Contract identities reported in the ready frame; cleared on dispose. */
@@ -1235,7 +1263,12 @@ function importNodeModuleHooks(): { registerHooks(hooks: unknown): void } {
 
 function stubSource(
   specifier: string,
-  identities?: readonly { exportName: string; name: string; owner: string }[],
+  identities?: readonly {
+    exportName: string;
+    name: string;
+    owner: string;
+    serviceKind?: "data" | "service";
+  }[],
 ): string {
   // The stub imports the SDK entry module for the acquire machinery: the
   // plugin module graph shares the SDK instance with the worker entry (Deno
@@ -1248,7 +1281,7 @@ function stubSource(
   const identityExports = (identities ?? []).map((identity) => {
     const value = `createRemoteIdentity(${JSON.stringify(identity.name)}, ${
       JSON.stringify(identity.owner)
-    }, ${JSON.stringify(specifier)})`;
+    }, ${JSON.stringify(specifier)}, ${JSON.stringify(identity.serviceKind ?? "data")})`;
     return `export const ${identity.exportName} = ${value};`;
   });
   return `
@@ -1287,5 +1320,12 @@ export {
   unprovide,
   values,
 };
-export type { CollectionStream, ExtensionPointIdentity, ProviderRegistration, ReactiveValue };
+export type {
+  CollectionStream,
+  CollectionValue,
+  ExtensionPointIdentity,
+  ProviderRegistration,
+  ReactiveValue,
+  Remote,
+};
 export { computed, effect, signal } from "./reactive.ts";

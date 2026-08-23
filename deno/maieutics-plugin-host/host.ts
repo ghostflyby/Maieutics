@@ -136,11 +136,13 @@ interface WorkerRpc {
 
 /** One contract identity exported by a worker's entry module: the export key
  * (what a dependency imports), the extension point name (what providers
- * address), and the defining module URL (the identity's owner). */
+ * address), the defining module URL (the identity's owner), and the element
+ * kind (data or service). */
 interface ContractExportIdentity {
   readonly exportName: string;
   readonly name: string;
   readonly owner: string;
+  readonly serviceKind: "data" | "service";
 }
 
 /** Identity + runtime handle of one spawned worker. */

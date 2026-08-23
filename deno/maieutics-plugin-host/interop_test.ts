@@ -775,15 +775,18 @@ Deno.test("a transparent service travels through a collection as a remote refere
     root,
     "definer",
     `${sdkImport()}
-    import { signal, provide, defineService, subscribe, markCollectionStream } from ${
+    import { signal, provide, defineServiceExtensionPoint, subscribe, markCollectionStream } from ${
       JSON.stringify(SDK_URL)
     };
-    export const ep = defineExtensionPoint<unknown>("sample.services");
+    export const ep = defineServiceExtensionPoint<{
+      hello(): string;
+      add(a: number, b: number): number;
+    }>("sample.services");
     const service = {
       hello(): string { return "hi-from-service"; },
       add(a: number, b: number): number { return a + b; },
     };
-    const value = signal<unknown | undefined>(defineService(service));
+    const value = signal<unknown | undefined>(service);
     provide(ep, value);
     export const metrics = defineActor({
       changes(): AsyncIterable<unknown[]> {
@@ -843,28 +846,33 @@ Deno.test("a transparent service travels through a collection as a remote refere
   }
 });
 
-Deno.test("a collection mixes plain data and transparent services across workers", async () => {
+Deno.test("data and service extension points coexist in one worker", async () => {
   const root = Deno.makeTempDirSync();
 
-  // The definer contributes one plain-data value and one service to the same
-  // extension point. The consumer receives the data as-is and the service as a
-  // Remote<T> proxy.
+  // The definer owns a data extension point and a service extension point.
+  // The consumer receives data as-is and the service as a Remote<T> proxy.
   const definer = writePlugin(
     root,
     "definer",
     `${sdkImport()}
-    import { signal, provide, defineService, subscribe, markCollectionStream } from ${
+    import { signal, provide, defineServiceExtensionPoint, subscribe, markCollectionStream } from ${
       JSON.stringify(SDK_URL)
     };
-    export const ep = defineExtensionPoint<unknown>("sample.mixed");
-    const data = signal<unknown | undefined>({ name: "plain", count: 7 });
-    provide(ep, data);
+    export const dataEp = defineExtensionPoint<{ name: string; count: number }>("sample.data");
+    const data = signal<{ name: string; count: number } | undefined>(
+      { name: "plain", count: 7 },
+    );
+    provide(dataEp, data);
+    export const svcEp = defineServiceExtensionPoint<{ echo(s: string): string }>("sample.svc");
     const svc = { echo(s: string): string { return "echo:" + s; } };
-    const service = signal<unknown | undefined>(defineService(svc));
-    provide(ep, service);
+    const service = signal<{ echo(s: string): string } | undefined>(svc);
+    provide(svcEp, service);
     export const metrics = defineActor({
-      changes(): AsyncIterable<unknown[]> {
-        return markCollectionStream(subscribe(ep));
+      dataChanges(): AsyncIterable<unknown[]> {
+        return markCollectionStream(subscribe(dataEp));
+      },
+      svcChanges(): AsyncIterable<unknown[]> {
+        return markCollectionStream(subscribe(svcEp));
       },
     });
     export const pre = defineExtensionPoint("ToolPreInvoke", {
@@ -882,25 +890,24 @@ Deno.test("a collection mixes plain data and transparent services across workers
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
     export const pre = defineExtensionPoint("ToolPreInvoke", {
       handler: async () => {
-        const changes = metrics.changes();
-        const iter = changes[Symbol.asyncIterator]();
-        const first = await iter.next();
-        const elems = first.value as unknown[];
-        const kinds: string[] = [];
-        let echo = "";
-        for (const elem of elems) {
-          // A service arrives as a Remote<T> proxy: its methods read as
-          // functions (the get trap answers), while the in operator would
-          // inspect the empty proxy target. Detect by the method type.
-          const echoFn = (elem as { echo?: unknown }).echo;
-          if (typeof echoFn === "function") {
-            kinds.push("service");
-            echo = await (elem as { echo(s: string): Promise<string> }).echo("hi");
-          } else {
-            kinds.push("data");
-          }
-        }
-        return { action: "continue" as const, kinds: kinds.sort(), echo };
+        const dataIter = metrics.dataChanges()[Symbol.asyncIterator]();
+        const dataFirst = await dataIter.next();
+        const dataElem = (dataFirst.value as unknown[])[0] as {
+          name: string;
+          count: number;
+        };
+        const svcIter = metrics.svcChanges()[Symbol.asyncIterator]();
+        const svcFirst = await svcIter.next();
+        const svcElem = (svcFirst.value as unknown[])[0] as {
+          echo(s: string): Promise<string>;
+        };
+        const echo = await svcElem.echo("hi");
+        return {
+          action: "continue" as const,
+          dataName: dataElem.name,
+          dataCount: dataElem.count,
+          echo,
+        };
       },
     });
     `,
@@ -916,11 +923,13 @@ Deno.test("a collection mixes plain data and transparent services across workers
     await host.startAll();
     const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {}) as {
       action?: string;
-      kinds?: string[];
+      dataName?: string;
+      dataCount?: number;
       echo?: string;
     };
     assertEquals(value.action, "continue");
-    assertEquals(value.kinds, ["data", "service"]);
+    assertEquals(value.dataName, "plain");
+    assertEquals(value.dataCount, 7);
     assertEquals(value.echo, "echo:hi");
   } finally {
     host.dispose();

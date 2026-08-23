@@ -6,11 +6,16 @@ owned by another worker, the defining worker aggregates it into its local
 collection, consumers observe the aggregate, and the contribution can be
 withdrawn (explicit `unprovide` or stream end). Stub identity replacement means
 `import { ep } from "contract"` yields the real remote identity. Integration
-tests cover single/multi-provider aggregation, imported identity shape, and
-remote unprovide.
+tests cover single/multi-provider aggregation, imported identity shape, remote
+unprovide, and cascade-stop stream settlement.
+
+The SDK now exposes `values(ep)`: a lazy single-value async stream over the
+collection (mirroring ES `Iterator.prototype` map/filter/take/drop/toArray,
+adapted to async iteration).
 
 Remaining (designed but not implemented): hard-crash cleanup for dead providers
-(no liveness plane today), remote `snapshot`, and duplicate-provide semantics.
+(no liveness plane today), remote `snapshot` (likely not worth adding), and
+duplicate-provide semantics.
 
 ## Background
 
@@ -140,6 +145,36 @@ any hand-built substitute.
   default-import redirect, jsr:-prefixed specifier, plain-module pass-through, reactive
   subscribe across workers) all stay green.
 
+## `values(ep)`: the single-value collection stream
+
+`values(ep)` returns a lazy async stream of the collection's values. The element
+type is the provider value itself — no event wrapper, no provider identity. The
+stream emits every current value on subscription, then each changed value as it
+happens; a provider going `undefined` or leaving is silent (consumers observe
+the values that flow, not the collection's membership).
+
+The stream mirrors ES `Iterator.prototype` map / filter / take / drop / toArray
+semantics, adapted to async iteration. Every combinator returns a new stream and
+is lazy: nothing iterates until `for await` (or `toArray`) runs. `map`/`filter`
+receive the single value, so the collection's container shape never leaks into
+the consumer's pipeline.
+
+```ts
+const stream = values(ep)
+  .filter((v) => v > 0)
+  .map((v) => ({ value: v }))
+  .take(10);
+for await (const entry of stream) { /* ... */ }
+```
+
+Design notes:
+- ES sync `Iterator.prototype` methods exist (lazy, verified in Deno) but
+  `AsyncIterator.prototype` is empty — the async combinators are hand-rolled.
+- `take` must stop consuming the source once the count is reached (a naive
+  `for await` + `return` would keep waiting on the source's next value).
+- `toArray` collects until the stream ends; on an unbounded stream it never
+  resolves, so pair it with `take` (documented, matches ES semantics).
+
 ## Remaining work
 
 1. **Hard-crash cleanup.** Provider worker exit without an explicit `unprovide` or stream
@@ -163,9 +198,11 @@ any hand-built substitute.
 
 ## Verification baseline
 
-- Current worktree: deno workspace tests 58 passed / 0 failed (SDK + host), REPL 10 passed —
+- Current worktree: deno workspace tests 62 passed / 0 failed (SDK + host), REPL 10 passed —
   no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
 - Feature gates: cross-worker aggregation (single/multi provider), imported contract
-  identity, remote unprovide, and cascade-stop stream settlement tests are green.
+  identity, remote unprovide, cascade-stop stream settlement, and the `values` stream
+  combinators (initial values, changes, undefined silence, map/filter/take/drop/toArray)
+  are green.
 - Full repository acceptance: `dotnet test Maieutics.slnx` and
   `git diff --check` clean (dotnet build with -warnaserror verified on the earlier pass).

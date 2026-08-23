@@ -467,3 +467,191 @@ export async function* subscribe<T>(
 export function providerCount(extensionPoint: ExtensionPointIdentity): number {
   return providersByPoint.get(symbolFor(extensionPoint.owner, extensionPoint.name))?.size ?? 0;
 }
+
+// —— CollectionStream: a lazy, single-value async stream over a collection ——
+
+/**
+ * A lazy async stream of the extension point's values. The element type is the
+ * provider value itself (no event wrapper, no provider identity): the stream
+ * emits every current value on subscription, then the value of each change as
+ * it happens. A provider going `undefined` or leaving is silent — consumers
+ * observe the values that flow, not the collection's membership.
+ *
+ * Every combinator returns a new stream and is lazy: nothing iterates until
+ * `for await` (or `toArray`) runs. This mirrors ES `Iterator.prototype` map /
+ * filter / take / drop / toArray semantics, adapted to async iteration.
+ *
+ * `map`/`filter` receive the single value, so `stream.map((v) => v * 2)`
+ * transforms each flowing value — the collection's container shape never
+ * leaks into the consumer's pipeline.
+ */
+export interface CollectionStream<T> {
+  /** Iterate the stream: initial values, then each change. */
+  [Symbol.asyncIterator](): AsyncIterator<T>;
+  /** A stream of `fn(value)` for each flowing value. */
+  map<U>(fn: (value: T) => U): CollectionStream<U>;
+  /** A stream of the values for which `pred(value)` is true. */
+  filter(pred: (value: T) => boolean): CollectionStream<T>;
+  /** The first `count` values, then the stream ends. */
+  take(count: number): CollectionStream<T>;
+  /** The values after the first `count`, then the stream ends. */
+  drop(count: number): CollectionStream<T>;
+  /** Collect every value until the stream ends (finite streams only). */
+  toArray(): Promise<T[]>;
+}
+
+/** The stream's value source: one value per change, identified by provider. */
+function valueChanges<T>(
+  extensionPoint: ExtensionPointIdentity<T>,
+): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]() {
+      const providers = providersByPoint.get(
+        symbolFor(extensionPoint.owner, extensionPoint.name),
+      );
+      let stopped = false;
+      let pending: ((result: IteratorResult<T>) => void) | undefined;
+      let queue: T[] = [];
+      // Provider id → last emitted value; a changed or new provider emits.
+      let lastByProvider = new Map<string, unknown>();
+
+      const stop = effect(() => {
+        registryVersion.value;
+        const current = providersByPoint.get(
+          symbolFor(extensionPoint.owner, extensionPoint.name),
+        );
+        const nextByProvider = new Map<string, unknown>();
+        for (const [providerId, signal] of current ?? []) {
+          const value = signal.value;
+          nextByProvider.set(providerId, value);
+          if (value === undefined) continue;
+          if (
+            !lastByProvider.has(providerId) ||
+            lastByProvider.get(providerId) !== value
+          ) {
+            if (pending !== undefined) {
+              const resolve = pending;
+              pending = undefined;
+              resolve({ done: false, value: value as T });
+            } else {
+              queue.push(value as T);
+            }
+          }
+        }
+        lastByProvider = nextByProvider;
+      });
+
+      return {
+        next(): Promise<IteratorResult<T>> {
+          if (stopped) return Promise.resolve({ done: true, value: undefined });
+          if (queue.length > 0) {
+            return Promise.resolve({ done: false, value: queue.shift()! });
+          }
+          return new Promise<IteratorResult<T>>((resolve) => {
+            pending = (result: IteratorResult<T>) => resolve(result);
+          });
+        },
+        return(): Promise<IteratorResult<T>> {
+          if (stopped) return Promise.resolve({ done: true, value: undefined });
+          stopped = true;
+          stop();
+          // A pending next() must settle or the iterator never completes.
+          if (pending !== undefined) {
+            const resolve = pending;
+            pending = undefined;
+            resolve({ done: true, value: undefined });
+          }
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Subscribes to an extension point's collection as a stream of individual
+ * values. The stream emits the current values, then each changed value as it
+ * happens. See {@link CollectionStream} for the combinator API.
+ */
+export function values<T>(extensionPoint: ExtensionPointIdentity<T>): CollectionStream<T> {
+  return new CollectionStreamImpl(valueChanges(extensionPoint));
+}
+
+class CollectionStreamImpl<T> implements CollectionStream<T> {
+  readonly #source: AsyncIterable<T>;
+
+  constructor(source: AsyncIterable<T>) {
+    this.#source = source;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return this.#source[Symbol.asyncIterator]();
+  }
+
+  map<U>(fn: (value: T) => U): CollectionStream<U> {
+    return new CollectionStreamImpl(mapAsync(this.#source, fn));
+  }
+
+  filter(pred: (value: T) => boolean): CollectionStream<T> {
+    return new CollectionStreamImpl(filterAsync(this.#source, pred));
+  }
+
+  take(count: number): CollectionStream<T> {
+    return new CollectionStreamImpl(takeAsync(this.#source, count));
+  }
+
+  drop(count: number): CollectionStream<T> {
+    return new CollectionStreamImpl(dropAsync(this.#source, count));
+  }
+
+  async toArray(): Promise<T[]> {
+    const out: T[] = [];
+    for await (const value of this.#source) out.push(value);
+    return out;
+  }
+}
+
+// —— Lazy async combinators (mirror ES Iterator.prototype semantics) ——
+
+async function* mapAsync<T, U>(
+  source: AsyncIterable<T>,
+  fn: (value: T) => U,
+): AsyncGenerator<U> {
+  for await (const value of source) yield fn(value);
+}
+
+async function* filterAsync<T>(
+  source: AsyncIterable<T>,
+  pred: (value: T) => boolean,
+): AsyncGenerator<T> {
+  for await (const value of source) {
+    if (pred(value)) yield value;
+  }
+}
+
+async function* takeAsync<T>(
+  source: AsyncIterable<T>,
+  count: number,
+): AsyncGenerator<T> {
+  let seen = 0;
+  if (count <= 0) return;
+  for await (const value of source) {
+    yield value;
+    seen += 1;
+    if (seen >= count) return;
+  }
+}
+
+async function* dropAsync<T>(
+  source: AsyncIterable<T>,
+  count: number,
+): AsyncGenerator<T> {
+  let skipped = 0;
+  for await (const value of source) {
+    if (skipped < count) {
+      skipped += 1;
+      continue;
+    }
+    yield value;
+  }
+}

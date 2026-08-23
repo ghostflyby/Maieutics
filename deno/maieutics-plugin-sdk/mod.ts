@@ -40,6 +40,7 @@ import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/wo
 import {
   bindDefiningWorker,
   collection,
+  type CollectionStream,
   createRemoteIdentity,
   CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
@@ -58,6 +59,7 @@ import {
   snapshot,
   subscribe,
   unprovide,
+  values,
 } from "./reactive.ts";
 
 const NAMESPACE = "maieutics/extensionPoint/v1";
@@ -1179,6 +1181,7 @@ export {
   snapshot,
   subscribe,
   unprovide,
+  values,
 };
-export type { ExtensionPointIdentity, ProviderRegistration, ReactiveValue };
+export type { CollectionStream, ExtensionPointIdentity, ProviderRegistration, ReactiveValue };
 export { computed, effect, signal } from "./reactive.ts";

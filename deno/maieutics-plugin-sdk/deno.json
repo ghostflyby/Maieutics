@@ -2,7 +2,10 @@
   "name": "@maieutics/plugin-sdk",
   "version": "0.1.0",
   "exports": {
-    ".": "./mod.ts",
+    ".": "./entry.ts",
+    "./runtime": "./runtime.ts",
+    "./interop": "./interop.ts",
+    "./reactive": "./reactive.ts",
     "./lint": "./lint-plugin.ts"
   },
   "imports": {
@@ -10,7 +13,7 @@
     "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
   },
   "tasks": {
-    "check": "deno check mod.ts mod_test.ts actor_ref.ts lint-plugin.ts lint-plugin_test.ts",
+    "check": "deno check entry.ts mod.ts mod_test.ts actor_ref.ts collection_stream.ts runtime.ts interop.ts reactive.ts lint-plugin.ts lint-plugin_test.ts",
     "test": "deno test --allow-read --allow-write --allow-env --allow-net --unstable-worker-options"
   }
 }

@@ -14,8 +14,7 @@
  */
 
 import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
-import { actorRefCodec } from "../maieutics-plugin-sdk/actor_ref.ts";
-import { collectionStreamCodec } from "../maieutics-plugin-sdk/collection_stream.ts";
+import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
 
 /** Positive permission grant: `true` allows all, `false` denies, a list allows those entries. */
 export type PermissionGrant = boolean | readonly string[];
@@ -94,6 +93,11 @@ function filePathOf(url: string): string {
   return decodeURIComponent(new URL(url).pathname);
 }
 
+function dirnameOf(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index > 0 ? path.slice(0, index) : "/";
+}
+
 function normalize(grant: PermissionGrant | undefined): boolean | string[] {
   if (typeof grant === "boolean" || grant === undefined) {
     return grant === true;
@@ -109,8 +113,12 @@ function buildWorkerPermissions(
   const read: boolean | string[] = typeof declaredRead === "boolean" ? declaredRead : (() => {
     const entries = new Set<string>(declaredRead);
     entries.add(plugin.rootDir);
-    entries.add(filePathOf(options.sdkUrl));
-    entries.add(filePathOf(options.workerEntryUrl));
+    // The worker loads the SDK through its entry (and the subpaths it pulls in
+    // — runtime, interop, reactive, codecs), so grant the whole SDK directory,
+    // not just the entry file. Same for the worker entry module's directory
+    // (it lives beside the host implementation).
+    entries.add(dirnameOf(filePathOf(options.sdkUrl)));
+    entries.add(dirnameOf(filePathOf(options.workerEntryUrl)));
     // No DENO_DIR read grant is needed: Deno resolves jsr:/npm: modules
     // internally without a filesystem read permission (the cache is not a
     // user-facing read target), and reading DENO_DIR/HOME here would require

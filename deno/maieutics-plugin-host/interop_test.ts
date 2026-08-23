@@ -1,7 +1,8 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
 
-const SDK_URL = new URL("../maieutics-plugin-sdk/mod.ts", import.meta.url).href;
+const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
+const REACTIVE_URL = new URL("../maieutics-plugin-sdk/reactive.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
 
 function pathToFileUrl(path: string): string {
@@ -52,7 +53,16 @@ function pluginConfig(plugin: TestPlugin): PluginConfig {
 }
 
 function sdkImport(): string {
-  return `import { defineActor, defineExtensionPoint } from ${JSON.stringify(SDK_URL)};`;
+  return `import { defineActor, defineExtensionPoint as defineHostExtensionPoint } from ${
+    JSON.stringify(SDK_URL)
+  };`;
+}
+
+/** Reactive contract identity + collection API, from the low-level reactive path. */
+function reactiveImport(): string {
+  return `import { defineExtensionPoint, signal, provide, unprovide, snapshot, subscribe, values } from ${
+    JSON.stringify(REACTIVE_URL)
+  };`;
 }
 
 /** Polls the definer's collection snapshot until `predicate` holds or the timeout elapses. */
@@ -86,7 +96,7 @@ Deno.test("a consumer plugin calls a dependency actor across workers", async () 
       double(n: number): number { return n * 2; },
       add(a: number, b: number): Promise<number> { return Promise.resolve(a + b); },
     });
-    export const discover = defineExtensionPoint("McpDiscover", { handler: () => [] });
+    export const discover = defineHostExtensionPoint("McpDiscover", { handler: () => [] });
     `,
   );
 
@@ -101,7 +111,7 @@ Deno.test("a consumer plugin calls a dependency actor across workers", async () 
     import { depActor } from ${JSON.stringify(SDK_URL)};
     import type { math as MathSurface } from "@maieutics/dep/main";
     const math = depActor<typeof MathSurface>("@maieutics/dep/main", "math");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const doubled = await math.double(21);
         const sum = await math.add(1, 2);
@@ -156,7 +166,7 @@ Deno.test("a static default import of an actor entry is redirected to the acquir
     "consumer",
     `${sdkImport()}
     import dep from "@maieutics/dep/main";
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const doubled = await dep.math.double(21);
         return { action: "continue" as const, note: String(doubled) };
@@ -201,7 +211,7 @@ Deno.test("a jsr:-prefixed specifier with a version segment is normalized and re
     "consumer",
     `${sdkImport()}
     import dep from "jsr:@maieutics/dep@0.1/main";
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const doubled = await dep.math.double(10);
         return { action: "continue" as const, note: String(doubled) };
@@ -248,7 +258,7 @@ Deno.test("a non-entry plain module import is not redirected and loads its real 
     "consumer",
     `${sdkImport()}
     import { localValue } from "./local.ts";
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => ({ action: "continue" as const, note: String(localValue) }),
     });
     `,
@@ -286,8 +296,7 @@ Deno.test("a consumer subscribes to a provider's reactive extension point across
     root,
     "provider",
     `${sdkImport()}
-    import { signal } from "@preact/signals-core";
-    import { provide, subscribe } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
     const value = signal<number | undefined>(1);
     provide(ep, value);
@@ -306,7 +315,7 @@ Deno.test("a consumer subscribes to a provider's reactive extension point across
     import { depActor } from ${JSON.stringify(SDK_URL)};
     import type { metrics as MetricsSurface } from "@maieutics/provider/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/provider/main", "metrics");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const changes = metrics.changes();
         const isIterable = typeof (changes as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function";
@@ -352,8 +361,9 @@ Deno.test("an imported contract identity is a remote identity carrying the defin
     root,
     "definer",
     `${sdkImport()}
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -368,7 +378,7 @@ Deno.test("an imported contract identity is a remote identity carrying the defin
     `${sdkImport()}
     import { isRemoteExtensionPoint } from ${JSON.stringify(SDK_URL)};
     import { ep } from "@maieutics/definer/main";
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({
         action: "continue" as const,
         name: ep.name,
@@ -413,9 +423,9 @@ Deno.test("a provider contributes to a defining worker's collection across worke
     root,
     "definer",
     `${sdkImport()}
-    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
     });
     `,
@@ -430,11 +440,11 @@ Deno.test("a provider contributes to a defining worker's collection across worke
     root,
     "provider",
     `${sdkImport()}
-    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(1);
     provide(ep, value);
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: (context: { arguments?: { step?: string } }) => {
         if (context.arguments?.step === "set-two") value.value = 2;
         if (context.arguments?.step === "clear") value.value = undefined;
@@ -480,9 +490,9 @@ Deno.test("a provider's unprovide withdraws its remote contribution", async () =
     root,
     "definer",
     `${sdkImport()}
-    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
     });
     `,
@@ -494,14 +504,14 @@ Deno.test("a provider's unprovide withdraws its remote contribution", async () =
     root,
     "provider",
     `${sdkImport()}
-    import { provide, signal, unprovide, type ProviderRegistration } from ${
-      JSON.stringify(SDK_URL)
+    import { signal, provide, unprovide, type ProviderRegistration } from ${
+      JSON.stringify(REACTIVE_URL)
     };
     import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(1);
     let registration: ProviderRegistration<number> | undefined;
     registration = provide(ep, value);
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: (context: { arguments?: { step?: string } }) => {
         if (context.arguments?.step === "unprovide" && registration) {
           unprovide(registration);
@@ -540,9 +550,9 @@ Deno.test("multiple provider workers aggregate into the defining worker's collec
     root,
     "definer",
     `${sdkImport()}
-    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("shared.metric");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
     });
     `,
@@ -550,11 +560,11 @@ Deno.test("multiple provider workers aggregate into the defining worker's collec
 
   const providerSource = (pluginName: string, value: number): string =>
     `${sdkImport()}
-    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(${value});
     provide(ep, value);
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `;
@@ -584,14 +594,14 @@ Deno.test("cascading the stop to a dependent does not hang its stream iteration"
     root,
     "definer",
     `${sdkImport()}
-    import { signal, provide, subscribe } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
     const value = signal<number | undefined>(1);
     provide(ep, value);
     export const metrics = defineActor({
       changes(): AsyncIterable<number[]> { return subscribe(ep); },
     });
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -608,7 +618,7 @@ Deno.test("cascading the stop to a dependent does not hang its stream iteration"
     import { depActor } from ${JSON.stringify(SDK_URL)};
     import type { metrics as MetricsSurface } from "@maieutics/definer/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const changes = metrics.changes();
         const iterator = changes[Symbol.asyncIterator]();
@@ -661,9 +671,9 @@ Deno.test("reloading a provider drops its stale contribution from the definer", 
     root,
     "definer",
     `${sdkImport()}
-    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
     });
     `,
@@ -671,11 +681,11 @@ Deno.test("reloading a provider drops its stale contribution from the definer", 
 
   const providerSource = (): string =>
     `${sdkImport()}
-    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(1);
     provide(ep, value);
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `;
@@ -711,9 +721,9 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
     root,
     "definer",
     `${sdkImport()}
-    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("shared.metric");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
     });
     `,
@@ -725,18 +735,18 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
   // only provider-b's [2] — never a lingering stale [1].
   const contributing = (name: string, value: number): string =>
     `${sdkImport()}
-    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
     const value = signal<number | undefined>(${value});
     provide(ep, value);
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `;
   const nonContributing = (name: string): string =>
     `${sdkImport()}
     import { ep } from "@maieutics/definer/main";
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `;
@@ -775,9 +785,8 @@ Deno.test("a transparent service travels through a collection as a remote refere
     root,
     "definer",
     `${sdkImport()}
-    import { signal, provide, defineServiceExtensionPoint, subscribe, markCollectionStream } from ${
-      JSON.stringify(SDK_URL)
-    };
+    ${reactiveImport()}
+    import { defineServiceExtensionPoint, markCollectionStream } from ${JSON.stringify(SDK_URL)};
     export const ep = defineServiceExtensionPoint<{
       hello(): string;
       add(a: number, b: number): number;
@@ -793,7 +802,7 @@ Deno.test("a transparent service travels through a collection as a remote refere
         return markCollectionStream(subscribe(ep));
       },
     });
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -808,7 +817,7 @@ Deno.test("a transparent service travels through a collection as a remote refere
     import { depActor } from ${JSON.stringify(SDK_URL)};
     import type { metrics as MetricsSurface } from "@maieutics/definer/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const changes = metrics.changes();
         const iter = changes[Symbol.asyncIterator]();
@@ -855,9 +864,8 @@ Deno.test("data and service extension points coexist in one worker", async () =>
     root,
     "definer",
     `${sdkImport()}
-    import { signal, provide, defineServiceExtensionPoint, subscribe, markCollectionStream } from ${
-      JSON.stringify(SDK_URL)
-    };
+    ${reactiveImport()}
+    import { defineServiceExtensionPoint, markCollectionStream } from ${JSON.stringify(SDK_URL)};
     export const dataEp = defineExtensionPoint<{ name: string; count: number }>("sample.data");
     const data = signal<{ name: string; count: number } | undefined>(
       { name: "plain", count: 7 },
@@ -875,7 +883,7 @@ Deno.test("data and service extension points coexist in one worker", async () =>
         return markCollectionStream(subscribe(svcEp));
       },
     });
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -888,7 +896,7 @@ Deno.test("data and service extension points coexist in one worker", async () =>
     import { depActor } from ${JSON.stringify(SDK_URL)};
     import type { metrics as MetricsSurface } from "@maieutics/definer/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const dataIter = metrics.dataChanges()[Symbol.asyncIterator]();
         const dataFirst = await dataIter.next();
@@ -945,7 +953,7 @@ Deno.test("a service contributed from another worker arrives as a Remote proxy w
   // receives a Remote<T> proxy — never raw data that would trip the callback
   // codec.
   const fullSdkImport =
-    `import { defineActor, defineExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
+    `import { defineActor, defineExtensionPoint as defineHostExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
       JSON.stringify(SDK_URL)
     };`;
   const definer = writePlugin(
@@ -953,7 +961,7 @@ Deno.test("a service contributed from another worker arrives as a Remote proxy w
     "definer",
     `${fullSdkImport}
     export const ep = defineServiceExtensionPoint<{ hello(): string }>("sample.svc");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     export const metrics = defineActor({
@@ -969,7 +977,7 @@ Deno.test("a service contributed from another worker arrives as a Remote proxy w
     import { ep } from "@maieutics/definer/main";
     const svc = { hello(): string { return "remote-plain-hi"; } };
     provide(ep, signal<unknown | undefined>(svc));
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -982,7 +990,7 @@ Deno.test("a service contributed from another worker arrives as a Remote proxy w
     `${fullSdkImport}
     import type { metrics as MetricsSurface } from "@maieutics/definer/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const iter = metrics.changes()[Symbol.asyncIterator]();
         const first = await iter.next();
@@ -1023,7 +1031,7 @@ Deno.test("a service reference forwarded to a third worker keeps its routing ide
   // re-encoded reference must keep its specifier and surface name, so the
   // third worker's call routes back to the service's owning worker.
   const fullSdkImport =
-    `import { defineActor, defineExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
+    `import { defineActor, defineExtensionPoint as defineHostExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
       JSON.stringify(SDK_URL)
     };`;
   const definer = writePlugin(
@@ -1036,7 +1044,7 @@ Deno.test("a service reference forwarded to a third worker keeps its routing ide
     export const metrics = defineActor({
       changes(): AsyncIterable<unknown[]> { return markCollectionStream(subscribe(ep)); },
     });
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -1052,7 +1060,7 @@ Deno.test("a service reference forwarded to a third worker keeps its routing ide
         return { action: "continue" as const, hello: await s.hello() };
       },
     });
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
     `,
@@ -1066,7 +1074,7 @@ Deno.test("a service reference forwarded to a third worker keeps its routing ide
     import type { echo as EchoSurface } from "@maieutics/echo/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
     const echo = depActor<typeof EchoSurface>("@maieutics/echo/main", "echo");
-    export const pre = defineExtensionPoint("ToolPreInvoke", {
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const iter = metrics.changes()[Symbol.asyncIterator]();
         const first = await iter.next();

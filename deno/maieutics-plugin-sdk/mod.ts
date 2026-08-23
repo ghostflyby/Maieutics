@@ -215,35 +215,19 @@ export type ExtensionPointImpl<K extends ExtensionPointName> = ExtensionPointSha
 /**
  * Declares an extension point implementation by attaching the versioned marker
  * symbol and validating the invocation shape. The returned value keeps the
- * original runtime identity.
+ * original runtime identity. This is the host-extension-point form; the
+ * reactive contract-identity form (single-argument) lives on the `./reactive`
+ * SDK path.
  */
 export function defineExtensionPoint<K extends ExtensionPointName>(
   name: K,
   impl: ExtensionPointInput<K>,
 ): ExtensionPointImpl<K>;
-/**
- * Declares a reactive extension-point identity (single-argument form, with an
- * optional owner module URL). The value is a pure identity with no
- * implementation; any worker can contribute a reactive value to it with
- * {@link provide}. This is the contract extension point model: the identity is
- * owned by the module that declares it, and sharing it requires importing the
- * contract module that exports it.
- */
-export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T>;
 export function defineExtensionPoint(
   name: string,
-  implOrOwner?: unknown,
-): ExtensionPointIdentity | ExtensionPointImpl<ExtensionPointName> {
-  // The owner is taken from the loader (CURRENT_MODULE), not from an argument:
-  // a string second argument was the pre-loader contract-mode owner and is
-  // accepted for compatibility but ignored. A function/object second argument
-  // is the legacy two-argument handler form.
-  if (typeof implOrOwner === "string" || implOrOwner === undefined) {
-    return defineReactiveExtensionPoint(name);
-  }
-
+  impl: unknown,
+): ExtensionPointImpl<ExtensionPointName> {
   const symbol = ExtensionPoint[name as ExtensionPointName];
-  const impl = implOrOwner;
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {

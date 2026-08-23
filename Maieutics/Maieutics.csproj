@@ -43,6 +43,9 @@
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Maieutics.Deno.DenoRepl.Config.json" />
         <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Maieutics.Deno.DenoRepl.Lock.json" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts" LogicalName="Maieutics.Deno.PluginSdk.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\entry.ts" LogicalName="Maieutics.Deno.PluginSdkEntry.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\runtime.ts" LogicalName="Maieutics.Deno.PluginSdkRuntime.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\interop.ts" LogicalName="Maieutics.Deno.PluginSdkInterop.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\actor_ref.ts" LogicalName="Maieutics.Deno.PluginSdkActorRef.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\reactive.ts" LogicalName="Maieutics.Deno.PluginSdkReactive.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\collection_stream.ts" LogicalName="Maieutics.Deno.PluginSdkCollectionStream.ts" />

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { defineExtensionPoint, ExtensionPoint } from "./mod.ts";
+import { defineExtensionPoint, ExtensionPoint } from "./entry.ts";
 
 Deno.test("global symbols are shared across any module instance", () => {
   assertEquals(

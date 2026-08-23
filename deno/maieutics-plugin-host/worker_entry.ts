@@ -6,6 +6,6 @@
  * `maieutics-config` frame arrives, which the host posts before waiting.
  */
 
-import { initPluginWorker } from "../maieutics-plugin-sdk/mod.ts";
+import { initPluginWorker } from "../maieutics-plugin-sdk/runtime.ts";
 
 void initPluginWorker();

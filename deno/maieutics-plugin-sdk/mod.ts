@@ -22,12 +22,14 @@
  */
 
 import {
+  ACTOR_CODEC_TAG,
   actorRefCodec,
   clearActorExports,
   clearNamespaceSurface,
   decodeActorValue,
   encodeActorValue,
   flattenSurface,
+  REF_PROXY_BRAND,
   registerActorExport,
   type RemoteActor,
   remoteActor,
@@ -35,6 +37,7 @@ import {
   setSpecifierAcquire,
 } from "./actor_ref.ts";
 import {
+  CODEC_PLACEHOLDER_KEY,
   connectChannel,
   type DecodeContext,
   getActiveRegistry,
@@ -273,7 +276,9 @@ export function defineExtensionPoint(
  * Declares a service extension-point identity. The element type `T` is the
  * service's original type; a provider contributes a live service instance
  * (no export, no handle) and consumers receive a `Remote<T>` proxy — every
- * method becomes a Promise-returning callable.
+ * method becomes a Promise-returning callable. Provided values are converted
+ * to remote references automatically, whether the provider and the defining
+ * worker are the same worker or different workers.
  *
  * ```ts
  * const services = defineServiceExtensionPoint<{ hello(): string }>("services");
@@ -334,18 +339,23 @@ export function defineActor(
 
 // —— Transparent services (original-type instances in collections) ——
 
-// The service brand is a string key: a service value travels as a remote actor
-// reference placeholder (cloneable), and the consumer decodes it back to a
-// Remote<T> proxy. The brand lets provide() detect that a value is a service
-// and convert it to a reference instead of treating it as plain data.
+// The service brand is an explicit marker: a `defineService`-marked value is
+// converted to a remote actor reference placeholder before it enters a service
+// extension point's collection. The conversion is NOT gated on the brand — a
+// service extension point converts every provided value (see
+// convertServiceValue) — but marking makes the intent explicit and lets a
+// provider opt a value into reference semantics on a data extension point too.
 const SERVICE_BRAND = "maieutics/service/v1";
 
 /**
  * Marks an object as a service: a live instance that should be exposed across
  * workers as a remote reference rather than serialized as data. The returned
- * value is the same object (type `T` unchanged); `provide` detects the brand
- * and converts it to an internal actor reference, so the consumer receives a
- * `Remote<T>` proxy.
+ * value is the same object (type `T` unchanged).
+ *
+ * On a service extension point (`defineServiceExtensionPoint`) the conversion
+ * happens automatically for every provided value, so `defineService` is
+ * optional there. On a data extension point it has no effect: values are
+ * structured-cloned as-is.
  *
  * ```ts
  * const service = { hello(): string { return "hi"; } };
@@ -371,18 +381,39 @@ export function isService(value: unknown): value is object {
 
 let serviceRefCount = 0;
 
-/** Converts a defineService-marked value to a transmittable remote reference:
- * the service becomes an actor proxy registered under a service surface name,
- * so a consumer's specifier-based acquire resolves it. Plain data passes
- * through unchanged. */
+/** Service object → its transmittable placeholder. Each service instance is
+ * converted once and registered under one service surface name; repeated
+ * provide/snapshot reads reuse the same placeholder instead of growing the
+ * surface registry. */
+let servicePlaceholderByObject = new WeakMap<object, unknown>();
+
+/** Converts a service value to a transmittable remote reference: the service
+ * becomes an actor proxy registered under a service surface name, so a
+ * consumer's specifier-based acquire resolves it. Already-converted values
+ * (placeholders, including services forwarded from another worker) pass
+ * through unchanged; plain data also passes through unchanged. Called only for
+ * service extension points, whose values are live instances by contract. */
 function convertServiceValue(value: unknown): unknown {
-  if (!isService(value)) return value;
+  if (typeof value !== "object" || value === null) return value;
+  if ((value as Record<string, unknown>)[CODEC_PLACEHOLDER_KEY] === ACTOR_CODEC_TAG) {
+    return value;
+  }
+  // A received reference proxy (a service forwarded from another worker,
+  // decoded at an RPC boundary) is already a remote reference — keep it as-is;
+  // re-registering it under a new surface would orphan the routing identity.
+  if ((value as Record<symbol, unknown>)[REF_PROXY_BRAND] === true) {
+    return value;
+  }
+  const cached = servicePlaceholderByObject.get(value as object);
+  if (cached !== undefined) return cached;
   const name = `__svc:${++serviceRefCount}`;
   // Register the service so a consumer's acquire (specifier + name) can serve
   // it; the surface is the service object itself.
   registerActorExport(name, ownSpecifier(), value);
   const proxy = remoteActor(value, ownSpecifier(), name);
-  return encodeActorValue(proxy);
+  const placeholder = encodeActorValue(proxy);
+  servicePlaceholderByObject.set(value as object, placeholder);
+  return placeholder;
 }
 
 /**
@@ -874,6 +905,10 @@ function disposePlugin(): void {
   }
   remoteContributions.clear();
   clearActorExports();
+  // Forget converted service placeholders: their surfaces were just cleared,
+  // so a re-init must convert fresh (the previous placeholders would route to
+  // surfaces that no longer exist).
+  servicePlaceholderByObject = new WeakMap();
   extensionPoints.clear();
   extensionPointIdentities.clear();
   contractExportIdentities = [];

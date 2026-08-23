@@ -935,3 +935,163 @@ Deno.test("data and service extension points coexist in one worker", async () =>
     host.dispose();
   }
 });
+
+Deno.test("a service contributed from another worker arrives as a Remote proxy without defineService", async () => {
+  const root = Deno.makeTempDirSync();
+
+  // The provider contributes a live service instance to the definer's service
+  // extension point across workers, WITHOUT defineService marking. The SDK
+  // converts it to a remote reference in the providing worker, so the consumer
+  // receives a Remote<T> proxy — never raw data that would trip the callback
+  // codec.
+  const fullSdkImport =
+    `import { defineActor, defineExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
+      JSON.stringify(SDK_URL)
+    };`;
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${fullSdkImport}
+    export const ep = defineServiceExtensionPoint<{ hello(): string }>("sample.svc");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    export const metrics = defineActor({
+      changes(): AsyncIterable<unknown[]> { return markCollectionStream(subscribe(ep)); },
+    });
+    `,
+  );
+
+  const provider = writePlugin(
+    root,
+    "provider",
+    `${fullSdkImport}
+    import { ep } from "@maieutics/definer/main";
+    const svc = { hello(): string { return "remote-plain-hi"; } };
+    provide(ep, signal<unknown | undefined>(svc));
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+    ["definer"],
+  );
+
+  const consumer = writePlugin(
+    root,
+    "consumer",
+    `${fullSdkImport}
+    import type { metrics as MetricsSurface } from "@maieutics/definer/main";
+    const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const iter = metrics.changes()[Symbol.asyncIterator]();
+        const first = await iter.next();
+        const elem = (first.value as unknown[])[0] as { hello?: unknown };
+        const hello = typeof elem?.hello === "function"
+          ? await (elem.hello as () => Promise<unknown>)()
+          : "no-fn";
+        return { action: "continue" as const, hello };
+      },
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(provider), pluginConfig(consumer)],
+  });
+  try {
+    await host.startAll();
+    const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      hello?: unknown;
+    };
+    assertEquals(value.action, "continue");
+    assertEquals(value.hello, "remote-plain-hi");
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("a service reference forwarded to a third worker keeps its routing identity", async () => {
+  const root = Deno.makeTempDirSync();
+
+  // mid receives the service proxy from the definer's changes stream and
+  // forwards it as an argument to a third worker's actor method. The
+  // re-encoded reference must keep its specifier and surface name, so the
+  // third worker's call routes back to the service's owning worker.
+  const fullSdkImport =
+    `import { defineActor, defineExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
+      JSON.stringify(SDK_URL)
+    };`;
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${fullSdkImport}
+    export const ep = defineServiceExtensionPoint<{ hello(): string }>("sample.svc");
+    const svc = { hello(): string { return "fwd-hi"; } };
+    provide(ep, signal<unknown | undefined>(svc));
+    export const metrics = defineActor({
+      changes(): AsyncIterable<unknown[]> { return markCollectionStream(subscribe(ep)); },
+    });
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+  );
+
+  const echo = writePlugin(
+    root,
+    "echo",
+    `${fullSdkImport}
+    export const echo = defineActor({
+      async forward(svc: unknown): Promise<{ action: string; hello: unknown }> {
+        const s = svc as { hello?: () => Promise<unknown> };
+        return { action: "continue" as const, hello: await s.hello() };
+      },
+    });
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+  );
+
+  const mid = writePlugin(
+    root,
+    "mid",
+    `${fullSdkImport}
+    import type { metrics as MetricsSurface } from "@maieutics/definer/main";
+    import type { echo as EchoSurface } from "@maieutics/echo/main";
+    const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
+    const echo = depActor<typeof EchoSurface>("@maieutics/echo/main", "echo");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const iter = metrics.changes()[Symbol.asyncIterator]();
+        const first = await iter.next();
+        const svc = (first.value as unknown[])[0];
+        return await echo.forward(svc);
+      },
+    });
+    `,
+    ["definer", "echo"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(echo), pluginConfig(mid)],
+  });
+  try {
+    await host.startAll();
+    const value = await host.invoke("mid", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      hello?: unknown;
+    };
+    assertEquals(value.action, "continue");
+    assertEquals(value.hello, "fwd-hi");
+  } finally {
+    host.dispose();
+  }
+});

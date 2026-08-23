@@ -137,7 +137,9 @@ export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointI
  * Declares a service extension-point identity. The element type `T` is the
  * service's original type; a provider contributes a live service instance and
  * consumers receive a `Remote<T>` proxy (every method becomes a
- * Promise-returning callable) — see {@link defineServiceExtensionPoint}.
+ * Promise-returning callable). Provided values are converted to remote
+ * references automatically (see {@link setValueTransformer}); `defineService`
+ * marking is optional on a service extension point.
  */
 export function defineServiceExtensionPoint<T = unknown>(
   name: string,
@@ -350,6 +352,24 @@ export function changesOf<T>(value: ReactiveValue<T | undefined>): AsyncIterable
 }
 
 /**
+ * Maps every element of an async source through `transform` lazily. Used for
+ * service extension points so each transmitted change is converted to a remote
+ * reference placeholder before it leaves this worker — the same conversion the
+ * local provide path applies, keeping the wire shape identical whether the
+ * defining worker is local or remote.
+ */
+function transformChanges(
+  source: AsyncIterable<unknown>,
+  transform: (value: unknown) => unknown,
+): AsyncIterable<unknown> {
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<unknown> {
+      for await (const value of source) yield transform(value);
+    },
+  };
+}
+
+/**
  * Contributes a reactive value to an extension point from the current worker.
  * The provider joins the extension point's collection; while its value is
  * `undefined` it does not contribute. Returns a handle that can be passed to
@@ -384,11 +404,22 @@ export function provide<T>(
     }
     const specifier = defSpecifier;
     const providerKey = `${currentWorkerSpecifier()}:${crypto.randomUUID()}`;
+    // Service extension points convert each value to a remote actor reference
+    // placeholder here, in the providing worker — exactly like the local path —
+    // so a service contributed across workers travels as a reference (with the
+    // provider's specifier), never as raw data that would trip the callback
+    // codec or leave the definer holding an untransmittable object.
+    const transform = valueTransformer;
+    const isServicePoint = extensionPoint.serviceKind === "service" && transform !== undefined;
+    const initial = isServicePoint ? transform(value.value) : value.value;
+    const changes = isServicePoint
+      ? transformChanges(changesOf(value), transform)
+      : changesOf(value);
     void remoteProvide(
       specifier,
       extensionPoint.name,
-      value.value,
-      changesOf(value),
+      initial,
+      changes,
       providerKey,
     ).catch((error: unknown) => {
       // The contribution failed to reach the defining worker; log instead of

@@ -55,7 +55,8 @@ import { RemoteError } from "@ghostflyby/worker-actor";
 export const ACTOR_CODEC_TAG = "maieutics/actor";
 export const ACTOR_BRAND = Symbol.for("maieutics/actor/v1/surface");
 const REF_TOKEN_BRAND = Symbol.for("maieutics/actor/v1/ref-token");
-const REF_PROXY_BRAND = Symbol.for("maieutics/actor/v1/ref-proxy");
+/** Brand on received reference proxies (pending or materialized). */
+export const REF_PROXY_BRAND = Symbol.for("maieutics/actor/v1/ref-proxy");
 
 /**
  * The proxy type: methods returning an AsyncIterable keep it lazy (matching
@@ -456,6 +457,12 @@ interface PendingEntry {
   registry: DecodeContext["registry"];
   refId: string;
   real?: RemoteActor<object>;
+  /** Owning worker's specifier, when the reference carries one (services in
+   * collections). Preserved so a re-encode keeps routing through the host's
+   * specifier-based __acquire-actor. */
+  specifier?: string;
+  /** The registered surface name (a service's internal `__svc:` name). */
+  name?: string;
 }
 
 const pendingByRefId = new Map<string, PendingEntry>();
@@ -490,6 +497,8 @@ function createPendingProxy(
     calls: [],
     registry: ctx.registry,
     refId,
+    ...(specifier === undefined ? {} : { specifier }),
+    ...(name === undefined ? {} : { name }),
   };
   const proxy = new Proxy({} as RemoteActor<object>, {
     get(_target, prop) {
@@ -577,9 +586,9 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
   encode(v: RemoteActor<object>, ctx: EncodeContext): unknown {
     const ref = v as unknown as Record<PropertyKey, unknown>;
     if (ref[REF_TOKEN_BRAND] === true) {
-      // Do NOT read `v.token` or `v.__refId` off the proxy: its get trap
-      // returns a function for any string key, so those reads would yield
-      // garbage callables. The token always comes from the reverse WeakMap.
+      // The token always comes from the reverse WeakMap. The proxy's get trap
+      // answers `__refId`/`__surface` with real values and every other string
+      // key with a method callable; never read arbitrary keys off it.
       const token = tokenByProxy(v);
       const refId = (v as unknown as { __refId?: string }).__refId ??
         refIdFor(token.specifier);
@@ -597,7 +606,11 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
         specifier: token.specifier,
       } satisfies RefHandle;
     }
-    return { [CODEC_PLACEHOLDER_KEY]: ACTOR_CODEC_TAG, refId: refIdOfProxy(v) } satisfies RefHandle;
+    return {
+      [CODEC_PLACEHOLDER_KEY]: ACTOR_CODEC_TAG,
+      refId: refIdOfProxy(v),
+      ...proxyIdentityOf(v),
+    } satisfies RefHandle;
   },
   decode(placeholder: RefHandle, ctx: DecodeContext): RemoteActor<object> {
     const { refId, port, specifier, name } = placeholder;
@@ -607,7 +620,15 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
     const channel = connectChannel(port);
     ctx.registry.registerChannel(channel);
     const proxy = createRefProxy(channel, ctx.registry, refId);
-    pendingByRefId.set(refId, { proxy, calls: [], registry: ctx.registry, refId, real: proxy });
+    pendingByRefId.set(refId, {
+      proxy,
+      calls: [],
+      registry: ctx.registry,
+      refId,
+      real: proxy,
+      ...(specifier === undefined ? {} : { specifier }),
+      ...(name === undefined ? {} : { name }),
+    });
     return proxy;
   },
   onRegistryFail(): void {
@@ -676,6 +697,28 @@ function refIdOfProxy(proxy: unknown): string {
     if (entry.proxy === proxy || entry.real === proxy) return refId;
   }
   throw new Error("Cannot re-encode an unknown actor reference.");
+}
+
+/**
+ * The routing identity (specifier + optional surface name) of a received
+ * reference proxy, from the pending table. Preserved on re-encode so a
+ * service reference forwarded to a third worker still routes through the
+ * host's specifier-based __acquire-actor instead of falling back to
+ * worker-actor's __acquire-ref (which the host does not handle).
+ */
+function proxyIdentityOf(proxy: unknown): { specifier?: string; name?: string } {
+  for (const entry of pendingByRefId.values()) {
+    if (entry.proxy === proxy || entry.real === proxy) {
+      if (entry.specifier !== undefined) {
+        return entry.name === undefined ? { specifier: entry.specifier } : {
+          specifier: entry.specifier,
+          name: entry.name,
+        };
+      }
+      break;
+    }
+  }
+  return {};
 }
 
 function isActorSurface(value: object): boolean {

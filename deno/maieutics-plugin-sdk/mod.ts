@@ -25,11 +25,14 @@ import {
   actorRefCodec,
   clearActorExports,
   clearNamespaceSurface,
+  decodeActorValue,
+  encodeActorValue,
   flattenSurface,
   registerActorExport,
   type RemoteActor,
   remoteActor,
   setNamespaceSurface,
+  setSpecifierAcquire,
 } from "./actor_ref.ts";
 import {
   connectChannel,
@@ -39,6 +42,7 @@ import {
   registerControlHandler,
 } from "@ghostflyby/worker-actor/codec";
 import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 import {
   bindDefiningWorker,
   collection,
@@ -56,6 +60,8 @@ import {
   type ReactiveValue,
   setRemoteProvide,
   setRemoteUnprovide,
+  setValueTransformer,
+  setValueUntransformer,
   setWorkerSpecifier,
   signal,
   snapshot,
@@ -305,81 +311,57 @@ export function defineActor(
   return remoteActor(surface, ownSpecifier(), "actor") as RemoteActor<Record<string, unknown>>;
 }
 
-// —— Service handles (cross-worker service references in collections) ——
+// —— Transparent services (original-type instances in collections) ——
 
-// The handle must survive structured clone (it travels as a collection
-// element), so the brand is a string key — symbol keys are dropped by
-// structured clone.
-const SERVICE_HANDLE_BRAND = "maieutics/serviceHandle/v1";
+// The service brand is a string key: a service value travels as a remote actor
+// reference placeholder (cloneable), and the consumer decodes it back to a
+// Remote<T> proxy. The brand lets provide() detect that a value is a service
+// and convert it to a reference instead of treating it as plain data.
+const SERVICE_BRAND = "maieutics/service/v1";
 
 /**
- * A cloneable reference to an actor surface, safe to store in a collection and
- * transport across workers. Unlike the actor proxy itself (which cannot be
- * structured-cloned), a service handle is plain data: the owning worker's
- * canonical specifier plus the export name the surface is registered under.
+ * Marks an object as a service: a live instance that should be exposed across
+ * workers as a remote reference rather than serialized as data. The returned
+ * value is the same object (type `T` unchanged); `provide` detects the brand
+ * and converts it to an internal actor reference, so the consumer receives a
+ * `Remote<T>` proxy.
  *
  * ```ts
- * export const svc = defineActor({ hello(): string { return "hi"; } });
- * export const svcHandle = createServiceHandle("svc");
- * provide(ep, signal(svcHandle)); // the handle, not the proxy, goes in the set
+ * const service = { hello(): string { return "hi"; } };
+ * provide(ep, signal(defineService(service))); // original instance, no export
  * ```
- *
- * A consumer receives the handle through the collection stream and resolves it
- * with {@link resolveService} to a typed remote proxy.
  */
-export interface ServiceHandle {
-  readonly specifier: string;
-  readonly exportName: string;
-  readonly [SERVICE_HANDLE_BRAND]: true;
+export function defineService<T extends object>(service: T): T {
+  if (typeof service !== "object" || service === null) {
+    throw new TypeError("defineService() expects an object.");
+  }
+  (service as Record<string, unknown>)[SERVICE_BRAND] = true;
+  return service;
 }
 
-/** True when `value` is a service handle (produced by {@link createServiceHandle}). */
-export function isServiceHandle(value: unknown): value is ServiceHandle {
+/** True when `value` is a service marked with {@link defineService}. */
+export function isService(value: unknown): value is object {
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as Record<string, unknown>)[SERVICE_HANDLE_BRAND] === true
+    (value as Record<string, unknown>)[SERVICE_BRAND] === true
   );
 }
 
-/**
- * Builds a cloneable handle to an actor surface exported by this worker under
- * `exportName`. The handle carries this worker's canonical specifier and the
- * export name; it is plain data, so it can be placed in a collection and flow
- * across workers (structured clone) where the actor proxy itself cannot.
- */
-export function createServiceHandle(exportName: string): ServiceHandle {
-  if (typeof exportName !== "string" || exportName.length === 0) {
-    throw new TypeError("A service handle needs a non-empty export name.");
-  }
-  return {
-    specifier: ownSpecifier(),
-    exportName,
-    [SERVICE_HANDLE_BRAND]: true,
-  } as ServiceHandle;
-}
+let serviceRefCount = 0;
 
-/**
- * Resolves a service handle received from a collection into a typed remote
- * proxy to the owning worker's actor surface. `T` is the real actor surface
- * type (from `typeof import(...)`); the resolved value is `Remote<T>` — every
- * method becomes a Promise-returning callable, matching `depActor<T>`.
- *
- * ```ts
- * import type { svc as SvcSurface } from "@maieutics/definer/main";
- * for await (const handle of values(ep)) {
- *   const svc = resolveService<typeof SvcSurface>(handle);
- *   await svc.hello();
- * }
- * ```
- */
-export function resolveService<T>(
-  handle: ServiceHandle,
-): RemoteActor<T> {
-  if (!isServiceHandle(handle)) {
-    throw new TypeError("resolveService() expects a service handle.");
-  }
-  return depActor<T>(handle.specifier, handle.exportName);
+/** Converts a defineService-marked value to a transmittable remote reference:
+ * the service becomes an actor proxy registered under a service surface name,
+ * so a consumer's specifier-based acquire resolves it. Plain data passes
+ * through unchanged. */
+function convertServiceValue(value: unknown): unknown {
+  if (!isService(value)) return value;
+  const name = `__svc:${++serviceRefCount}`;
+  // Register the service so a consumer's acquire (specifier + name) can serve
+  // it; the surface is the service object itself.
+  registerActorExport(name, ownSpecifier(), value);
+  const proxy = remoteActor(value, ownSpecifier(), name);
+  return encodeActorValue(proxy);
 }
 
 /**
@@ -499,6 +481,14 @@ export async function initPluginWorker(): Promise<void> {
   setWorkerSpecifier(config.specifier);
   setRemoteProvide(remoteProvideImpl);
   setRemoteUnprovide(remoteUnprovideImpl);
+  // Specifier-addressed acquires (decoded service references in collections)
+  // route through the host's __acquire-actor frame.
+  setSpecifierAcquire(postAcquireActor);
+  // Service values (defineService-marked) become remote actor references; the
+  // actorRefCodec encodes them to cloneable placeholders on the wire. Received
+  // placeholders decode back to Remote<T> proxies.
+  setValueTransformer(convertServiceValue);
+  setValueUntransformer(decodeActorValue);
 
   // The dependency stubs need this worker's id to build routeable refIds;
   // expose the worker-actor runtime's registry to them via the global slot.
@@ -510,7 +500,7 @@ export async function initPluginWorker(): Promise<void> {
   installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
-    codecs: [actorRefCodec],
+    codecs: [actorRefCodec, collectionStreamCodec],
     onLink(link: LinkHandle): void {
       // A peer linked directly (host or another worker). Expose the flattened
       // plugin namespace over the link; the peer calls through link.rpc.
@@ -686,7 +676,12 @@ function collectionActorSurface(name: string): object {
     },
     changes(): AsyncIterable<unknown[]> {
       const ep = lookupIdentity(name);
-      return ep === undefined ? emptyAsyncIterable() : subscribe(ep) as AsyncIterable<unknown[]>;
+      // Mark the stream so the collection-stream codec transports its elements
+      // through the registry (services arrive as Remote<T> proxies, not
+      // structured-clone failures).
+      return ep === undefined
+        ? emptyAsyncIterable()
+        : markCollectionStream(subscribe(ep) as AsyncIterable<unknown[]>);
     },
   };
 }
@@ -1270,6 +1265,10 @@ function scopePostMessage(message: unknown): void {
 // —— Link peer surface (flattened namespace) ——
 
 export { flattenSurface };
+
+// —— Collection stream transport ——
+
+export { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 
 // —— Reactive extension points ——
 

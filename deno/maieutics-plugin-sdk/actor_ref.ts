@@ -245,6 +245,13 @@ interface RefHandle {
   [CODEC_PLACEHOLDER_KEY]: typeof ACTOR_CODEC_TAG;
   refId: string;
   port?: MessagePort;
+  /** The owning worker's canonical specifier, carried so a consumer can route
+   * the acquire through Maieutics' __acquire-actor (which is specifier-based;
+   * worker-actor's __acquire-ref is not handled by the host). */
+  specifier?: string;
+  /** The registered surface name (a service's internal `__svc:` name), so a
+   * consumer's acquire resolves exactly that surface. */
+  name?: string;
 }
 
 type RefFrame =
@@ -272,6 +279,7 @@ export function remoteActor(surface: object, specifier: string, name: string): R
       if (prop === REF_TOKEN_BRAND) return true;
       if (prop === ACTOR_BRAND) return true;
       if (prop === "__surface") return surface;
+      if (prop === "__refId") return refId;
       if (prop === "dispose") return () => releaseToken(token);
       if (prop === Symbol.dispose) return () => void releaseToken(token);
       if (prop === "then") return undefined;
@@ -452,7 +460,29 @@ interface PendingEntry {
 
 const pendingByRefId = new Map<string, PendingEntry>();
 
-function createPendingProxy(refId: string, ctx: DecodeContext): RemoteActor<object> {
+/**
+ * Hook installed by the SDK entry: routes a specifier-addressed acquire to the
+ * host via Maieutics' `__acquire-actor` frame (the host does not handle
+ * worker-actor's `__acquire-ref`). Used when decoding an actor reference that
+ * carries the owning worker's specifier (e.g. a service in a collection).
+ */
+let specifierAcquire:
+  | ((specifier: string, refId: string, name?: string) => void)
+  | undefined;
+
+/** Installed by mod.ts: routes specifier-addressed acquires through the host. */
+export function setSpecifierAcquire(
+  fn: ((specifier: string, refId: string, name?: string) => void) | undefined,
+): void {
+  specifierAcquire = fn;
+}
+
+function createPendingProxy(
+  refId: string,
+  ctx: DecodeContext,
+  specifier?: string,
+  name?: string,
+): RemoteActor<object> {
   const existing = pendingByRefId.get(refId);
   if (existing) return existing.proxy;
   const entry: PendingEntry = {
@@ -473,8 +503,14 @@ function createPendingProxy(refId: string, ctx: DecodeContext): RemoteActor<obje
             return (entry.real as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)
               [prop](...args);
           }
-          // First call triggers the acquire; subsequent calls queue too.
-          triggerAcquire(refId);
+          // First call triggers the acquire; subsequent calls queue too. A
+          // specifier-addressed reference routes through the host's
+          // __acquire-actor (specifier-based), not worker-actor's __acquire-ref.
+          if (specifier !== undefined && specifierAcquire !== undefined) {
+            specifierAcquire(specifier, refId, name);
+          } else {
+            triggerAcquire(refId);
+          }
           return new Promise<unknown>((resolve, reject) => {
             entry.calls.push({ method: prop, args, resolve, reject });
           });
@@ -541,8 +577,10 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
   encode(v: RemoteActor<object>, ctx: EncodeContext): unknown {
     const ref = v as unknown as Record<PropertyKey, unknown>;
     if (ref[REF_TOKEN_BRAND] === true) {
-      const token = (v as unknown as { token?: RefToken }).token ??
-        tokenByProxy(v);
+      // Do NOT read `v.token` or `v.__refId` off the proxy: its get trap
+      // returns a function for any string key, so those reads would yield
+      // garbage callables. The token always comes from the reverse WeakMap.
+      const token = tokenByProxy(v);
       const refId = (v as unknown as { __refId?: string }).__refId ??
         refIdFor(token.specifier);
       const { channel, peerPort } = openChannel(ctx);
@@ -556,13 +594,16 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
         [CODEC_PLACEHOLDER_KEY]: ACTOR_CODEC_TAG,
         refId,
         port: peerPort,
+        specifier: token.specifier,
       } satisfies RefHandle;
     }
     return { [CODEC_PLACEHOLDER_KEY]: ACTOR_CODEC_TAG, refId: refIdOfProxy(v) } satisfies RefHandle;
   },
   decode(placeholder: RefHandle, ctx: DecodeContext): RemoteActor<object> {
-    const { refId, port } = placeholder;
-    if (port === undefined) return createPendingProxy(refId, ctx);
+    const { refId, port, specifier, name } = placeholder;
+    if (port === undefined) {
+      return createPendingProxy(refId, ctx, specifier, name);
+    }
     const channel = connectChannel(port);
     ctx.registry.registerChannel(channel);
     const proxy = createRefProxy(channel, ctx.registry, refId);
@@ -578,6 +619,53 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
     pendingByRefId.clear();
   },
 };
+
+/**
+ * Decodes a single value that may be an actor reference placeholder (a service
+ * contributed by another worker) into a `Remote<T>` proxy. Plain data returns
+ * unchanged. Uses the active worker registry so the decode context (codec
+ * state, pending table) is the current worker's.
+ */
+export function decodeActorValue(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  if ((value as Record<string, unknown>)[CODEC_PLACEHOLDER_KEY] !== ACTOR_CODEC_TAG) {
+    return value;
+  }
+  const registry = getActiveRegistry();
+  if (registry === undefined) return value;
+  return actorRefCodec.decode(value as RefHandle, {
+    registry,
+    seen: new WeakMap(),
+    codecState: new Map(),
+  });
+}
+
+/**
+ * Encodes an actor reference (a `remoteActor` proxy) into its transmittable
+ * placeholder form. Unlike relying on the codec during a stream send (stream
+ * items are structured-cloned directly, so the codec never runs on them), this
+ * produces the placeholder eagerly so it can be stored in a collection and
+ * cloned.
+ *
+ * The placeholder deliberately omits the port: a port would need to be
+ * transferred with the message, which stream items cannot do. The consumer
+ * decodes it to a pending proxy whose first call triggers a specifier-based
+ * acquire (the placeholder carries the owning worker's specifier).
+ * Plain data passes through unchanged.
+ */
+export function encodeActorValue(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  if (!actorRefCodec.matches(value)) return value;
+  const token = tokenByProxy(value as RemoteActor<object>);
+  const refId = (value as unknown as { __refId?: string }).__refId ??
+    refIdFor(token.specifier);
+  return {
+    [CODEC_PLACEHOLDER_KEY]: ACTOR_CODEC_TAG,
+    refId,
+    specifier: token.specifier,
+    ...(token.name.length > 0 ? { name: token.name } : {}),
+  } satisfies RefHandle;
+}
 
 function refIdOfProxy(proxy: unknown): string {
   const ref = proxy as { __refId?: string };
@@ -619,9 +707,12 @@ registerControlHandler("__serve-ref", (frame: ControlFrame) => {
     // surface. Specifier-only acquires (actor interop) serve the whole
     // namespace — every actor export's methods nested as `exportName.method` —
     // so all of a worker's actor surfaces are reachable, not just the first
-    // matching one.
+    // matching one. A service surface (internal `__svc:` name) is served as a
+    // bare method set, matching the Remote<T> proxy's direct method calls.
     const api = name !== undefined
-      ? flattenActorSurface(found.name, found.surface)
+      ? (name.startsWith("__svc:")
+        ? flattenSurface(found.surface as Record<string, unknown>)
+        : flattenActorSurface(found.name, found.surface))
       : flattenSurface(namespaceSurface);
     const handler = makeRpcHandler(api, registry);
     serveRefOwner(channel, frame.refId, handler, registry);

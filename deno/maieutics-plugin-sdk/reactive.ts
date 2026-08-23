@@ -193,6 +193,43 @@ export type RemoteUnprovideFn = (
   providerKey: string,
 ) => Promise<void>;
 
+/**
+ * Value transformer: converts a provided value before it enters a collection.
+ * The SDK entry installs one that turns a `defineService`-marked object into a
+ * remote actor reference (a cloneable token), so services travel across workers
+ * as references and consumers receive `Remote<T>` proxies. Plain data passes
+ * through unchanged.
+ */
+export type ValueTransformer = (value: unknown) => unknown;
+
+let valueTransformer: ValueTransformer | undefined;
+
+/** Installed by mod.ts: converts service values to remote references. */
+export function setValueTransformer(fn: ValueTransformer | undefined): void {
+  valueTransformer = fn;
+}
+
+/**
+ * Value untransformer: converts a received collection element back to its
+ * consumer-side form. The SDK entry installs one that decodes actor reference
+ * placeholders (a service contributed by another worker) into a `Remote<T>`
+ * proxy. Plain data passes through unchanged.
+ */
+export type ValueUntransformer = (value: unknown) => unknown;
+
+let valueUntransformer: ValueUntransformer | undefined;
+
+/** Installed by mod.ts: decodes received actor reference placeholders. */
+export function setValueUntransformer(fn: ValueUntransformer | undefined): void {
+  valueUntransformer = fn;
+}
+
+/** Applies the untransformer to a single value (no-op when not installed). */
+function untransformValue(value: unknown): unknown {
+  const untransform = valueUntransformer;
+  return untransform === undefined ? value : untransform(value);
+}
+
 let remoteProvide: RemoteProvideFn | undefined;
 let remoteUnprovide: RemoteUnprovideFn | undefined;
 
@@ -348,7 +385,18 @@ export function provide<T>(
   }
 
   const providerId = crypto.randomUUID();
-  providers.set(providerId, value as ReactiveValue<unknown>);
+  // A service value (defineService-marked) is converted to a remote actor
+  // reference token before entering the collection, so it travels as a
+  // cloneable placeholder and consumers decode it to a Remote<T> proxy.
+  // Plain data passes through unchanged. The transformer is applied on every
+  // read, so a provider switching a signal from data to a service (or vice
+  // versa) is handled consistently.
+  const stored = valueTransformer === undefined ? value : (() => {
+    const transform = valueTransformer;
+    if (transform === undefined) return value;
+    return computed(() => transform(value.value));
+  })();
+  providers.set(providerId, stored as ReactiveValue<unknown>);
   registryVersion.value += 1;
   return { extensionPoint, value, providerId };
 }
@@ -387,6 +435,11 @@ export function unprovide<T>(registration: ProviderRegistration<T>): void {
 /**
  * The current collection snapshot of an extension point: every provider value
  * that is not `undefined`, in registration order. Non-reactive read.
+ *
+ * Values are returned as stored: a service contribution is a cloneable actor
+ * reference placeholder (see {@link provide}); consumers decode it with the
+ * untransformer, while the provider's own snapshot keeps the placeholder so it
+ * can travel across workers.
  */
 export function snapshot<T>(extensionPoint: ExtensionPointIdentity<T>): T[] {
   const providers = providersByPoint.get(symbolFor(extensionPoint.owner, extensionPoint.name));
@@ -541,12 +594,13 @@ function valueChanges<T>(
             !lastByProvider.has(providerId) ||
             lastByProvider.get(providerId) !== value
           ) {
+            const out = untransformValue(value) as T;
             if (pending !== undefined) {
               const resolve = pending;
               pending = undefined;
-              resolve({ done: false, value: value as T });
+              resolve({ done: false, value: out });
             } else {
-              queue.push(value as T);
+              queue.push(out);
             }
           }
         }

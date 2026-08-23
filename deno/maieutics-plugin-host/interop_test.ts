@@ -765,26 +765,30 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
   }
 });
 
-Deno.test("a service handle travels through a collection and resolves to a remote actor", async () => {
+Deno.test("a transparent service travels through a collection as a remote reference", async () => {
   const root = Deno.makeTempDirSync();
 
-  // The definer owns an actor (service) and contributes its handle to the
-  // collection. The handle is plain data, so it survives structured clone.
+  // The definer contributes an original-type service instance (no export, no
+  // handle). The SDK converts it to a remote reference internally; the
+  // consumer receives a Remote<T> proxy directly.
   const definer = writePlugin(
     root,
     "definer",
     `${sdkImport()}
-    import { signal, provide, createServiceHandle, subscribe } from ${JSON.stringify(SDK_URL)};
+    import { signal, provide, defineService, subscribe, markCollectionStream } from ${
+      JSON.stringify(SDK_URL)
+    };
     export const ep = defineExtensionPoint<unknown>("sample.services");
-    export const svc = defineActor({
+    const service = {
       hello(): string { return "hi-from-service"; },
       add(a: number, b: number): number { return a + b; },
-    });
-    const handle = createServiceHandle("svc");
-    const value = signal<unknown | undefined>(handle);
+    };
+    const value = signal<unknown | undefined>(defineService(service));
     provide(ep, value);
     export const metrics = defineActor({
-      changes(): AsyncIterable<unknown[]> { return subscribe(ep); },
+      changes(): AsyncIterable<unknown[]> {
+        return markCollectionStream(subscribe(ep));
+      },
     });
     export const pre = defineExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
@@ -792,27 +796,27 @@ Deno.test("a service handle travels through a collection and resolves to a remot
     `,
   );
 
-  // The consumer receives the handle via the changes stream, resolves it, and
-  // calls the remote service.
+  // The consumer receives the service via the changes stream as a Remote<T>
+  // proxy — no manual resolution needed.
   const consumer = writePlugin(
     root,
     "consumer",
     `${sdkImport()}
-    import { depActor, resolveService, isServiceHandle } from ${JSON.stringify(SDK_URL)};
+    import { depActor } from ${JSON.stringify(SDK_URL)};
     import type { metrics as MetricsSurface } from "@maieutics/definer/main";
-    import type { svc as SvcSurface } from "@maieutics/definer/main";
     const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
     export const pre = defineExtensionPoint("ToolPreInvoke", {
       handler: async () => {
         const changes = metrics.changes();
         const iter = changes[Symbol.asyncIterator]();
         const first = await iter.next();
-        const handle = (first.value as unknown[])[0];
-        const isHandle = isServiceHandle(handle);
-        const svc = resolveService<typeof SvcSurface>(handle as never);
+        const svc = (first.value as unknown[])[0] as {
+          hello(): Promise<string>;
+          add(a: number, b: number): Promise<number>;
+        };
         const hello = await svc.hello();
         const sum = await svc.add(2, 3);
-        return { action: "continue" as const, isHandle, hello, sum };
+        return { action: "continue" as const, hello, sum };
       },
     });
     `,
@@ -828,14 +832,96 @@ Deno.test("a service handle travels through a collection and resolves to a remot
     await host.startAll();
     const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {}) as {
       action?: string;
-      isHandle?: boolean;
       hello?: string;
       sum?: number;
     };
     assertEquals(value.action, "continue");
-    assertEquals(value.isHandle, true);
     assertEquals(value.hello, "hi-from-service");
     assertEquals(value.sum, 5);
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("a collection mixes plain data and transparent services across workers", async () => {
+  const root = Deno.makeTempDirSync();
+
+  // The definer contributes one plain-data value and one service to the same
+  // extension point. The consumer receives the data as-is and the service as a
+  // Remote<T> proxy.
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { signal, provide, defineService, subscribe, markCollectionStream } from ${
+      JSON.stringify(SDK_URL)
+    };
+    export const ep = defineExtensionPoint<unknown>("sample.mixed");
+    const data = signal<unknown | undefined>({ name: "plain", count: 7 });
+    provide(ep, data);
+    const svc = { echo(s: string): string { return "echo:" + s; } };
+    const service = signal<unknown | undefined>(defineService(svc));
+    provide(ep, service);
+    export const metrics = defineActor({
+      changes(): AsyncIterable<unknown[]> {
+        return markCollectionStream(subscribe(ep));
+      },
+    });
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+  );
+
+  const consumer = writePlugin(
+    root,
+    "consumer",
+    `${sdkImport()}
+    import { depActor } from ${JSON.stringify(SDK_URL)};
+    import type { metrics as MetricsSurface } from "@maieutics/definer/main";
+    const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const changes = metrics.changes();
+        const iter = changes[Symbol.asyncIterator]();
+        const first = await iter.next();
+        const elems = first.value as unknown[];
+        const kinds: string[] = [];
+        let echo = "";
+        for (const elem of elems) {
+          // A service arrives as a Remote<T> proxy: its methods read as
+          // functions (the get trap answers), while the in operator would
+          // inspect the empty proxy target. Detect by the method type.
+          const echoFn = (elem as { echo?: unknown }).echo;
+          if (typeof echoFn === "function") {
+            kinds.push("service");
+            echo = await (elem as { echo(s: string): Promise<string> }).echo("hi");
+          } else {
+            kinds.push("data");
+          }
+        }
+        return { action: "continue" as const, kinds: kinds.sort(), echo };
+      },
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(consumer)],
+  });
+  try {
+    await host.startAll();
+    const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      kinds?: string[];
+      echo?: string;
+    };
+    assertEquals(value.action, "continue");
+    assertEquals(value.kinds, ["data", "service"]);
+    assertEquals(value.echo, "echo:hi");
   } finally {
     host.dispose();
   }

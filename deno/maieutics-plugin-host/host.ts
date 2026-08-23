@@ -15,6 +15,7 @@
 
 import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
 import { actorRefCodec } from "../maieutics-plugin-sdk/actor_ref.ts";
+import { collectionStreamCodec } from "../maieutics-plugin-sdk/collection_stream.ts";
 
 /** Positive permission grant: `true` allows all, `false` denies, a list allows those entries. */
 export type PermissionGrant = boolean | readonly string[];
@@ -414,7 +415,7 @@ export class PluginHost {
         },
       });
       const actor = await spawn<WorkerRpc>(worker, {
-        codecs: [actorRefCodec],
+        codecs: [actorRefCodec, collectionStreamCodec],
         signal: AbortSignal.timeout(this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS),
         onDeath: (reason) => this.#handleDeath(key, reason),
       });

@@ -516,16 +516,27 @@ export class PluginHost {
   }
 
   /** Notifies every worker that `stopped` contributes to (its declared
-   * dependencies) that the provider is dead, so they drop its contributions. */
+   * dependencies) that the provider is dead, so they drop its contributions.
+   * The notification rides the worker-actor RPC surface (a bare postMessage
+   * frame would be ignored by the worker runtime's onmessage dispatcher). */
   #notifyProviderDead(stopped: WorkerHandle): void {
     const declared = new Set(stopped.plugin.dependencies ?? []);
     for (const candidate of this.#workers.values()) {
       if (candidate.plugin.id !== stopped.plugin.id && declared.has(candidate.plugin.id)) {
-        if (candidate.state === State.Running && candidate.worker !== undefined) {
-          candidate.worker.postMessage({
-            type: "__provider-dead",
-            providerSpecifier: stopped.specifier,
-          });
+        if (candidate.state === State.Running && candidate.actor !== undefined) {
+          try {
+            void (candidate.actor as unknown as Record<
+              string,
+              (specifier: string) => Promise<unknown>
+            >)["__maieuticsProviderDead"](stopped.specifier).catch((error: unknown) => {
+              console.error(
+                `[plugin-host] provider-dead notification to '${candidate.specifier}' failed: ` +
+                  `${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          } catch {
+            // best-effort: the definer may already be stopping
+          }
         }
       }
     }

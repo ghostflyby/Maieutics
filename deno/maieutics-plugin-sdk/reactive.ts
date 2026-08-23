@@ -264,7 +264,9 @@ export function changesOf<T>(value: ReactiveValue<T | undefined>): AsyncIterable
         next(): Promise<IteratorResult<T | undefined>> {
           if (stopped) return Promise.resolve({ done: true, value: undefined });
           if (queue.length > 0) {
-            return Promise.resolve({ done: false, value: queue.shift()! });
+            // The length guard guarantees shift() returns an element; the
+            // element itself may legitimately be undefined (a signal change).
+            return Promise.resolve({ done: false, value: queue.shift() as T | undefined });
           }
           return new Promise<IteratorResult<T | undefined>>((resolve) => {
             pending = (v: T | undefined) => resolve({ done: false, value: v });
@@ -305,7 +307,15 @@ export function provide<T>(
   // own specifier prefix, so the defining worker can drop every contribution
   // from a dead provider (host `__provider-dead` notification).
   if (isRemoteExtensionPoint(extensionPoint) && remoteProvide !== undefined) {
-    const specifier = extensionPoint.defSpecifier!;
+    // isRemoteExtensionPoint guarantees defSpecifier is set (a remote identity
+    // always carries it); bind it to satisfy the compiler without `!`.
+    const defSpecifier = extensionPoint.defSpecifier;
+    if (defSpecifier === undefined) {
+      throw new Error(
+        "A remote extension point identity is missing its defining worker specifier.",
+      );
+    }
+    const specifier = defSpecifier;
     const providerKey = `${currentWorkerSpecifier()}:${crypto.randomUUID()}`;
     void remoteProvide(
       specifier,
@@ -452,7 +462,7 @@ export async function* subscribe<T>(
     yield collectionSignal.value;
     while (true) {
       if (queue.length > 0) {
-        yield queue.shift()!;
+        yield queue.shift() as T[];
       } else {
         const snapshot = await new Promise<T[]>((resolve) => {
           pending = resolve;
@@ -547,7 +557,8 @@ function valueChanges<T>(
         next(): Promise<IteratorResult<T>> {
           if (stopped) return Promise.resolve({ done: true, value: undefined });
           if (queue.length > 0) {
-            return Promise.resolve({ done: false, value: queue.shift()! });
+            // The length guard guarantees shift() returns an element.
+            return Promise.resolve({ done: false, value: queue.shift() as T });
           }
           return new Promise<IteratorResult<T>>((resolve) => {
             pending = (result: IteratorResult<T>) => resolve(result);

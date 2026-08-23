@@ -428,15 +428,6 @@ export async function initPluginWorker(): Promise<void> {
     (globalThis as unknown as { __maieuticsWorkerId: string }).__maieuticsWorkerId = frame.refId;
   });
 
-  // A declared dependency worker stopped (crash, reload, or host shutdown).
-  // The host notifies every dependent; this worker drops the contributions
-  // whose providerKey carries the dead provider's specifier.
-  registerControlHandler("__provider-dead", (frame) => {
-    const specifier = (frame as { providerSpecifier?: unknown }).providerSpecifier;
-    if (typeof specifier !== "string") return;
-    removeContributionsByProvider(specifier);
-  });
-
   installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
@@ -501,6 +492,14 @@ async function initialize(entryUrl: string): Promise<void> {
     };
     servingApi[name] = invoke;
   }
+  // Internal host hook: a declared dependency provider stopped; drop its remote
+  // contributions. Exposed on the RPC surface because the host notifies through
+  // the worker-actor channel (a bare postMessage frame would be ignored by the
+  // worker runtime's onmessage dispatcher).
+  servingApi["__maieuticsProviderDead"] = (specifier: unknown): void => {
+    if (typeof specifier !== "string") return;
+    removeContributionsByProvider(specifier);
+  };
   scopePostMessage({
     type: "ready",
     specifier: ownSpecifierValue,
@@ -666,7 +665,12 @@ function applyRemoteContribution(
       if (byName.size === 0) remoteContributions.delete(name);
     }
   };
-  remoteContributions.set(name, new Map([[key, { registration, stop }]]));
+  // Merge into the existing per-name map instead of replacing it: replacing
+  // would drop references to contributions registered under other keys, whose
+  // signals would linger unremovable in the collection.
+  const byName = remoteContributions.get(name) ?? new Map<string, RemoteContribution>();
+  byName.set(key, { registration, stop });
+  remoteContributions.set(name, byName);
 
   void (async () => {
     try {

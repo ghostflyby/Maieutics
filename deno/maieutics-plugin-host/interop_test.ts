@@ -703,3 +703,64 @@ Deno.test("reloading a provider drops its stale contribution from the definer", 
     host.dispose();
   }
 });
+
+Deno.test("reloading a provider to a non-contributing version drops its contribution", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<number>("shared.metric");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
+    });
+    `,
+  );
+
+  // provider-a contributes [1]; provider-b contributes [2]. Reloading
+  // provider-a to a version that no longer contributes must drop its [1]
+  // from the definer (host notifies via __maieuticsProviderDead), leaving
+  // only provider-b's [2] — never a lingering stale [1].
+  const contributing = (name: string, value: number): string =>
+    `${sdkImport()}
+    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    import { ep } from "@maieutics/definer/main";
+    const value = signal<number | undefined>(${value});
+    provide(ep, value);
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `;
+  const nonContributing = (name: string): string =>
+    `${sdkImport()}
+    import { ep } from "@maieutics/definer/main";
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `;
+  const providerA = writePlugin(root, "provider-a", contributing("provider-a", 1), ["definer"]);
+  const providerB = writePlugin(root, "provider-b", contributing("provider-b", 2), ["definer"]);
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(providerA), pluginConfig(providerB)],
+  });
+  try {
+    await host.startAll();
+    const both = await waitForCollectionSnapshot(host, (s) => s.length === 2);
+    assertEquals([...both].sort(), [1, 2]);
+
+    // Reload provider-a to a version that does not contribute.
+    const nextA = writePlugin(root, "provider-a", nonContributing("provider-a"), ["definer"]);
+    await host.reload("provider-a", "./main", pluginConfig(nextA));
+
+    // Only provider-b's [2] remains.
+    const after = await waitForCollectionSnapshot(host, (s) => s.length === 1);
+    assertEquals(after, [2]);
+  } finally {
+    host.dispose();
+  }
+});

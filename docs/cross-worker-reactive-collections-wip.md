@@ -143,19 +143,29 @@ any hand-built substitute.
 ## Remaining work
 
 1. **Hard-crash cleanup.** Provider worker exit without an explicit `unprovide` or stream
-   close leaves its contribution in the definer's collection (no liveness plane today). Needs
-   worker-actor liveness or a host-side cascade that calls `remove` on the definer.
+   close leaves its contribution in the definer's collection — unless the host cascades the
+   stop. Verified: a bare MessageChannel gives no peer-death event (`onclose`/`onmessageerror`
+   never fire, postMessage to a closed peer is silently accepted), so no liveness heartbeat
+   exists. **The host is the lifecycle authority**: when a dependency crashes, `#handleDeath`
+   → `#cascade` stops its dependents, and `dispose()` fails their in-flight calls (including
+   stream iterations), so a consumer's pending `next()` settles instead of hanging. This is
+   correct for the star topology; a bidirectional liveness plane (worker-actor's
+   `examples/remote_ref` model) is not needed. The residual gap: a consumer holding a ref to
+   a worker it does **not** declare as a dependency would hang on that stream — but actor
+   acquisition is dependency-declared only, so this cannot arise today.
 2. **Remote `snapshot`.** A remote `snapshot(ep)` is a request to the defining worker; add it
-   to the collection surface (currently `add`, `remove`, `changes`).
+   to the collection surface (currently `add`, `remove`, `changes`). Note: remote snapshot
+   races with live changes; `subscribe`'s first element is the honest "current" primitive.
+   Likely not worth adding.
 3. **Duplicate-provide semantics.** Repeated `provide` of the same signal by the same worker
    currently registers two independent contributions (each with its own provider key); decide
    whether that should coalesce per (specifier, name).
 
 ## Verification baseline
 
-- Current worktree: deno workspace tests 57 passed / 0 failed (SDK + host), REPL 10 passed —
+- Current worktree: deno workspace tests 58 passed / 0 failed (SDK + host), REPL 10 passed —
   no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
 - Feature gates: cross-worker aggregation (single/multi provider), imported contract
-  identity, and remote unprovide tests are green.
+  identity, remote unprovide, and cascade-stop stream settlement tests are green.
 - Full repository acceptance: `dotnet test Maieutics.slnx` and
   `git diff --check` clean (dotnet build with -warnaserror verified on the earlier pass).

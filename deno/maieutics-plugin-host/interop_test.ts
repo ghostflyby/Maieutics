@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
 
 const SDK_URL = new URL("../maieutics-plugin-sdk/mod.ts", import.meta.url).href;
@@ -575,4 +575,81 @@ Deno.test("multiple provider workers aggregate into the defining worker's collec
   } finally {
     host.dispose();
   }
+});
+
+Deno.test("cascading the stop to a dependent does not hang its stream iteration", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { signal, provide, subscribe } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<number>("sample.metric");
+    const value = signal<number | undefined>(1);
+    provide(ep, value);
+    export const metrics = defineActor({
+      changes(): AsyncIterable<number[]> { return subscribe(ep); },
+    });
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `,
+  );
+
+  // The consumer acquires the stream and reads one snapshot; the second next()
+  // races a timeout. When the host cascades the stop (definer disposed → the
+  // dependent consumer is stopped too), the in-flight iteration must settle
+  // (resolve or reject) instead of hanging forever.
+  const consumer = writePlugin(
+    root,
+    "consumer",
+    `${sdkImport()}
+    import { depActor } from ${JSON.stringify(SDK_URL)};
+    import type { metrics as MetricsSurface } from "@maieutics/definer/main";
+    const metrics = depActor<typeof MetricsSurface>("@maieutics/definer/main", "metrics");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const changes = metrics.changes();
+        const iterator = changes[Symbol.asyncIterator]();
+        const first = await iterator.next();
+        const snapshots = [first.value as number[]];
+        const second = await Promise.race([
+          iterator.next().then(
+            (r) => ({ kind: "resolved" as const, done: r.done }),
+            (e) => ({ kind: "rejected" as const, error: (e as Error).message }),
+          ),
+          new Promise((r) => setTimeout(() => r({ kind: "timeout" as const }), 3_000)),
+        ]);
+        return { action: "continue" as const, snapshots, second };
+      },
+    });
+    `,
+    ["definer"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(consumer)],
+  });
+  await host.startAll();
+  // Start the consumer's stream read; it acquires the stream and reads the
+  // first snapshot, then waits on the second next().
+  const consumerRead = host.invoke("consumer", "./main", "ToolPreInvoke", {}).catch(
+    (error) => ({ __invokeError: (error as Error).message }),
+  );
+  // Give the consumer time to acquire the stream and read the first snapshot.
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  // Dispose the whole host: the definer (and its dependent consumer) are
+  // cascaded to stopped, which must settle the consumer's pending iteration.
+  host.dispose();
+
+  const result = await consumerRead as { second?: { kind: string } };
+  assertNotEquals(
+    result.second?.kind,
+    "timeout",
+    "the consumer's stream iteration must not hang when the cascade stops it",
+  );
 });

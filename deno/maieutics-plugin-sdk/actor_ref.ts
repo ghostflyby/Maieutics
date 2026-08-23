@@ -57,9 +57,16 @@ export const ACTOR_BRAND = Symbol.for("maieutics/actor/v1/surface");
 const REF_TOKEN_BRAND = Symbol.for("maieutics/actor/v1/ref-token");
 const REF_PROXY_BRAND = Symbol.for("maieutics/actor/v1/ref-proxy");
 
-/** The proxy type: every method returns a Promise; non-functions are `never`. */
+/**
+ * The proxy type: methods returning an AsyncIterable keep it lazy (matching
+ * worker-actor's `Remote<T>` projection, so streaming methods transport over
+ * the iterable codec); other methods return a Promise; non-functions are
+ * `never`.
+ */
 export type RemoteActor<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>>
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R
+    ? R extends AsyncIterable<infer E> ? (...args: A) => AsyncIterable<E>
+    : (...args: A) => Promise<Awaited<R>>
     : never;
 };
 
@@ -87,6 +94,8 @@ setMainAcquire(() => {});
 
 interface AcquireActorFrame extends ControlFrame {
   specifier: string;
+  /** Optional surface name for name-addressed acquire (remote collections). */
+  name?: string;
 }
 
 registerControlHandler("__acquire-actor", () => {
@@ -131,13 +140,37 @@ export function clearActorExports(): void {
   specifierBySurface.clear();
 }
 
+/** Marker on remote-collection surfaces (set by the SDK entry); the acquire
+ * router prefers ordinary actor surfaces when both share a specifier. */
+const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
+
 function findSurfaceBySpecifier(
   specifier: string,
+  name?: string,
 ): { name: string; surface: object } | undefined {
-  for (const [name, surface] of surfaces) {
-    if (specifierBySurface.get(name) === specifier) return { name, surface };
+  // Name-addressed acquire (remote collections): resolve the exact named
+  // surface this worker serves under the specifier, ordinary or collection.
+  if (name !== undefined) {
+    const surface = surfaces.get(name);
+    if (surface !== undefined && specifierBySurface.get(name) === specifier) {
+      return { name, surface };
+    }
+    return undefined;
   }
-  return undefined;
+  // Specifier-only acquire (actor interop): prefer an ordinary actor surface
+  // over a remote-collection surface when a worker exports both under the
+  // same specifier (the collection is addressed by extension-point name, not
+  // by this acquire path).
+  let collection: { name: string; surface: object } | undefined;
+  for (const [surfaceName, surface] of surfaces) {
+    if (specifierBySurface.get(surfaceName) !== specifier) continue;
+    if ((surface as Record<symbol, unknown>)[COLLECTION_SURFACE_MARKER] === true) {
+      collection ??= { name: surfaceName, surface };
+      continue;
+    }
+    return { name: surfaceName, surface };
+  }
+  return collection;
 }
 
 /**
@@ -280,16 +313,23 @@ function serveRefOwner(
       return;
     }
     if (frame.type !== "call") return;
+    // makeRpcHandler decodes the args itself (its signature takes the encoded
+    // request). Passing already-decoded args would decode twice: plain values
+    // survive, but a codec value like an AsyncIterable placeholder loses its
+    // symbol-keyed methods on the second plain-object pass and becomes {}.
     const result = await handler({
       id: frame.id,
       method: frame.method,
-      args: registry.decode(frame.args) as unknown[],
+      args: frame.args,
     });
     if (result.ok) {
-      const transfer: Transferable[] = [];
+      // makeRpcHandler already encoded the value and collected the transferable
+      // ports (an AsyncIterable return travels over an iterable-codec channel).
+      // Re-encoding would turn the placeholder back into a plain object and drop
+      // the ports, so send the handler's own value and transfer list.
       channel.send(
-        { type: "result", id: result.id, ok: true, value: registry.encode(result.value, transfer) },
-        transfer,
+        { type: "result", id: result.id, ok: true, value: result.value },
+        result.transfer,
       );
     } else {
       channel.send({ type: "result", id: result.id, ok: false, error: result.error });
@@ -543,9 +583,11 @@ registerControlHandler("__serve-ref", (frame: ControlFrame) => {
   if (frame.port === undefined) return;
   const registry = getActiveRegistry();
   if (!registry) return;
-  const specifier = (frame as AcquireActorFrame).specifier;
+  const acquire = frame as AcquireActorFrame;
+  const specifier = acquire.specifier;
   if (typeof specifier !== "string") return;
-  const found = findSurfaceBySpecifier(specifier);
+  const name = typeof acquire.name === "string" ? acquire.name : undefined;
+  const found = findSurfaceBySpecifier(specifier, name);
   if (found === undefined) {
     frame.port.close();
     return;

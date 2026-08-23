@@ -5,6 +5,7 @@
     "jsr:@ghostflyby/worker-actor@0.1.0": "0.1.0",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.13",
+    "npm:@preact/signals-core@1.14.4": "1.14.4",
     "npm:acorn@8": "8.18.0",
     "npm:astring@1": "1.9.0",
     "npm:esbuild-wasm@0.25.12": "0.25.12"
@@ -32,6 +33,9 @@
     }
   },
   "npm": {
+    "@preact/signals-core@1.14.4": {
+      "integrity": "sha512-HNB6HYeYKhQbJ1aKl+YRjrS4+QWHLKX6qKoUsfS/m0vqzsVaEBiZiaKbG/e+NKk2ch5ALQr/ihWaMHxiCuuWHA=="
+    },
     "acorn@8.18.0": {
       "integrity": "sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==",
       "bin": true
@@ -49,7 +53,8 @@
     "dependencies": [
       "jsr:@ghostflyby/aves@0.6.0",
       "jsr:@ghostflyby/worker-actor@0.1.0",
-      "jsr:@std/assert@^1.0.19"
+      "jsr:@std/assert@^1.0.19",
+      "npm:@preact/signals-core@1.14.4"
     ],
     "members": {
       "maieutics-deno-repl": {
@@ -60,7 +65,8 @@
       },
       "maieutics-plugin-sdk": {
         "dependencies": [
-          "jsr:@ghostflyby/worker-actor@0.1.0"
+          "jsr:@ghostflyby/worker-actor@0.1.0",
+          "npm:@preact/signals-core@1.14.4"
         ]
       }
     }

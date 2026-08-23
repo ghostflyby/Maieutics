@@ -31,18 +31,36 @@ import {
 } from "./actor_ref.ts";
 import {
   connectChannel,
+  type DecodeContext,
+  getActiveRegistry,
   type PeerRpc,
   registerControlHandler,
 } from "@ghostflyby/worker-actor/codec";
-import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
-
-// The worker-side registry lives in the worker-actor runtime module; the SDK
-// shares the worker context, so the control-plane accessor resolves the same
-// instance. Exposed here for the dependency stubs' channel cleanup.
-declare global {
-  // deno-lint-ignore no-explicit-any
-  var __workerActorRegistry: any;
-}
+import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import {
+  bindDefiningWorker,
+  collection,
+  type CollectionStream,
+  createRemoteIdentity,
+  CURRENT_MODULE,
+  defineExtensionPoint as defineReactiveExtensionPoint,
+  type ExtensionPointIdentity,
+  isExtensionPoint,
+  isLocalExtensionPoint,
+  isRemoteExtensionPoint,
+  provide,
+  providerCount,
+  type ProviderRegistration,
+  type ReactiveValue,
+  setRemoteProvide,
+  setRemoteUnprovide,
+  setWorkerSpecifier,
+  signal,
+  snapshot,
+  subscribe,
+  unprovide,
+  values,
+} from "./reactive.ts";
 
 const NAMESPACE = "maieutics/extensionPoint/v1";
 
@@ -188,8 +206,30 @@ export type ExtensionPointImpl<K extends ExtensionPointName> = ExtensionPointSha
 export function defineExtensionPoint<K extends ExtensionPointName>(
   name: K,
   impl: ExtensionPointInput<K>,
-): ExtensionPointImpl<K> {
-  const symbol = ExtensionPoint[name];
+): ExtensionPointImpl<K>;
+/**
+ * Declares a reactive extension-point identity (single-argument form, with an
+ * optional owner module URL). The value is a pure identity with no
+ * implementation; any worker can contribute a reactive value to it with
+ * {@link provide}. This is the contract extension point model: the identity is
+ * owned by the module that declares it, and sharing it requires importing the
+ * contract module that exports it.
+ */
+export function defineExtensionPoint<T = unknown>(name: string): ExtensionPointIdentity<T>;
+export function defineExtensionPoint(
+  name: string,
+  implOrOwner?: unknown,
+): ExtensionPointIdentity | ExtensionPointImpl<ExtensionPointName> {
+  // The owner is taken from the loader (CURRENT_MODULE), not from an argument:
+  // a string second argument was the pre-loader contract-mode owner and is
+  // accepted for compatibility but ignored. A function/object second argument
+  // is the legacy two-argument handler form.
+  if (typeof implOrOwner === "string" || implOrOwner === undefined) {
+    return defineReactiveExtensionPoint(name);
+  }
+
+  const symbol = ExtensionPoint[name as ExtensionPointName];
+  const impl = implOrOwner;
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {
@@ -215,7 +255,7 @@ export function defineExtensionPoint<K extends ExtensionPointName>(
       `Extension point '${name}' marker could not be attached.`,
     );
   }
-  return impl as ExtensionPointImpl<K>;
+  return impl as ExtensionPointImpl<ExtensionPointName>;
 }
 
 // —— Actor surfaces (cross-plugin interop) ——
@@ -311,7 +351,17 @@ interface WorkerInitConfig {
    * and entry file URL of each dependency worker this plugin may call. The
    * load hook redirects only import edges that resolve to one of these.
    */
-  actorEntries: readonly { specifier: string; entryUrl: string }[];
+  actorEntries: readonly {
+    specifier: string;
+    entryUrl: string;
+    /**
+     * Contract identities (extension points) the dependency worker exports,
+     * reported by the host from its ready frame. The load hook synthesizes
+     * stub exports for these, so `import { ep } from "contract"` yields a
+     * remote identity carrying the defining worker's specifier.
+     */
+    identities?: readonly { exportName: string; name: string; owner: string }[];
+  }[];
 }
 
 let ownSpecifierValue = "";
@@ -367,6 +417,9 @@ export async function initPluginWorker(): Promise<void> {
 
   const config = await awaitConfig();
   ownSpecifierValue = config.specifier;
+  setWorkerSpecifier(config.specifier);
+  setRemoteProvide(remoteProvideImpl);
+  setRemoteUnprovide(remoteUnprovideImpl);
 
   // The dependency stubs need this worker's id to build routeable refIds;
   // expose the worker-actor runtime's registry to them via the global slot.
@@ -427,24 +480,41 @@ async function initialize(entryUrl: string): Promise<void> {
   // extension points are known only after init, so repopulate the object now.
   for (const key of Object.keys(servingApi)) delete servingApi[key];
   for (const [name, impl] of extensionPoints) {
-    const invoke = async (request: unknown): Promise<unknown> => {
-      const value = typeof impl === "function"
-        ? await (impl as (context: unknown) => unknown)(request)
-        : await (impl as { handler(context: unknown): unknown }).handler(request);
-      return value;
+    const invoke = (request: unknown): unknown => {
+      const raw = typeof impl === "function"
+        ? (impl as (context: unknown) => unknown)(request)
+        : (impl as { handler(context: unknown): unknown }).handler(request);
+      // A handler returning an AsyncIterable must be passed through untouched:
+      // awaiting it would flatten the stream into an object and break the
+      // worker-actor iterable codec. Only promise values are awaited.
+      if (raw instanceof Promise) return raw;
+      return raw;
     };
     servingApi[name] = invoke;
   }
+  // Internal host hook: a declared dependency provider stopped; drop its remote
+  // contributions. Exposed on the RPC surface because the host notifies through
+  // the worker-actor channel (a bare postMessage frame would be ignored by the
+  // worker runtime's onmessage dispatcher).
+  servingApi["__maieuticsProviderDead"] = (specifier: unknown): void => {
+    if (typeof specifier !== "string") return;
+    removeContributionsByProvider(specifier);
+  };
   scopePostMessage({
     type: "ready",
     specifier: ownSpecifierValue,
     extensionPoints: [...extensionPoints.keys()],
+    // Contract identities (export key + extension point name + defining module
+    // URL) are reported to the host so dependency workers can synthesize stub
+    // identity exports for them (stub identity replacement).
+    contractIdentities: [...contractExportIdentities],
   });
 }
 
 function scanExports(namespace: Record<string, unknown>): void {
   const extensions = new Map<string, unknown>();
   const actors = new Map<string, object>();
+  const contractExports: ContractExportIdentity[] = [];
   for (const [name, value] of Object.entries(namespace)) {
     if (typeof value === "function" || (typeof value === "object" && value !== null)) {
       for (
@@ -454,10 +524,26 @@ function scanExports(namespace: Record<string, unknown>): void {
           extensions.set(extensionName, value);
         }
       }
+      // Reactive (contract-mode) extension point identities: bind the defining
+      // worker specifier and register a remote collection actor under the
+      // extension point's name so providers in other workers can route their
+      // contributions to this worker's collection. Identities are not host
+      // callable, so they stay out of extensionPoints (the servingApi surface).
+      // The surface is keyed by the identity name (what providers address), not
+      // the export key, so `provide(ep, ...)` on an imported identity routes
+      // here regardless of the local export spelling.
+      if (isExtensionPoint(value)) {
+        bindDefiningWorker(value, ownSpecifierValue);
+        const identityName = value.name;
+        extensionPointIdentities.set(identityName, value);
+        contractExports.push({ exportName: name, name: identityName, owner: value.owner });
+        registerActorExport(identityName, ownSpecifierValue, collectionActorSurface(identityName));
+      }
       if ((value as Record<symbol, unknown>)[ACTOR_MARKER] === true) actors.set(name, value);
     }
   }
   extensionPoints = extensions;
+  contractExportIdentities = contractExports;
   for (const [name, surface] of actors) {
     // The defineActor proxy exposes the real surface via __surface so the
     // owner can flatten it (a Proxy cannot be Object.entries-enumerated).
@@ -466,11 +552,228 @@ function scanExports(namespace: Record<string, unknown>): void {
   }
 }
 
+/**
+ * The remote collection actor surface exposed by the defining worker for one
+ * extension point. Providers in other workers acquire this surface (via the
+ * dependency stub under the extension point's name) and call `add` to
+ * contribute; `changes` streams the aggregated collection snapshots.
+ *
+ * The surface carries a marker so the acquire router prefers ordinary actor
+ * surfaces when a worker exports both an actor and a collection under the
+ * same specifier.
+ */
+const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
+
+/** One remote contribution tracked by the defining worker: the local signal
+ * plus the pull-loop stop, so `remove`/dispose can withdraw it. */
+interface RemoteContribution {
+  registration: ProviderRegistration<unknown>;
+  stop: () => void;
+}
+
+/** Remote contributions by extension point name, keyed by provider identity
+ * (the acquiring worker's refId prefix serves as the per-provider key; one
+ * provider contributes once per extension point). */
+const remoteContributions = new Map<string, Map<string, RemoteContribution>>();
+
+/** The provider identity of an incoming contribution: the caller's worker id
+ * prefix from the acquire refId (rewritten by the host to the owner id, but
+ * the original holder prefix survives in the frame's refId — see below). */
+let remoteContributionCounter = 0;
+
+function collectionActorSurface(name: string): object {
+  return {
+    [COLLECTION_SURFACE_MARKER]: true,
+    add(
+      initial: unknown,
+      changes: AsyncIterable<unknown>,
+      providerKey?: string,
+    ): Promise<void> {
+      const ep = lookupIdentity(name);
+      if (ep === undefined) return Promise.resolve();
+      applyRemoteContribution(ep, initial, changes, providerKey);
+      return Promise.resolve();
+    },
+    remove(providerKey?: string): Promise<void> {
+      const ep = lookupIdentity(name);
+      if (ep === undefined) return Promise.resolve();
+      if (providerKey === undefined) {
+        removeAllRemoteContributions(name);
+      } else {
+        removeRemoteContribution(name, providerKey);
+      }
+      return Promise.resolve();
+    },
+    changes(): AsyncIterable<unknown[]> {
+      const ep = lookupIdentity(name);
+      return ep === undefined ? emptyAsyncIterable() : subscribe(ep) as AsyncIterable<unknown[]>;
+    },
+  };
+}
+
+/** True when a registered surface is a remote collection actor. */
+export function isCollectionSurface(surface: object): boolean {
+  return (surface as Record<symbol, unknown>)[COLLECTION_SURFACE_MARKER] === true;
+}
+
+function lookupIdentity(name: string): ExtensionPointIdentity | undefined {
+  return extensionPointIdentities.get(name);
+}
+
+function emptyAsyncIterable<T>(): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<T> {
+      // never yields
+    },
+  };
+}
+
+/** Applies a remote provider's contribution to the local collection: register
+ * the initial value, then keep pulling the change stream and updating the
+ * signal. The pull loop runs independently of any consumer so the producer's
+ * values stream continuously; the signal stays registered until the provider's
+ * stream ends (undefined values simply drop the contribution from snapshots).
+ *
+ * `providerKey` identifies the contributing provider (a client-generated id)
+ * so a later `remove`/`unprovide` can withdraw exactly this contribution and a
+ * repeated `add` with the same key replaces the previous contribution instead
+ * of stacking duplicates.
+ *
+ * The loop must never throw outward: a failed/ended stream unregisters the
+ * contribution (the provider is gone or the channel closed). */
+function applyRemoteContribution(
+  extensionPoint: ExtensionPointIdentity,
+  initial: unknown,
+  changes: AsyncIterable<unknown>,
+  providerKey?: string,
+): void {
+  const name = extensionPoint.name;
+  const key = providerKey ?? `remote:${++remoteContributionCounter}`;
+  // Replace a previous contribution from the same provider (idempotent add).
+  removeRemoteContribution(name, key);
+
+  const value = signal<unknown | undefined>(initial as unknown | undefined);
+  const registration = provide(extensionPoint, value as ReactiveValue<unknown | undefined>);
+  let stopped = false;
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    unprovide(registration);
+    const byName = remoteContributions.get(name);
+    if (byName?.get(key)?.registration === registration) {
+      byName.delete(key);
+      if (byName.size === 0) remoteContributions.delete(name);
+    }
+  };
+  // Merge into the existing per-name map instead of replacing it: replacing
+  // would drop references to contributions registered under other keys, whose
+  // signals would linger unremovable in the collection.
+  const byName = remoteContributions.get(name) ?? new Map<string, RemoteContribution>();
+  byName.set(key, { registration, stop });
+  remoteContributions.set(name, byName);
+
+  void (async () => {
+    try {
+      const iterator = changes[Symbol.asyncIterator]();
+      while (!stopped) {
+        const next = await iterator.next();
+        if (stopped) return;
+        if (next.done) return stop();
+        value.value = next.value as unknown | undefined;
+      }
+    } catch {
+      // The provider's stream ended or was abandoned; withdraw the contribution.
+      stop();
+    }
+  })();
+}
+
+/** Withdraws the remote contribution identified by `providerKey`, stopping its
+ * pull loop and unregistering its signal from the collection. */
+function removeRemoteContribution(name: string, providerKey: string): void {
+  const byName = remoteContributions.get(name);
+  if (byName === undefined) return;
+  byName.get(providerKey)?.stop();
+}
+
+/** Withdraws every contribution whose providerKey carries `providerSpecifier`
+ * as its prefix (the provider worker is dead or stopped). */
+function removeContributionsByProvider(providerSpecifier: string): void {
+  const prefix = `${providerSpecifier}:`;
+  for (const byName of remoteContributions.values()) {
+    for (const [key, contribution] of byName) {
+      if (key.startsWith(prefix)) contribution.stop();
+    }
+  }
+}
+
+/** Withdraws every remote contribution of one extension point. */
+function removeAllRemoteContributions(name: string): void {
+  const byName = remoteContributions.get(name);
+  if (byName === undefined) return;
+  for (const contribution of byName.values()) contribution.stop();
+}
+
+/** Routes provide() to the defining worker's remote collection. The providerKey
+ * (generated on the providing side) identifies this contribution so a later
+ * unprovide can withdraw exactly it. */
+async function remoteProvideImpl(
+  specifier: string,
+  name: string,
+  initial: unknown,
+  changes: AsyncIterable<unknown>,
+  providerKey: string,
+): Promise<void> {
+  const stub = createDependencyStub(specifier, name);
+  const collection = (stub as unknown as Record<string, unknown>)[name] as {
+    add(
+      initial: unknown,
+      changes: AsyncIterable<unknown>,
+      providerKey: string,
+    ): Promise<void>;
+  };
+  await collection.add(initial, changes, providerKey);
+}
+
+/** Routes unprovide() of a remote contribution back to the defining worker,
+ * which withdraws the contribution by providerKey. */
+async function remoteUnprovideImpl(
+  specifier: string,
+  name: string,
+  providerKey: string,
+): Promise<void> {
+  const stub = createDependencyStub(specifier, name);
+  const collection = (stub as unknown as Record<string, unknown>)[name] as {
+    remove(providerKey: string): Promise<void>;
+  };
+  await collection.remove(providerKey);
+}
+
 let extensionPoints = new Map<string, unknown>();
+const extensionPointIdentities = new Map<string, ExtensionPointIdentity>();
+
+/** One contract identity exported by this worker's entry module: the export
+ * key (what a dependency imports), the extension point name (what providers
+ * address), and the defining module URL (the identity's owner). */
+interface ContractExportIdentity {
+  readonly exportName: string;
+  readonly name: string;
+  readonly owner: string;
+}
+
+/** Contract identities reported in the ready frame; cleared on dispose. */
+let contractExportIdentities: ContractExportIdentity[] = [];
 
 function disposePlugin(): void {
+  // Stop every remote pull loop; each stop unregisters its contribution.
+  for (const byName of remoteContributions.values()) {
+    for (const contribution of byName.values()) contribution.stop();
+  }
+  remoteContributions.clear();
   clearActorExports();
   extensionPoints.clear();
+  extensionPointIdentities.clear();
+  contractExportIdentities = [];
   linkedSurface = {};
   for (const close of closeHandlers) close();
   closeHandlers.length = 0;
@@ -498,8 +801,25 @@ const stubBySpecifier = new Map<string, RemoteActor<Record<string, unknown>>>();
  */
 export function createDependencyStub(
   specifier: string,
+): RemoteActor<Record<string, unknown>>;
+/**
+ * Internal: a stub whose acquire targets a specific named surface of the
+ * dependency worker (the remote collection of one extension point) instead of
+ * its default actor surface. The name rides on the acquire frame so the owner
+ * serves exactly that surface. Each named stub is cached independently, so a
+ * worker can hold both the default surface and one named collection per
+ * extension point.
+ */
+export function createDependencyStub(
+  specifier: string,
+  surfaceName: string,
+): RemoteActor<Record<string, unknown>>;
+export function createDependencyStub(
+  specifier: string,
+  surfaceName?: string,
 ): RemoteActor<Record<string, unknown>> {
-  const existing = stubBySpecifier.get(specifier);
+  const cacheKey = surfaceName === undefined ? specifier : `${specifier}\u0000${surfaceName}`;
+  const existing = stubBySpecifier.get(cacheKey);
   if (existing) return existing;
 
   let workerIdPrefix = globalWorkerId();
@@ -526,7 +846,7 @@ export function createDependencyStub(
     if (refId.length === 0) {
       refId = `${workerIdPrefix}:${specifier}:${++dependencyCallCount}`;
     }
-    postAcquireActor(specifier, refId);
+    postAcquireActor(specifier, refId, surfaceName);
     return new Promise<unknown>((resolve, reject) => {
       queue.push({ method, args, resolve, reject });
     });
@@ -537,7 +857,7 @@ export function createDependencyStub(
       if (prop === "then") return undefined;
       if (prop === "dispose") {
         return () => {
-          stubBySpecifier.delete(specifier);
+          stubBySpecifier.delete(cacheKey);
           (materialized as { dispose?(): Promise<void> } | undefined)?.dispose?.();
           return Promise.resolve();
         };
@@ -554,7 +874,16 @@ export function createDependencyStub(
               return () => acquireAndCall(`${String(prop)}.dispose`, []);
             }
             if (typeof method === "string") {
-              return (...args: unknown[]) => acquireAndCall(`${String(prop)}.${method}`, args);
+              return (...args: unknown[]) => {
+                const p = acquireAndCall(`${String(prop)}.${method}`, args);
+                // A method may return an AsyncIterable over the wire; attach a
+                // lazy iterator so `for await` works exactly like worker-actor's
+                // Remote<T> projection (the first next() awaits the acquire and
+                // iterates the resolved stream). Ordinary single-value methods
+                // are unaffected: nobody for-await's them.
+                attachLazyIterator(p);
+                return p;
+              };
             }
             return undefined;
           },
@@ -564,7 +893,7 @@ export function createDependencyStub(
       return undefined;
     },
   });
-  stubBySpecifier.set(specifier, surface);
+  stubBySpecifier.set(cacheKey, surface);
 
   // The worker id arrives via the standard worker-actor frame; the surface's
   // first call before that would use the placeholder prefix, so re-route any
@@ -585,9 +914,9 @@ export function createDependencyStub(
       return;
     }
     const channel = connectChannel(frame.port);
-    const registry = activeRegistry();
+    const registry = getActiveRegistry();
     if (registry) registry.registerChannel(channel);
-    const real = createRefProxyForStub(channel, refId, registry);
+    const real = createRefProxyForStub(channel, registry);
     materialized = real;
     // Defer the flush one microtask: the owner's __serve-ref handler binds its
     // channel in the same message-dispatch turn; a same-turn send on the fresh
@@ -611,31 +940,24 @@ function globalWorkerId(): string {
     "w?";
 }
 
-/** Posts the Maieutics acquire request; the host's router answers with __serve-actor/__ref-acquired. */
-function postAcquireActor(specifier: string, refId: string): void {
+/** Posts the Maieutics acquire request; the host's router answers with __serve-actor/__ref-acquired.
+ * An optional name addresses a specific surface (a remote collection) instead
+ * of the worker's default actor surface. */
+function postAcquireActor(specifier: string, refId: string, name?: string): void {
   (self as unknown as { postMessage(m: unknown): void }).postMessage({
     type: "__acquire-actor",
     specifier,
     refId,
+    ...(name === undefined ? {} : { name }),
   });
 }
 
 let dependencyCallCount = 0;
 
 /** The stub's received channels must join the worker's registry for failAll cleanup. */
-function activeRegistry(): { registerChannel(channel: unknown): void } | undefined {
-  // The worker-actor runtime registers its per-worker registry on the worker
-  // context; the SDK entry shares that context, so the accessor returns the
-  // same instance the serveWorker runtime uses.
-  return (globalThis as unknown as {
-    __workerActorRegistry?: { registerChannel(channel: unknown): void };
-  }).__workerActorRegistry;
-}
-
 function createRefProxyForStub(
   channel: ReturnType<typeof connectChannel>,
-  refId: string,
-  registry: { registerChannel(channel: unknown): void } | undefined,
+  registry: DecodeContext["registry"] | undefined,
 ): RemoteActor<Record<string, unknown>> {
   const pending = new Map<number, {
     resolve: (value: unknown) => void;
@@ -655,8 +977,15 @@ function createRefProxyForStub(
     const call = pending.get(frame.id ?? -1);
     if (!call) return;
     pending.delete(frame.id ?? -1);
-    if (frame.ok) call.resolve(frame.value);
-    else call.reject(new Error(frame.error?.message ?? "Actor call failed"));
+    if (frame.ok) {
+      // The value arrives encoded (an AsyncIterable return travels as an
+      // iterable-codec placeholder with a MessagePort); decode it through the
+      // worker-actor registry so the caller gets a real local stream, exactly
+      // like actor_ref's createRefProxy does.
+      call.resolve(registry ? registry.decode(frame.value) : frame.value);
+    } else {
+      call.reject(new Error(frame.error?.message ?? "Actor call failed"));
+    }
   });
   const proxy = new Proxy({} as RemoteActor<Record<string, unknown>>, {
     get(_target, prop) {
@@ -679,7 +1008,16 @@ function createRefProxyForStub(
             const id = nextCallId++;
             pending.set(id, { resolve, reject });
             try {
-              channel.send({ type: "call", id, method: prop, args });
+              const transfer: Transferable[] = [];
+              channel.send(
+                {
+                  type: "call",
+                  id,
+                  method: prop,
+                  args: registry ? registry.encode(args, transfer) as unknown[] : args,
+                },
+                transfer,
+              );
             } catch (error) {
               reject(error);
             }
@@ -689,8 +1027,6 @@ function createRefProxyForStub(
       return undefined;
     },
   });
-  void refId;
-  void registry;
   return proxy;
 }
 
@@ -718,14 +1054,24 @@ function createRefProxyForStub(
  *     equals a registry entry URL (import-map aliases, relative paths, ...).
  */
 function installDependencyLoadHook(
-  actorEntries: readonly { specifier: string; entryUrl: string }[],
+  actorEntries: readonly {
+    specifier: string;
+    entryUrl: string;
+    identities?: readonly { exportName: string; name: string; owner: string }[];
+  }[],
 ): void {
-  if (actorEntries.length === 0) return;
   const canonical = new Map(
     actorEntries.map((entry) => [normalizeSpecifier(entry.specifier), entry.specifier]),
   );
   const entryUrls = new Map(
     actorEntries.map((entry) => [normalizeFileUrl(entry.entryUrl), entry.specifier]),
+  );
+  // Contract identities per dependency specifier, used to synthesize stub
+  // identity exports (stub identity replacement).
+  const identitiesBySpecifier = new Map(
+    actorEntries
+      .filter((entry) => (entry.identities?.length ?? 0) > 0)
+      .map((entry) => [entry.specifier, entry.identities!]),
   );
   // node:module is CJS; registerHooks is Deno's implemented (sync) form of
   // Node's registerHooks. `import` is hoisted to module top level (fine: the
@@ -748,11 +1094,16 @@ function installDependencyLoadHook(
       return resolved;
     },
     load(url: string, context: unknown, nextLoad: (u: string, c: unknown) => unknown) {
+      // Record the module URL before its top-level code runs so
+      // defineExtensionPoint can read the defining module from the loader
+      // (CURRENT_MODULE). This runs for every module, even with no actor
+      // entries, which is why the hook installs unconditionally.
+      (globalThis as Record<symbol, unknown>)[CURRENT_MODULE] = url;
       if (url.startsWith(STUB_SCHEME)) {
         const specifier = decodeURIComponent(url.slice(STUB_SCHEME.length));
         return {
           format: "module",
-          source: stubSource(specifier),
+          source: stubSource(specifier, identitiesBySpecifier.get(specifier)),
           shortCircuit: true,
         };
       }
@@ -806,15 +1157,28 @@ function importNodeModuleHooks(): { registerHooks(hooks: unknown): void } {
   return nodeModule as { registerHooks(hooks: unknown): void };
 }
 
-function stubSource(specifier: string): string {
+function stubSource(
+  specifier: string,
+  identities?: readonly { exportName: string; name: string; owner: string }[],
+): string {
   // The stub imports the SDK entry module for the acquire machinery: the
   // plugin module graph shares the SDK instance with the worker entry (Deno
   // caches modules by URL per worker), so no re-initialization occurs, and the
   // load hook is installed in this same graph, so the SDK import resolves
-  // normally. The default export is the single lazy surface.
+  // normally. The default export is the single lazy surface; contract
+  // identities of the dependency are exported by their export name as remote
+  // identities (stub identity replacement), so `import { ep } from "contract"`
+  // yields the identity with the defining worker's specifier.
+  const identityExports = (identities ?? []).map((identity) => {
+    const value = `createRemoteIdentity(${JSON.stringify(identity.name)}, ${
+      JSON.stringify(identity.owner)
+    }, ${JSON.stringify(specifier)})`;
+    return `export const ${identity.exportName} = ${value};`;
+  });
   return `
-import { createDependencyStub } from ${JSON.stringify(SDK_ENTRY_URL)};
+import { createDependencyStub, createRemoteIdentity } from ${JSON.stringify(SDK_ENTRY_URL)};
 export default createDependencyStub(${JSON.stringify(specifier)});
+${identityExports.join("\n")}
 `;
 }
 
@@ -825,3 +1189,23 @@ function scopePostMessage(message: unknown): void {
 // —— Link peer surface (flattened namespace) ——
 
 export { flattenSurface };
+
+// —— Reactive extension points ——
+
+export {
+  collection,
+  createRemoteIdentity,
+  CURRENT_MODULE,
+  defineReactiveExtensionPoint,
+  isExtensionPoint,
+  isLocalExtensionPoint,
+  isRemoteExtensionPoint,
+  provide,
+  providerCount,
+  snapshot,
+  subscribe,
+  unprovide,
+  values,
+};
+export type { CollectionStream, ExtensionPointIdentity, ProviderRegistration, ReactiveValue };
+export { computed, effect, signal } from "./reactive.ts";

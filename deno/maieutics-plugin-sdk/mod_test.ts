@@ -37,15 +37,17 @@ Deno.test("defineExtensionPoint rejects a bare object without a handler", () => 
   );
 });
 
-Deno.test("the sdk module imports only worker-actor and its actor ref module", async () => {
+Deno.test("the sdk module imports only worker-actor, signals-core and its local modules", async () => {
   const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
   const imports = [...source.matchAll(/^import[^\n]*?from\s+"([^"]+)"/gm)].map((match) => match[1]);
   assert(imports.length > 0, "expected at least one import in the sdk module");
   for (const specifier of imports) {
     assert(
       specifier === "./actor_ref.ts" ||
+        specifier === "./reactive.ts" ||
         specifier === "@ghostflyby/worker-actor" ||
-        specifier.startsWith("@ghostflyby/worker-actor/"),
+        specifier.startsWith("@ghostflyby/worker-actor/") ||
+        specifier === "@preact/signals-core",
       `unexpected import '${specifier}' in the sdk module`,
     );
   }

@@ -133,6 +133,15 @@ interface WorkerRpc {
   [method: string]: (payload: unknown) => Promise<unknown>;
 }
 
+/** One contract identity exported by a worker's entry module: the export key
+ * (what a dependency imports), the extension point name (what providers
+ * address), and the defining module URL (the identity's owner). */
+interface ContractExportIdentity {
+  readonly exportName: string;
+  readonly name: string;
+  readonly owner: string;
+}
+
 /** Identity + runtime handle of one spawned worker. */
 interface WorkerHandle {
   plugin: PluginConfig;
@@ -144,6 +153,8 @@ interface WorkerHandle {
   state: "starting" | "running" | "stopping" | "stopped" | "failed" | "disabled" | "crashed";
   failure?: string;
   extensionPoints: Set<string>;
+  /** Contract identities (extension points) this worker's entry exports. */
+  contractIdentities: ContractExportIdentity[];
   restarts: number;
 }
 
@@ -182,6 +193,7 @@ export class PluginHost {
           worker: undefined as never,
           state: State.Stopped,
           extensionPoints: new Set(),
+          contractIdentities: [],
           restarts: 0,
         });
         this.#bySpecifier.set(workerConfig.specifier, key);
@@ -329,18 +341,20 @@ export class PluginHost {
         type?: string;
         specifier?: unknown;
         refId?: unknown;
+        name?: unknown;
       };
       if (frame?.type !== "__acquire-actor") return;
       const specifier = frame.specifier;
       const refId = frame.refId;
       if (typeof specifier !== "string" || typeof refId !== "string") return;
       const requester = event.currentTarget as Worker;
-      this.#routeAcquire(requester, specifier, refId);
+      const name = typeof frame.name === "string" ? frame.name : undefined;
+      this.#routeAcquire(requester, specifier, refId, name);
     });
   }
 
   /** Bootstraps the owner↔holder channel for a specifier acquire. */
-  #routeAcquire(requester: Worker, specifier: string, refId: string): void {
+  #routeAcquire(requester: Worker, specifier: string, refId: string, name?: string): void {
     const key = this.#bySpecifier.get(specifier);
     if (key === undefined) {
       return;
@@ -354,9 +368,17 @@ export class PluginHost {
     }
     const { port1, port2 } = new MessageChannel();
     // serveWorker dispatches __serve-ref / __ref-acquired; the specifier rides
-    // on the serve frame so the owner serves the right surface.
+    // on the serve frame so the owner serves the right surface. The optional
+    // name addresses a specific surface (a remote collection) when present;
+    // the host stays agnostic and forwards it unchanged.
     owner.worker.postMessage(
-      { type: "__serve-ref", refId, specifier, port: port1 },
+      {
+        type: "__serve-ref",
+        refId,
+        specifier,
+        ...(name === undefined ? {} : { name }),
+        port: port1,
+      },
       { transfer: [port1] },
     );
     requester.postMessage(
@@ -423,10 +445,16 @@ export class PluginHost {
       // addEventListener coexists with spawn's onmessage property (which owns
       // the RPC response channel); the ready/init-error frames are host-side.
       const onMessage = (event: MessageEvent): void => {
-        const frame = event.data as { type?: string; extensionPoints?: string[]; message?: string };
+        const frame = event.data as {
+          type?: string;
+          extensionPoints?: string[];
+          contractIdentities?: ContractExportIdentity[];
+          message?: string;
+        };
         if (frame?.type === "ready") {
           handle.worker.removeEventListener("message", onMessage);
           for (const name of frame.extensionPoints ?? []) handle.extensionPoints.add(name);
+          handle.contractIdentities = frame.contractIdentities ?? [];
           clearTimeout(timeout);
           resolve();
         } else if (frame?.type === "init-error") {
@@ -471,6 +499,10 @@ export class PluginHost {
     if (handle === undefined || handle.state === State.Stopped || handle.state === State.Failed) {
       return;
     }
+    // Before the worker dies, tell every dependency it contributes to that this
+    // provider is gone, so the definers drop its remote contributions (the
+    // provider's change stream would otherwise hang and the value would linger).
+    this.#notifyProviderDead(handle);
     handle.state = State.Stopping;
     const grace = this.#options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     const stopped = Promise.race([
@@ -480,6 +512,34 @@ export class PluginHost {
     await stopped;
     handle.state = State.Stopped;
     handle.extensionPoints.clear();
+    handle.contractIdentities = [];
+  }
+
+  /** Notifies every worker that `stopped` contributes to (its declared
+   * dependencies) that the provider is dead, so they drop its contributions.
+   * The notification rides the worker-actor RPC surface (a bare postMessage
+   * frame would be ignored by the worker runtime's onmessage dispatcher). */
+  #notifyProviderDead(stopped: WorkerHandle): void {
+    const declared = new Set(stopped.plugin.dependencies ?? []);
+    for (const candidate of this.#workers.values()) {
+      if (candidate.plugin.id !== stopped.plugin.id && declared.has(candidate.plugin.id)) {
+        if (candidate.state === State.Running && candidate.actor !== undefined) {
+          try {
+            void (candidate.actor as unknown as Record<
+              string,
+              (specifier: string) => Promise<unknown>
+            >)["__maieuticsProviderDead"](stopped.specifier).catch((error: unknown) => {
+              console.error(
+                `[plugin-host] provider-dead notification to '${candidate.specifier}' failed: ` +
+                  `${error instanceof Error ? error.message : String(error)}`,
+              );
+            });
+          } catch {
+            // best-effort: the definer may already be stopping
+          }
+        }
+      }
+    }
   }
 
   async #startSubgraph(keys: string[]): Promise<void> {
@@ -504,18 +564,31 @@ export class PluginHost {
    * URL of every worker that plugin runs. Both come from spawn-time known
    * data (the plugin manifest exports), never from reading module sources.
    * The consumer worker's load hook uses this to decide which import edges
-   * carry actor semantics and must be redirected.
+   * carry actor semantics and must be redirected. The dependency worker's
+   * contract identities ride along so the consumer can synthesize stub
+   * identity exports for them.
    */
   #dependencyActorEntries(handle: WorkerHandle): Array<{
     specifier: string;
     entryUrl: string;
+    identities?: ContractExportIdentity[];
   }> {
-    const result: Array<{ specifier: string; entryUrl: string }> = [];
+    const result: Array<{
+      specifier: string;
+      entryUrl: string;
+      identities?: ContractExportIdentity[];
+    }> = [];
     const declared = new Set(handle.plugin.dependencies ?? []);
     for (const candidate of this.#workers.values()) {
       if (candidate.plugin.id !== handle.plugin.id && declared.has(candidate.plugin.id)) {
         if (candidate.specifier.length > 0) {
-          result.push({ specifier: candidate.specifier, entryUrl: candidate.config.entryUrl });
+          result.push({
+            specifier: candidate.specifier,
+            entryUrl: candidate.config.entryUrl,
+            ...(candidate.contractIdentities.length === 0
+              ? {}
+              : { identities: candidate.contractIdentities }),
+          });
         }
       }
     }

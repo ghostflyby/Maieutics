@@ -1,7 +1,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
 
-const SDK_URL = new URL("../maieutics-plugin-sdk/mod.ts", import.meta.url).href;
+const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
 
 function pathToFileUrl(path: string): string {

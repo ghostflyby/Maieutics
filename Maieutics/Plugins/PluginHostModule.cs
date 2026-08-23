@@ -12,6 +12,9 @@ internal sealed class PluginHostModule
     private static readonly (string Resource, string RelativePath)[] Entries =
     [
         ("Maieutics.Deno.PluginSdk.ts", "maieutics-plugin-sdk/mod.ts"),
+        ("Maieutics.Deno.PluginSdkEntry.ts", "maieutics-plugin-sdk/entry.ts"),
+        ("Maieutics.Deno.PluginSdkRuntime.ts", "maieutics-plugin-sdk/runtime.ts"),
+        ("Maieutics.Deno.PluginSdkInterop.ts", "maieutics-plugin-sdk/interop.ts"),
         ("Maieutics.Deno.PluginSdkActorRef.ts", "maieutics-plugin-sdk/actor_ref.ts"),
         ("Maieutics.Deno.PluginSdkReactive.ts", "maieutics-plugin-sdk/reactive.ts"),
         ("Maieutics.Deno.PluginSdkCollectionStream.ts", "maieutics-plugin-sdk/collection_stream.ts"),

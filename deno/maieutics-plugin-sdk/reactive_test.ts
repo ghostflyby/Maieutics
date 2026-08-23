@@ -10,7 +10,7 @@ import {
   subscribe,
   unprovide,
   values,
-} from "./mod.ts";
+} from "./reactive.ts";
 
 Deno.test("defineExtensionPoint(name) returns a pure identity value", () => {
   const ep = defineExtensionPoint<number>("my.ep");
@@ -37,7 +37,7 @@ Deno.test("identities from different modules with the same name do not merge", a
   // each module's URL before its top-level code runs.
   const moduleA = `${Deno.makeTempDirSync()}/contract-a.ts`;
   const moduleB = `${Deno.makeTempDirSync()}/contract-b.ts`;
-  const sdkUrl = new URL("./mod.ts", import.meta.url).href;
+  const sdkUrl = new URL("./reactive.ts", import.meta.url).href;
   Deno.writeTextFileSync(
     moduleA,
     `import { CURRENT_MODULE, defineExtensionPoint } from ${JSON.stringify(sdkUrl)};\n` +

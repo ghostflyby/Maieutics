@@ -301,10 +301,12 @@ export function provide<T>(
 
   // Remote identity: route to the defining worker's collection. The providerKey
   // (generated here) identifies this contribution so a later unprovide can
-  // withdraw exactly it from the defining worker.
+  // withdraw exactly it from the defining worker. It carries the provider's
+  // own specifier prefix, so the defining worker can drop every contribution
+  // from a dead provider (host `__provider-dead` notification).
   if (isRemoteExtensionPoint(extensionPoint) && remoteProvide !== undefined) {
     const specifier = extensionPoint.defSpecifier!;
-    const providerKey = crypto.randomUUID();
+    const providerKey = `${currentWorkerSpecifier()}:${crypto.randomUUID()}`;
     void remoteProvide(
       specifier,
       extensionPoint.name,

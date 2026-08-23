@@ -178,16 +178,17 @@ Design notes:
 ## Remaining work
 
 1. **Hard-crash cleanup.** Provider worker exit without an explicit `unprovide` or stream
-   close leaves its contribution in the definer's collection — unless the host cascades the
-   stop. Verified: a bare MessageChannel gives no peer-death event (`onclose`/`onmessageerror`
-   never fire, postMessage to a closed peer is silently accepted), so no liveness heartbeat
-   exists. **The host is the lifecycle authority**: when a dependency crashes, `#handleDeath`
-   → `#cascade` stops its dependents, and `dispose()` fails their in-flight calls (including
-   stream iterations), so a consumer's pending `next()` settles instead of hanging. This is
-   correct for the star topology; a bidirectional liveness plane (worker-actor's
-   `examples/remote_ref` model) is not needed. The residual gap: a consumer holding a ref to
-   a worker it does **not** declare as a dependency would hang on that stream — but actor
-   acquisition is dependency-declared only, so this cannot arise today.
+   close leaves its contribution in the definer's collection. The host is the lifecycle
+   authority and now covers this: `#stopWorker` notifies each dependency of the stopped
+   provider via a `__provider-dead` frame, and the definer's SDK drops every contribution
+   whose providerKey carries the provider's specifier. The providerKey embeds the provider
+   specifier prefix at provide time. A graceful reload also cleans up via the stream-end
+   path (the producer channel closes, the pull loop ends, `stop()` unregisters); the
+   `__provider-dead` frame is the fast path that also covers hard crashes where no stream
+   end is observable. The end-to-end reload test asserts the definer shows exactly one
+   value after a provider reload (not a stale + fresh duplicate). A true hard-crash
+   (worker process dies) test is not written because Deno's test runner reports the
+   worker's uncaught error as a module failure.
 2. **Remote `snapshot`.** A remote `snapshot(ep)` is a request to the defining worker; add it
    to the collection surface (currently `add`, `remove`, `changes`). Note: remote snapshot
    races with live changes; `subscribe`'s first element is the honest "current" primitive.
@@ -198,11 +199,10 @@ Design notes:
 
 ## Verification baseline
 
-- Current worktree: deno workspace tests 62 passed / 0 failed (SDK + host), REPL 10 passed —
+- Current worktree: deno workspace tests 63 passed / 0 failed (SDK + host), REPL 10 passed —
   no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
 - Feature gates: cross-worker aggregation (single/multi provider), imported contract
-  identity, remote unprovide, cascade-stop stream settlement, and the `values` stream
-  combinators (initial values, changes, undefined silence, map/filter/take/drop/toArray)
-  are green.
+  identity, remote unprovide, cascade-stop stream settlement, the `values` stream
+  combinators, and provider-reload contribution cleanup are green.
 - Full repository acceptance: `dotnet test Maieutics.slnx` and
   `git diff --check` clean (dotnet build with -warnaserror verified on the earlier pass).

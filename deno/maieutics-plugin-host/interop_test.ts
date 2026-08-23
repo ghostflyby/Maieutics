@@ -653,3 +653,53 @@ Deno.test("cascading the stop to a dependent does not hang its stream iteration"
     "the consumer's stream iteration must not hang when the cascade stops it",
   );
 });
+
+Deno.test("reloading a provider drops its stale contribution from the definer", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    import { snapshot } from ${JSON.stringify(SDK_URL)};
+    export const ep = defineExtensionPoint<number>("sample.metric");
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const, snapshots: snapshot(ep) }),
+    });
+    `,
+  );
+
+  const providerSource = (): string =>
+    `${sdkImport()}
+    import { provide, signal } from ${JSON.stringify(SDK_URL)};
+    import { ep } from "@maieutics/definer/main";
+    const value = signal<number | undefined>(1);
+    provide(ep, value);
+    export const pre = defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue" as const }),
+    });
+    `;
+  const provider = writePlugin(root, "provider", providerSource(), ["definer"]);
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(provider)],
+  });
+  try {
+    await host.startAll();
+    // The provider's contribution lands.
+    const initial = await waitForCollectionSnapshot(host, (s) => s.length === 1);
+    assertEquals(initial, [1]);
+
+    // Reload the provider: the host stops it (notifying the definer to drop
+    // its contribution) then restarts it, which contributes again. The stale
+    // contribution must not linger — the definer must show exactly one value
+    // from the fresh provider, not [1, 1].
+    await host.reload("provider", "./main", pluginConfig(provider));
+    const after = await waitForCollectionSnapshot(host, (s) => s.length === 1);
+    assertEquals(after, [1]);
+  } finally {
+    host.dispose();
+  }
+});

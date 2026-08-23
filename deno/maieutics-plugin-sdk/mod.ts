@@ -428,6 +428,15 @@ export async function initPluginWorker(): Promise<void> {
     (globalThis as unknown as { __maieuticsWorkerId: string }).__maieuticsWorkerId = frame.refId;
   });
 
+  // A declared dependency worker stopped (crash, reload, or host shutdown).
+  // The host notifies every dependent; this worker drops the contributions
+  // whose providerKey carries the dead provider's specifier.
+  registerControlHandler("__provider-dead", (frame) => {
+    const specifier = (frame as { providerSpecifier?: unknown }).providerSpecifier;
+    if (typeof specifier !== "string") return;
+    removeContributionsByProvider(specifier);
+  });
+
   installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
@@ -681,6 +690,17 @@ function removeRemoteContribution(name: string, providerKey: string): void {
   const byName = remoteContributions.get(name);
   if (byName === undefined) return;
   byName.get(providerKey)?.stop();
+}
+
+/** Withdraws every contribution whose providerKey carries `providerSpecifier`
+ * as its prefix (the provider worker is dead or stopped). */
+function removeContributionsByProvider(providerSpecifier: string): void {
+  const prefix = `${providerSpecifier}:`;
+  for (const byName of remoteContributions.values()) {
+    for (const [key, contribution] of byName) {
+      if (key.startsWith(prefix)) contribution.stop();
+    }
+  }
 }
 
 /** Withdraws every remote contribution of one extension point. */

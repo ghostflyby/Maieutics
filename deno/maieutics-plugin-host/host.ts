@@ -499,6 +499,10 @@ export class PluginHost {
     if (handle === undefined || handle.state === State.Stopped || handle.state === State.Failed) {
       return;
     }
+    // Before the worker dies, tell every dependency it contributes to that this
+    // provider is gone, so the definers drop its remote contributions (the
+    // provider's change stream would otherwise hang and the value would linger).
+    this.#notifyProviderDead(handle);
     handle.state = State.Stopping;
     const grace = this.#options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     const stopped = Promise.race([
@@ -509,6 +513,22 @@ export class PluginHost {
     handle.state = State.Stopped;
     handle.extensionPoints.clear();
     handle.contractIdentities = [];
+  }
+
+  /** Notifies every worker that `stopped` contributes to (its declared
+   * dependencies) that the provider is dead, so they drop its contributions. */
+  #notifyProviderDead(stopped: WorkerHandle): void {
+    const declared = new Set(stopped.plugin.dependencies ?? []);
+    for (const candidate of this.#workers.values()) {
+      if (candidate.plugin.id !== stopped.plugin.id && declared.has(candidate.plugin.id)) {
+        if (candidate.state === State.Running && candidate.worker !== undefined) {
+          candidate.worker.postMessage({
+            type: "__provider-dead",
+            providerSpecifier: stopped.specifier,
+          });
+        }
+      }
+    }
   }
 
   async #startSubgraph(keys: string[]): Promise<void> {

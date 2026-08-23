@@ -184,22 +184,28 @@ Design notes:
    to the collection surface (currently `add`, `remove`, `changes`). Note: remote snapshot
    races with live changes; `subscribe`'s first element is the honest "current" primitive.
    Likely not worth adding.
-2. ~~Duplicate-provide semantics~~ **Resolved: independent contributions + lint rule.**
+2. ~~Duplicate-provide semantics~~ **Resolved: independent contributions + lint rules.**
    Repeated `provide` of the same signal stays two independent contributions (each with its
-   own provider key) — the runtime does not guess the caller's intent. The accidental
-   duplicate case (same signal provided twice) is caught statically by the
-   `maieutics/provide-once` lint rule, which reports a signal identifier provided more than
-   once in one file. The lint rule's scope is deliberately narrow (same file, same
-   identifier); cross-file and dynamic signals are out of scope, and the runtime still
-   allows independent contributions.
+   own provider key) — the runtime does not guess the caller's intent. Two lint rules catch
+   the anti-patterns statically:
+   - `maieutics/provide-once` reports a signal identifier provided more than once in one
+     file (the accidental duplicate).
+   - `maieutics/provide-top-level` reports a provide inside a function body: a function-body
+     provide registers a new contribution per invocation (never unregistered, accumulating
+     ghosts) and starts a change stream that is never stopped. A conditional top-level
+     provide (`if (cond) provide(ep, s)`) is allowed — it evaluates once and stays
+     declarative.
+   The rules' scope is deliberately narrow (same file, same identifier; function ancestry
+   via the AST parent chain); cross-file and dynamic signals are out of scope, and the
+   runtime still allows independent contributions.
 
 ## Verification baseline
 
-- Current worktree: deno workspace tests 68 passed / 0 failed (SDK + host), REPL 10 passed —
+- Current worktree: deno workspace tests 72 passed / 0 failed (SDK + host), REPL 10 passed —
   no regressions. `deno fmt --check` clean, `deno check` clean for SDK and host.
 - Feature gates: cross-worker aggregation (single/multi provider), imported contract
   identity, remote unprovide, cascade-stop stream settlement, the `values` stream
-  combinators, provider-reload contribution cleanup, and the `provide-once` lint rule
-  are green.
+  combinators, provider-reload contribution cleanup, and the `provide-once` /
+  `provide-top-level` lint rules are green.
 - Full repository acceptance: `dotnet test Maieutics.slnx` and
   `git diff --check` clean (dotnet build with -warnaserror verified on the earlier pass).

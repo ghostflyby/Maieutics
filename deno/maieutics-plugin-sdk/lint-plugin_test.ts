@@ -258,3 +258,50 @@ Deno.test("entrypoint-registered: alias import defineActor export outside entryp
   const hit = diags.filter((d) => d.id === "maieutics/entrypoint-registered");
   assertEquals(hit.length, 1);
 });
+
+// —— provide-top-level ——
+
+Deno.test("provide-top-level: a top-level provide is silent", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const s = signal(1);\n" +
+    "provide(ep, s);\n";
+  const diags = await lint(dir, "mod.ts", src);
+  assertEquals(diags.filter((d) => d.id === "maieutics/provide-top-level").length, 0);
+});
+
+Deno.test("provide-top-level: a provide inside a function is reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const s = signal(1);\n" +
+    "function setup() { provide(ep, s); }\n" +
+    "setup();\n";
+  const diags = await lint(dir, "mod.ts", src);
+  const hit = diags.filter((d) => d.id === "maieutics/provide-top-level");
+  assertEquals(hit.length, 1);
+  assert(hit[0].message.includes("top level"));
+});
+
+Deno.test("provide-top-level: arrow and method bodies are reported", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const s = signal(1);\n" +
+    "const start = () => { provide(ep, s); };\n" +
+    "const obj = { run() { provide(ep, s); } };\n";
+  const diags = await lint(dir, "mod.ts", src);
+  const hit = diags.filter((d) => d.id === "maieutics/provide-top-level");
+  assertEquals(hit.length, 2);
+});
+
+Deno.test("provide-top-level: a conditional top-level provide is silent", async () => {
+  const dir = tempProject({ main: ["./mod.ts"] });
+  const src = REACTIVE_IMPORT +
+    'export const ep = defineExtensionPoint<number>("m");\n' +
+    "const s = signal(1);\n" +
+    "if (isProd) { provide(ep, s); }\n";
+  const diags = await lint(dir, "mod.ts", src);
+  assertEquals(diags.filter((d) => d.id === "maieutics/provide-top-level").length, 0);
+});

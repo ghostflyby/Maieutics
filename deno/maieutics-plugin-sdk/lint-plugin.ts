@@ -463,11 +463,110 @@ const provideOnceRule = {
   },
 };
 
+/** Function-like node types: a provide inside any of these is off the module
+ * top level and registers a contribution per invocation (accumulating ghosts)
+ * with an effect that is never returned — both leak. */
+const FUNCTION_NODE_TYPES = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
+/**
+ * `maieutics/provide-top-level` — provide() is a declarative statement about
+ * the worker's contribution and must run once at module top level. A provide
+ * inside a function body registers a new contribution on every invocation
+ * (never unregistered, so the collection accumulates duplicates) and starts a
+ * changesOf effect that is never stopped — both leak. Deliberately conditional
+ * top-level provides (e.g. `if (env === "prod") provide(ep, s)`) are allowed:
+ * they evaluate once and stay declarative.
+ */
+const provideTopLevelRule = {
+  create(context: Deno.lint.RuleContext) {
+    let provideNames: Set<string> | undefined;
+    let namespaceNames: Set<string> | undefined;
+
+    const ensureNames = (): void => {
+      if (provideNames !== undefined) return;
+      provideNames = new Set();
+      namespaceNames = new Set();
+    };
+
+    const isProvideCall = (node: Deno.lint.CallExpression): boolean => {
+      const callee = (node as {
+        callee?: {
+          type?: string;
+          name?: string;
+          object?: { name?: string };
+          property?: { name?: string };
+        };
+      })?.callee;
+      if (callee === undefined || callee === null) return false;
+      if (callee.type === "Identifier") return provideNames!.has(callee.name ?? "");
+      return callee.type === "MemberExpression" &&
+        (namespaceNames?.has(callee.object?.name ?? "") ?? false) &&
+        callee.property?.name === "provide";
+    };
+
+    /** Walks the parent chain up to the enclosing function, if any. */
+    const enclosingFunction = (node: Deno.lint.CallExpression): string | undefined => {
+      let cur: unknown = (node as { parent?: unknown }).parent;
+      let depth = 0;
+      while (cur !== undefined && cur !== null && depth < 32) {
+        const type = (cur as { type?: string }).type ?? "";
+        if (FUNCTION_NODE_TYPES.has(type)) return type;
+        cur = (cur as { parent?: unknown }).parent;
+        depth += 1;
+      }
+      return undefined;
+    };
+
+    return {
+      ImportDeclaration(node: Deno.lint.ImportDeclaration) {
+        ensureNames();
+        const source = (node as { source?: { value?: string } }).source?.value ?? "";
+        if (!source.includes("maieutics-plugin-sdk") && !source.includes("@maieutics/plugin-sdk")) {
+          return;
+        }
+        const specifiers = (node as {
+          specifiers?: Array<
+            { type?: string; imported?: { name?: string }; local?: { name?: string } }
+          >;
+        }).specifiers ?? [];
+        for (const specifier of specifiers) {
+          if (specifier.type === "ImportSpecifier") {
+            const imported = specifier.imported?.name ?? "";
+            const local = specifier.local?.name ?? "";
+            if (imported === "provide") provideNames!.add(local);
+          } else if (specifier.type === "ImportNamespaceSpecifier") {
+            namespaceNames!.add(specifier.local?.name ?? "");
+          }
+        }
+      },
+      CallExpression(node: Deno.lint.CallExpression) {
+        if (provideNames === undefined) return;
+        if (!isProvideCall(node)) return;
+        const fnType = enclosingFunction(node);
+        if (fnType === undefined) return;
+        context.report({
+          node: node as Deno.lint.Node,
+          message: `provide() must be called at module top level, not inside a ${fnType}. ` +
+            `A function-body provide registers a new contribution on every invocation ` +
+            `(never unregistered) and starts a change stream that is never stopped — ` +
+            `both leak. Declare the contribution once at top level and use ` +
+            `signal.value = undefined to pause it or unprovide() to withdraw it.`,
+        });
+      },
+    };
+  },
+};
+
 export default {
   name: "maieutics",
   rules: {
     "entrypoint-registered": entrypointRegisteredRule,
     "entrypoint-exports": entrypointExportsRule,
     "provide-once": provideOnceRule,
+    "provide-top-level": provideTopLevelRule,
   },
 };

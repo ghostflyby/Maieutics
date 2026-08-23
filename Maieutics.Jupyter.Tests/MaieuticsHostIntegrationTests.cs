@@ -1369,35 +1369,64 @@ public sealed class MaieuticsHostIntegrationTests
 
         private async Task ServeAsync(CancellationToken cancellationToken)
         {
-            for (var requestIndex = 0; requestIndex < requestCount; requestIndex++)
+            // Handle the expected requests across connections. The OpenAI SDK's
+            // HttpClient pools connections (keep-alive by default), so a client
+            // may reuse the same TCP connection for consecutive requests or open
+            // a fresh one. Loop on a per-connection basis: read one request,
+            // answer it, and keep the connection open for the next request. A
+            // "Connection: close" response per request would race the client's
+            // connection reuse (the pooled connection may already be closed when
+            // the next request arrives), surfacing as an EndOfStreamException on
+            // slow CI.
+            var served = 0;
+            while (served < requestCount)
             {
-                using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                using var client = await listener.AcceptTcpClientAsync(cancellationToken)
+                    .ConfigureAwait(false);
                 await using var stream = client.GetStream();
-                var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-                RequestBodies.Enqueue(request.Body.Clone());
-                AssertRequest(request, requestIndex);
-
-                var data = (apiFlavor, toolFlow, requestIndex) switch
+                while (served < requestCount)
                 {
-                    (OpenAiApiFlavor.Responses, true, 0) => CreateResponsesToolStream(
-                        toolName,
-                        toolArgumentsJson),
-                    (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(
-                        toolName,
-                        toolArgumentsJson),
-                    (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
-                        toolFlow ? "tool-backed answer" : answer),
-                    (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
-                        toolFlow ? "tool-backed answer" : answer,
-                        reasoning),
-                    _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
-                };
-                var body = Encoding.UTF8.GetBytes(data);
-                var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
-                    "Connection: close\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                    HttpRequest request;
+                    try
+                    {
+                        request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (EndOfStreamException)
+                    {
+                        // The client closed this connection (dispose or a fresh
+                        // connection for the next request); accept the next one.
+                        break;
+                    }
+                    RequestBodies.Enqueue(request.Body.Clone());
+                    AssertRequest(request, served);
+
+                    var data = (apiFlavor, toolFlow, served) switch
+                    {
+                        (OpenAiApiFlavor.Responses, true, 0) => CreateResponsesToolStream(
+                            toolName,
+                            toolArgumentsJson),
+                        (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(
+                            toolName,
+                            toolArgumentsJson),
+                        (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
+                            toolFlow ? "tool-backed answer" : answer),
+                        (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
+                            toolFlow ? "tool-backed answer" : answer,
+                            reasoning),
+                        _ => throw new InvalidOperationException(
+                            $"Unsupported test API flavor '{apiFlavor}'.")
+                    };
+                    var body = Encoding.UTF8.GetBytes(data);
+                    // Keep the connection open (no "Connection: close") so the
+                    // client's pooled connection can carry the next request; the
+                    // outer loop accepts a fresh connection when this one ends.
+                    var headers = Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" +
+                        $"Content-Length: {body.Length}\r\n\r\n");
+                    await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+                    await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                    served++;
+                }
             }
         }
 
@@ -1661,26 +1690,43 @@ public sealed class MaieuticsHostIntegrationTests
 
         private async Task ServeAsync(CancellationToken cancellationToken)
         {
+            // Same keep-alive handling as FakeOpenAiServer: the Anthropic SDK's
+            // HttpClient pools connections, so keep each connection open for the
+            // next request instead of racing the client's connection reuse with a
+            // per-request "Connection: close".
             var requestCount = toolFlow ? 2 : 1;
-            for (var requestIndex = 0; requestIndex < requestCount; requestIndex++)
+            var served = 0;
+            while (served < requestCount)
             {
                 using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
                 await using var stream = client.GetStream();
-                var request = await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-                request.Method.Should().Be("POST");
-                request.Path.Should().Be("/v1/messages");
-                request.Body.GetProperty("model").GetString().Should().Be(model);
-                request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
-                RequestBodies.Enqueue(request.Body);
-                if (toolFlow) request.Body.GetRawText().Should().Contain("echo");
+                while (served < requestCount)
+                {
+                    FakeOpenAiServer.HttpRequest request;
+                    try
+                    {
+                        request = await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (EndOfStreamException)
+                    {
+                        break; // client closed this connection; accept the next one
+                    }
+                    request.Method.Should().Be("POST");
+                    request.Path.Should().Be("/v1/messages");
+                    request.Body.GetProperty("model").GetString().Should().Be(model);
+                    request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
+                    RequestBodies.Enqueue(request.Body);
+                    if (toolFlow) request.Body.GetRawText().Should().Contain("echo");
 
-                var data = toolFlow && requestIndex == 0 ? CreateToolStream() : CreateTextStream(answer);
-                var body = Encoding.UTF8.GetBytes(data);
-                var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n" +
-                    "Connection: close\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                    var data = toolFlow && served == 0 ? CreateToolStream() : CreateTextStream(answer);
+                    var body = Encoding.UTF8.GetBytes(data);
+                    var headers = Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
+                    await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+                    await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                    served++;
+                }
             }
         }
 

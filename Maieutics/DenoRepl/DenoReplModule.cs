@@ -16,6 +16,7 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.DenoRepl.Config.json", "maieutics-deno-repl/deno.json"),
         ("Maieutics.Deno.DenoRepl.Lock.json", "maieutics-deno-repl/deno.lock"),
         ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),
+        ("Maieutics.Deno.ReplClientComm.ts", "maieutics-repl-client/comm.ts"),
         ("Maieutics.Deno.ReplClientWindowsBootstrap.ts", "maieutics-repl-client/windows_bootstrap.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),

@@ -15,6 +15,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
     private readonly Channel<JupyterWireMessage> controlRequests = Channel.CreateBounded<JupyterWireMessage>(32);
     private readonly Lock executionGate = new();
     private readonly CancellationTokenSource lifetime = new();
+    private JupyterExecutionContext? currentExecutionContext;
     private readonly ConcurrentDictionary<JupyterMessageId, TaskCompletionSource<string>> pendingInputs = new();
     private readonly Task routerLoop;
     private readonly JupyterSessionIdentity session;
@@ -81,6 +82,38 @@ public sealed class JupyterKernelHost : IJupyterKernel
     public void RequestInterrupt()
     {
         CancelCurrentExecution();
+    }
+
+    /// <inheritdoc />
+    public async ValueTask SendCommAsync(JupyterCommMessage message, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var wireMessage = message.WireMessage;
+        var outgoing = new JupyterWireMessage(
+            wireMessage.Identities,
+            message.Kind switch
+            {
+                JupyterCommKind.Open => JupyterMessage.Create(
+                    "comm_open",
+                    new JupyterCommOpenContent(
+                        message.CommId,
+                        message.TargetName ?? string.Empty,
+                        message.Data),
+                    JupyterJsonContext.Default.JupyterCommOpenContent,
+                    session),
+                JupyterCommKind.Close => JupyterMessage.Create(
+                    "comm_close",
+                    new JupyterCommCloseContent(message.CommId, message.Data),
+                    JupyterJsonContext.Default.JupyterCommCloseContent,
+                    session),
+                _ => JupyterMessage.Create(
+                    "comm_msg",
+                    new JupyterCommMsgContent(message.CommId, message.Data),
+                    JupyterJsonContext.Default.JupyterCommMsgContent,
+                    session)
+            },
+            message.Buffers);
+        await transport.SendAsync(JupyterKernelChannel.Iopub, outgoing, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RouteIncomingAsync()
@@ -187,6 +220,15 @@ public sealed class JupyterKernelHost : IJupyterKernel
                 return false;
             case "shutdown_request":
                 return await HandleShutdownAsync(request, channel).ConfigureAwait(false);
+            case "comm_open":
+                await HandleCommAsync(JupyterCommKind.Open, request).ConfigureAwait(false);
+                return false;
+            case "comm_msg":
+                await HandleCommAsync(JupyterCommKind.Message, request).ConfigureAwait(false);
+                return false;
+            case "comm_close":
+                await HandleCommAsync(JupyterCommKind.Close, request).ConfigureAwait(false);
+                return false;
             default:
                 return false;
         }
@@ -237,14 +279,15 @@ public sealed class JupyterKernelHost : IJupyterKernel
                 lifetime.Token).ConfigureAwait(false);
 
         using var execution = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        var context = CreateExecutionContext(wireRequest, request, count);
         lock (executionGate)
         {
             currentExecution = execution;
+            currentExecutionContext = context;
         }
 
         try
         {
-            var context = CreateExecutionContext(wireRequest, request, count);
             var result = await application.ExecuteAsync(context, request, execution.Token).ConfigureAwait(false);
             await SendReplyAsync(
                 JupyterKernelChannel.Shell,
@@ -289,6 +332,7 @@ public sealed class JupyterKernelHost : IJupyterKernel
             lock (executionGate)
             {
                 if (ReferenceEquals(currentExecution, execution)) currentExecution = null;
+                if (ReferenceEquals(currentExecutionContext, context)) currentExecutionContext = null;
             }
         }
     }
@@ -410,6 +454,69 @@ public sealed class JupyterKernelHost : IJupyterKernel
             new JupyterIsCompleteReply(ToWireStatus(result.Status), result.Indent),
             JupyterJsonContext.Default.JupyterIsCompleteReply,
             CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task HandleCommAsync(JupyterCommKind kind, JupyterWireMessage wireRequest)
+    {
+        if (application is not IJupyterCommSink sink)
+            return;
+
+        JupyterCommMessage message;
+        try
+        {
+            message = CreateCommMessage(kind, wireRequest);
+        }
+        catch (JupyterProtocolException)
+        {
+            // Malformed comm content is dropped like any other unknown shell message; comm has no
+            // reply contract and must not take down the kernel or the enclosing execution.
+            return;
+        }
+
+        JupyterExecutionContext? context;
+        lock (executionGate)
+        {
+            context = currentExecutionContext;
+        }
+
+        switch (kind)
+        {
+            case JupyterCommKind.Open:
+                await sink.OnCommOpenAsync(message, context, lifetime.Token).ConfigureAwait(false);
+                break;
+            case JupyterCommKind.Message:
+                await sink.OnCommMsgAsync(message, context, lifetime.Token).ConfigureAwait(false);
+                break;
+            case JupyterCommKind.Close:
+                await sink.OnCommCloseAsync(message, context, lifetime.Token).ConfigureAwait(false);
+                break;
+        }
+    }
+
+    private static JupyterCommMessage CreateCommMessage(JupyterCommKind kind, JupyterWireMessage wireRequest)
+    {
+        var content = wireRequest.Message.Content;
+        var commId = GetRequiredString(content, "comm_id", wireRequest.Message.MessageType);
+        var targetName = kind == JupyterCommKind.Open
+            ? GetRequiredString(content, "target_name", wireRequest.Message.MessageType)
+            : null;
+        var data = content.ValueKind == JsonValueKind.Object &&
+                   content.TryGetProperty("data", out var dataProperty)
+            ? (JsonElement?)dataProperty
+            : null;
+        return new JupyterCommMessage(kind, commId, targetName, data, wireRequest.Buffers, wireRequest);
+    }
+
+    private static string GetRequiredString(JsonElement content, string property, string messageType)
+    {
+        if (content.ValueKind != JsonValueKind.Object ||
+            !content.TryGetProperty(property, out var value) ||
+            value.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(value.GetString()))
+            throw new JupyterProtocolException(
+                $"Jupyter '{messageType}' content requires a non-empty '{property}'.");
+
+        return value.GetString()!;
     }
 
     private JupyterExecutionContext CreateExecutionContext(

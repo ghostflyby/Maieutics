@@ -35,6 +35,7 @@ function deferred<T>(): Deferred<T> {
 
 import { type BusConnection, connectBus } from "../shared/bus.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
+import { type CommClient, CommKind, connectComm } from "./comm.ts";
 
 export interface ReplClientOptions {
   /** Unix-domain socket path or Windows loopback host:port of the control channel. */
@@ -57,12 +58,19 @@ export interface ReplTools {
 }
 
 export interface ReplComm {
-  /** Opens a comm channel. */
+  /** Opens a comm channel; the kernel relays comm_open to the frontend. */
   open(commId: string, targetName?: string, data?: unknown): Promise<void>;
   /** Sends a message on an open comm channel, optionally with binary buffers. */
   msg(commId: string, data?: unknown, buffers?: Uint8Array[]): Promise<void>;
   /** Closes a comm channel. */
-  close(commId: string): Promise<void>;
+  close(commId: string, data?: unknown): Promise<void>;
+  /** Subscribes to comm events from the frontend (open, msg, close). */
+  on(
+    event: "open" | "msg" | "close",
+    handler: (
+      message: { commId: string; targetName?: string; data?: unknown; buffers: Uint8Array[] },
+    ) => void,
+  ): void;
 }
 
 export interface ReplClient {
@@ -194,7 +202,7 @@ function abortError(): DOMException {
 class ReplBus {
   readonly events: EventTarget;
 
-  private readonly address: string;
+  readonly address: string;
   private readonly sessionId: string;
   private readonly credential: string | undefined;
   private readonly waiters = new Map<
@@ -462,22 +470,60 @@ function createTools(bus: ReplBus): ReplTools {
 }
 
 function createComm(bus: ReplBus): ReplComm {
+  const address = bus.address;
+  let client: CommClient | undefined;
+  let connecting: Promise<CommClient> | undefined;
+
+  const connect = (): Promise<CommClient> => {
+    if (client !== undefined) return Promise.resolve(client);
+    connecting ??= connectComm(
+      address,
+      Deno.env.get(SESSION_ENV) ?? "",
+      Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined,
+    )
+      .then((value) => {
+        client = value;
+        connecting = undefined;
+        return value;
+      })
+      .catch((error) => {
+        connecting = undefined;
+        throw error;
+      });
+    return connecting;
+  };
+
   return {
     async open(commId, targetName, data) {
-      await sendAndWait(bus, {
-        type: "comm.open",
-        payload: { commId, targetName, data },
-      });
+      const value = await connect();
+      value.send({ kind: CommKind.Open, commId, targetName, data, buffers: [] });
     },
     async msg(commId, data, buffers) {
-      await sendAndWait(bus, {
-        type: "comm.msg",
-        payload: { commId, data },
-        buffers: buffers?.map((bytes) => bytes.toBase64()),
-      });
+      const value = await connect();
+      value.send({ kind: CommKind.Message, commId, data, buffers: buffers ?? [] });
     },
-    async close(commId) {
-      await sendAndWait(bus, { type: "comm.close", payload: { commId } });
+    async close(commId, data) {
+      const value = await connect();
+      value.send({ kind: CommKind.Close, commId, data, buffers: [] });
+    },
+    on(event, handler) {
+      void connect().then((value) => {
+        value.onMessage = (message) => {
+          const kind = message.kind === CommKind.Open
+            ? "open"
+            : message.kind === CommKind.Close
+            ? "close"
+            : "msg";
+          if (kind === event) {
+            handler({
+              commId: message.commId,
+              targetName: message.targetName,
+              data: message.data,
+              buffers: message.buffers,
+            });
+          }
+        };
+      });
     },
   };
 }
@@ -541,5 +587,6 @@ export const events: EventTarget = defaultEvents;
 export const comm: ReplComm = {
   open: (commId, targetName, data) => ensureDefaultClient().comm.open(commId, targetName, data),
   msg: (commId, data, buffers) => ensureDefaultClient().comm.msg(commId, data, buffers),
-  close: (commId) => ensureDefaultClient().comm.close(commId),
+  close: (commId, data) => ensureDefaultClient().comm.close(commId, data),
+  on: (event, handler) => ensureDefaultClient().comm.on(event, handler),
 };

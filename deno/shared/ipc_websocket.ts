@@ -54,10 +54,10 @@ type Kernel32 = Deno.DynamicLibrary<typeof WINDOWS_PIPE_SYMBOLS>;
 
 export interface IpcWebSocket {
   readonly isOpen: boolean;
-  onMessage: ((text: string) => void) | undefined;
+  onMessage: ((data: string | Uint8Array) => void) | undefined;
   onClose: (() => void) | undefined;
   onError: ((error: Error) => void) | undefined;
-  send(text: string): void;
+  send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
 }
 
@@ -77,10 +77,10 @@ export function connectIpcWebSocket(
 }
 
 class NativeTcpWebSocket implements IpcWebSocket {
-  #onMessage: ((text: string) => void) | undefined;
+  #onMessage: ((data: string | Uint8Array) => void) | undefined;
   #onClose: (() => void) | undefined;
   #onError: ((error: Error) => void) | undefined;
-  readonly #pendingMessages: string[] = [];
+  readonly #pendingMessages: (string | Uint8Array)[] = [];
   #closed = false;
   #terminalError: Error | undefined;
 
@@ -89,29 +89,30 @@ class NativeTcpWebSocket implements IpcWebSocket {
   private constructor(socket: WebSocket) {
     this.#socket = socket;
     socket.onmessage = (event) => {
-      if (typeof event.data === "string") {
+      const data = messageData(event.data);
+      if (data !== null) {
         if (this.#onMessage === undefined) {
           if (this.#pendingMessages.length >= PENDING_MESSAGE_CAPACITY) {
             this.onError?.(new Error("The IPC WebSocket message queue is full."));
             return;
           }
-          this.#pendingMessages.push(event.data);
+          this.#pendingMessages.push(data);
         } else {
-          this.#onMessage(event.data);
+          this.#onMessage(data);
         }
       } else {
-        this.onError?.(new Error("The IPC WebSocket only accepts text messages."));
+        this.onError?.(new Error("The IPC WebSocket only accepts text or binary messages."));
       }
     };
     socket.onerror = () => this.#fail(new Error("The IPC WebSocket failed."));
     socket.onclose = () => this.#finishClose();
   }
 
-  get onMessage(): ((text: string) => void) | undefined {
+  get onMessage(): ((data: string | Uint8Array) => void) | undefined {
     return this.#onMessage;
   }
 
-  set onMessage(handler: ((text: string) => void) | undefined) {
+  set onMessage(handler: ((data: string | Uint8Array) => void) | undefined) {
     this.#onMessage = handler;
     if (handler !== undefined) {
       for (const message of this.#pendingMessages.splice(0)) handler(message);
@@ -174,8 +175,8 @@ class NativeTcpWebSocket implements IpcWebSocket {
     return new NativeTcpWebSocket(socket);
   }
 
-  send(text: string): void {
-    this.#socket.send(text);
+  send(data: string | Uint8Array): void {
+    this.#socket.send(data);
   }
 
   close(code?: number, reason?: string): void {
@@ -184,10 +185,10 @@ class NativeTcpWebSocket implements IpcWebSocket {
 }
 
 class NativeUnixWebSocket implements IpcWebSocket {
-  #onMessage: ((text: string) => void) | undefined;
+  #onMessage: ((data: string | Uint8Array) => void) | undefined;
   #onClose: (() => void) | undefined;
   #onError: ((error: Error) => void) | undefined;
-  readonly #pendingMessages: string[] = [];
+  readonly #pendingMessages: (string | Uint8Array)[] = [];
   #closed = false;
   #terminalError: Error | undefined;
 
@@ -202,18 +203,19 @@ class NativeUnixWebSocket implements IpcWebSocket {
     this.#http = http;
     this.#socket = socket;
     socket.onmessage = (event) => {
-      if (typeof event.data === "string") {
+      const data = messageData(event.data);
+      if (data !== null) {
         if (this.#onMessage === undefined) {
           if (this.#pendingMessages.length >= PENDING_MESSAGE_CAPACITY) {
             this.onError?.(new Error("The IPC WebSocket message queue is full."));
             return;
           }
-          this.#pendingMessages.push(event.data);
+          this.#pendingMessages.push(data);
         } else {
-          this.#onMessage(event.data);
+          this.#onMessage(data);
         }
       } else {
-        this.onError?.(new Error("The IPC WebSocket only accepts text messages."));
+        this.onError?.(new Error("The IPC WebSocket only accepts text or binary messages."));
       }
     };
     socket.onerror = () => this.#fail(new Error("The IPC WebSocket failed."));
@@ -223,11 +225,11 @@ class NativeUnixWebSocket implements IpcWebSocket {
     };
   }
 
-  get onMessage(): ((text: string) => void) | undefined {
+  get onMessage(): ((data: string | Uint8Array) => void) | undefined {
     return this.#onMessage;
   }
 
-  set onMessage(handler: ((text: string) => void) | undefined) {
+  set onMessage(handler: ((data: string | Uint8Array) => void) | undefined) {
     this.#onMessage = handler;
     if (handler !== undefined) {
       for (const message of this.#pendingMessages.splice(0)) handler(message);
@@ -286,8 +288,8 @@ class NativeUnixWebSocket implements IpcWebSocket {
     }
   }
 
-  send(text: string): void {
-    this.#socket.send(text);
+  send(data: string | Uint8Array): void {
+    this.#socket.send(data);
   }
 
   close(code?: number, reason?: string): void {
@@ -299,6 +301,15 @@ class NativeUnixWebSocket implements IpcWebSocket {
     this.#transportClosed = true;
     this.#http.close();
   }
+}
+
+function messageData(data: unknown): string | Uint8Array | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return null;
 }
 
 async function waitForNativeOpen(socket: WebSocket): Promise<void> {
@@ -344,7 +355,7 @@ async function waitForNativeOpen(socket: WebSocket): Promise<void> {
 }
 
 class WindowsNamedPipeWebSocket implements IpcWebSocket {
-  onMessage: ((text: string) => void) | undefined;
+  onMessage: ((data: string | Uint8Array) => void) | undefined;
   onClose: (() => void) | undefined;
   onError: ((error: Error) => void) | undefined;
 
@@ -392,13 +403,14 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
     }
   }
 
-  send(text: string): void {
+  send(data: string | Uint8Array): void {
     if (!this.isOpen) throw new DOMException("The IPC WebSocket is not open.", "InvalidStateError");
-    const payload = new TextEncoder().encode(text);
+    const binary = typeof data === "string";
+    const payload = binary ? new TextEncoder().encode(data) : data;
     if (payload.length > MAX_MESSAGE_BYTES) {
       throw new RangeError(`The IPC WebSocket message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
     }
-    void this.#enqueueWrite(encodeClientWebSocketFrame(0x1, payload));
+    void this.#enqueueWrite(encodeClientWebSocketFrame(binary ? 0x1 : 0x2, payload));
   }
 
   close(code = 1000, reason = ""): void {
@@ -508,7 +520,6 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
         throw new RangeError(`The IPC WebSocket message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
       }
       if (!final) continue;
-      if (fragmentOpcode !== 0x1) throw new Error("The IPC WebSocket only accepts text messages.");
       const message = new Uint8Array(fragmentBytes);
       let offset = 0;
       for (const fragment of fragments) {
@@ -517,8 +528,13 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
       }
       fragments = [];
       fragmentBytes = 0;
+      const dataOpcode = fragmentOpcode;
       fragmentOpcode = undefined;
-      this.onMessage?.(new TextDecoder("utf-8", { fatal: true }).decode(message));
+      if (dataOpcode === 0x1) {
+        this.onMessage?.(new TextDecoder("utf-8", { fatal: true }).decode(message));
+      } else {
+        this.onMessage?.(message);
+      }
     }
   }
 

@@ -33,6 +33,7 @@
 
     <ItemGroup>
         <EmbeddedResource Include="..\deno\maieutics-repl-client\mod.ts" LogicalName="Maieutics.Deno.ReplClient.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-repl-client\comm.ts" LogicalName="Maieutics.Deno.ReplClientComm.ts" />
         <EmbeddedResource Include="..\deno\maieutics-repl-client\windows_bootstrap.ts" LogicalName="Maieutics.Deno.ReplClientWindowsBootstrap.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\main.ts" LogicalName="Maieutics.Deno.DenoRepl.Main.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\protocol.ts" LogicalName="Maieutics.Deno.DenoRepl.Protocol.ts" />

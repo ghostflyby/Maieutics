@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Maieutics.Agent;
+using Maieutics.Jupyter.Kernel;
 using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
@@ -20,7 +21,7 @@ namespace Maieutics.Control;
 ///     peer process identity, while WebSocket bus connections bind to a session through the
 ///     <c>control.hello</c> handshake.
 /// </summary>
-internal sealed class ReplControlHost : IDisposable
+internal sealed partial class ReplControlHost : IDisposable
 {
     private const int EnvelopeVersion = 1;
     private const string AuthorizedIdentityItem = "Maieutics.Control.AuthorizedIdentity";
@@ -28,6 +29,7 @@ internal sealed class ReplControlHost : IDisposable
         new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, SessionBusConnection> connections = new(StringComparer.Ordinal);
+    private readonly Func<JupyterCommMessage, CancellationToken, ValueTask>? commFrontendSink;
     private readonly ILogger<ReplControlHost> logger;
     private readonly ReplControlCredentialRegistry? credentialRegistry;
     private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
@@ -45,7 +47,8 @@ internal sealed class ReplControlHost : IDisposable
         IReadOnlyList<AIFunction>? scriptTools = null,
         PluginHostManager? pluginHosts = null,
         ReplControlCredentialRegistry? credentials = null,
-        IWindowsPipeBootstrap? windowsPipeBootstrap = null)
+        IWindowsPipeBootstrap? windowsPipeBootstrap = null,
+        Func<JupyterCommMessage, CancellationToken, ValueTask>? commFrontendSink = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
@@ -55,6 +58,7 @@ internal sealed class ReplControlHost : IDisposable
         this.pluginHosts = pluginHosts;
         this.credentialRegistry = credentials;
         this.windowsPipeBootstrap = windowsPipeBootstrap;
+        this.commFrontendSink = commFrontendSink;
     }
 
     /// <summary>Gets the Unix socket path used by the process-wide channel on Unix.</summary>
@@ -123,6 +127,7 @@ internal sealed class ReplControlHost : IDisposable
         application.MapGet("/health", () => Results.Text("ok"));
         application.Map("/ws", HandleWebSocketAsync);
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
+        MapCommEndpoint(application);
     }
 
     private async Task<string?> AuthorizeAsync(HttpContext context)

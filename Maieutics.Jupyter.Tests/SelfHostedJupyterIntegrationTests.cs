@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text.Json;
+using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Jupyter.Client;
 using Maieutics.Jupyter.Kernel;
@@ -11,6 +12,102 @@ namespace Maieutics.Jupyter.Tests;
 [Collection(JupyterSocketIntegrationCollection.Name)]
 public sealed class SelfHostedJupyterIntegrationTests
 {
+    [Fact(Timeout = 30_000)]
+    public async Task CommMessagesReachSinkWithBuffers()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var cancellationToken = deadline.Token;
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var application = new TestKernelApplication();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: cancellationToken);
+        await using var client = await JupyterClient.ConnectAsync(
+            connection,
+            cancellationToken: cancellationToken);
+
+        var openContent = JsonSerializer.SerializeToElement(new { marker = "open" });
+        var openMessage = JupyterMessage.Create(
+            "comm_open",
+            new JupyterCommOpenContent("comm-1", "widget-test", openContent),
+            JupyterJsonContext.Default.JupyterCommOpenContent,
+            JupyterSessionIdentity.Create("test-client"));
+        await client.SendCommAsync(openMessage, cancellationToken);
+
+        var msgContent = JsonSerializer.SerializeToElement(new { marker = "msg" });
+        var msgMessage = JupyterMessage.Create(
+            "comm_msg",
+            new JupyterCommMsgContent("comm-1", msgContent),
+            JupyterJsonContext.Default.JupyterCommMsgContent,
+            JupyterSessionIdentity.Create("test-client"));
+        await client.SendCommAsync(msgMessage, cancellationToken);
+
+        var closeContent = JsonSerializer.SerializeToElement(new { marker = "close" });
+        var closeMessage = JupyterMessage.Create(
+            "comm_close",
+            new JupyterCommCloseContent("comm-1", closeContent),
+            JupyterJsonContext.Default.JupyterCommCloseContent,
+            JupyterSessionIdentity.Create("test-client"));
+        await client.SendCommAsync(closeMessage, cancellationToken);
+
+        // Comm messages carry no reply; drain the sink channel until all three arrive.
+        var messages = await ReadCommAsync(application, 3, cancellationToken);
+
+        messages.Select(static m => m.Kind).Should().Equal(
+            JupyterCommKind.Open,
+            JupyterCommKind.Message,
+            JupyterCommKind.Close);
+        messages[0].CommId.Should().Be("comm-1");
+        messages[0].TargetName.Should().Be("widget-test");
+        messages[0].Data.Should().NotBeNull();
+        messages[1].CommId.Should().Be("comm-1");
+        messages[2].CommId.Should().Be("comm-1");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CommWithoutSinkIsSilentlyDropped()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var cancellationToken = deadline.Token;
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var application = new ExecuteOnlyKernelApplication();
+        await using var host = await JupyterKernelHost.StartAsync(
+            connection,
+            application,
+            cancellationToken: cancellationToken);
+        await using var client = await JupyterClient.ConnectAsync(
+            connection,
+            cancellationToken: cancellationToken);
+
+        var openMessage = JupyterMessage.Create(
+            "comm_open",
+            new JupyterCommOpenContent("comm-drop", "widget-test"),
+            JupyterJsonContext.Default.JupyterCommOpenContent,
+            JupyterSessionIdentity.Create("test-client"));
+        await client.SendCommAsync(openMessage, cancellationToken);
+
+        // The kernel must remain alive and responsive after dropping the comm message.
+        (await client.PingAsync(cancellationToken)).Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
+        var info = await client.GetKernelInfoAsync(cancellationToken);
+        info.Status.Should().Be("ok");
+    }
+
+    private static async Task<IReadOnlyList<JupyterCommMessage>> ReadCommAsync(
+        TestKernelApplication application,
+        int expected,
+        CancellationToken cancellationToken)
+    {
+        var messages = new List<JupyterCommMessage>(expected);
+        await foreach (var message in application.CommMessages.Reader.ReadAllAsync(cancellationToken))
+        {
+            messages.Add(message);
+            if (messages.Count >= expected) break;
+        }
+
+        return messages;
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task ClientAndKernelCompleteCoreLifecycle()
     {
@@ -393,7 +490,7 @@ public sealed class SelfHostedJupyterIntegrationTests
     }
 
     private sealed class TestKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider,
-        IJupyterInspectionProvider, IJupyterCodeCompletenessProvider
+        IJupyterInspectionProvider, IJupyterCodeCompletenessProvider, IJupyterCommSink
     {
         private readonly TaskCompletionSource<(JupyterExecutionContext Context, JupyterDisplayId DisplayId)>
             lateDisplay = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -401,6 +498,35 @@ public sealed class SelfHostedJupyterIntegrationTests
         public TaskCompletionSource WaitStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public JupyterDisplayId LateDisplayId { get; private set; }
+
+        public Channel<JupyterCommMessage> CommMessages { get; } = Channel.CreateUnbounded<JupyterCommMessage>();
+
+        public ValueTask OnCommOpenAsync(
+            JupyterCommMessage message,
+            JupyterExecutionContext? context,
+            CancellationToken cancellationToken)
+        {
+            CommMessages.Writer.TryWrite(message);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnCommMsgAsync(
+            JupyterCommMessage message,
+            JupyterExecutionContext? context,
+            CancellationToken cancellationToken)
+        {
+            CommMessages.Writer.TryWrite(message);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnCommCloseAsync(
+            JupyterCommMessage message,
+            JupyterExecutionContext? context,
+            CancellationToken cancellationToken)
+        {
+            CommMessages.Writer.TryWrite(message);
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask<JupyterCodeCompletenessResult> IsCompleteAsync(
             JupyterIsCompleteRequest request,

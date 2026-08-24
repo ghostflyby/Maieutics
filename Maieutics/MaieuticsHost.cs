@@ -150,6 +150,7 @@ public static class MaieuticsHost
         });
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
         builder.Services.AddSingleton<ReplEvalWebSocketHost>();
+        builder.Services.AddSingleton<CommFrontendSink>();
         if (OperatingSystem.IsWindows())
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
                 OperatingSystem.IsWindows() ? CreateWindowsBootstrap(services) : throw new UnreachableException()
@@ -178,7 +179,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
-                : null));
+                : null,
+            services.GetRequiredService<CommFrontendSink>().ForwardAsync));
         builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
             DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
@@ -270,7 +272,9 @@ public static class MaieuticsHost
             workspace: services.GetRequiredService<Workspace>(),
             replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
             mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
-            statusProvider: services.GetRequiredService<MaieuticsStatusProvider>());
+            statusProvider: services.GetRequiredService<MaieuticsStatusProvider>(),
+            replControlHost: services.GetRequiredService<ReplControlHost>(),
+            replRegistry: services.GetRequiredService<DenoReplRegistry>());
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

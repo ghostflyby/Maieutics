@@ -101,6 +101,11 @@ public sealed class JupyterClient : IJupyterClient
         return protocolSession.InterruptAsync(cancellationToken);
     }
 
+    internal ValueTask SendCommAsync(JupyterMessage message, CancellationToken cancellationToken = default)
+    {
+        return protocolSession.SendCommAsync(message, cancellationToken);
+    }
+
     internal Task<JupyterShutdownReply> ShutdownAsync(
         bool restart,
         CancellationToken cancellationToken = default)

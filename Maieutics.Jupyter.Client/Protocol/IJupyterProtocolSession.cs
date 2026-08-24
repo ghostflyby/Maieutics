@@ -38,4 +38,7 @@ internal interface IJupyterProtocolSession : IAsyncDisposable
     Task<JupyterShutdownReply> ShutdownAsync(
         bool restart,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Sends an inbound-style comm message to the kernel without awaiting a reply.</summary>
+    ValueTask SendCommAsync(JupyterMessage message, CancellationToken cancellationToken = default);
 }

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Jupyter.Kernel;
@@ -13,7 +14,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter;
 
-public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider
+public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication, IJupyterCompletionProvider,
+    IJupyterCommSink
 {
     private static readonly IReadOnlyDictionary<string, JsonElement> EmptyMetadata =
         new Dictionary<string, JsonElement>();
@@ -21,7 +23,9 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     private readonly Func<MaieuticsAgentKernelOptions> getOptions;
     private readonly ILogger<MaieuticsAgentKernelApplication> logger;
     private readonly IMaieuticsMcpController? mcpController;
+    private readonly DenoReplRegistry? replRegistry;
     private readonly JupyterDenoReplPresentationRouter? replPresentationRouter;
+    private readonly ReplControlHost? replControlHost;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
 
     private readonly IAgentSession session;
@@ -47,7 +51,9 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         Workspace? workspace = null,
         JupyterDenoReplPresentationRouter? replPresentationRouter = null,
         IMaieuticsMcpController? mcpController = null,
-        MaieuticsStatusProvider? statusProvider = null)
+        MaieuticsStatusProvider? statusProvider = null,
+        ReplControlHost? replControlHost = null,
+        DenoReplRegistry? replRegistry = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
@@ -56,6 +62,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         this.workspace = workspace;
         this.replPresentationRouter = replPresentationRouter;
         this.statusProvider = statusProvider;
+        this.replControlHost = replControlHost;
+        this.replRegistry = replRegistry;
         if (runtimeConfiguration is null) this.getOptions().Validate();
 
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
@@ -75,6 +83,42 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             profiles,
             automaticProfiles,
             sourceIds));
+    }
+
+    public async ValueTask OnCommOpenAsync(
+        JupyterCommMessage message,
+        JupyterExecutionContext? context,
+        CancellationToken cancellationToken)
+    {
+        await RelayCommAsync(message, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask OnCommMsgAsync(
+        JupyterCommMessage message,
+        JupyterExecutionContext? context,
+        CancellationToken cancellationToken)
+    {
+        await RelayCommAsync(message, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask OnCommCloseAsync(
+        JupyterCommMessage message,
+        JupyterExecutionContext? context,
+        CancellationToken cancellationToken)
+    {
+        await RelayCommAsync(message, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RelayCommAsync(JupyterCommMessage message, CancellationToken cancellationToken)
+    {
+        if (replRegistry is null || replControlHost is null)
+            return;
+
+        var session = await replRegistry.EnsureDefaultAsync(this.session.Id, cancellationToken)
+            .ConfigureAwait(false);
+        await replControlHost
+            .PushCommMessageAsync(session.SessionId, message, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public JupyterKernelInfo KernelInfo { get; } = new(

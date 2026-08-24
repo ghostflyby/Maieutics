@@ -42,6 +42,7 @@ import {
   type DecodeContext,
   type EncodeContext,
   getActiveRegistry,
+  getActiveTransport,
   openChannel,
   registerControlHandler,
   registerRelease,
@@ -645,7 +646,11 @@ export const actorRefCodec: Codec<RemoteActor<object>> = {
  * Decodes a single value that may be an actor reference placeholder (a service
  * contributed by another worker) into a `Remote<T>` proxy. Plain data returns
  * unchanged. Uses the active worker registry so the decode context (codec
- * state, pending table) is the current worker's.
+ * state, pending table) is the current worker's. The transport is the active
+ * runtime transport: a process/remote actor carries a real Transport (the
+ * ref-codec's dedicated channels and acquire control frames ride it); a Web
+ * Worker has none, so the value is returned undecoded (its `refId`-only
+ * placeholder still routes through the pending-acquire path on a later call).
  */
 export function decodeActorValue(value: unknown): unknown {
   if (typeof value !== "object" || value === null) return value;
@@ -653,11 +658,13 @@ export function decodeActorValue(value: unknown): unknown {
     return value;
   }
   const registry = getActiveRegistry();
-  if (registry === undefined) return value;
+  const transport = getActiveTransport();
+  if (registry === undefined || transport === undefined) return value;
   return actorRefCodec.decode(value as RefHandle, {
     registry,
     seen: new WeakMap(),
     codecState: new Map(),
+    transport,
   });
 }
 

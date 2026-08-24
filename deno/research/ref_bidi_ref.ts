@@ -10,11 +10,7 @@
 //   - REPL hands its ref to HOST (HOST acquires it and calls it).
 // Both directions use the same remoteRef codec on both sides.
 import { serveProcess } from "@ghostflyby/worker-actor";
-import {
-  remoteRef,
-  remoteRefCodec,
-  type RemoteRef,
-} from "./ref_codec.ts";
+import { type RemoteRef, remoteRef, remoteRefCodec } from "./ref_codec.ts";
 
 const replSurface = {
   execute(code: string): string {

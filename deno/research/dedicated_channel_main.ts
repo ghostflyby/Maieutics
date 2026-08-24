@@ -23,6 +23,8 @@ console.log("token =", JSON.stringify(token));
 // (b) the host needs a transport handle to connect the token. spawnNode
 // exposes `.transport`; spawnProcess does not. That is the library gap to
 // surface (see report).
-console.log("RESULT: worker-side openChannel + token handoff verified; host connect needs transport handle.");
+console.log(
+  "RESULT: worker-side openChannel + token handoff verified; host connect needs transport handle.",
+);
 
 await actor.dispose();

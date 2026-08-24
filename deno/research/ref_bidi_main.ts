@@ -2,7 +2,7 @@
 // a "host" process via remoteRef (worker-actor 0.4.0, JSR).
 import type * as ReplModule from "./ref_bidi_ref.ts";
 import { spawnProcess } from "@ghostflyby/worker-actor";
-import { remoteRef, remoteRefCodec, type RemoteRef } from "./ref_codec.ts";
+import { type RemoteRef, remoteRef, remoteRefCodec } from "./ref_codec.ts";
 
 // The "host" process's own surface.
 const hostSurface = {
@@ -29,7 +29,10 @@ try {
     execute(code: string): Promise<string>;
     status(): Promise<string>;
   };
-  console.log("repl→host (host calls repl) =", await replSurface.execute("1+1"));
+  console.log(
+    "repl→host (host calls repl) =",
+    await replSurface.execute("1+1"),
+  );
   console.log("repl→host status            =", await replSurface.status());
 } finally {
   await repl.dispose();

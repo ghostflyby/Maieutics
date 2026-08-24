@@ -12,7 +12,10 @@ const node = await spawnNode<typeof NodeModule.actors>(
 
 try {
   console.log("repl.initialize() =", await node.repl.initialize());
-  console.log("repl.execute(x)   =", JSON.stringify(await node.repl.execute("1+1")));
+  console.log(
+    "repl.execute(x)   =",
+    JSON.stringify(await node.repl.execute("1+1")),
+  );
   console.log("broker.ping()     =", await node.broker.ping());
 
   // Dedicated channel: ask the node (worker side) to open one, then connect the

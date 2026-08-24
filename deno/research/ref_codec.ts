@@ -79,8 +79,7 @@ const REF_ID = Symbol.for("worker-actor-example.remote-ref.id");
 /** The proxy type: every method returns a Promise; non-functions are `never`. */
 export type RemoteRef<T> =
   & {
-    [K in keyof T]: T[K] extends (...args: infer A) => infer R
-      ? (...args: A) => Promise<Awaited<R>>
+    [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>>
       : never;
   }
   & { dispose(): Promise<void> };
@@ -665,9 +664,7 @@ function materialize(
   const registry = entry.registry;
   const channel = connectChannel(port);
   registry.registerChannel(channel);
-  const pair = liveness
-    ? ensureHolderPair(liveness.ownerId, liveness.livenessPort)
-    : undefined;
+  const pair = liveness ? ensureHolderPair(liveness.ownerId, liveness.livenessPort) : undefined;
   const real = createRefProxy(channel, registry, entry.refId, () => {
     // The real proxy's death does not end the ENTITY: identityByRefId keeps
     // pointing at the pending proxy (the single entity), whose dispose is the
@@ -684,11 +681,10 @@ function materialize(
   const calls = entry.calls;
   entry.calls = [];
   for (const c of calls) {
-    const p =
-      (real as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)
-        [
-          c.method
-        ](...c.args);
+    const p = (real as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)
+      [
+        c.method
+      ](...c.args);
     p.then(c.resolve, c.reject);
   }
 }
@@ -731,9 +727,7 @@ function materializeChannel(
   }
   const registry = entry.registry;
   registry.registerChannel(channel);
-  const pair = liveness
-    ? ensureHolderPair(liveness.ownerId, liveness.livenessPort)
-    : undefined;
+  const pair = liveness ? ensureHolderPair(liveness.ownerId, liveness.livenessPort) : undefined;
   const real = createRefProxy(channel, registry, entry.refId, () => {
     // The real proxy's death does not end the ENTITY: identityByRefId keeps
     // pointing at the pending proxy (the single entity), whose dispose is the
@@ -750,11 +744,10 @@ function materializeChannel(
   const calls = entry.calls;
   entry.calls = [];
   for (const c of calls) {
-    const p =
-      (real as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)
-        [
-          c.method
-        ](...c.args);
+    const p = (real as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)
+      [
+        c.method
+      ](...c.args);
     p.then(c.resolve, c.reject);
   }
 }

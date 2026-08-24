@@ -19,6 +19,7 @@ import {
   type Codec,
   CODEC_PLACEHOLDER_KEY,
   connectChannel,
+  connectToken,
   type DecodeContext,
   type EncodeContext,
   openChannel,
@@ -37,7 +38,10 @@ type StreamFrame =
 
 interface StreamHandle {
   [CODEC_PLACEHOLDER_KEY]: typeof COLLECTION_STREAM_TAG;
-  port: MessagePort;
+  /** Messageport transports: the transferred peer port. */
+  port?: MessagePort;
+  /** Mux transports: the channel-establishment token. */
+  token?: unknown;
 }
 
 interface CollectionStreamState {
@@ -253,7 +257,7 @@ function createDecodedIterable(
 }
 
 function encode(value: AsyncIterable<unknown>, ctx: EncodeContext): unknown {
-  const { channel, peerPort } = openChannel(ctx);
+  const { channel, peerPort, token } = openChannel(ctx);
   ctx.registry.registerChannel(channel);
   const state = getState(ctx);
   let stopFn: () => void = () => {};
@@ -261,17 +265,22 @@ function encode(value: AsyncIterable<unknown>, ctx: EncodeContext): unknown {
     state.producerStops.delete(stopFn);
   });
   state.producerStops.add(stopFn);
+  // Messageport transports hand over a port; Mux transports hand over a token
+  // the peer resolves back to this channel on its transport.
   return {
     [CODEC_PLACEHOLDER_KEY]: COLLECTION_STREAM_TAG,
-    port: peerPort,
+    ...(peerPort !== undefined ? { port: peerPort } : { token }),
   } satisfies StreamHandle;
 }
 
 function decode(
-  placeholder: { port: MessagePort },
+  placeholder: { port?: MessagePort; token?: unknown },
   ctx: DecodeContext,
 ): AsyncIterable<unknown> {
-  const channel = connectChannel(placeholder.port);
+  const channel = placeholder.port !== undefined ? connectChannel(placeholder.port) : connectToken(
+    ctx.transport,
+    placeholder.token as { __mux: "open"; ch: number },
+  );
   ctx.registry.registerChannel(channel);
   const state = getState(ctx);
   let failFn: () => void = () => {};

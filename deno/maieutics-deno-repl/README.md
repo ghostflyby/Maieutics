@@ -60,7 +60,8 @@ deno run --no-prompt \
 `Deno.createHttpClient` requires the socket path in both read and write allowlists. The native
 `WebSocket` connects through the UDS proxy but still resolves its synthetic `ws://localhost` URL
 authority, so `localhost:80` must be granted alongside the socket. No other TCP endpoint is granted
-on Unix.
+on Unix. The same socket and allowlist serve the dedicated comm WebSocket (`/comm`, see
+`docs/deno-jupyter-compat.md`); no additional permission is needed.
 
 Windows launch permissions:
 

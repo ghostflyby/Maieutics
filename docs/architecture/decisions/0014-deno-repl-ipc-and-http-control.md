@@ -93,7 +93,11 @@ Channel mapping:
 | SSE | One-way kernel-to-consumer event streams (turn events, tool activity) with `Last-Event-ID` reconnect semantics |
 | WebSocket | Comm/widget bidirectional messages with binary buffers, and kernel-to-script control pushes while a script awaits |
 
-The WebSocket endpoint is opened when the comm feature is implemented, not before.
+The WebSocket endpoint is opened when the comm feature is implemented, not before. The comm bridge is implemented:
+a dedicated `/comm` WebSocket (separate from the control-bus `/ws`) carries comm messages with binary buffers as
+native bytes between the kernel and the REPL child, relayed by the composition root (`MaieuticsAgentKernelApplication`
+implements `IJupyterCommSink`; `ReplControlHost` maps `/comm` and owns per-session `CommBusConnection`). See
+`docs/comm-channel-plan.md`.
 
 ### Lifecycle
 
@@ -120,7 +124,14 @@ verify peer credentials and detect Jupyter restarts. The reusable Jupyter librar
   and a `comm.open/msg/close` skeleton using the channel's own envelope vocabulary. Jupyter wire mapping is a
   frontend-bridge concern, not a bus protocol property. Tool calls stay on HTTP and support cancellation through
   correlationId; the Deno client exposes `events.on`, `comm`, and `tools.invoke(..., { signal })`.
-- Pending: frontend comm/widget bridge, tool progress streams, SSE external event endpoint, approval for script tool
+- Landed (comm bridge): dedicated `/comm` WebSocket endpoint in `ReplControlHost` with peer-identity hello handshake
+  and `comm.ready` acknowledgment; `CommBusConnection` binary-frame writer; `CommCodec` binary encoding
+  (length-prefixed JSON + native buffers, no base64); `IJupyterCommSink` inbound comm surface in
+  `Maieutics.Jupyter.Kernel`; `JupyterKernelHost` dispatches `comm_open`/`comm_msg`/`comm_close` to the sink and
+  relays REPL-originated comm to iopub via `SendCommAsync`; `MaieuticsAgentKernelApplication` lazily starts the
+  default REPL and pushes frontend comm to it; the Deno side connects `/comm` in `repl_client.ts`, exposes
+  `maieutics.comm` (open/msg/close + `on` events), and `Deno.jupyter.broadcast` supports comm message types.
+- Pending: tool progress streams, SSE external event endpoint, approval for script tool
   calls, external loopback control endpoint, and the Windows named-pipe bootstrap.
 
 ## Consequences

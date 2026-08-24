@@ -129,7 +129,7 @@ Deno.test("the worker binds maieutics before creating Aves", async () => {
     /await installMaieuticsNamespace\(\);[\s\S]*kernel = await createReplKernel\(\);/.test(worker),
     true,
   );
-  assertEquals(worker.includes(".maieutics = namespace"), true);
+  assertEquals(worker.includes(".maieutics = injected"), true);
   assertEquals(worker.includes("await health()"), false);
 });
 

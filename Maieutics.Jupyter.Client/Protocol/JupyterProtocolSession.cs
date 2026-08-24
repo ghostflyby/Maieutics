@@ -234,6 +234,13 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         return shutdownReply;
     }
 
+    public ValueTask SendCommAsync(JupyterMessage message, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ThrowIfDisposed();
+        return transport.SendAsync(JupyterTransportChannel.Shell, message, cancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposeState, 1) != 0) return;

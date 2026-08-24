@@ -23,6 +23,15 @@ export type ReplActorEvent =
     executionId: string;
     sequence: number;
     wait: boolean;
+  }
+  | {
+    type: "commOpen" | "commMsg" | "commClose";
+    executionId: string;
+    sequence: number;
+    commId: string;
+    targetName?: string;
+    data?: unknown;
+    buffers: Uint8Array[];
   };
 
 export interface ReplActorInputRequest {
@@ -94,6 +103,20 @@ export class ReplActor {
     if (!this.#disposed) {
       await this.#actor.disposeRepl();
     }
+  }
+
+  /** Delivers a frontend comm message to the worker for dispatch to registered handlers. */
+  async deliverComm(message: {
+    kind: number;
+    commId: string;
+    targetName?: string;
+    data?: unknown;
+    buffers: Uint8Array[];
+  }): Promise<void> {
+    if (this.#disposed) {
+      return;
+    }
+    await this.#actor.deliverComm(message);
   }
 
   /** Hard-stops the worker after cooperative disposal has completed or failed. */

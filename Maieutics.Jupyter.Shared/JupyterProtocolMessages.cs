@@ -194,3 +194,17 @@ public sealed record JupyterIsCompleteReply(
 public sealed record JupyterIopubWelcome(
     [property: JsonPropertyName("subscription")]
     string Subscription);
+
+public sealed record JupyterCommOpenContent(
+    [property: JsonPropertyName("comm_id")] string CommId,
+    [property: JsonPropertyName("target_name")]
+    string TargetName,
+    [property: JsonPropertyName("data")] JsonElement? Data = null);
+
+public sealed record JupyterCommMsgContent(
+    [property: JsonPropertyName("comm_id")] string CommId,
+    [property: JsonPropertyName("data")] JsonElement? Data = null);
+
+public sealed record JupyterCommCloseContent(
+    [property: JsonPropertyName("comm_id")] string CommId,
+    [property: JsonPropertyName("data")] JsonElement? Data = null);

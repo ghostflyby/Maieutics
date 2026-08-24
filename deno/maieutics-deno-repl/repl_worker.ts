@@ -106,6 +106,17 @@ export const rpc = {
       await repl.dispose();
     }
   },
+
+  async deliverComm(message: {
+    kind: number;
+    commId: string;
+    targetName?: string;
+    data?: unknown;
+    buffers: Uint8Array[];
+  }): Promise<void> {
+    const kind = message.kind === 0 ? "open" : message.kind === 2 ? "close" : "msg";
+    deliverCommToHandlers(kind, message);
+  },
 };
 
 serveWorker(rpc);
@@ -123,7 +134,76 @@ async function installMaieuticsNamespace(): Promise<void> {
     throw new Error(`Missing ${CLIENT_ENV} environment variable.`);
   }
   const namespace = await import(moduleUrl) as Record<string, unknown>;
-  (globalThis as unknown as Record<string, unknown>).maieutics = namespace;
+  const injected = { ...namespace, comm: createCommProxy() };
+  (globalThis as unknown as Record<string, unknown>).maieutics = injected;
+}
+
+interface CommProxy {
+  open(commId: string, targetName?: string, data?: unknown): Promise<void>;
+  msg(commId: string, data?: unknown, buffers?: Uint8Array[]): Promise<void>;
+  close(commId: string, data?: unknown): Promise<void>;
+  on(
+    event: "open" | "msg" | "close",
+    handler: (
+      message: { commId: string; targetName?: string; data?: unknown; buffers: Uint8Array[] },
+    ) => void,
+  ): void;
+}
+
+const commHandlers: {
+  open: Array<
+    (
+      message: { commId: string; targetName?: string; data?: unknown; buffers: Uint8Array[] },
+    ) => void
+  >;
+  msg: Array<
+    (
+      message: { commId: string; targetName?: string; data?: unknown; buffers: Uint8Array[] },
+    ) => void
+  >;
+  close: Array<
+    (
+      message: { commId: string; targetName?: string; data?: unknown; buffers: Uint8Array[] },
+    ) => void
+  >;
+} = { open: [], msg: [], close: [] };
+
+function createCommProxy(): CommProxy {
+  const sendEvent = (
+    type: "commOpen" | "commMsg" | "commClose",
+    commId: string,
+    targetName: string | undefined,
+    data: unknown,
+    buffers: Uint8Array[],
+  ): Promise<void> => {
+    return queueAsyncEvent((execution) => ({
+      type,
+      executionId: execution.executionId,
+      sequence: execution.nextSequence++,
+      commId,
+      ...(targetName === undefined ? {} : { targetName }),
+      ...(data === undefined ? {} : { data }),
+      buffers,
+    }));
+  };
+
+  return {
+    open: (commId, targetName, data) => sendEvent("commOpen", commId, targetName, data, []),
+    msg: (commId, data, buffers) => sendEvent("commMsg", commId, undefined, data, buffers ?? []),
+    close: (commId, data) => sendEvent("commClose", commId, undefined, data, []),
+    on(event, handler) {
+      commHandlers[event].push(handler);
+    },
+  };
+}
+
+function deliverCommToHandlers(
+  kind: "open" | "msg" | "close",
+  message: { commId: string; targetName?: string; data?: unknown; buffers: Uint8Array[] },
+): void {
+  for (const handler of commHandlers[kind]) {
+    handler(message);
+  }
 }
 
 function installHostEnvironment(): void {
@@ -351,6 +431,33 @@ function createJupyterApi(): typeof Deno.jupyter {
     }
     if (messageType === "clear_output") {
       await sendJupyterEvent("clearOutput", { wait: content.wait === true });
+      return;
+    }
+    if (messageType === "comm_open" || messageType === "comm_msg" || messageType === "comm_close") {
+      if (!isRecord(content)) {
+        throw new TypeError(`The '${messageType}' broadcast content must be an object.`);
+      }
+      const commId = typeof content.comm_id === "string" ? content.comm_id : "";
+      if (commId.length === 0) {
+        throw new TypeError(`The '${messageType}' broadcast requires a comm_id.`);
+      }
+      const buffers = extra?.buffers ?? [];
+      const eventType = messageType === "comm_open"
+        ? "commOpen"
+        : messageType === "comm_close"
+        ? "commClose"
+        : "commMsg";
+      await queueAsyncEvent((execution) => ({
+        type: eventType,
+        executionId: execution.executionId,
+        sequence: execution.nextSequence++,
+        commId,
+        ...(messageType === "comm_open" && typeof content.target_name === "string"
+          ? { targetName: content.target_name }
+          : {}),
+        ...(content.data === undefined ? {} : { data: content.data }),
+        buffers,
+      }));
       return;
     }
     if (messageType !== "display_data" && messageType !== "update_display_data") {

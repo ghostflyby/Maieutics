@@ -34,6 +34,30 @@ public interface IJupyterCodeCompletenessProvider
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+///     Optional comm sink. A kernel application that implements this interface receives inbound
+///     <c>comm_open</c>, <c>comm_msg</c>, and <c>comm_close</c> shell messages instead of having
+///     them dropped. The context is the active execute execution when one is running, or null when
+///     the message arrives outside an execution.
+/// </summary>
+public interface IJupyterCommSink
+{
+    ValueTask OnCommOpenAsync(
+        JupyterCommMessage message,
+        JupyterExecutionContext? context,
+        CancellationToken cancellationToken);
+
+    ValueTask OnCommMsgAsync(
+        JupyterCommMessage message,
+        JupyterExecutionContext? context,
+        CancellationToken cancellationToken);
+
+    ValueTask OnCommCloseAsync(
+        JupyterCommMessage message,
+        JupyterExecutionContext? context,
+        CancellationToken cancellationToken);
+}
+
 public sealed record JupyterCompletionResult(
     IReadOnlyList<string> Matches,
     int CursorStart,

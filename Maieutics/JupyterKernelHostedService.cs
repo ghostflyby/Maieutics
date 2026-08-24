@@ -1,4 +1,5 @@
 using Maieutics.Configuration;
+using Maieutics.Control;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
 using Microsoft.Extensions.Hosting;
@@ -11,6 +12,7 @@ internal sealed class JupyterKernelHostedService(
     IMaieuticsRuntimeConfiguration configuration,
     IHostApplicationLifetime applicationLifetime,
     IKernelInterruptCoordinator interruptCoordinator,
+    CommFrontendSink commFrontendSink,
     ILogger<JupyterKernelHostedService> logger) : BackgroundService
 {
     private JupyterKernelHost? kernelHost;
@@ -28,6 +30,7 @@ internal sealed class JupyterKernelHostedService(
                 cancellationToken: stoppingToken).ConfigureAwait(false);
             kernelHost = host;
             interruptCoordinator.SetHost(host);
+            commFrontendSink.SetHost(host);
             logger.LogInformation("Maieutics Jupyter kernel started.");
             await host.Completion.ConfigureAwait(false);
         }
@@ -35,6 +38,7 @@ internal sealed class JupyterKernelHostedService(
         {
             kernelHost = null;
             interruptCoordinator.Clear();
+            commFrontendSink.Clear();
             applicationLifetime.StopApplication();
         }
     }

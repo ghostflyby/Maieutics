@@ -45,10 +45,14 @@ export async function connectBus(options: ConnectBusOptions): Promise<BusConnect
   const socket = await connectIpcWebSocket(address, path, credential);
   socket.onError = (error) => onError?.(error);
   socket.onClose = () => onClose?.();
-  socket.onMessage = (text) => {
+  socket.onMessage = (data) => {
+    if (typeof data !== "string") {
+      onError?.(new Error("The control WebSocket only accepts text messages."));
+      return;
+    }
     let envelope: ReplEnvelope;
     try {
-      envelope = JSON.parse(text) as ReplEnvelope;
+      envelope = JSON.parse(data) as ReplEnvelope;
     } catch {
       onError?.(new Error("The control WebSocket received invalid JSON."));
       return;

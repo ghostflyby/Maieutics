@@ -1,6 +1,12 @@
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
 import { connectIpcWebSocket, type IpcWebSocket } from "../shared/ipc_websocket.ts";
 import {
+  type CommClient,
+  CommKind,
+  type CommMessage,
+  connectComm,
+} from "../maieutics-repl-client/comm.ts";
+import {
   decodeReplEvalEnvelope,
   encodeReplEvalEnvelope,
   REPL_EVAL_WEBSOCKET_PATH,
@@ -54,6 +60,12 @@ interface InputWaiter {
   cleanup(): void;
 }
 
+function isCommEvent(
+  event: ReplActorEvent,
+): event is ReplActorEvent & { type: "commOpen" | "commMsg" | "commClose" } {
+  return event.type === "commOpen" || event.type === "commMsg" || event.type === "commClose";
+}
+
 /** Single owner for the actor, WebSocket, pumps, pending input, and active execution. */
 export class ReplClient {
   readonly #options: ReplClientOptions;
@@ -67,6 +79,7 @@ export class ReplClient {
   #socket: IpcWebSocket | undefined;
   #actor: ReplActor | undefined;
   #active: ActiveExecution | undefined;
+  #commClient: CommClient | undefined;
   #shutdownTask: Promise<void> | undefined;
   #readyReceived = false;
   #closeExpected = false;
@@ -98,6 +111,7 @@ export class ReplClient {
       onDeath: (reason) => this.#fail(reason),
     });
     await this.#openSocket();
+    this.#own(this.#openComm().catch((error) => this.#failComm(error)));
     this.#own(this.#outboundPump());
     this.#own(this.#eventPump());
     this.#own(this.#inboundPump());
@@ -132,6 +146,42 @@ export class ReplClient {
       }
     };
     socket.onError = (error) => this.#fail(error);
+  }
+
+  async #openComm(): Promise<void> {
+    const client = await connectComm(
+      this.#options.address,
+      this.#options.sessionId,
+      this.#options.credential,
+    );
+    this.#commClient = client;
+    client.onMessage = (message) => this.#deliverComm(message);
+    client.onClose = () => {
+      if (this.#commClient === client) this.#commClient = undefined;
+    };
+    client.onError = () => {
+      if (this.#commClient === client) this.#commClient = undefined;
+    };
+  }
+
+  #failComm(error: unknown): void {
+    // The comm channel is auxiliary: a failure to open it must not take down the
+    // REPL eval channel or the worker. Script comm calls fail with a clear error.
+    this.#commClient = undefined;
+  }
+
+  #deliverComm(message: CommMessage): void {
+    const actor = this.#actor;
+    if (actor === undefined) return;
+    actor
+      .deliverComm({
+        kind: message.kind,
+        commId: message.commId,
+        targetName: message.targetName,
+        data: message.data,
+        buffers: message.buffers,
+      })
+      .catch((error) => this.#fail(error));
   }
 
   #receive(data: unknown): void {
@@ -455,6 +505,11 @@ export class ReplClient {
     while (true) {
       const item = await this.#events.dequeue();
       try {
+        if (isCommEvent(item.event)) {
+          await this.#sendComm(item.event);
+          item.handled.resolve();
+          continue;
+        }
         const active = this.#active;
         if (active === undefined || active.executionId !== item.event.executionId) {
           throw new Error(`Output arrived for inactive execution '${item.event.executionId}'.`);
@@ -466,6 +521,27 @@ export class ReplClient {
         throw error;
       }
     }
+  }
+
+  async #sendComm(
+    event: ReplActorEvent & { type: "commOpen" | "commMsg" | "commClose" },
+  ): Promise<void> {
+    const client = this.#commClient;
+    if (client === undefined) {
+      throw new Error("The comm WebSocket is not open.");
+    }
+    const kind = event.type === "commOpen"
+      ? CommKind.Open
+      : event.type === "commClose"
+      ? CommKind.Close
+      : CommKind.Message;
+    await client.send({
+      kind,
+      commId: event.commId,
+      targetName: event.targetName,
+      data: event.data,
+      buffers: event.buffers,
+    });
   }
 
   #eventEnvelope(event: ReplActorEvent): Omit<ReplEvalEnvelope, "version"> {
@@ -482,6 +558,10 @@ export class ReplClient {
         return { ...common, type: ReplEvalMessageType.updateDisplay };
       case "clearOutput":
         return { ...common, type: ReplEvalMessageType.clearOutput };
+      case "commOpen":
+      case "commMsg":
+      case "commClose":
+        throw new Error("Comm events are delivered over the comm WebSocket, not repl.eval.");
     }
   }
 

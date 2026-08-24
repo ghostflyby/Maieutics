@@ -74,6 +74,19 @@ internal sealed class DenoReplRegistry(
         return await session.ExecuteAsync(code, toolContext.CallId, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    ///     Ensures the default Deno REPL session for an Agent session is created and started, and
+    ///     returns it. Used by the comm relay to deliver frontend comm messages to the REPL child.
+    /// </summary>
+    internal async Task<DenoReplSession> EnsureDefaultAsync(
+        AgentSessionId ownerSessionId,
+        CancellationToken cancellationToken)
+    {
+        var session = GetOrReserveDefault(ownerSessionId, null);
+        await session.StartAsync(cancellationToken).ConfigureAwait(false);
+        return session;
+    }
+
     internal DenoReplListResult List(AgentSessionId ownerSessionId)
     {
         DenoReplSession[] snapshot;

@@ -25,6 +25,8 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(ToolPostHookContextPayload))]
 [JsonSerializable(typeof(Dictionary<string, JsonElement>))]
 [JsonSerializable(typeof(DiscoverContextPayload))]
+[JsonSerializable(typeof(HostReplSpawnedPayload))]
+[JsonSerializable(typeof(HostReplExitedPayload))]
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 internal static class ReplControlJson
@@ -80,6 +82,8 @@ internal static class ReplMessageType
     public const string ExtensionError = "extension.error";
     public const string ExtensionRegistry = "extension.registry";
     public const string PluginReload = "plugin.reload";
+    public const string HostReplSpawned = "host.repl.spawned";
+    public const string HostReplExited = "host.repl.exited";
     public const string Error = "error";
 }
 
@@ -173,3 +177,24 @@ internal sealed record ToolPostHookContextPayload(
 
 /// <summary>Context passed to a plugin's MCP discovery extension point.</summary>
 internal sealed record DiscoverContextPayload(string Reason);
+
+/// <summary>
+///     Host-to-kernel report that the plugin host derived a Deno REPL process for a session
+///     (ADR 0020). Carries the REPL child's self-reported <c>Deno.pid</c> so the kernel can
+///     register the permission-broker policy and the control-channel identity by pid, exactly as
+///     it does for a kernel-derived REPL. Aligns with <c>host.repl.spawned</c> in
+///     <c>deno/maieutics-plugin-host/host_repl_protocol.ts</c>.
+/// </summary>
+internal sealed record HostReplSpawnedPayload(string SessionId, int Generation, int Pid);
+
+/// <summary>
+///     Host-to-kernel report that a host-derived Deno REPL process exited (ADR 0020). Releases
+///     the pid-scoped permission-broker policy and control-channel session identity. Aligns with
+///     <c>host.repl.exited</c> in <c>deno/maieutics-plugin-host/host_repl_protocol.ts</c>; the
+///     optional <see cref="Failure"/> mirrors the draft's optional <c>failure</c> reason.
+/// </summary>
+internal sealed record HostReplExitedPayload(
+    string SessionId,
+    int Generation,
+    int Pid,
+    string? Failure = null);

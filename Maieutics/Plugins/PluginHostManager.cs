@@ -10,6 +10,7 @@ using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -70,7 +71,8 @@ internal sealed class PluginHostManager(
     ReplControlSessionRegistry sessionRegistry,
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    DenoPermissionBroker? broker = null)
     : IHostedService, IAsyncDisposable
 {
     private const int EnvelopeVersion = 1;
@@ -112,8 +114,22 @@ internal sealed class PluginHostManager(
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
 
+    private readonly DenoPermissionBroker? broker = broker;
+
     private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     private string? configPath;
+
+    /// <summary>
+    ///     Effective REPL policies keyed by session id, registered by the kernel before the host
+    ///     derives a REPL for that session (ADR 0020 decision 1). The permission broker resolves
+    ///     every Deno permission check the REPL child makes against the policy registered for its
+    ///     pid; the host is only the enforcement point, never the authority. Skeleton stage: the
+    ///     kernel-facing registration method (<see cref="RegisterReplPolicy"/>) is the interface a
+    ///     future <c>DenoReplSessionFactory</c> host-derivation path calls; the current
+    ///     kernel-derived path never invokes it, so no policy is cached in production yet and a
+    ///     spawned report falls back to <see cref="EffectivePolicy.Default"/> with a warning.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
 
     private PluginMcpCoordinator? dynamicMcpCoordinator;
     private PluginHostProcess? process;
@@ -252,6 +268,23 @@ internal sealed class PluginHostManager(
         }
     }
 
+    /// <summary>
+    ///     Caches the effective REPL policy the kernel computed for a session, keyed by session
+    ///     id. A host-derived REPL report (<c>host.repl.spawned</c>) then registers this policy
+    ///     with the permission broker for the REPL's pid, preserving the kernel as the permission
+    ///     authority (ADR 0020 decision 1). Skeleton stage: no production kernel path calls this
+    ///     yet — the host-derivation path in <c>DenoReplSessionFactory</c> computes the policy
+    ///     and caches it here before asking the host to spawn. Until then, spawned reports fall
+    ///     back to <see cref="EffectivePolicy.Default"/> with a warning.
+    /// </summary>
+    internal void RegisterReplPolicy(string sessionId, EffectivePolicy policy)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(policy);
+        replPolicies[sessionId] = policy;
+        logger.LogDebug("Cached the effective REPL policy for session '{SessionId}'.", sessionId);
+    }
+
     public IReadOnlyList<PluginRegistration> GetRegistrations(string extensionPoint)
     {
         lock (gate)
@@ -296,7 +329,8 @@ internal sealed class PluginHostManager(
                 HostId,
                 modules.SdkUrl,
                 modules.WorkerEntryUrl,
-                modules.ConfigFile),
+                modules.ConfigFile,
+                broker),
             logger);
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         processExitObservation = ObserveExitAsync(process, configPath);
@@ -768,7 +802,7 @@ internal sealed class PluginHostManager(
             : JsonSerializer.SerializeToElement([.. grant.Values], PluginHostJsonContext.Default.StringArray);
     }
 
-    private void HandleHostMessage(string text)
+    internal void HandleHostMessage(string text)
     {
         ReplEnvelope envelope;
         try
@@ -790,7 +824,91 @@ internal sealed class PluginHostManager(
             case ReplMessageType.ExtensionRegistry:
                 UpdateRegistry(ParsePayload<ExtensionRegistryPayload>(envelope));
                 break;
+            case ReplMessageType.HostReplSpawned:
+                RegisterHostRepl(ParsePayload<HostReplSpawnedPayload>(envelope));
+                break;
+            case ReplMessageType.HostReplExited:
+                UnregisterHostRepl(ParsePayload<HostReplExitedPayload>(envelope));
+                break;
         }
+    }
+
+    /// <summary>
+    ///     Registers a REPL process the plugin host derived (ADR 0020): the pid becomes a
+    ///     session-owned control-channel identity and a broker-scoped permission subject, the
+    ///     same registration effect a kernel-derived REPL has at spawn. The host connection is
+    ///     already authenticated as a trusted host (the <c>control.hello</c> host handshake), and
+    ///     like every other host message this report carries no host id.
+    /// </summary>
+    private void RegisterHostRepl(HostReplSpawnedPayload? payload)
+    {
+        if (payload is null ||
+            payload.Pid <= 0 ||
+            string.IsNullOrWhiteSpace(payload.SessionId))
+        {
+            logger.LogWarning(
+                "Ignored a malformed host REPL spawned report (session '{SessionId}', pid {Pid}).",
+                payload?.SessionId,
+                payload?.Pid);
+            return;
+        }
+
+        if (replPolicies.TryGetValue(payload.SessionId, out var policy))
+            logger.LogDebug(
+                "Host-derived REPL for session '{SessionId}' generation {Generation} registered with pid {Pid}.",
+                payload.SessionId,
+                payload.Generation,
+                payload.Pid);
+        else
+        {
+            // Skeleton stage: no kernel path caches a policy yet (the host-derivation wiring in
+            // DenoReplSessionFactory is a later task), so the broker would deny every REPL
+            // permission request by default. Use the empty default policy as the placeholder and
+            // keep the interface in place; the warning surfaces the gap until the real policy
+            // generation lands.
+            policy = EffectivePolicy.Default;
+            logger.LogWarning(
+                "No effective REPL policy is cached for session '{SessionId}'; " +
+                "registered the host-derived REPL pid {Pid} with the default policy. " +
+                "The kernel must compute and register the REPL policy before the host derives it (ADR 0020).",
+                payload.SessionId,
+                payload.Pid);
+        }
+
+        sessionRegistry.Register(payload.Pid, payload.SessionId);
+        broker?.RegisterPolicy(payload.Pid, policy);
+        logger.LogInformation(
+            "Plugin host reported a REPL process for session '{SessionId}' generation {Generation} with pid {Pid}.",
+            payload.SessionId,
+            payload.Generation,
+            payload.Pid);
+    }
+
+    /// <summary>Releases the pid-scoped identity and broker policy of a host-derived REPL that
+    /// exited (ADR 0020). Idempotent: the pid may already have been unregistered by another
+    /// path.</summary>
+    private void UnregisterHostRepl(HostReplExitedPayload? payload)
+    {
+        if (payload is null ||
+            payload.Pid <= 0 ||
+            string.IsNullOrWhiteSpace(payload.SessionId))
+        {
+            logger.LogWarning(
+                "Ignored a malformed host REPL exited report (session '{SessionId}', pid {Pid}).",
+                payload?.SessionId,
+                payload?.Pid);
+            return;
+        }
+
+        sessionRegistry.Unregister(payload.Pid);
+        broker?.UnregisterProcess(payload.Pid);
+        logger.LogDebug(
+            "Plugin host reported a REPL process exit for session '{SessionId}' generation {Generation} " +
+            "with pid {Pid}{Failure}.",
+            payload.SessionId,
+            payload.Generation,
+            payload.Pid,
+            payload.Failure is { } failure ? $" ({failure})" : string.Empty);
     }
 
     private void CompletePending(ReplEnvelope envelope)
@@ -983,6 +1101,10 @@ internal sealed class PluginHostManager(
                 ReplControlJsonContext.Default.ExtensionErrorPayload,
             _ when typeof(T) == typeof(ExtensionRegistryPayload) =>
                 ReplControlJsonContext.Default.ExtensionRegistryPayload,
+            _ when typeof(T) == typeof(HostReplSpawnedPayload) =>
+                ReplControlJsonContext.Default.HostReplSpawnedPayload,
+            _ when typeof(T) == typeof(HostReplExitedPayload) =>
+                ReplControlJsonContext.Default.HostReplExitedPayload,
             _ => throw new InvalidOperationException($"Unsupported extension payload type '{typeof(T).Name}'.")
         };
     }

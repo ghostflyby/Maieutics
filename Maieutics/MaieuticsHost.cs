@@ -168,7 +168,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
-            services.GetRequiredService<TimeProvider>()));
+            services.GetRequiredService<TimeProvider>(),
+            services.GetService<DenoPermissionBroker>()));
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,

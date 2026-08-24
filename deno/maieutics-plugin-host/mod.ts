@@ -9,6 +9,7 @@ import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
 import { ReplManager } from "./repl_manager.ts";
 import { connectBus } from "../shared/bus.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
+import type { HostReplReport } from "./host_repl_protocol.ts";
 
 const IPC_ENV = "MAIEUTICS_REPL_IPC";
 const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";
@@ -42,9 +43,11 @@ async function main(): Promise<void> {
     workerEntryUrl,
     plugins: config.plugins ?? [],
   });
-  // ADR 0020 skeleton: the host can also derive REPL processes. The entry path
-  // is optional at this stage (spawnRepl is not yet called by a kernel path);
-  // the pid-registration closed loop is covered by host_test.ts.
+  // ADR 0020: the host derives REPL processes. The entry path is optional at
+  // this stage (spawnRepl is not yet called by a kernel path); the pid
+  // registration + broker policy closed loop is covered by host_test.ts. The
+  // reporter is wired below once the control bus is connected — a REPL must
+  // not be derived before the pid report channel exists.
   const repls = new ReplManager({
     replEntryPath: Deno.env.get(REPL_ENTRY_ENV) ?? "",
   });
@@ -70,6 +73,10 @@ async function main(): Promise<void> {
     type: "extension.registry",
     payload: registryPayload(registered, host.states()),
   });
+  // Host → kernel REPL pid reports ride the same bus. The reporter is wired
+  // here, after the hello handshake authenticated this host; ReplManager
+  // refuses to derive a REPL before it is set.
+  repls.setReporter((report: HostReplReport) => bus.send(report));
 
   const shutdown = (): void => {
     host.dispose();

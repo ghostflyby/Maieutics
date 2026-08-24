@@ -9,8 +9,11 @@
  * keeps working during the dual-track transition (ADR 0020 out of scope).
  *
  * The process runs the actor surface with whatever `permissions` shell the host
- * passed at spawn. In the full migration the kernel attaches the permission
- * broker to this pid; the static shell is only the fallback baseline (ADR 0020
+ * passed at spawn. When the host forwards the kernel's broker address under
+ * DENO_PERMISSION_BROKER_PATH, every explicit permission check this process
+ * makes is resolved by the broker against the policy the kernel registered for
+ * this pid (the host reports the pid with `host.repl.spawned` before the actor
+ * handshake, B3); the static shell is only the fallback baseline (ADR 0020
  * decision 1), never the security boundary.
  */
 

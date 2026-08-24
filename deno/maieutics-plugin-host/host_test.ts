@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
-import { ReplManager } from "./repl_manager.ts";
+import { isValidReplPid, ReplManager, type ReplReporter } from "./repl_manager.ts";
+import type { HostReplReport } from "./host_repl_protocol.ts";
 
 const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
@@ -57,6 +58,7 @@ Deno.test("host entry imports only the host implementation and shared control mo
   for (const specifier of imports) {
     assert(
       specifier === "./host.ts" || specifier === "./repl_manager.ts" ||
+        specifier === "./host_repl_protocol.ts" ||
         specifier.startsWith("../shared/"),
       `unexpected import '${specifier}' in the plugin host entry`,
     );
@@ -384,8 +386,8 @@ Deno.test("propagates handler failures as typed errors", async () => {
   }
 });
 
-function makeReplManager(): ReplManager {
-  return new ReplManager({ replEntryPath: REPL_ENTRY_PATH });
+function makeReplManager(reporter?: ReplReporter): ReplManager {
+  return new ReplManager({ replEntryPath: REPL_ENTRY_PATH, reporter });
 }
 
 function isReplProcessAlive(pid: number): boolean {
@@ -396,23 +398,39 @@ function isReplProcessAlive(pid: number): boolean {
   }
 }
 
-// —— REPL process derivation (ADR 0020 skeleton) ——
+function collectReports(): { reports: HostReplReport[]; reporter: ReplReporter } {
+  const reports: HostReplReport[] = [];
+  return {
+    reports,
+    reporter: (report: HostReplReport) => {
+      reports.push(report);
+    },
+  };
+}
+
+// —— REPL process derivation (ADR 0020) ——
 
 Deno.test("host derives a REPL process actor and receives its pid", async () => {
-  const repls = makeReplManager();
+  const { reports, reporter } = collectReports();
+  const repls = makeReplManager(reporter);
   try {
     const handle = await repls.spawnRepl("repl-test-1", 0);
     assert(Number.isSafeInteger(handle.pid) && handle.pid > 0, "pid must be a positive integer");
     assertEquals(handle.sessionId, "repl-test-1");
     assertEquals(handle.generation, 0);
     assertEquals(repls.get("repl-test-1"), handle);
+    assertEquals(reports, [{
+      type: "host.repl.spawned",
+      payload: { sessionId: "repl-test-1", generation: 0, pid: handle.pid },
+    }]);
   } finally {
     await repls.disposeAll();
   }
 });
 
 Deno.test("repl process actor exposes execute and returns the skeleton envelope", async () => {
-  const repls = makeReplManager();
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
   try {
     const handle = await repls.spawnRepl("repl-test-2", 1);
     const result = await handle.actor.execute("1 + 1");
@@ -424,7 +442,8 @@ Deno.test("repl process actor exposes execute and returns the skeleton envelope"
 });
 
 Deno.test("dispose stops the derived repl process and clears the registry", async () => {
-  const repls = makeReplManager();
+  const { reports, reporter } = collectReports();
+  const repls = makeReplManager(reporter);
   const handle = await repls.spawnRepl("repl-test-3", 2);
   const pid = handle.pid;
   assert(isReplProcessAlive(pid), "repl process must be alive before dispose");
@@ -437,10 +456,17 @@ Deno.test("dispose stops the derived repl process and clears the registry", asyn
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert(!isReplProcessAlive(pid), "repl process must exit after dispose");
+  // Exactly one exited report, keyed to the reported spawn pid.
+  assertEquals(reports.filter((report) => report.type === "host.repl.exited"), [{
+    type: "host.repl.exited",
+    payload: { sessionId: "repl-test-3", generation: 2, pid },
+  }]);
+  assertEquals(reports.length, 2, "spawn + exit = exactly two reports");
 });
 
 Deno.test("a crashed repl process is removed from the registry", async () => {
-  const repls = makeReplManager();
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
   const handle = await repls.spawnRepl("repl-test-4", 3);
   const pid = handle.pid;
   assert(isReplProcessAlive(pid), "repl process must be alive before the kill");
@@ -457,7 +483,8 @@ Deno.test("a crashed repl process is removed from the registry", async () => {
 });
 
 Deno.test("spawnRepl rejects a duplicate running session", async () => {
-  const repls = makeReplManager();
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
   try {
     await repls.spawnRepl("repl-test-5", 0);
     await assertRejects(
@@ -468,4 +495,175 @@ Deno.test("spawnRepl rejects a duplicate running session", async () => {
   } finally {
     await repls.disposeAll();
   }
+});
+
+Deno.test("a crashed repl process emits one exited report", async () => {
+  const { reports, reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  const handle = await repls.spawnRepl("repl-crash-1", 4);
+  const pid = handle.pid;
+  Deno.kill(pid, "SIGKILL");
+  // The liveness monitor (or onDeath) clears the registry and emits the exit;
+  // give the poll a bounded window.
+  for (let attempt = 0; attempt < 100 && repls.get("repl-crash-1") !== undefined; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assertEquals(repls.get("repl-crash-1"), undefined, "registry must clear after crash");
+  const exited = reports.filter((report) => report.type === "host.repl.exited");
+  assertEquals(exited.length, 1, "exactly one exited report per crash");
+  assertEquals(exited[0].type, "host.repl.exited");
+  assertEquals(exited[0].payload.sessionId, "repl-crash-1");
+  assertEquals(exited[0].payload.generation, 4);
+  assertEquals(exited[0].payload.pid, pid);
+  assert(
+    typeof (exited[0].payload as { failure?: string }).failure === "string",
+    "a crash report must carry a failure reason",
+  );
+  await repls.disposeAll();
+  // disposeAll must not emit a second exited report for the same handle.
+  const after = reports.filter((report) => report.type === "host.repl.exited");
+  assertEquals(after.length, 1, "no duplicate exited report");
+});
+
+Deno.test("disposing after a crash does not double-report the exit", async () => {
+  const { reports, reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  const handle = await repls.spawnRepl("repl-crash-2", 5);
+  const pid = handle.pid;
+  Deno.kill(pid, "SIGKILL");
+  for (let attempt = 0; attempt < 100 && repls.get("repl-crash-2") !== undefined; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  await repls.disposeAll();
+  const exited = reports.filter((report) => report.type === "host.repl.exited");
+  assertEquals(exited.length, 1, "one exited report even when dispose races the death");
+});
+
+Deno.test("spawnRepl without a reporter refuses to derive a REPL", async () => {
+  const repls = makeReplManager();
+  await assertRejects(
+    () => repls.spawnRepl("repl-test-6", 0),
+    Error,
+    "control bus is not connected",
+  );
+});
+
+/**
+ * A minimal real permission broker: the .NET DenoPermissionBroker shape
+ * (JSON-lines over a unix socket). The host's env-forwarding test must point
+ * DENO_PERMISSION_BROKER_PATH at an EXISTING socket — Deno fails the child at
+ * launch when the path is absent, so a fake path would kill the REPL before
+ * the handshake.
+ */
+class TestBroker implements AsyncDisposable {
+  static async start(): Promise<TestBroker> {
+    // The unix socket path must stay well under the platform SUN_LEN limit, so
+    // use a short /tmp name (like the .NET broker's CreateSocketPath).
+    const path = `/tmp/mc-broker-${crypto.randomUUID().slice(0, 8)}.sock`;
+    const listener = Deno.listen({ path, transport: "unix" });
+    const broker = new TestBroker(path, listener);
+    void broker.#serve();
+    return broker;
+  }
+
+  readonly address: string;
+  #listener: Deno.Listener;
+
+  private constructor(path: string, listener: Deno.Listener) {
+    this.address = path;
+    this.#listener = listener;
+  }
+
+  async #serve(): Promise<void> {
+    for await (const conn of this.#listener) {
+      void this.#lineReader(conn);
+    }
+  }
+
+  async #lineReader(conn: Deno.Conn): Promise<void> {
+    const buffer = new Uint8Array(4096);
+    let pending = "";
+    try {
+      while (true) {
+        const n = await conn.read(buffer);
+        if (n === null) return;
+        pending += new TextDecoder().decode(buffer.subarray(0, n));
+        let index: number;
+        while ((index = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0, index);
+          pending = pending.slice(index + 1);
+          try {
+            const request = JSON.parse(line) as { id: number; permission: string; value?: string };
+            // Allow by default: the real kernel policy for a REPL grants the
+            // session env reads and the module-graph reads, and the child's
+            // initialize()/pregestBrokerPath() depend on those being allowed.
+            await conn.write(new TextEncoder().encode(
+              JSON.stringify({ id: request.id, result: "allow" }) + "\n",
+            ));
+          } catch {
+            // Keep serving the stream on a malformed line.
+          }
+        }
+      }
+    } catch {
+      // Client disconnected.
+    }
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    try {
+      this.#listener.close();
+    } catch {
+      // Already closed.
+    }
+  }
+}
+
+Deno.test("repl child receives the forwarded broker path in its environment", async () => {
+  await using broker = await TestBroker.start();
+  const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
+  Deno.env.set("MAIEUTICS_PERMISSION_BROKER", broker.address);
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  try {
+    const handle = await repls.spawnRepl("repl-broker-1", 6);
+    try {
+      const brokerPath = await handle.actor.pregestBrokerPath();
+      assertEquals(brokerPath, broker.address);
+    } finally {
+      await repls.disposeRepl("repl-broker-1");
+    }
+  } finally {
+    if (previous === undefined) Deno.env.delete("MAIEUTICS_PERMISSION_BROKER");
+    else Deno.env.set("MAIEUTICS_PERMISSION_BROKER", previous);
+  }
+});
+
+Deno.test("repl child sees no broker path when the host received none", async () => {
+  const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
+  if (previous !== undefined) Deno.env.delete("MAIEUTICS_PERMISSION_BROKER");
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  try {
+    const handle = await repls.spawnRepl("repl-broker-2", 7);
+    try {
+      const brokerPath = await handle.actor.pregestBrokerPath();
+      assertEquals(brokerPath, "");
+    } finally {
+      await repls.disposeRepl("repl-broker-2");
+    }
+  } finally {
+    if (previous !== undefined) Deno.env.set("MAIEUTICS_PERMISSION_BROKER", previous);
+  }
+});
+
+Deno.test("isValidReplPid rejects the host's own pid", async () => {
+  assertEquals(isValidReplPid(Deno.pid), false);
+  assertEquals(isValidReplPid(0), false);
+  assertEquals(isValidReplPid(-1), false);
+  assertEquals(isValidReplPid(Number.NaN), false);
+  assertEquals(isValidReplPid(Number.POSITIVE_INFINITY), false);
+  // Deno.pid is always positive, so 1 is a foreign positive pid unless the
+  // test runner itself is pid 1 (essentially impossible on a normal host).
+  assertEquals(isValidReplPid(1), Deno.pid !== 1);
 });

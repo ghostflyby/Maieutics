@@ -1,0 +1,16 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@ghostflyby/worker-actor@0.4.0": "0.4.0"
+  },
+  "jsr": {
+    "@ghostflyby/worker-actor@0.4.0": {
+      "integrity": "62953d833e21bf71717c113716551976d29f74738476bd9bfbea2d905f6218e3"
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@ghostflyby/worker-actor@0.4.0"
+    ]
+  }
+}

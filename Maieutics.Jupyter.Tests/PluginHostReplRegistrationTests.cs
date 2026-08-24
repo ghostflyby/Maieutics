@@ -71,9 +71,10 @@ public sealed class PluginHostReplRegistrationTests
             using var process = StartProbe(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
 
-            // No kernel path cached a policy for this session (the host-derivation wiring in
-            // DenoReplSessionFactory is a later task), so the placeholder default policy is
-            // registered: the REPL is still bound, but every permission request is denied by default.
+            // No kernel path pre-cached a policy for this session (esbuild-wasm resolution failed
+            // at session start, or the session was never started through the kernel path), so the
+            // explicit downgrade policy is registered: the REPL is still bound, but every
+            // permission request is denied by default.
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "no-policy-session", 1, process.Id)));
 

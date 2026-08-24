@@ -170,6 +170,10 @@ public static class MaieuticsHost
             services.GetRequiredService<ILoggerFactory>(),
             services.GetRequiredService<TimeProvider>(),
             services.GetService<DenoPermissionBroker>()));
+        // The host manager is the kernel-facing REPL policy registrar (ADR 0020 decision 1): the
+        // session factory pre-caches a REPL's policy through it before the host derives the REPL.
+        builder.Services.AddSingleton<IReplPolicyRegistrar>(static services =>
+            services.GetRequiredService<PluginHostManager>());
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services => new ReplControlHost(
             controlSocketPath,
@@ -194,7 +198,8 @@ public static class MaieuticsHost
                 services.GetRequiredService<ReplControlSessionRegistry>(),
                 services.GetRequiredService<ReplControlCredentialRegistry>(),
                 services.GetRequiredService<ILogger<DenoReplProcess>>(),
-                services.GetRequiredService<DenoPermissionBroker>()));
+                services.GetRequiredService<DenoPermissionBroker>(),
+                services.GetService<IReplPolicyRegistrar>()));
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();

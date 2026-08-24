@@ -34,7 +34,8 @@ internal sealed class LocalDenoReplSessionFactory(
     ReplControlSessionRegistry sessionRegistry,
     ReplControlCredentialRegistry credentialRegistry,
     ILogger<DenoReplProcess> logger,
-    DenoPermissionBroker broker)
+    DenoPermissionBroker broker,
+    IReplPolicyRegistrar? replPolicyRegistrar = null)
     : IDenoReplSessionFactory
 {
     private readonly ReplControlCredentialRegistry credentialRegistry =
@@ -51,6 +52,8 @@ internal sealed class LocalDenoReplSessionFactory(
     private readonly DenoReplModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
     private readonly DenoReplOptions options = options ?? throw new ArgumentNullException(nameof(options));
+
+    private readonly IReplPolicyRegistrar? replPolicyRegistrar = replPolicyRegistrar;
 
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
@@ -71,6 +74,26 @@ internal sealed class LocalDenoReplSessionFactory(
         DenoReplProcess? process = null;
         try
         {
+            // Pre-cache the effective REPL policy before the child starts (ADR 0020 decision 1):
+            // the kernel is the permission authority and the host only enforces it. With the
+            // broker env var active every REPL permission check reaches the broker, so a host-
+            // derived REPL report for this session must register the true policy the moment it
+            // arrives — the policy is computed here and re-uses the same esbuild-wasm resolution
+            // the kernel-derived start below performs. A resolution failure only disables the
+            // pre-cache for this session; the start itself is unchanged.
+            await DenoReplPolicyCache.PrepareAsync(
+                replPolicyRegistrar,
+                options.Executable,
+                modules.ModuleDirectory,
+                workingDirectory,
+                modules.ConfigFile,
+                modules.LockFile,
+                controlHost.ControlAddress,
+                controlHost.WindowsPipeName,
+                sessionId,
+                logger,
+                startup.Token).ConfigureAwait(false);
+
             process = await DenoReplProcess.StartAsync(
                 new DenoReplProcessOptions(
                     options.Executable,
@@ -111,7 +134,8 @@ internal sealed class LocalDenoReplSessionFactory(
                 sessionId,
                 options.ShutdownTimeout,
                 sessionRegistry,
-                credentialRegistry);
+                credentialRegistry,
+                replPolicyRegistrar);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -134,6 +158,7 @@ internal sealed class LocalDenoReplSessionFactory(
     {
         sessionRegistry.Unregister(process.ProcessId);
         credentialRegistry.Remove(sessionId);
+        DenoReplPolicyCache.Clear(replPolicyRegistrar, sessionId);
         await process.DisposeAsync().ConfigureAwait(false);
     }
 }
@@ -143,6 +168,7 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
     private readonly ReplControlCredentialRegistry credentialRegistry;
     private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly DenoReplProcess process;
+    private readonly IReplPolicyRegistrar? replPolicyRegistrar;
     private readonly string sessionId;
     private readonly ReplControlSessionRegistry sessionRegistry;
     private readonly TimeSpan shutdownTimeout;
@@ -154,7 +180,8 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
         string sessionId,
         TimeSpan shutdownTimeout,
         ReplControlSessionRegistry sessionRegistry,
-        ReplControlCredentialRegistry credentialRegistry)
+        ReplControlCredentialRegistry credentialRegistry,
+        IReplPolicyRegistrar? replPolicyRegistrar)
     {
         this.process = process;
         Connection = connection;
@@ -162,6 +189,7 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
         this.shutdownTimeout = shutdownTimeout;
         this.sessionRegistry = sessionRegistry;
         this.credentialRegistry = credentialRegistry;
+        this.replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
     }
 
@@ -218,6 +246,9 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
         {
             sessionRegistry.Unregister(process.ProcessId);
             credentialRegistry.Remove(sessionId);
+            // This generation's policy is spent: a restart re-caches its own policy on start, and
+            // a closed session must not leave a stale policy behind (ADR 0020, B4 cache lifecycle).
+            DenoReplPolicyCache.Clear(replPolicyRegistrar, sessionId);
         }
 
         if (!disposing && failure is not null) throw failure;

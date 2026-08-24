@@ -73,7 +73,7 @@ internal sealed class PluginHostManager(
     ILoggerFactory loggerFactory,
     TimeProvider timeProvider,
     DenoPermissionBroker? broker = null)
-    : IHostedService, IAsyncDisposable
+    : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
@@ -123,11 +123,11 @@ internal sealed class PluginHostManager(
     ///     Effective REPL policies keyed by session id, registered by the kernel before the host
     ///     derives a REPL for that session (ADR 0020 decision 1). The permission broker resolves
     ///     every Deno permission check the REPL child makes against the policy registered for its
-    ///     pid; the host is only the enforcement point, never the authority. Skeleton stage: the
-    ///     kernel-facing registration method (<see cref="RegisterReplPolicy"/>) is the interface a
-    ///     future <c>DenoReplSessionFactory</c> host-derivation path calls; the current
-    ///     kernel-derived path never invokes it, so no policy is cached in production yet and a
-    ///     spawned report falls back to <see cref="EffectivePolicy.Default"/> with a warning.
+    ///     pid; the host is only the enforcement point, never the authority. The kernel pre-caches
+    ///     the policy at session start (<see cref="DenoReplPolicyCache.PrepareAsync"/>), so a
+    ///     spawned report registers the real policy; a session with no cached policy degrades to
+    ///     <see cref="EffectivePolicy.Default"/> explicitly with a warning — the fallback is a
+    ///     deliberate choice, never a silent one.
     /// </summary>
     private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
 
@@ -272,10 +272,9 @@ internal sealed class PluginHostManager(
     ///     Caches the effective REPL policy the kernel computed for a session, keyed by session
     ///     id. A host-derived REPL report (<c>host.repl.spawned</c>) then registers this policy
     ///     with the permission broker for the REPL's pid, preserving the kernel as the permission
-    ///     authority (ADR 0020 decision 1). Skeleton stage: no production kernel path calls this
-    ///     yet — the host-derivation path in <c>DenoReplSessionFactory</c> computes the policy
-    ///     and caches it here before asking the host to spawn. Until then, spawned reports fall
-    ///     back to <see cref="EffectivePolicy.Default"/> with a warning.
+    ///     authority (ADR 0020 decision 1). The kernel pre-caches the policy at session start via
+    ///     <see cref="DenoReplPolicyCache"/>, which calls this method through
+    ///     <see cref="IReplPolicyRegistrar"/>.
     /// </summary>
     internal void RegisterReplPolicy(string sessionId, EffectivePolicy policy)
     {
@@ -283,6 +282,25 @@ internal sealed class PluginHostManager(
         ArgumentNullException.ThrowIfNull(policy);
         replPolicies[sessionId] = policy;
         logger.LogDebug("Cached the effective REPL policy for session '{SessionId}'.", sessionId);
+    }
+
+    /// <summary>Removes a session's cached REPL policy, so a closed or restarted session's old
+    /// policy cannot leak into the next generation (the next session start re-caches).</summary>
+    internal void UnregisterReplPolicy(string sessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        if (replPolicies.TryRemove(sessionId, out _))
+            logger.LogDebug("Removed the cached REPL policy for session '{SessionId}'.", sessionId);
+    }
+
+    void IReplPolicyRegistrar.RegisterReplPolicy(string sessionId, EffectivePolicy policy)
+    {
+        RegisterReplPolicy(sessionId, policy);
+    }
+
+    void IReplPolicyRegistrar.UnregisterReplPolicy(string sessionId)
+    {
+        UnregisterReplPolicy(sessionId);
     }
 
     public IReadOnlyList<PluginRegistration> GetRegistrations(string extensionPoint)
@@ -861,16 +879,16 @@ internal sealed class PluginHostManager(
                 payload.Pid);
         else
         {
-            // Skeleton stage: no kernel path caches a policy yet (the host-derivation wiring in
-            // DenoReplSessionFactory is a later task), so the broker would deny every REPL
-            // permission request by default. Use the empty default policy as the placeholder and
-            // keep the interface in place; the warning surfaces the gap until the real policy
-            // generation lands.
+            // Explicit downgrade: no kernel path cached a policy for this session (the esbuild-
+            // wasm resolution failed at session start, or a non-kernel session was derived).
+            // Registering the empty default policy denies every REPL permission request by
+            // default — a deliberate, surfaced fallback, never a silent one. The kernel must
+            // compute and pre-cache the policy before the host derives the REPL (ADR 0020).
             policy = EffectivePolicy.Default;
             logger.LogWarning(
                 "No effective REPL policy is cached for session '{SessionId}'; " +
                 "registered the host-derived REPL pid {Pid} with the default policy. " +
-                "The kernel must compute and register the REPL policy before the host derives it (ADR 0020).",
+                "The kernel must compute and pre-cache the REPL policy before the host derives it (ADR 0020).",
                 payload.SessionId,
                 payload.Pid);
         }

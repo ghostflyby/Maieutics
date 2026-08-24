@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using Maieutics.DenoExecution;
-using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoRepl;
@@ -28,7 +27,6 @@ internal sealed record DenoReplProcessOptions(
 /// flags, and the policy registered at spawn carries the control-channel and module-graph grants.</summary>
 internal sealed class DenoReplProcess : IAsyncDisposable
 {
-    private const string EsbuildWasmVersion = "0.25.12";
     private readonly DenoRunProcess inner;
 
     private DenoReplProcess(DenoRunProcess inner)
@@ -56,14 +54,34 @@ internal sealed class DenoReplProcess : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
-        var esbuildWasm = await ResolveEsbuildWasmAsync(options, logger, cancellationToken).ConfigureAwait(false);
-        if (esbuildWasm is null)
+        var policy = await DenoReplPolicyBuilder.BuildAsync(
+                options.Executable,
+                options.ModuleDirectory,
+                options.WorkingDirectory,
+                options.ConfigFile,
+                options.LockFile,
+                options.IpcAddress,
+                options.WindowsPipeName,
+                logger,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (policy is null)
         {
             if (!options.AutoInstallModuleGraph)
-                throw CreateMissingModuleGraphException();
+                throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
             await InstallModuleGraphAsync(options, cancellationToken).ConfigureAwait(false);
-            esbuildWasm = await ResolveEsbuildWasmAsync(options, logger, cancellationToken).ConfigureAwait(false)
-                          ?? throw CreateMissingModuleGraphException();
+            policy = await DenoReplPolicyBuilder.BuildAsync(
+                    options.Executable,
+                    options.ModuleDirectory,
+                    options.WorkingDirectory,
+                    options.ConfigFile,
+                    options.LockFile,
+                    options.IpcAddress,
+                    options.WindowsPipeName,
+                    logger,
+                    cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
         }
 
         var startInfo = new ProcessStartInfo
@@ -106,7 +124,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             InternalDenoProcessKind.DenoRepl,
             logger,
             options.Broker,
-            BuildPolicy(options, esbuildWasm),
+            policy,
             captureStandardError: true);
         logger.LogInformation(
             "Deno REPL session {SessionId} generation {Generation} started with pid {ProcessId}.",
@@ -116,70 +134,9 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         return new DenoReplProcess(inner);
     }
 
-    private static EffectivePolicy BuildPolicy(DenoReplProcessOptions options, string esbuildWasm)
-    {
-        return PermissionBaseline.ForDenoRepl(
-            options.ModuleDirectory,
-            options.WorkingDirectory,
-            options.ConfigFile,
-            options.LockFile,
-            options.IpcAddress,
-            esbuildWasm,
-            options.WindowsPipeName);
-    }
-
     internal Task StopAsync()
     {
         return inner.StopAsync();
-    }
-
-    private static async Task<string?> ResolveEsbuildWasmAsync(
-        DenoReplProcessOptions options,
-        ILogger logger,
-        CancellationToken cancellationToken)
-    {
-        // Mirror Aves' own resolution (eval-engine.ts): import.meta.resolve yields the exact
-        // cached esbuild.wasm URL. No DENO_DIR probing and no cache-layout assumptions; when
-        // the module graph is absent the eval fails and a warm install populates it.
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = options.Executable,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        startInfo.ArgumentList.Add("eval");
-        startInfo.ArgumentList.Add($"--config={options.ConfigFile}");
-        startInfo.ArgumentList.Add($"--lock={options.LockFile}");
-        startInfo.ArgumentList.Add("console.log(import.meta.resolve('npm:esbuild-wasm/esbuild.wasm'))");
-        using var process = Process.Start(startInfo)
-                            ?? throw new InvalidOperationException(
-                                $"Could not start '{options.Executable}' to locate esbuild-wasm.");
-        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        var error = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        if (process.ExitCode != 0)
-        {
-            logger.LogDebug("esbuild-wasm resolution failed ({ExitCode}): {Error}", process.ExitCode, error.Trim());
-            return null;
-        }
-
-        if (!Uri.TryCreate(output.Trim(), UriKind.Absolute, out var wasmUrl) ||
-            !string.Equals(wasmUrl.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                $"esbuild-wasm resolved to an unexpected location: {output.Trim()}");
-
-        // This is exactly the URL Aves reads inside the REPL child, so the --allow-read grant
-        // uses its local path verbatim; no canonicalization is performed here.
-        return File.Exists(wasmUrl.LocalPath) ? wasmUrl.LocalPath : null;
-    }
-
-    private static InvalidOperationException CreateMissingModuleGraphException()
-    {
-        return new InvalidOperationException(
-            $"The cached esbuild-wasm {EsbuildWasmVersion} payload is missing. " +
-            "Install the Deno REPL module graph before starting Maieutics.");
     }
 
     private static async Task InstallModuleGraphAsync(

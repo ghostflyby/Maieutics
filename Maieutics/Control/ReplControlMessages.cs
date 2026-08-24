@@ -27,6 +27,9 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(DiscoverContextPayload))]
 [JsonSerializable(typeof(HostReplSpawnedPayload))]
 [JsonSerializable(typeof(HostReplExitedPayload))]
+[JsonSerializable(typeof(HostReplDerivePayload))]
+[JsonSerializable(typeof(HostReplDeriveFailedPayload))]
+[JsonSerializable(typeof(HostReplPermissions))]
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 internal static class ReplControlJson
@@ -84,6 +87,8 @@ internal static class ReplMessageType
     public const string PluginReload = "plugin.reload";
     public const string HostReplSpawned = "host.repl.spawned";
     public const string HostReplExited = "host.repl.exited";
+    public const string HostReplDerive = "host.repl.derive";
+    public const string HostReplDeriveFailed = "host.repl.deriveFailed";
     public const string Error = "error";
 }
 
@@ -198,3 +203,50 @@ internal sealed record HostReplExitedPayload(
     int Generation,
     int Pid,
     string? Failure = null);
+
+/// <summary>
+///     Kernel-to-host instruction to derive a Deno REPL process (ADR 0020, B5). The host is the
+///     spawner; the kernel decides the entry module, the complete child environment, and the static
+///     permission shell. The host answers with <c>host.repl.spawned</c> / <c>host.repl.exited</c> /
+///     <c>host.repl.deriveFailed</c>. Aligns with <c>HostReplDerivePayload</c> in
+///     <c>deno/maieutics-plugin-host/host_repl_protocol.ts</c>; field names are CamelCase and
+///     <see cref="HostReplPermissions"/> mirrors the draft's <c>boolean | string[]</c> kinds.
+/// </summary>
+internal sealed record HostReplDerivePayload(
+    string SessionId,
+    int Generation,
+    string EntryUrl,
+    Dictionary<string, string> Env,
+    HostReplPermissions? Permissions = null,
+    bool Report = true);
+
+/// <summary>
+///     Host-to-kernel report that a <c>host.repl.derive</c> instruction could not be executed
+///     BEFORE any pid existed (validation or spawn failure). A failure after the spawn report is
+///     reported as <c>host.repl.exited</c> instead, so the kernel never sees both. Aligns with
+///     <c>host.repl.deriveFailed</c> in <c>deno/maieutics-plugin-host/host_repl_protocol.ts</c>.
+/// </summary>
+internal sealed record HostReplDeriveFailedPayload(
+    string SessionId,
+    int Generation,
+    string Message);
+
+/// <summary>
+///     Static permission shell the kernel ships with a <c>host.repl.derive</c> instruction, in the
+///     <c>Deno.PermissionOptionsObject</c> shape worker-actor <c>spawnProcess</c> accepts:
+///     <c>true</c> = allow all, <c>string[]</c> = allowlist, absent = deny. Each kind is a
+///     <see cref="JsonElement"/> so both shapes survive source-generated serialization (the same
+///     approach <c>PluginHostConfigPermissions</c> uses). Denied kinds are <see langword="null"/>
+///     and omitted from the wire (the host's parser accepts only booleans and string arrays).
+///     This is the broker's fallback baseline, NOT a security boundary (ADR 0020 decision 1).
+///     Aligns with <c>HostReplPermissions</c> in <c>deno/maieutics-plugin-host/host_repl_protocol.ts</c>.
+/// </summary>
+internal sealed record HostReplPermissions(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Read = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Write = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Net = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Env = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Run = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Ffi = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Sys = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Import = null);

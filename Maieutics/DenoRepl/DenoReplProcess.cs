@@ -101,23 +101,14 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.ArgumentList.Add(options.MainUrl);
 
         startInfo.Environment.Clear();
-        startInfo.Environment[DenoReplEnvironment.IpcAddress] = options.IpcAddress;
-        startInfo.Environment[DenoReplEnvironment.SessionId] = options.SessionId;
-        startInfo.Environment[DenoReplEnvironment.Generation] = options.Generation.ToString(
-            System.Globalization.CultureInfo.InvariantCulture);
-        startInfo.Environment[DenoReplEnvironment.ClientModule] = options.ClientUrl;
-        startInfo.Environment[DenoReplEnvironment.BrokerAddress] = options.Broker.Address;
-        CopyEnvironment(startInfo, "DENO_DIR");
-        CopyEnvironment(startInfo, "TMPDIR");
-        CopyEnvironment(startInfo, "TMP");
-        CopyEnvironment(startInfo, "TEMP");
-        if (OperatingSystem.IsWindows())
-        {
-            var systemRoot = Environment.GetEnvironmentVariable("SystemRoot")
-                             ?? throw new InvalidOperationException("SystemRoot is not configured.");
-            startInfo.Environment["SystemRoot"] = systemRoot;
-            startInfo.Environment[DenoReplEnvironment.PipeName] = options.WindowsPipeName;
-        }
+        var environment = DenoReplEnvironment.Build(
+            options.IpcAddress,
+            options.SessionId,
+            options.Generation,
+            options.ClientUrl,
+            options.WindowsPipeName);
+        environment[DenoReplEnvironment.BrokerAddress] = options.Broker.Address;
+        foreach (var pair in environment) startInfo.Environment[pair.Key] = pair.Value;
 
         var inner = DenoRunProcess.Start(
             startInfo,
@@ -173,12 +164,6 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                 $"Installing the Deno REPL module graph failed with exit code {process.ExitCode}. " +
                 $"stderr: {error.Trim()}");
     }
-
-    private static void CopyEnvironment(ProcessStartInfo startInfo, string name)
-    {
-        if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
-            startInfo.Environment[name] = value;
-    }
 }
 
 internal static class DenoReplEnvironment
@@ -190,4 +175,54 @@ internal static class DenoReplEnvironment
     internal const string PipeName = "MAIEUTICS_REPL_PIPE";
     internal const string Credential = "MAIEUTICS_REPL_CREDENTIAL";
     internal const string BrokerAddress = "DENO_PERMISSION_BROKER_PATH";
+
+    /// <summary>
+    ///     Builds the complete REPL child environment both derivation paths use (the kernel-derived
+    ///     process launch and the <c>host.repl.derive</c> payload env). The set is authoritative
+    ///     (B5a): MAIEUTICS_REPL_IPC / SESSION / GENERATION / CLIENT, the inherited DENO_DIR / TMP*
+    ///     cache variables, and on Windows SystemRoot + MAIEUTICS_REPL_PIPE. The kernel-derived path
+    ///     adds <see cref="BrokerAddress"/> (DENO_PERMISSION_BROKER_PATH) at launch; the
+    ///     host-derived path deliberately omits it — the host appends its own forwarded broker path
+    ///     (B5a env contract) and never takes it from the kernel env.
+    /// </summary>
+    internal static Dictionary<string, string> Build(
+        string ipcAddress,
+        string sessionId,
+        int generation,
+        string clientModule,
+        string? windowsPipeName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ipcAddress);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentOutOfRangeException.ThrowIfNegative(generation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientModule);
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [IpcAddress] = ipcAddress,
+            [SessionId] = sessionId,
+            [Generation] = generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            [ClientModule] = clientModule
+        };
+        CopyEnvironment(environment, "DENO_DIR");
+        CopyEnvironment(environment, "TMPDIR");
+        CopyEnvironment(environment, "TMP");
+        CopyEnvironment(environment, "TEMP");
+        if (OperatingSystem.IsWindows())
+        {
+            var systemRoot = Environment.GetEnvironmentVariable("SystemRoot")
+                             ?? throw new InvalidOperationException("SystemRoot is not configured.");
+            environment["SystemRoot"] = systemRoot;
+            environment[PipeName] = windowsPipeName
+                ?? throw new InvalidOperationException(
+                    "The Windows named-pipe bootstrap is required for the REPL child environment.");
+        }
+
+        return environment;
+    }
+
+    private static void CopyEnvironment(Dictionary<string, string> target, string name)
+    {
+        if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
+            target[name] = value;
+    }
 }

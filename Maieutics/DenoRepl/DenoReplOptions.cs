@@ -26,6 +26,11 @@ internal sealed class DenoReplOptions
 
     public bool AutoInstallModuleGraph { get; set; } = true;
 
+    /// <summary>Derives REPL processes through the plugin host (<c>host.repl.derive</c>, ADR
+    /// 0020 B5) instead of the kernel spawning them directly. Defaults to true; set false to keep
+    /// the kernel-derived path (the dual-track fallback).</summary>
+    public bool HostDerivedRepl { get; set; } = true;
+
     internal void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Executable);

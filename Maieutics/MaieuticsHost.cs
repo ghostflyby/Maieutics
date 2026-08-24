@@ -199,7 +199,8 @@ public static class MaieuticsHost
                 services.GetRequiredService<ReplControlCredentialRegistry>(),
                 services.GetRequiredService<ILogger<DenoReplProcess>>(),
                 services.GetRequiredService<DenoPermissionBroker>(),
-                services.GetService<IReplPolicyRegistrar>()));
+                services.GetService<IReplPolicyRegistrar>(),
+                services.GetService<PluginHostManager>()));
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();

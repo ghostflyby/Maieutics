@@ -42,6 +42,8 @@
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_worker.ts" LogicalName="Maieutics.Deno.DenoRepl.Worker.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\input_mailbox.ts" LogicalName="Maieutics.Deno.DenoRepl.InputMailbox.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_eval_queue.ts" LogicalName="Maieutics.Deno.DenoRepl.Queue.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-deno-repl\process_main.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessMain.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-deno-repl\process_rpc.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessRpc.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Maieutics.Deno.DenoRepl.Config.json" />
         <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Maieutics.Deno.DenoRepl.Lock.json" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts" LogicalName="Maieutics.Deno.PluginSdk.ts" />
@@ -55,6 +57,8 @@
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\mod.ts" LogicalName="Maieutics.Deno.PluginHost.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host.ts" LogicalName="Maieutics.Deno.PluginHostImpl.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\worker_entry.ts" LogicalName="Maieutics.Deno.PluginHostWorker.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\repl_manager.ts" LogicalName="Maieutics.Deno.PluginHostReplManager.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\host_repl_protocol.ts" LogicalName="Maieutics.Deno.PluginHostReplProtocol.ts" />
         <EmbeddedResource Include="..\deno\shared\protocol.ts" LogicalName="Maieutics.Deno.Shared.Protocol.ts" />
         <EmbeddedResource Include="..\deno\shared\bus.ts" LogicalName="Maieutics.Deno.Shared.Bus.ts" />
         <EmbeddedResource Include="..\deno\shared\ipc_websocket.ts" LogicalName="Maieutics.Deno.Shared.IpcWebSocket.ts" />

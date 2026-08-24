@@ -1,8 +1,10 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
+import { ReplManager } from "./repl_manager.ts";
 
 const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
+const REPL_ENTRY_PATH = new URL("../maieutics-deno-repl/process_main.ts", import.meta.url).pathname;
 
 function pathToFileUrl(path: string): string {
   return new URL(`file://${path}`).href;
@@ -54,7 +56,8 @@ Deno.test("host entry imports only the host implementation and shared control mo
   const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
   for (const specifier of imports) {
     assert(
-      specifier === "./host.ts" || specifier.startsWith("../shared/"),
+      specifier === "./host.ts" || specifier === "./repl_manager.ts" ||
+        specifier.startsWith("../shared/"),
       `unexpected import '${specifier}' in the plugin host entry`,
     );
   }
@@ -378,5 +381,91 @@ Deno.test("propagates handler failures as typed errors", async () => {
     );
   } finally {
     host.dispose();
+  }
+});
+
+function makeReplManager(): ReplManager {
+  return new ReplManager({ replEntryPath: REPL_ENTRY_PATH });
+}
+
+function isReplProcessAlive(pid: number): boolean {
+  try {
+    return Deno.kill(pid, 0) === undefined;
+  } catch {
+    return false;
+  }
+}
+
+// —— REPL process derivation (ADR 0020 skeleton) ——
+
+Deno.test("host derives a REPL process actor and receives its pid", async () => {
+  const repls = makeReplManager();
+  try {
+    const handle = await repls.spawnRepl("repl-test-1", 0);
+    assert(Number.isSafeInteger(handle.pid) && handle.pid > 0, "pid must be a positive integer");
+    assertEquals(handle.sessionId, "repl-test-1");
+    assertEquals(handle.generation, 0);
+    assertEquals(repls.get("repl-test-1"), handle);
+  } finally {
+    await repls.disposeAll();
+  }
+});
+
+Deno.test("repl process actor exposes execute and returns the skeleton envelope", async () => {
+  const repls = makeReplManager();
+  try {
+    const handle = await repls.spawnRepl("repl-test-2", 1);
+    const result = await handle.actor.execute("1 + 1");
+    assertEquals(result.ok, true);
+    assertEquals(result.data, "skeleton: 1 + 1");
+  } finally {
+    await repls.disposeAll();
+  }
+});
+
+Deno.test("dispose stops the derived repl process and clears the registry", async () => {
+  const repls = makeReplManager();
+  const handle = await repls.spawnRepl("repl-test-3", 2);
+  const pid = handle.pid;
+  assert(isReplProcessAlive(pid), "repl process must be alive before dispose");
+  const disposed = await repls.disposeRepl("repl-test-3");
+  assertEquals(disposed, true);
+  assertEquals(repls.get("repl-test-3"), undefined);
+  // dispose() resolves once the actor is torn down; the child process exit can
+  // trail it by a tick, so poll briefly instead of asserting synchronously.
+  for (let attempt = 0; attempt < 50 && isReplProcessAlive(pid); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert(!isReplProcessAlive(pid), "repl process must exit after dispose");
+});
+
+Deno.test("a crashed repl process is removed from the registry", async () => {
+  const repls = makeReplManager();
+  const handle = await repls.spawnRepl("repl-test-4", 3);
+  const pid = handle.pid;
+  assert(isReplProcessAlive(pid), "repl process must be alive before the kill");
+  Deno.kill(pid, "SIGKILL");
+  // The host's pid liveness monitor clears the registry once the child is
+  // gone. worker-actor's onDeath does not fire on a hard kill (the library
+  // does not wire child exit to the transport close), so the host-side monitor
+  // is the death signal; give it a bounded window to observe the exit.
+  for (let attempt = 0; attempt < 50 && repls.get("repl-test-4") !== undefined; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assertEquals(repls.get("repl-test-4"), undefined, "registry must clear after crash");
+  await repls.disposeAll();
+});
+
+Deno.test("spawnRepl rejects a duplicate running session", async () => {
+  const repls = makeReplManager();
+  try {
+    await repls.spawnRepl("repl-test-5", 0);
+    await assertRejects(
+      () => repls.spawnRepl("repl-test-5", 0),
+      Error,
+      "already running",
+    );
+  } finally {
+    await repls.disposeAll();
   }
 });

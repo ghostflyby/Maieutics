@@ -6,6 +6,7 @@
  */
 
 import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
+import { ReplManager } from "./repl_manager.ts";
 import { connectBus } from "../shared/bus.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
 
@@ -14,6 +15,7 @@ const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";
 const CONFIG_ENV = "MAIEUTICS_PLUGIN_CONFIG";
 const SDK_ENV = "MAIEUTICS_PLUGIN_SDK";
 const WORKER_ENTRY_ENV = "MAIEUTICS_PLUGIN_WORKER_ENTRY";
+const REPL_ENTRY_ENV = "MAIEUTICS_REPL_PROCESS_ENTRY";
 
 function requireEnv(name: string): string {
   const value = Deno.env.get(name);
@@ -40,6 +42,12 @@ async function main(): Promise<void> {
     workerEntryUrl,
     plugins: config.plugins ?? [],
   });
+  // ADR 0020 skeleton: the host can also derive REPL processes. The entry path
+  // is optional at this stage (spawnRepl is not yet called by a kernel path);
+  // the pid-registration closed loop is covered by host_test.ts.
+  const repls = new ReplManager({
+    replEntryPath: Deno.env.get(REPL_ENTRY_ENV) ?? "",
+  });
 
   const registered = await host.startAll();
   console.error(
@@ -65,6 +73,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     host.dispose();
+    void repls.disposeAll();
     bus.close();
   };
   globalThis.addEventListener("unload", shutdown);

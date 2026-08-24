@@ -8,7 +8,7 @@
 
 | 成员 | 支持 | 说明 |
 |---|---|---|
-| `$display` | ✅ | `Symbol.for("Jupyter.display")`;带该 symbol 的对象作为表达式结果会被自动呈现 |
+| `$display` | ✅ | `Symbol.for("Jupyter.display")`;带该 symbol 的对象作为**表达式结果**会被自动呈现(调用其 `$display` 得 MIME bundle 显示,不返回给模型),与官方 `deno jupyter` 一致 |
 | `display(value, {raw, update, display_id})` | ✅ | `raw` 直接作为 MIME bundle;`update` + `display_id` 定向更新 |
 | `format(value)` | ✅ | `Deno.inspect` 文本,或 `$display` 对象调其方法 |
 | `broadcast(msgType, content, extra)` | ✅ | 支持 `display_data` / `update_display_data` / `clear_output` / `comm_open` / `comm_msg` / `comm_close`;`extra.metadata` 透传;`extra.buffers` 支持 comm 消息 |

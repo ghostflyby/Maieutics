@@ -9,6 +9,7 @@ using System.Text.Json.Serialization;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Jupyter.Client;
+using Maieutics.Jupyter.Client.Transport;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
@@ -262,6 +263,119 @@ public sealed class MaieuticsHostIntegrationTests
                 .And.NotContain("visible-update")
                 .And.NotContain("invalid-update");
 
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await host.StopAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+            {
+            }
+
+            File.Delete(connectionFile);
+            File.Delete(configurationFile);
+        }
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task DenoReplRelaysAnywidgetStyleCommWithNativeBuffers()
+    {
+        // Simulates the exact API sequence of @anywidget/deno (0.2.x): broadcast
+        // comm_open/comm_msg with native buffers, then surface a $display object as
+        // the cell result (see docs/deno-jupyter-compat.md). The real package is not
+        // imported because the REPL child has no general network permission.
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(70));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-anywidget-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("anywidget");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        const string code =
+            "const commId = 'anywidget-model'; " +
+            "await Deno.jupyter.broadcast('comm_open', " +
+            "{ comm_id: commId, target_name: 'jupyter.widget', " +
+            "data: { state: { _model_module: 'anywidget', _model_name: 'AnyModel' } } }, " +
+            "{ buffers: [new Uint8Array([1, 2, 3])] }); " +
+            "await Deno.jupyter.broadcast('comm_msg', " +
+            "{ comm_id: commId, data: { method: 'update', state: { value: 42 }, buffer_paths: [] } }, " +
+            "{ buffers: [new Uint8Array([4, 5])] }); " +
+            "const widget = { " +
+            "[Deno.jupyter.$display]: async () => " +
+            "({ 'application/vnd.jupyter.widget-view+json': " +
+            "{ version_major: 2, version_minor: 0, model_id: commId } }) " +
+            "}; widget";
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.Responses,
+            true,
+            toolName: "repl_execute",
+            toolArgumentsJson: JsonSerializer.Serialize(new { code }));
+        var endpoint = provider.Endpoint.ToString();
+        await using var host = MaieuticsHost.CreateApplication(
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"],
+            builder =>
+            {
+                builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
+                builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = endpoint;
+            });
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+            await using var events = client.WatchEventsAsync(deadline.Token).GetAsyncEnumerator(deadline.Token);
+            (await events.MoveNextAsync()).Should().BeTrue();
+
+            var execution = await client.ExecuteAsync(
+                new JupyterExecuteRequest("render the widget"),
+                deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+
+            var widgetDisplay = outputs.OfType<JupyterDisplayOutput>().SingleOrDefault(output =>
+                output.Data.Data.ContainsKey("application/vnd.jupyter.widget-view+json"));
+            var executionError = outputs.OfType<JupyterExecutionError>().FirstOrDefault();
+            widgetDisplay.Should().NotBeNull(
+                "the $display widget object should render as a widget-view display; " +
+                $"outputs were: {string.Join(" | ", outputs.Select(static o => o is JupyterDisplayOutput d ? $"{d.GetType().Name}[{string.Join(",", d.Data.Data.Keys)}]" : o.GetType().Name))}; " +
+                $"error: {executionError?.Name}: {executionError?.Value}");
+            widgetDisplay!.Data.Data["application/vnd.jupyter.widget-view+json"]
+                .GetProperty("model_id").GetString().Should().Be("anywidget-model");
+
+            // comm_open and comm_msg reach the frontend over iopub as unhandled messages.
+            var commTypes = new List<(string Type, string CommId, string? TargetName)>();
+            while (commTypes.Count < 2)
+            {
+                if (!await events.MoveNextAsync())
+                    throw new InvalidOperationException("The event stream ended before comm messages arrived.");
+
+                if (events.Current is JupyterUnhandledMessage
+                    {
+                        Channel: JupyterTransportChannel.Iopub
+                    } unhandled)
+                {
+                    var content = unhandled.Message.Content;
+                    var commId = content.TryGetProperty("comm_id", out var id)
+                        ? id.GetString()
+                        : null;
+                    var targetName = content.TryGetProperty("target_name", out var target)
+                        ? target.GetString()
+                        : null;
+                    if (commId == "anywidget-model")
+                        commTypes.Add((unhandled.Message.MessageType, commId!, targetName));
+                }
+            }
+
+            commTypes.Select(static item => item.Type).Should().Contain("comm_open").And.Contain("comm_msg");
+            commTypes.Single(item => item.Type == "comm_open").TargetName.Should().Be("jupyter.widget");
+            commTypes.Should().OnlyContain(item => item.CommId == "anywidget-model");
+
+            await provider.Completion.WaitAsync(deadline.Token);
             await client.ShutdownAsync(false, deadline.Token);
             await host.WaitForShutdownAsync(deadline.Token);
         }

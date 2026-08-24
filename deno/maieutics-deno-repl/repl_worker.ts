@@ -355,6 +355,31 @@ async function enqueueTerminal(
   }>,
 ): Promise<void> {
   const result = await resultPromise;
+  if (execution.outputFailure === undefined && result.ok && isDisplayable(result.data)) {
+    // A Displayable expression result renders through its $display symbol, matching the
+    // official deno jupyter kernel: the value is displayed, not returned to the model.
+    // Enqueue without awaiting delivery: the execute generator pulls the display event
+    // before the terminal, and awaiting here would deadlock against that pull.
+    try {
+      const bundle = await normalizeMediaBundle(await result.data[DISPLAY]());
+      const item = outputItem(execution, {
+        type: "display",
+        executionId: execution.executionId,
+        sequence: execution.nextSequence++,
+        data: bundle,
+      });
+      if (!execution.queue.tryEnqueue(item)) {
+        execution.pendingDeliveries.delete(item.delivered);
+        item.delivered.resolve();
+        failOutput(execution, "The bounded REPL output queue is full.");
+      }
+      result.data = undefined;
+    } catch (error) {
+      result.data = undefined;
+      result.ok = false;
+      result.error = error instanceof Error ? error.message : String(error);
+    }
+  }
   const actorResult: ReplActorResult = execution.outputFailure === undefined
     ? {
       ok: result.ok,
@@ -426,13 +451,6 @@ function createJupyterApi(): typeof Deno.jupyter {
     content: Record<string, unknown>,
     extra?: { metadata?: Record<string, unknown>; buffers?: Uint8Array[] },
   ): Promise<void> => {
-    if ((extra?.buffers?.length ?? 0) > 0) {
-      throw new TypeError("Binary Jupyter broadcast buffers are not supported by this protocol.");
-    }
-    if (messageType === "clear_output") {
-      await sendJupyterEvent("clearOutput", { wait: content.wait === true });
-      return;
-    }
     if (messageType === "comm_open" || messageType === "comm_msg" || messageType === "comm_close") {
       if (!isRecord(content)) {
         throw new TypeError(`The '${messageType}' broadcast content must be an object.`);
@@ -459,6 +477,13 @@ function createJupyterApi(): typeof Deno.jupyter {
         buffers,
       }));
       return;
+    }
+    if (messageType === "clear_output") {
+      await sendJupyterEvent("clearOutput", { wait: content.wait === true });
+      return;
+    }
+    if ((extra?.buffers?.length ?? 0) > 0) {
+      throw new TypeError("Binary Jupyter broadcast buffers are not supported by this protocol.");
     }
     if (messageType !== "display_data" && messageType !== "update_display_data") {
       throw new TypeError(`Unsupported Jupyter broadcast message '${messageType}'.`);

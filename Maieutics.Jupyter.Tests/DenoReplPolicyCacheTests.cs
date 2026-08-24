@@ -41,8 +41,9 @@ public sealed class DenoReplPolicyCacheTests
                 root,
                 Path.Combine(root, "deno.json"),
                 Path.Combine(root, "deno.lock"),
-                ReplControlHost.CreateControlAddress(),
-                Path.Combine(root, "esbuild.wasm"));
+                ControlAddressForTests(),
+                Path.Combine(root, "esbuild.wasm"),
+                WindowsPipeNameForTests());
             DenoReplPolicyCache.Cache(manager, "prepared-session", policy);
 
             using var process = StartProbe(broker, root, deadline.Token);
@@ -86,8 +87,8 @@ public sealed class DenoReplPolicyCacheTests
                 root,
                 modules.ConfigFile,
                 modules.LockFile,
-                ReplControlHost.CreateControlAddress(),
-                null,
+                ControlAddressForTests(),
+                WindowsPipeNameForTests(),
                 "prepared-session",
                 NullLogger.Instance,
                 deadline.Token);
@@ -136,8 +137,8 @@ public sealed class DenoReplPolicyCacheTests
                 root,
                 Path.Combine(root, "missing-denon.json"),
                 modules.LockFile,
-                ReplControlHost.CreateControlAddress(),
-                null,
+                ControlAddressForTests(),
+                WindowsPipeNameForTests(),
                 "failed-session",
                 NullLogger.Instance,
                 deadline.Token);
@@ -244,7 +245,9 @@ public sealed class DenoReplPolicyCacheTests
     }
 
     /// <summary>Builds the same baseline policy the kernel derives for a REPL child, from an
-    /// already-resolved esbuild-wasm path (the synchronous builder entry; no deno eval).</summary>
+    /// already-resolved esbuild-wasm path (the synchronous builder entry; no deno eval). On
+    /// Windows the baseline requires a loopback control address and a named-pipe bootstrap name —
+    /// the tests only assert broker verdicts against the policy, never the pipe itself.</summary>
     private static EffectivePolicy CreateBaselinePolicy(string workingDirectory)
     {
         return DenoReplPolicyBuilder.Build(
@@ -252,8 +255,24 @@ public sealed class DenoReplPolicyCacheTests
             workingDirectory,
             Path.Combine(workingDirectory, "deno.json"),
             Path.Combine(workingDirectory, "deno.lock"),
-            ReplControlHost.CreateControlAddress(),
-            Path.Combine(workingDirectory, "esbuild.wasm"));
+            ControlAddressForTests(),
+            Path.Combine(workingDirectory, "esbuild.wasm"),
+            WindowsPipeNameForTests());
+    }
+
+    /// <summary>A control-channel address valid on the current platform: a loopback host:port on
+    /// Windows (the baseline validates it), an arbitrary socket path elsewhere.</summary>
+    private static string ControlAddressForTests()
+    {
+        return OperatingSystem.IsWindows()
+            ? $"127.0.0.1:{Random.Shared.Next(20000, 60000)}"
+            : ReplControlHost.CreateControlAddress();
+    }
+
+    /// <summary>A named-pipe bootstrap name on Windows (required by the baseline), null elsewhere.</summary>
+    private static string? WindowsPipeNameForTests()
+    {
+        return OperatingSystem.IsWindows() ? $"mc-test-{Guid.NewGuid():N}" : null;
     }
 
     private static string CreateProbeRoot()

@@ -79,7 +79,7 @@ public sealed class DenoReplHostDeriveTests
             "env-session",
             3,
             "file:///tmp/mod.ts",
-            windowsPipeName: null);
+            windowsPipeName: OperatingSystem.IsWindows() ? "mc-test-pipe" : null);
 
         environment.Should().ContainKey(DenoReplEnvironment.IpcAddress);
         environment.Should().ContainKey(DenoReplEnvironment.SessionId);
@@ -137,6 +137,9 @@ public sealed class DenoReplHostDeriveTests
     [Fact(Timeout = 60_000)]
     public async Task DeriveFailedReportCompletesThePendingDeriveWithTheFailure()
     {
+        if (OperatingSystem.IsWindows())
+            return; // The host harness attaches over a Unix socket (control + eval channels).
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
         await using var harness = await CreateHostHarnessAsync(deadline.Token);
@@ -157,6 +160,9 @@ public sealed class DenoReplHostDeriveTests
     [Fact(Timeout = 60_000)]
     public async Task SpawnedReportCompletesThePendingDeriveAsSpawned()
     {
+        if (OperatingSystem.IsWindows())
+            return; // The host harness attaches over a Unix socket (control + eval channels).
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
         var registry = new ReplControlSessionRegistry();
@@ -178,6 +184,9 @@ public sealed class DenoReplHostDeriveTests
     [Fact(Timeout = 60_000)]
     public async Task StaleReportsForAnotherSessionDoNotCompleteTheDerive()
     {
+        if (OperatingSystem.IsWindows())
+            return; // The host harness attaches over a Unix socket (control + eval channels).
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
         await using var harness = await CreateHostHarnessAsync(deadline.Token);
@@ -200,6 +209,9 @@ public sealed class DenoReplHostDeriveTests
     [Fact(Timeout = 60_000)]
     public async Task DuplicateDeriveForTheSameSessionIsRejected()
     {
+        if (OperatingSystem.IsWindows())
+            return; // The host harness attaches over a Unix socket (control + eval channels).
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
         await using var harness = await CreateHostHarnessAsync(deadline.Token);
@@ -220,6 +232,9 @@ public sealed class DenoReplHostDeriveTests
     [Fact(Timeout = 120_000)]
     public async Task FactoryDerivesThroughAHostSpawnedReportThenWaitsForTheEvalChannel()
     {
+        if (OperatingSystem.IsWindows())
+            return; // The host harness attaches over a Unix socket (control + eval channels).
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();
@@ -282,6 +297,9 @@ public sealed class DenoReplHostDeriveTests
     [Fact(Timeout = 120_000)]
     public async Task FactoryFallsBackToKernelDerivationWhenTheHostRejectsTheDerive()
     {
+        if (OperatingSystem.IsWindows())
+            return; // The host harness attaches over a Unix socket (control + eval channels).
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(90));
         var registry = new ReplControlSessionRegistry();

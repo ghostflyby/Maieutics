@@ -11,7 +11,7 @@
  * paths.
  */
 
-import { bootstrapWindowsCredential } from "../maieutics-repl-client/windows_bootstrap.ts";
+import { bootstrapWindowsCredential } from "./windows_bootstrap.ts";
 
 export const IPC_ENV = "MAIEUTICS_REPL_IPC";
 export const SESSION_ENV = "MAIEUTICS_REPL_SESSION";

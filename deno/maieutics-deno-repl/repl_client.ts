@@ -1,11 +1,6 @@
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
 import { connectIpcWebSocket, type IpcWebSocket } from "../shared/ipc_websocket.ts";
-import {
-  type CommClient,
-  CommKind,
-  type CommMessage,
-  connectComm,
-} from "../maieutics-repl-client/comm.ts";
+import { type CommClient, CommKind, type CommMessage, connectComm } from "./comm.ts";
 import {
   decodeReplEvalEnvelope,
   encodeReplEvalEnvelope,

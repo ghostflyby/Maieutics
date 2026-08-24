@@ -18,11 +18,11 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.DenoRepl.ProcessRpc.ts", "maieutics-deno-repl/process_rpc.ts"),
         ("Maieutics.Deno.DenoRepl.ProcessEnv.ts", "maieutics-deno-repl/repl_process_env.ts"),
         ("Maieutics.Deno.DenoRepl.ProcessRpcTest.ts", "maieutics-deno-repl/process_rpc_test.ts"),
+        ("Maieutics.Deno.DenoRepl.Comm.ts", "maieutics-deno-repl/comm.ts"),
+        ("Maieutics.Deno.DenoRepl.WindowsBootstrap.ts", "maieutics-deno-repl/windows_bootstrap.ts"),
         ("Maieutics.Deno.DenoRepl.Config.json", "maieutics-deno-repl/deno.json"),
         ("Maieutics.Deno.DenoRepl.Lock.json", "maieutics-deno-repl/deno.lock"),
         ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),
-        ("Maieutics.Deno.ReplClientComm.ts", "maieutics-repl-client/comm.ts"),
-        ("Maieutics.Deno.ReplClientWindowsBootstrap.ts", "maieutics-repl-client/windows_bootstrap.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
         ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts")

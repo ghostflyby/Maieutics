@@ -286,7 +286,7 @@ export class ReplManager {
    * REPL entry, the complete child env, and the static permission shell, and
    * the host executes the derive. Validation and derivation are async, so the
    * outcome is reported fire-and-forget from the bus call site (mod.ts ignores
-   * the returned promise, matching the `extension.invoke` style). The promise
+   * the returned promise, matching the `host.invoke` style). The promise
    * resolves with the derived handle on success and never rejects (failures
    * are reported instead), which makes it awaitable in tests:
    * - a malformed payload is rejected with `host.repl.deriveFailed`;

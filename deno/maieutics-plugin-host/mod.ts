@@ -105,7 +105,11 @@ async function main(): Promise<void> {
       }
       return;
     }
-    if (envelope.type === "extension.invoke") {
+    if (envelope.type === "host.invoke") {
+      // Kernel → host extension point call (retired the `extension.invoke` protocol, ADR 0020
+      // §7.2). The host invokes the plugin worker's Remote<T> surface directly in-process
+      // (host.invoke below) and answers with host.invokeResult / host.invokeError, echoing the
+      // instruction's correlationId so the kernel can complete the pending call.
       const payload = envelope.payload as {
         pluginId?: string;
         exportName?: string;
@@ -124,14 +128,14 @@ async function main(): Promise<void> {
           payload.request,
         ).then((value: unknown) => {
           bus.send({
-            type: "extension.result",
+            type: "host.invokeResult",
             payload: { value },
             correlationId: envelope.correlationId,
           });
         }).catch((error: Error) => {
           bus.send({
-            type: "extension.error",
-            payload: { code: "extension_failed", message: error.message },
+            type: "host.invokeError",
+            payload: { code: "host_invoke_failed", message: error.message },
             correlationId: envelope.correlationId,
           });
         });
@@ -144,7 +148,7 @@ async function main(): Promise<void> {
       // shell; ReplManager validates the payload, derives the REPL, and
       // reports spawned/exited/deriveFailed through the reporter wired above.
       // Derivation is async; failures are reported fire-and-forget inside
-      // ReplManager.derive (matching the extension.invoke style).
+      // ReplManager.derive (matching the host.invoke style).
       void repls.derive(envelope);
       return;
     }

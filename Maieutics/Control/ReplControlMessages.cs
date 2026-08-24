@@ -15,9 +15,9 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(BusAckPayload))]
 [JsonSerializable(typeof(ToolProgressPayload))]
 [JsonSerializable(typeof(PluginHelloPayload))]
-[JsonSerializable(typeof(ExtensionInvokePayload))]
-[JsonSerializable(typeof(ExtensionResultPayload))]
-[JsonSerializable(typeof(ExtensionErrorPayload))]
+[JsonSerializable(typeof(HostInvokePayload))]
+[JsonSerializable(typeof(HostInvokeResultPayload))]
+[JsonSerializable(typeof(HostInvokeErrorPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPlugin))]
 [JsonSerializable(typeof(PluginStatePayload))]
@@ -80,9 +80,9 @@ internal static class ReplMessageType
     public const string ToolInvoke = "tool.invoke";
     public const string ToolProgress = "tool.progress";
     public const string ToolResult = "tool.result";
-    public const string ExtensionInvoke = "extension.invoke";
-    public const string ExtensionResult = "extension.result";
-    public const string ExtensionError = "extension.error";
+    public const string HostInvoke = "host.invoke";
+    public const string HostInvokeResult = "host.invokeResult";
+    public const string HostInvokeError = "host.invokeError";
     public const string ExtensionRegistry = "extension.registry";
     public const string PluginReload = "plugin.reload";
     public const string HostReplSpawned = "host.repl.spawned";
@@ -134,18 +134,23 @@ internal sealed class ReplToolProgress(Func<ToolProgressPayload, CancellationTok
     }
 }
 
-/// <summary>Kernel-to-host request to invoke one extension point on one plugin worker.</summary>
-internal sealed record ExtensionInvokePayload(
+/// <summary>
+///     Kernel-to-host request to invoke one extension point on one plugin worker (replaces the
+///     retired <c>extension.invoke</c> protocol, ADR 0020 §7.2). The host calls the plugin
+///     worker's <c>Remote&lt;T&gt;</c> surface directly in-process and answers with
+///     <c>host.invokeResult</c> / <c>host.invokeError</c>, echoing the envelope correlationId.
+/// </summary>
+internal sealed record HostInvokePayload(
     string PluginId,
     string ExportName,
     string ExtensionPoint,
     JsonElement? Request = null);
 
 /// <summary>Host-to-kernel response carrying the extension point result.</summary>
-internal sealed record ExtensionResultPayload(JsonElement? Value = null);
+internal sealed record HostInvokeResultPayload(JsonElement? Value = null);
 
 /// <summary>Host-to-kernel typed failure for an extension point call.</summary>
-internal sealed record ExtensionErrorPayload(string Code, string Message);
+internal sealed record HostInvokeErrorPayload(string Code, string Message);
 
 /// <summary>Host-to-kernel registry snapshot of scanned extension points per worker.</summary>
 internal sealed record ExtensionRegistryPayload(

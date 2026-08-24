@@ -116,7 +116,11 @@ internal sealed class PluginHostManager(
 
     private readonly PluginHostModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pending =
+    /// <summary>Completions for in-flight <c>host.invoke</c> extension point calls, keyed by
+    /// correlation id. A <c>host.invokeResult</c> / <c>host.invokeError</c> response for the same
+    /// correlation id completes the matching call (the retired <c>extension.invoke</c> protocol
+    /// used the same pending/complete shape; only the message family changed).</summary>
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pendingInvokes =
         new(StringComparer.Ordinal);
 
     /// <summary>Completions for in-flight <c>host.repl.derive</c> instructions, keyed by
@@ -608,6 +612,16 @@ internal sealed class PluginHostManager(
             exportName);
     }
 
+    /// <summary>
+    ///     Requests one extension point call on one plugin worker through the host connection and
+    ///     waits for the outcome. The request rides the general <c>host.invoke</c> request-response
+    ///     message family: the kernel sends the instruction with a correlation id, the host invokes
+    ///     the plugin worker's <c>Remote&lt;T&gt;</c> surface directly in-process (ADR 0020 §7.2,
+    ///     replacing the retired <c>extension.invoke</c> protocol), and answers
+    ///     <c>host.invokeResult</c> / <c>host.invokeError</c> echoing that id. Failure and timeout
+    ///     semantics are unchanged: an error response becomes <see cref="ExtensionCallOutcome.Error"/>
+    ///     and the call cancels after <see cref="InvokeTimeout" /> or when the host disconnects.
+    /// </summary>
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
         string pluginId,
         string exportName,
@@ -618,7 +632,7 @@ internal sealed class PluginHostManager(
         var correlationId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        pending[correlationId] = tcs;
+        pendingInvokes[correlationId] = tcs;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         timeout.CancelAfter(InvokeTimeout);
         try
@@ -626,20 +640,20 @@ internal sealed class PluginHostManager(
             await using var registration = timeout.Token.Register(
                 static state => (state as TaskCompletionSource<ExtensionCallOutcome>)?.TrySetCanceled(),
                 tcs);
-            var payload = new ExtensionInvokePayload(pluginId, exportName, extensionPoint, request);
+            var payload = new HostInvokePayload(pluginId, exportName, extensionPoint, request);
             await PushAsync(
                 Socket ?? throw new InvalidOperationException("The plugin host is not connected."),
                 new ReplEnvelope(
                     EnvelopeVersion,
-                    ReplMessageType.ExtensionInvoke,
+                    ReplMessageType.HostInvoke,
                     correlationId,
-                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.ExtensionInvokePayload)),
+                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.HostInvokePayload)),
                 timeout.Token).ConfigureAwait(false);
             return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
         }
         finally
         {
-            pending.TryRemove(correlationId, out _);
+            pendingInvokes.TryRemove(correlationId, out _);
         }
     }
 
@@ -935,8 +949,8 @@ internal sealed class PluginHostManager(
 
         switch (envelope.Type)
         {
-            case ReplMessageType.ExtensionResult:
-            case ReplMessageType.ExtensionError:
+            case ReplMessageType.HostInvokeResult:
+            case ReplMessageType.HostInvokeError:
                 CompletePending(envelope);
                 break;
             case ReplMessageType.ExtensionRegistry:
@@ -1068,19 +1082,19 @@ internal sealed class PluginHostManager(
     private void CompletePending(ReplEnvelope envelope)
     {
         if (envelope.CorrelationId is not { } correlationId ||
-            !pending.TryRemove(correlationId, out var completion))
+            !pendingInvokes.TryRemove(correlationId, out var completion))
             return;
 
-        if (envelope.Type == ReplMessageType.ExtensionResult)
+        if (envelope.Type == ReplMessageType.HostInvokeResult)
         {
-            var payload = ParsePayload<ExtensionResultPayload>(envelope);
+            var payload = ParsePayload<HostInvokeResultPayload>(envelope);
             completion.TrySetResult(ExtensionCallOutcome.Result(payload?.Value));
             return;
         }
 
-        var error = ParsePayload<ExtensionErrorPayload>(envelope);
+        var error = ParsePayload<HostInvokeErrorPayload>(envelope);
         completion.TrySetResult(
-            ExtensionCallOutcome.Error(error?.Code ?? "extension_failed", error?.Message ?? "the extension failed"));
+            ExtensionCallOutcome.Error(error?.Code ?? "host_invoke_failed", error?.Message ?? "the extension failed"));
     }
 
     private void UpdateRegistry(ExtensionRegistryPayload? payload)
@@ -1231,10 +1245,10 @@ internal sealed class PluginHostManager(
 
     private void FailPending(string message)
     {
-        foreach (var completion in pending.Values)
+        foreach (var completion in pendingInvokes.Values)
             completion.TrySetResult(ExtensionCallOutcome.Error("host_disconnected", message));
 
-        pending.Clear();
+        pendingInvokes.Clear();
 
         foreach (var completion in pendingDerives.Values)
             completion.TrySetResult(ReplDeriveOutcome.DeriveFailed(message));
@@ -1254,10 +1268,10 @@ internal sealed class PluginHostManager(
     {
         return typeof(T) switch
         {
-            _ when typeof(T) == typeof(ExtensionResultPayload) =>
-                ReplControlJsonContext.Default.ExtensionResultPayload,
-            _ when typeof(T) == typeof(ExtensionErrorPayload) =>
-                ReplControlJsonContext.Default.ExtensionErrorPayload,
+            _ when typeof(T) == typeof(HostInvokeResultPayload) =>
+                ReplControlJsonContext.Default.HostInvokeResultPayload,
+            _ when typeof(T) == typeof(HostInvokeErrorPayload) =>
+                ReplControlJsonContext.Default.HostInvokeErrorPayload,
             _ when typeof(T) == typeof(ExtensionRegistryPayload) =>
                 ReplControlJsonContext.Default.ExtensionRegistryPayload,
             _ when typeof(T) == typeof(HostReplSpawnedPayload) =>

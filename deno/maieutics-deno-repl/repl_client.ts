@@ -26,6 +26,16 @@ import {
   type ReplActorInputRequest,
   type ReplActorResult,
 } from "./repl_actor.ts";
+import {
+  failInputMailbox,
+  type InputMailbox,
+  InputMailboxKind,
+  interruptInputMailbox,
+  mailboxFor,
+  writeInputMailboxAck,
+  writeInputMailboxAnswer,
+  writeInputMailboxBoolean,
+} from "./input_mailbox.ts";
 
 const QUEUE_CAPACITY = 64;
 const STARTUP_TIMEOUT_MS = 10_000;
@@ -56,7 +66,7 @@ interface EventItem {
 
 interface InputWaiter {
   executionId: string;
-  reply: Deferred<string>;
+  mailbox: InputMailbox;
   cleanup(): void;
 }
 
@@ -107,9 +117,9 @@ export class ReplClient {
 
   async #start(): Promise<void> {
     this.#actor = await ReplActor.create({
-      input: (request, signal) => this.#requestInput(request, signal),
       onDeath: (reason) => this.#fail(reason),
     });
+    this.#actor.setInputHandler((request) => this.#requestInput(request));
     await this.#openSocket();
     this.#own(this.#openComm().catch((error) => this.#failComm(error)));
     this.#own(this.#outboundPump());
@@ -450,37 +460,50 @@ export class ReplClient {
     }
     this.#inputWaiters.delete(requestId);
     waiter.cleanup();
-    waiter.reply.resolve(value);
+    // Write the answer into the shared mailbox; this wakes the worker thread
+    // that is blocked in Atomics.wait. The writer picks the slot by the kind
+    // code the worker stored when it sent the request, so a prompt answer can
+    // never be mistaken for a confirm boolean.
+    const kindCode = waiter.mailbox.kind[0];
+    if (kindCode === InputMailboxKind.confirm) {
+      writeInputMailboxBoolean(waiter.mailbox, /^(?:1|true|yes|y)$/i.test(value.trim()));
+    } else if (kindCode === InputMailboxKind.alert) {
+      writeInputMailboxAck(waiter.mailbox);
+    } else {
+      writeInputMailboxAnswer(waiter.mailbox, "prompt", value);
+    }
   }
 
-  async #requestInput(request: ReplActorInputRequest, _signal: AbortSignal): Promise<string> {
+  /**
+   * Handles one blocking input request from the worker. The worker thread is
+   * frozen in Atomics.wait on the shared mailbox; this (main-thread) side
+   * performs the async Jupyter round trip and writes the answer into the
+   * mailbox, waking the worker. On abort, the mailbox is marked interrupted
+   * instead, so the blocked worker wakes early and throws AbortError.
+   */
+  async #requestInput(request: ReplActorInputRequest): Promise<void> {
     const active = this.#active;
-    if (active === undefined || active.executionId !== request.executionId) {
-      throw new Error(`Execution '${request.executionId}' is not active.`);
+    if (active === undefined) {
+      throw new Error("No execution is active for an input request.");
     }
-    // The input callback channel is asynchronous relative to the event stream, so
-    // it is sent on the outbound channel independently of the event pump. Input
-    // does not participate in the event sequence: output events are ordered by the
-    // event pump FIFO alone, and the server routes input by correlation id.
+    const mailbox = mailboxFor(request.sab);
     const requestId = crypto.randomUUID();
-    const reply = replEvalDeferred<string>();
     const onAbort = (): void => {
       this.#inputWaiters.delete(requestId);
-      reply.reject(active.controller.signal.reason);
+      interruptInputMailbox(mailbox);
     };
     active.controller.signal.addEventListener("abort", onAbort, { once: true });
-    const waiter: InputWaiter = {
+    this.#inputWaiters.set(requestId, {
       executionId: active.executionId,
-      reply,
+      mailbox,
       cleanup: () => active.controller.signal.removeEventListener("abort", onAbort),
-    };
-    this.#inputWaiters.set(requestId, waiter);
+    });
     const payload: ReplEvalInputRequestPayload = {
       executionId: active.executionId,
-      sequence: request.sequence,
+      sequence: 0,
       requestId,
       prompt: request.prompt,
-      password: request.password,
+      password: request.kind === "prompt",
     };
     try {
       await this.#send({
@@ -488,10 +511,12 @@ export class ReplClient {
         correlationId: requestId,
         payload,
       });
-      return await reply.promise;
-    } finally {
+    } catch (error) {
+      // The round trip could not even start: mark the mailbox failed so the
+      // blocked worker does not hang forever.
+      failInputMailbox(mailbox, error);
       this.#inputWaiters.delete(requestId);
-      waiter.cleanup();
+      throw error;
     }
   }
 
@@ -642,7 +667,9 @@ export class ReplClient {
     );
     for (const waiter of this.#inputWaiters.values()) {
       waiter.cleanup();
-      waiter.reply.reject(reason ?? new Error("The REPL actor is disposing."));
+      // The blocked worker must not hang forever: mark its mailbox interrupted
+      // so the Atomics.wait wakes and the worker surfaces the cancellation.
+      interruptInputMailbox(waiter.mailbox);
     }
     this.#inputWaiters.clear();
 

@@ -1,15 +1,20 @@
 import { createReplKernel, type ReplExecution, type ReplKernel } from "@ghostflyby/aves/repl";
-import { serveWorker } from "@ghostflyby/worker-actor";
+import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
-import type {
-  ReplActorEvent,
-  ReplActorInputRequest,
-  ReplActorResult,
-  ReplActorStreamEvent,
+import {
+  INPUT_MAILBOX_LINK_LABEL,
+  type ReplActorEvent,
+  type ReplActorResult,
+  type ReplActorStreamEvent,
 } from "./repl_actor.ts";
+import {
+  createInputMailbox,
+  type InputMailboxKind,
+  InputMailboxStatus,
+  mailboxKindCode,
+  waitForInputMailbox,
+} from "./input_mailbox.ts";
 import type { ReplMediaBundle } from "./protocol.ts";
-
-type Input = (request: ReplActorInputRequest, signal: AbortSignal) => Promise<string>;
 
 interface ActiveExecution {
   executionId: string;
@@ -32,15 +37,14 @@ const OUTPUT_QUEUE_CAPACITY = 64;
 const CLIENT_ENV = "MAIEUTICS_REPL_CLIENT";
 const originalConsole = globalThis.console;
 let kernel: ReplKernel | undefined;
-let input: Input | undefined;
+let inputLink: LinkHandle | undefined;
 let active: ActiveExecution | undefined;
 
 export const rpc = {
-  async initialize(nextInput: Input): Promise<void> {
+  async initialize(): Promise<void> {
     if (kernel !== undefined) {
       throw new Error("The Deno REPL actor is already initialized.");
     }
-    input = nextInput;
     await installMaieuticsNamespace();
     installHostEnvironment();
     kernel = await createReplKernel();
@@ -119,7 +123,13 @@ export const rpc = {
   },
 };
 
-serveWorker(rpc);
+serveWorker(rpc, {
+  onLink(link: LinkHandle): void {
+    if (link.label === INPUT_MAILBOX_LINK_LABEL) {
+      inputLink = link;
+    }
+  },
+});
 
 function requireKernel(): ReplKernel {
   if (kernel === undefined) {
@@ -209,21 +219,55 @@ function deliverCommToHandlers(
 function installHostEnvironment(): void {
   globalThis.console = createConsole();
   const globals = globalThis as unknown as Record<string, unknown>;
-  globals.prompt = (message = ""): Promise<string> => requestInput(String(message), false);
-  globals.confirm = async (message = ""): Promise<boolean> => {
-    const value = await requestInput(String(message), false);
-    return /^(?:1|true|yes|y)$/i.test(value.trim());
-  };
-  globals.alert = async (message = ""): Promise<void> => {
-    await queueAsyncEvent((execution) => ({
-      type: "console",
-      executionId: execution.executionId,
-      sequence: execution.nextSequence++,
-      stream: "stdout",
-      text: `${formatConsoleArgs([message])}\n`,
-    }));
+  globals.prompt = (message = ""): string => blockingInput("prompt", String(message), false);
+  globals.confirm = (message = ""): boolean => blockingInput("confirm", String(message), true);
+  globals.alert = (message = ""): void => {
+    blockingInput("alert", String(message), false);
   };
   (Deno as unknown as { jupyter: unknown }).jupyter = createJupyterApi();
+}
+
+/**
+ * Blocking input for the synchronous prompt/confirm/alert globals: creates a
+ * fresh mailbox, sends the request to the main thread (repl_client), and
+ * blocks THIS thread in Atomics.wait until the main thread writes the answer,
+ * interrupts the input, or the mailbox times out. The main thread's event loop
+ * stays alive, so the async Jupyter round trip (and interrupt delivery)
+ * continues while this worker thread is frozen.
+ */
+function blockingInput(kind: "prompt" | "alert", message: string, asBoolean: false): string;
+function blockingInput(kind: "confirm", message: string, asBoolean: true): boolean;
+function blockingInput(
+  kind: "prompt" | "confirm" | "alert",
+  message: string,
+  asBoolean: boolean,
+): string | boolean {
+  const link = inputLink;
+  const execution = active;
+  if (!isOutputActive(execution) || link === undefined) {
+    throw new Error("Input is only available during an active REPL execution.");
+  }
+  if (execution.outputFailure !== undefined) throw execution.outputFailure;
+
+  const mailbox = createInputMailbox();
+  mailbox.kind[0] = mailboxKindCode(kind);
+  link.send({ sab: mailbox.sab, kind, prompt: message });
+  const result = waitForInputMailbox(mailbox);
+  if (result.error !== undefined) {
+    throw new Error(result.error);
+  }
+  switch (result.status) {
+    case InputMailboxStatus.interrupted:
+      throw execution.signal.aborted
+        ? execution.signal.reason
+        : new DOMException("Input interrupted", "AbortError");
+    case InputMailboxStatus.answered:
+      if (asBoolean) return result.ok === true;
+      return result.answer ?? "";
+    case InputMailboxStatus.pending:
+    default:
+      throw new Error(`The ${kind} input timed out.`);
+  }
 }
 
 function createConsole(): Console {
@@ -323,26 +367,6 @@ async function queueAsyncEvent(
   const item = outputItem(execution, factory(execution));
   await execution.queue.enqueue(item);
   await item.delivered.promise;
-}
-
-async function requestInput(message: string, password: boolean): Promise<string> {
-  const execution = active;
-  const request = input;
-  if (!isOutputActive(execution) || request === undefined) {
-    throw new Error("Input is only available during an active REPL execution.");
-  }
-  // Do not wait for every pending output delivery here: the execute generator
-  // delivers an event only after the parent pulls the next item, so waiting
-  // can deadlock the input request against that pull. Input is sent on an
-  // independent channel and does not participate in the event sequence, so no
-  // ordering is needed here.
-  if (execution.outputFailure !== undefined) throw execution.outputFailure;
-  return request({
-    executionId: execution.executionId,
-    sequence: 0,
-    prompt: message,
-    password,
-  }, execution.signal);
 }
 
 async function enqueueTerminal(

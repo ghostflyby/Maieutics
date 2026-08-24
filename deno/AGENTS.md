@@ -49,6 +49,25 @@ The kernel injects `MAIEUTICS_REPL_IPC` (socket address), `MAIEUTICS_REPL_CLIENT
 `MAIEUTICS_REPL_SESSION` (session id). The bootstrap binds `globalThis.maieutics` to the module
 namespace; explicit `import` via `MAIEUTICS_REPL_CLIENT` must keep working.
 
+## Embedding in the .NET host
+
+The `Maieutics` executable embeds the Deno module graph as resources and materializes it into a
+per-process temporary directory before launching the REPL child
+(`Maieutics/DenoRepl/DenoReplModule.cs` writes each embedded resource to the materialized root). A
+Deno-side file that is imported by another embedded file but is not itself embedded fails at child
+startup with `Module not found`, breaking every real-Deno integration test.
+
+When adding, renaming, or removing a `.ts` file under this workspace:
+
+1. Update `Maieutics/Maieutics.csproj` `EmbeddedResource` entries (one
+   `<EmbeddedResource Include=... LogicalName="Maieutics.Deno....">` per file).
+2. Update the `DenoReplModule.Entries` table in `Maieutics/DenoRepl/DenoReplModule.cs` (the logical
+   name maps to the materialized relative path).
+3. Keep the two lists in sync with each other and with the module's own `deno.json` imports.
+
 ## Validation
 
-Each submodule runs `deno task check`, `deno fmt`, and `deno task test`.
+Each submodule runs `deno task check`, `deno fmt`, and `deno task test`. Run `deno fmt` before
+submitting: the workspace enforces formatting (CI runs `deno fmt --check`), so an unformatted file
+fails review. A change that adds a Deno-side file also requires the embedding steps above before the
+.NET integration tests can pass.

@@ -40,6 +40,7 @@
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_client.ts" LogicalName="Maieutics.Deno.DenoRepl.Client.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_actor.ts" LogicalName="Maieutics.Deno.DenoRepl.Actor.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_worker.ts" LogicalName="Maieutics.Deno.DenoRepl.Worker.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-deno-repl\input_mailbox.ts" LogicalName="Maieutics.Deno.DenoRepl.InputMailbox.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_eval_queue.ts" LogicalName="Maieutics.Deno.DenoRepl.Queue.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Maieutics.Deno.DenoRepl.Config.json" />
         <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Maieutics.Deno.DenoRepl.Lock.json" />

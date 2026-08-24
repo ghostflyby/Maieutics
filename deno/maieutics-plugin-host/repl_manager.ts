@@ -7,10 +7,12 @@
  * kernel's permission policy and must live in its own process boundary (ADR
  * 0020 decision 1), not in a host-owned worker.
  *
- * The closed loop:
+ * The closed loop (B3 + B5a):
  *
- *   host.spawnRepl(sessionId, generation)
- *     -> spawnProcess(process_main.ts)
+ *   kernel sends `host.repl.derive` over the control bus (B5b) — the host no
+ *     longer decides the entry/env/permission shell itself (B1 skeleton default)
+ *   -> host.spawnRepl({ sessionId, generation, entryUrl, env, permissions })
+ *     -> spawnProcess(entryUrl) with the kernel's static permission shell
  *     -> REPL child pregest frame (the host learns the child pid before any
  *        broker-gated permission check the child can make)
  *     -> host emits `host.repl.spawned` over the control bus (B3)
@@ -23,10 +25,25 @@
  * baseline, NOT the security boundary. The authoritative REPL policy is
  * computed by the kernel and registered with the permission broker for this
  * pid (ADR 0020 decision 1 / 3). The host never widens the shell on its own.
+ *
+ * B5a adds the kernel → host instruction stream: the host accepts
+ * `host.repl.derive` envelopes (see {@link ReplManager.derive}) and derives
+ * the REPL with the kernel-supplied entry/env/permissions instead of the
+ * hard-coded skeleton parameters. The env contract is authoritative: the
+ * kernel sends the FULL child env and the host only appends the broker
+ * address (DENO_PERMISSION_BROKER_PATH, from its own MAIEUTICS_PERMISSION_BROKER)
+ * and, on Windows, SystemRoot. See `host_repl_protocol.ts` for the wire
+ * contract this manager implements.
  */
 
 import { type ActorHandle, type Remote, spawnProcess } from "@ghostflyby/worker-actor";
-import { type HostReplReport, type HostReplRpc } from "./host_repl_protocol.ts";
+import type { ReplEnvelope } from "../shared/protocol.ts";
+import {
+  type HostReplDerivePayload,
+  type HostReplPermissions,
+  type HostReplReport,
+  type HostReplRpc,
+} from "./host_repl_protocol.ts";
 
 const SESSION_ENV = "MAIEUTICS_REPL_SESSION";
 const GENERATION_ENV = "MAIEUTICS_REPL_GENERATION";
@@ -41,7 +58,8 @@ const BROKER_PATH_ENV = "DENO_PERMISSION_BROKER_PATH";
 /** Poll interval of the host-side pid liveness monitor. */
 const LIVENESS_POLL_MS = 200;
 
-/** Static permission shell for the REPL child at spawn. This is the broker's
+/** Static permission shell for the REPL child at spawn when the derive
+ * instruction carries no `permissions` (B5a default). This is the broker's
  * fallback baseline when the broker is absent, NOT a security boundary (ADR
  * 0020 decision 1): the kernel computes the authoritative REPL EffectivePolicy
  * and registers it with the permission broker for this pid. Read + env are the
@@ -59,13 +77,17 @@ const REPL_SHELL_PERMISSIONS = { read: true, env: true } as const;
 export type ReplReporter = (report: HostReplReport) => void;
 
 export interface ReplManagerOptions {
-  /** Absolute path of the REPL process entry module (process_main.ts). */
+  /** Absolute path of the REPL process entry module (process_main.ts). Used as
+   * the fallback default when a derive instruction omits `entryUrl`; the
+   * kernel supplies the authoritative entry in the B5a flow. */
   replEntryPath: string;
   /** Filesystem read grant for the REPL child's module graph (defaults to
-   * allowing reads; the broker overrides in the full migration). */
+   * allowing reads; the broker overrides in the full migration). Only applied
+   * to the default permission shell, never to a kernel-provided shell. */
   replEntryReadPath?: string;
   /** Host → kernel reporter for pid/session reports. Set after the bus
-   * connection is established; spawnRepl fails while it is still unset. */
+   * connection is established; spawnRepl fails while it is still unset and a
+   * report is expected. */
   reporter?: ReplReporter;
 }
 
@@ -75,8 +97,67 @@ export interface ReplHandle {
   readonly generation: number;
   readonly pid: number;
   readonly actor: Remote<HostReplRpc> & ActorHandle;
+  /** Whether this derivation reports to the kernel. A `report: false` derive
+   * stays silent: no spawned/exited reports are emitted for the handle. */
+  readonly report: boolean;
   state: "running" | "stopped" | "crashed";
 }
+
+/**
+ * A kernel `host.repl.derive` instruction normalized by
+ * {@link ReplManager.derive}. `env` is optional here (the direct API call path
+ * may omit it and let the manager fill the session identity vars); the bus
+ * path always carries a full env record from the parser.
+ */
+export interface ReplDeriveRequest {
+  /** Session id this REPL child belongs to (MAIEUTICS_REPL_SESSION). */
+  sessionId: string;
+  /** Generation number of the session (MAIEUTICS_REPL_GENERATION). */
+  generation: number;
+  /** Absolute file URL (or absolute filesystem path) of the REPL entry module.
+   * Falls back to the manager's `replEntryPath` when empty/omitted. */
+  entryUrl?: string;
+  /** Complete REPL child env from the kernel. When a key is missing the host
+   * fills MAIEUTICS_REPL_SESSION / MAIEUTICS_REPL_GENERATION from the request
+   * identity; kernel-provided values are never overwritten. */
+  env?: Record<string, string>;
+  /** Static permission shell for `spawnProcess` (broker fallback baseline).
+   * Absent means the skeleton default `{ read: true, env: true }`. */
+  permissions?: HostReplPermissions;
+  /** Whether the host reports spawned/exited/deriveFailed (default true). */
+  report?: boolean;
+}
+
+/**
+ * Thrown by spawnRepl when a derivation fails. `stage` tells the caller how
+ * far the derive got before the failure:
+ * - `"spawn"`: before any pid report reached the kernel; the caller should
+ *   emit `host.repl.deriveFailed` when reporting is enabled.
+ * - `"init"`: after `host.repl.spawned` already went out; the manager already
+ *   balanced it with `host.repl.exited`, so the caller must NOT emit a second
+ *   failure report (the kernel would see both).
+ */
+export class ReplDeriveError extends Error {
+  readonly stage: "spawn" | "init";
+
+  constructor(message: string, stage: "spawn" | "init") {
+    super(message);
+    this.name = "ReplDeriveError";
+    this.stage = stage;
+  }
+}
+
+/** Permission kinds the kernel may express in a derive shell. */
+const PERMISSION_KINDS = [
+  "read",
+  "write",
+  "net",
+  "env",
+  "run",
+  "ffi",
+  "sys",
+  "import",
+] as const;
 
 /**
  * The pid the REPL child reports back to the host. worker-actor 0.4.0's
@@ -90,6 +171,91 @@ export interface ReplHandle {
  */
 export function isValidReplPid(pid: number): boolean {
   return pid !== Deno.pid && Number.isSafeInteger(pid) && pid > 0;
+}
+
+/** Resolves a kernel-supplied REPL entry to the string handed to `deno run`.
+ * An absolute file:// URL is normalized to its href; an absolute filesystem
+ * path (including a Windows drive path, which `new URL` misreads as a scheme)
+ * is passed through unchanged — `deno run` accepts both. A relative URL has no
+ * sensible base on the host side and is left to `deno run` (which fails
+ * loudly); the kernel contract is an absolute entry. */
+function resolveReplEntry(entryUrl: string): string {
+  try {
+    const url = new URL(entryUrl);
+    if (url.protocol === "file:") return url.href;
+  } catch {
+    // Not a URL: an absolute filesystem path (or Windows drive path).
+  }
+  return entryUrl;
+}
+
+/** Validates a `host.repl.derive` payload into a {@link ReplDeriveRequest}.
+ * Throws on malformed payloads so the caller can report the rejection. The
+ * kernel env contract (`host_repl_protocol.ts`) requires `env` to be a string
+ * record when present; a missing `env` is tolerated as empty (the host fills
+ * the session identity vars). */
+function parseDeriveRequest(payload: unknown): ReplDeriveRequest {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error("host.repl.derive payload must be an object.");
+  }
+  const value = payload as Partial<HostReplDerivePayload>;
+  const sessionId = value.sessionId;
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    throw new Error("host.repl.derive requires a non-empty string sessionId.");
+  }
+  const generation = value.generation as number | undefined;
+  if (generation === undefined || !Number.isSafeInteger(generation) || generation < 0) {
+    throw new Error("host.repl.derive requires a non-negative integer generation.");
+  }
+  if (typeof value.entryUrl !== "string" || value.entryUrl.length === 0) {
+    throw new Error("host.repl.derive requires a non-empty string entryUrl.");
+  }
+  const env: Record<string, string> = {};
+  if (value.env !== undefined) {
+    if (typeof value.env !== "object" || value.env === null || Array.isArray(value.env)) {
+      throw new Error("host.repl.derive env must be a string record.");
+    }
+    for (const [key, entry] of Object.entries(value.env)) {
+      if (typeof entry !== "string") {
+        throw new Error(`host.repl.derive env['${key}'] must be a string.`);
+      }
+      env[key] = entry;
+    }
+  }
+  if (value.report !== undefined && typeof value.report !== "boolean") {
+    throw new Error("host.repl.derive report must be a boolean.");
+  }
+  return {
+    sessionId,
+    generation,
+    entryUrl: value.entryUrl,
+    env,
+    permissions: value.permissions === undefined ? undefined : parsePermissions(value.permissions),
+    report: value.report,
+  };
+}
+
+/** Validates the optional static permission shell of a derive payload. */
+function parsePermissions(value: unknown): HostReplPermissions {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("host.repl.derive permissions must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const permissions: HostReplPermissions = {};
+  for (const kind of PERMISSION_KINDS) {
+    const entry = record[kind];
+    if (entry === undefined) continue;
+    if (typeof entry === "boolean") {
+      permissions[kind] = entry;
+    } else if (Array.isArray(entry) && entry.every((item) => typeof item === "string")) {
+      permissions[kind] = entry;
+    } else {
+      throw new Error(
+        `host.repl.derive permissions.${kind} must be a boolean or a string array.`,
+      );
+    }
+  }
+  return permissions;
 }
 
 export class ReplManager {
@@ -108,74 +274,118 @@ export class ReplManager {
   }
 
   /** Sets (or replaces) the host → kernel reporter. Must be non-null before
-   * spawnRepl runs; the bus is established after the control hello. */
+   * spawnRepl runs with reporting enabled; the bus is established after the
+   * control hello. */
   setReporter(reporter: ReplReporter | undefined): void {
     this.#reporter = reporter;
   }
 
-  /** The session identity vars + broker address are injected on the host's own
-   * environment around each spawn because worker-actor 0.4.0's spawnProcess has
-   * no env option and the child captures its environment at launch. This is
-   * safe only while spawnRepl calls are serialized (the host drives REPL
-   * sessions one at a time in the skeleton); concurrent derivations would race
-   * on the shared environment. B1's single-threaded skeleton assumption is
-   * documented in place. */
-  #injectSessionEnv(sessionId: string, generation: number): () => void {
-    const previousSession = Deno.env.get(SESSION_ENV);
-    const previousGeneration = Deno.env.get(GENERATION_ENV);
-    const previousBroker = Deno.env.get(BROKER_PATH_ENV);
-    Deno.env.set(SESSION_ENV, sessionId);
-    Deno.env.set(GENERATION_ENV, String(generation));
-    // The broker address is forwarded verbatim. When the host was launched
-    // without a broker (no MAIEUTICS_PERMISSION_BROKER), the env stays unset so
-    // the child launches with the static shell only (tests / no-kernel runs).
-    const broker = Deno.env.get(BROKER_ENV);
-    if (broker !== undefined && broker.length > 0) Deno.env.set(BROKER_PATH_ENV, broker);
-    return () => {
-      if (previousSession === undefined) Deno.env.delete(SESSION_ENV);
-      else Deno.env.set(SESSION_ENV, previousSession);
-      if (previousGeneration === undefined) Deno.env.delete(GENERATION_ENV);
-      else Deno.env.set(GENERATION_ENV, previousGeneration);
-      if (previousBroker === undefined) Deno.env.delete(BROKER_PATH_ENV);
-      else Deno.env.set(BROKER_PATH_ENV, previousBroker);
-    };
+  /**
+   * Handles a kernel `host.repl.derive` envelope (ADR 0020, B5a). This is the
+   * receive end of the kernel → host instruction stream: the kernel decides the
+   * REPL entry, the complete child env, and the static permission shell, and
+   * the host executes the derive. Validation and derivation are async, so the
+   * outcome is reported fire-and-forget from the bus call site (mod.ts ignores
+   * the returned promise, matching the `extension.invoke` style). The promise
+   * resolves with the derived handle on success and never rejects (failures
+   * are reported instead), which makes it awaitable in tests:
+   * - a malformed payload is rejected with `host.repl.deriveFailed`;
+   * - a pre-pid derivation failure (spawn error, duplicate session, missing
+   *   reporter) is reported with `host.repl.deriveFailed`;
+   * - a failure AFTER `host.repl.spawned` is balanced by `host.repl.exited`
+   *   inside spawnRepl and logged here (never double-reported).
+   */
+  derive(envelope: ReplEnvelope): Promise<ReplHandle | undefined> {
+    let request: ReplDeriveRequest;
+    let report = true;
+    try {
+      request = parseDeriveRequest(envelope.payload);
+      report = request.report !== false;
+    } catch (error) {
+      const raw = envelope.payload as Partial<HostReplDerivePayload> | undefined;
+      report = raw?.report !== false;
+      // The protocol types sessionId/generation as string/number; a malformed
+      // payload may carry non-conforming values, so only echo them when they
+      // already match (the .NET side deserializes the failure into a string
+      // sessionId + number generation).
+      const sessionId = typeof raw?.sessionId === "string" ? raw.sessionId : "";
+      const generation = typeof raw?.generation === "number" && Number.isSafeInteger(raw.generation)
+        ? raw.generation
+        : 0;
+      this.#reportDeriveFailed(sessionId, generation, error, report);
+      return Promise.resolve(undefined);
+    }
+    return this.spawnRepl(request).then(
+      (handle) => handle,
+      (error: Error) => {
+        if (error instanceof ReplDeriveError && error.stage === "init") {
+          // The spawn report already went out and was balanced with an exited
+          // report; a second deriveFailed would double-report the failure.
+          console.error(
+            `[plugin-host] REPL derive for session '${request.sessionId}' failed after ` +
+              `spawn: ${error.message}`,
+          );
+          return undefined;
+        }
+        this.#reportDeriveFailed(request.sessionId, request.generation, error, report);
+        return undefined;
+      },
+    );
   }
 
-  /** Registers `sessionId` as a running REPL in the pid registry. */
-  async spawnRepl(
-    sessionId: string,
-    generation: number,
-  ): Promise<ReplHandle> {
+  /** Registers `sessionId` as a running REPL in the pid registry. The kernel
+   * supplies the entry module, the complete child environment, and the static
+   * permission shell through the request (B5a); the host only appends the
+   * broker address and Windows SystemRoot, and fills the session identity vars
+   * when the request env omits them. */
+  async spawnRepl(request: ReplDeriveRequest): Promise<ReplHandle> {
+    const { sessionId, generation } = request;
+    const report = request.report !== false;
+    const entryUrl = request.entryUrl || this.#replEntryPath;
+    if (entryUrl.length === 0) {
+      throw new ReplDeriveError(
+        `No REPL entry for session '${sessionId}': the derive request has no ` +
+          `entryUrl and the host has no default entry.`,
+        "spawn",
+      );
+    }
     const existing = this.#repls.get(sessionId);
     if (existing !== undefined && existing.state === "running") {
-      throw new Error(`A REPL process is already running for session '${sessionId}'.`);
+      throw new ReplDeriveError(
+        `A REPL process is already running for session '${sessionId}'.`,
+        "spawn",
+      );
     }
-    if (this.#reporter === undefined) {
-      throw new Error(
+    if (report && this.#reporter === undefined) {
+      throw new ReplDeriveError(
         `The control bus is not connected; the host.repl.spawned pid report ` +
           `registers the child's broker policy and control-channel identity, so ` +
           `no REPL can be derived before it (session '${sessionId}').`,
+        "spawn",
       );
     }
 
-    const permissions: Deno.PermissionOptionsObject = {
-      ...REPL_SHELL_PERMISSIONS,
-    };
-    if (typeof this.#replReadGrant !== "boolean") {
-      permissions.read = this.#replReadGrant;
-    }
-    // The REPL child reads its session identity from the environment
-    // (MAIEUTICS_REPL_SESSION / MAIEUTICS_REPL_GENERATION, the same contract the
-    // kernel writes today) and the broker address from DENO_PERMISSION_BROKER_PATH.
-    const restoreEnv = this.#injectSessionEnv(sessionId, generation);
+    const permissions: Deno.PermissionOptionsObject = request.permissions === undefined
+      ? this.#defaultShellPermissions()
+      : { ...request.permissions };
+    // The REPL child reads its session identity, broker address, and every
+    // kernel-decided variable from the environment captured at launch. The
+    // kernel env is authoritative; the host only appends the broker address +
+    // Windows SystemRoot (never guessing or overwriting kernel entries).
+    const restoreEnv = this.#injectChildEnv(request.env ?? {}, sessionId, generation);
     let actor: Remote<HostReplRpc> & ActorHandle;
     try {
       actor = await spawnProcess<HostReplRpc>(
-        this.#replEntryPath,
+        resolveReplEntry(entryUrl),
         {
           permissions,
           onDeath: (reason: unknown) => this.#handleDeath(sessionId, generation, reason),
         },
+      );
+    } catch (error) {
+      throw new ReplDeriveError(
+        error instanceof Error ? error.message : String(error),
+        "spawn",
       );
     } finally {
       // Deno reads DENO_PERMISSION_BROKER_PATH at launch; restoring the host's
@@ -190,8 +400,20 @@ export class ReplManager {
     // initialize() so the broker policy the kernel registers for the pid is in
     // place when the child's first broker-gated permission check (the env reads
     // inside initialize) arrives.
-    const pid = await this.#requestPid(actor);
-    this.#emitSpawned(sessionId, generation, pid);
+    let pid: number;
+    try {
+      pid = await this.#requestPid(actor);
+    } catch (error) {
+      // Pre-pid failure: no report reached the kernel yet, so the caller
+      // reports deriveFailed. Dispose the child so a broken handshake does not
+      // leak the process.
+      await actor.dispose().catch(() => {});
+      throw new ReplDeriveError(
+        error instanceof Error ? error.message : String(error),
+        "spawn",
+      );
+    }
+    if (report) this.#emitSpawned(sessionId, generation, pid, report);
 
     let info: { pid: number; sessionId: string; generation: number };
     try {
@@ -220,13 +442,19 @@ export class ReplManager {
       // report so the pid registration (broker policy + session identity) is
       // released even though no handle ever entered the registry.
       await actor.dispose().catch(() => {});
-      this.#emitExited(
-        sessionId,
-        generation,
-        pid,
+      if (report) {
+        this.#emitExited(
+          sessionId,
+          generation,
+          pid,
+          error instanceof Error ? error.message : String(error),
+          report,
+        );
+      }
+      throw new ReplDeriveError(
         error instanceof Error ? error.message : String(error),
+        "init",
       );
-      throw error;
     }
 
     const handle: ReplHandle = {
@@ -235,6 +463,7 @@ export class ReplManager {
       pid,
       actor,
       state: "running",
+      report,
     };
     this.#repls.set(sessionId, handle);
     this.#startLivenessMonitor(sessionId, handle);
@@ -261,7 +490,7 @@ export class ReplManager {
       await handle.actor.dispose();
     } finally {
       this.#repls.delete(sessionId);
-      this.#emitExited(sessionId, handle.generation, handle.pid, undefined);
+      this.#emitExited(sessionId, handle.generation, handle.pid, undefined, handle.report);
     }
     return true;
   }
@@ -271,6 +500,68 @@ export class ReplManager {
     for (const sessionId of [...this.#repls.keys()]) {
       await this.disposeRepl(sessionId);
     }
+  }
+
+  /** The default permission shell when the derive instruction carries none
+   * (skeleton baseline: read + env, with the optional entry read grant). */
+  #defaultShellPermissions(): Deno.PermissionOptionsObject {
+    const permissions: Deno.PermissionOptionsObject = {
+      ...REPL_SHELL_PERMISSIONS,
+    };
+    if (typeof this.#replReadGrant !== "boolean") {
+      permissions.read = this.#replReadGrant;
+    }
+    return permissions;
+  }
+
+  /**
+   * Merges the kernel-provided child env with the host-only additions (broker
+   * path, Windows SystemRoot) onto the host's own process environment around
+   * one spawn, because worker-actor 0.4.0's spawnProcess has no env option and
+   * the child captures its environment at launch. Returns the restore closure.
+   * This is safe only while spawnRepl calls are serialized (the host drives
+   * REPL sessions one at a time in the skeleton); concurrent derivations would
+   * race on the shared environment. B1's single-threaded skeleton assumption
+   * is documented in place.
+   *
+   * Merge rules (B5a, see `host_repl_protocol.ts`):
+   * - the kernel env is authoritative: the host never overwrites a
+   *   kernel-provided value;
+   * - when the kernel env omits MAIEUTICS_REPL_SESSION / MAIEUTICS_REPL_GENERATION
+   *   (direct API calls), the host fills them from the request identity;
+   * - the broker address is forwarded verbatim under DENO_PERMISSION_BROKER_PATH
+   *   from the host's own MAIEUTICS_PERMISSION_BROKER. When the host was
+   *   launched without a broker, the env stays unset so the child launches
+   *   with the static shell only (tests / no-kernel runs);
+   * - on Windows the host appends its own SystemRoot; the kernel env already
+   *   carries MAIEUTICS_REPL_PIPE when the pipe bootstrap is in use, and the
+   *   host never invents a pipe name.
+   */
+  #injectChildEnv(
+    env: Record<string, string>,
+    sessionId: string,
+    generation: number,
+  ): () => void {
+    const previous = new Map<string, string | undefined>();
+    const set = (key: string, value: string): void => {
+      if (!previous.has(key)) previous.set(key, Deno.env.get(key));
+      Deno.env.set(key, value);
+    };
+    for (const [key, value] of Object.entries(env)) set(key, value);
+    if (!Object.hasOwn(env, SESSION_ENV)) set(SESSION_ENV, sessionId);
+    if (!Object.hasOwn(env, GENERATION_ENV)) set(GENERATION_ENV, String(generation));
+    const broker = Deno.env.get(BROKER_ENV);
+    if (broker !== undefined && broker.length > 0) set(BROKER_PATH_ENV, broker);
+    if (Deno.build.os === "windows") {
+      const systemRoot = Deno.env.get("SystemRoot");
+      if (systemRoot !== undefined && systemRoot.length > 0) set("SystemRoot", systemRoot);
+    }
+    return () => {
+      for (const [key, value] of previous) {
+        if (value === undefined) Deno.env.delete(key);
+        else Deno.env.set(key, value);
+      }
+    };
   }
 
   /**
@@ -325,15 +616,17 @@ export class ReplManager {
   }
 
   /** Emits `host.repl.spawned`. The reporter is guaranteed to exist (spawnRepl
-   * refuses to run without it), but the bus may have dropped meanwhile; a
-   * failed report is logged, not fatal — the child is still derived locally. */
-  #emitSpawned(sessionId: string, generation: number, pid: number): void {
-    const report: HostReplReport = {
+   * refuses to run without it when reporting is enabled), but the bus may have
+   * dropped meanwhile; a failed report is logged, not fatal — the child is
+   * still derived locally. */
+  #emitSpawned(sessionId: string, generation: number, pid: number, report: boolean): void {
+    if (!report) return;
+    const spawned: HostReplReport = {
       type: "host.repl.spawned",
       payload: { sessionId, generation, pid },
     };
     try {
-      this.#reporter?.(report);
+      this.#reporter?.(spawned);
     } catch (error) {
       console.error(
         `[plugin-host] could not report REPL spawn for session '${sessionId}': ` +
@@ -350,17 +643,46 @@ export class ReplManager {
     generation: number,
     pid: number,
     failure: string | undefined,
+    report: boolean,
   ): void {
-    const report: HostReplReport = {
+    if (!report) return;
+    const exited: HostReplReport = {
       type: "host.repl.exited",
       payload: { sessionId, generation, pid, ...(failure === undefined ? {} : { failure }) },
     };
     try {
-      this.#reporter?.(report);
+      this.#reporter?.(exited);
     } catch (error) {
       console.error(
         `[plugin-host] could not report REPL exit for session '${sessionId}': ` +
           `${error instanceof Error ? error.message : String(error)}.`,
+      );
+    }
+  }
+
+  /** Reports that a `host.repl.derive` instruction could not be executed
+   * BEFORE any pid existed. Gated by the instruction's `report` flag. */
+  #reportDeriveFailed(
+    sessionId: string,
+    generation: number,
+    error: unknown,
+    report: boolean,
+  ): void {
+    if (!report) return;
+    const failed: HostReplReport = {
+      type: "host.repl.deriveFailed",
+      payload: {
+        sessionId,
+        generation,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+    try {
+      this.#reporter?.(failed);
+    } catch (sendError) {
+      console.error(
+        `[plugin-host] could not report REPL derive failure for session '${sessionId}': ` +
+          `${sendError instanceof Error ? sendError.message : String(sendError)}.`,
       );
     }
   }
@@ -379,6 +701,7 @@ export class ReplManager {
       handle.generation,
       handle.pid,
       reason instanceof Error ? reason.message : String(reason),
+      handle.report,
     );
   }
 }

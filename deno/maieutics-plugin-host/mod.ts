@@ -138,6 +138,16 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (envelope.type === "host.repl.derive") {
+      // ADR 0020 / B5a: kernel → host instruction stream. The kernel decides
+      // the REPL entry, the complete child env, and the static permission
+      // shell; ReplManager validates the payload, derives the REPL, and
+      // reports spawned/exited/deriveFailed through the reporter wired above.
+      // Derivation is async; failures are reported fire-and-forget inside
+      // ReplManager.derive (matching the extension.invoke style).
+      void repls.derive(envelope);
+      return;
+    }
   }
 }
 

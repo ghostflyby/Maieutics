@@ -1,6 +1,12 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
-import { isValidReplPid, ReplManager, type ReplReporter } from "./repl_manager.ts";
+import {
+  isValidReplPid,
+  type ReplDeriveRequest,
+  ReplManager,
+  type ReplReporter,
+} from "./repl_manager.ts";
+import type { ReplEnvelope } from "../shared/protocol.ts";
 import type { HostReplReport } from "./host_repl_protocol.ts";
 
 const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
@@ -390,6 +396,22 @@ function makeReplManager(reporter?: ReplReporter): ReplManager {
   return new ReplManager({ replEntryPath: REPL_ENTRY_PATH, reporter });
 }
 
+/** Builds a spawnRepl request for the given session/generation, defaulting the
+ * entry to the test REPL entry. `overrides` lets a test supply the kernel-side
+ * env / permissions / report / entryUrl exactly as `host.repl.derive` would. */
+function deriveRequest(
+  sessionId: string,
+  generation: number,
+  overrides: Partial<ReplDeriveRequest> = {},
+): ReplDeriveRequest {
+  return { sessionId, generation, entryUrl: REPL_ENTRY_PATH, ...overrides };
+}
+
+/** A `host.repl.derive` envelope as the kernel would send it (B5a). */
+function deriveEnvelope(payload: Record<string, unknown>): ReplEnvelope {
+  return { version: 1, type: "host.repl.derive", payload };
+}
+
 function isReplProcessAlive(pid: number): boolean {
   try {
     return Deno.kill(pid, 0) === undefined;
@@ -414,7 +436,7 @@ Deno.test("host derives a REPL process actor and receives its pid", async () => 
   const { reports, reporter } = collectReports();
   const repls = makeReplManager(reporter);
   try {
-    const handle = await repls.spawnRepl("repl-test-1", 0);
+    const handle = await repls.spawnRepl(deriveRequest("repl-test-1", 0));
     assert(Number.isSafeInteger(handle.pid) && handle.pid > 0, "pid must be a positive integer");
     assertEquals(handle.sessionId, "repl-test-1");
     assertEquals(handle.generation, 0);
@@ -432,7 +454,7 @@ Deno.test("repl process actor exposes execute and returns the skeleton envelope"
   const { reporter } = collectReports();
   const repls = makeReplManager(reporter);
   try {
-    const handle = await repls.spawnRepl("repl-test-2", 1);
+    const handle = await repls.spawnRepl(deriveRequest("repl-test-2", 1));
     const result = await handle.actor.execute("1 + 1");
     assertEquals(result.ok, true);
     assertEquals(result.data, "skeleton: 1 + 1");
@@ -444,7 +466,7 @@ Deno.test("repl process actor exposes execute and returns the skeleton envelope"
 Deno.test("dispose stops the derived repl process and clears the registry", async () => {
   const { reports, reporter } = collectReports();
   const repls = makeReplManager(reporter);
-  const handle = await repls.spawnRepl("repl-test-3", 2);
+  const handle = await repls.spawnRepl(deriveRequest("repl-test-3", 2));
   const pid = handle.pid;
   assert(isReplProcessAlive(pid), "repl process must be alive before dispose");
   const disposed = await repls.disposeRepl("repl-test-3");
@@ -467,7 +489,7 @@ Deno.test("dispose stops the derived repl process and clears the registry", asyn
 Deno.test("a crashed repl process is removed from the registry", async () => {
   const { reporter } = collectReports();
   const repls = makeReplManager(reporter);
-  const handle = await repls.spawnRepl("repl-test-4", 3);
+  const handle = await repls.spawnRepl(deriveRequest("repl-test-4", 3));
   const pid = handle.pid;
   assert(isReplProcessAlive(pid), "repl process must be alive before the kill");
   Deno.kill(pid, "SIGKILL");
@@ -486,9 +508,9 @@ Deno.test("spawnRepl rejects a duplicate running session", async () => {
   const { reporter } = collectReports();
   const repls = makeReplManager(reporter);
   try {
-    await repls.spawnRepl("repl-test-5", 0);
+    await repls.spawnRepl(deriveRequest("repl-test-5", 0));
     await assertRejects(
-      () => repls.spawnRepl("repl-test-5", 0),
+      () => repls.spawnRepl(deriveRequest("repl-test-5", 0)),
       Error,
       "already running",
     );
@@ -500,7 +522,7 @@ Deno.test("spawnRepl rejects a duplicate running session", async () => {
 Deno.test("a crashed repl process emits one exited report", async () => {
   const { reports, reporter } = collectReports();
   const repls = makeReplManager(reporter);
-  const handle = await repls.spawnRepl("repl-crash-1", 4);
+  const handle = await repls.spawnRepl(deriveRequest("repl-crash-1", 4));
   const pid = handle.pid;
   Deno.kill(pid, "SIGKILL");
   // The liveness monitor (or onDeath) clears the registry and emits the exit;
@@ -528,7 +550,7 @@ Deno.test("a crashed repl process emits one exited report", async () => {
 Deno.test("disposing after a crash does not double-report the exit", async () => {
   const { reports, reporter } = collectReports();
   const repls = makeReplManager(reporter);
-  const handle = await repls.spawnRepl("repl-crash-2", 5);
+  const handle = await repls.spawnRepl(deriveRequest("repl-crash-2", 5));
   const pid = handle.pid;
   Deno.kill(pid, "SIGKILL");
   for (let attempt = 0; attempt < 100 && repls.get("repl-crash-2") !== undefined; attempt++) {
@@ -542,10 +564,274 @@ Deno.test("disposing after a crash does not double-report the exit", async () =>
 Deno.test("spawnRepl without a reporter refuses to derive a REPL", async () => {
   const repls = makeReplManager();
   await assertRejects(
-    () => repls.spawnRepl("repl-test-6", 0),
+    () => repls.spawnRepl(deriveRequest("repl-test-6", 0)),
     Error,
     "control bus is not connected",
   );
+});
+
+// —— kernel → host derive instruction (ADR 0020 / B5a) ——
+
+/** Runs a `host.repl.derive` envelope through ReplManager.derive and drains
+ * the handle registry. Returns the emitted reports. */
+async function runDerive(
+  payload: Record<string, unknown>,
+  reporter?: ReplReporter,
+): Promise<HostReplReport[]> {
+  const reports: HostReplReport[] = [];
+  const repls = makeReplManager(reporter ?? ((report: HostReplReport) => reports.push(report)));
+  try {
+    await repls.derive(deriveEnvelope(payload));
+  } finally {
+    await repls.disposeAll();
+  }
+  return reports;
+}
+
+/** Narrows a report to the deriveFailed member (throws otherwise). */
+function deriveFailedOf(report: HostReplReport): {
+  sessionId: string;
+  generation: number;
+  message: string;
+} {
+  if (report.type !== "host.repl.deriveFailed") {
+    throw new Error(`expected a deriveFailed report, got '${report.type}'`);
+  }
+  return report.payload;
+}
+
+Deno.test("host.repl.derive derives a REPL from the kernel parameters and reports spawned", async () => {
+  const reports: HostReplReport[] = [];
+  const reporter: ReplReporter = (report) => reports.push(report);
+  const repls = makeReplManager(reporter);
+  try {
+    const handle = await repls.derive(deriveEnvelope({
+      sessionId: "repl-derive-1",
+      generation: 0,
+      entryUrl: REPL_ENTRY_PATH,
+      env: { MAIEUTICS_REPL_SESSION: "repl-derive-1", MAIEUTICS_REPL_GENERATION: "0" },
+    }));
+    assert(handle !== undefined, "a valid derive resolves with a handle");
+    assert(
+      Number.isSafeInteger(handle.pid) && handle.pid > 0,
+      "pid must be a positive integer",
+    );
+    assertEquals(handle.sessionId, "repl-derive-1");
+    assertEquals(handle.generation, 0);
+    assertEquals(repls.get("repl-derive-1"), handle);
+    // One spawned report, keyed to the derived pid.
+    assertEquals(reports.filter((report) => report.type === "host.repl.spawned"), [{
+      type: "host.repl.spawned",
+      payload: { sessionId: "repl-derive-1", generation: 0, pid: handle.pid },
+    }]);
+    // No exited report while the REPL is still running.
+    assertEquals(
+      reports.filter((report) => report.type === "host.repl.exited").length,
+      0,
+    );
+  } finally {
+    await repls.disposeAll();
+  }
+  // disposeAll balances the spawn with exactly one exited report.
+  assertEquals(
+    reports.filter((report) => report.type === "host.repl.exited").length,
+    1,
+    "disposeAll must emit one exited report",
+  );
+});
+
+Deno.test("host.repl.derive injects the kernel env verbatim plus the forwarded broker path", async () => {
+  await using broker = await TestBroker.start();
+  const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
+  Deno.env.set("MAIEUTICS_PERMISSION_BROKER", broker.address);
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  try {
+    // The kernel env is the authoritative child env: it carries the session
+    // identity vars and a marker var the child can read back through rpc.
+    const handle = await repls.spawnRepl(deriveRequest("repl-derive-2", 1, {
+      env: {
+        MAIEUTICS_REPL_SESSION: "repl-derive-2",
+        MAIEUTICS_REPL_GENERATION: "1",
+        MAIEUTICS_REPL_DERIVE_MARKER: "from-kernel",
+      },
+    }));
+    try {
+      // The kernel-provided marker reaches the child unchanged, and the session
+      // identity the child binds matches the kernel env.
+      const identity = await handle.actor.initialize();
+      assertEquals(identity.sessionId, "repl-derive-2");
+      assertEquals(identity.generation, 1);
+      // ...and the broker address the host received is forwarded verbatim.
+      const brokerPath = await handle.actor.pregestBrokerPath();
+      assertEquals(brokerPath, broker.address);
+      // The host's own environment is restored after spawn: no kernel var leaks
+      // into the host process env.
+      assertEquals(Deno.env.get("MAIEUTICS_REPL_DERIVE_MARKER"), undefined);
+    } finally {
+      await repls.disposeRepl("repl-derive-2");
+    }
+  } finally {
+    if (previous === undefined) Deno.env.delete("MAIEUTICS_PERMISSION_BROKER");
+    else Deno.env.set("MAIEUTICS_PERMISSION_BROKER", previous);
+  }
+});
+
+Deno.test("host.repl.derive env never overwrites the host's own broker path", async () => {
+  await using broker = await TestBroker.start();
+  const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
+  Deno.env.set("MAIEUTICS_PERMISSION_BROKER", broker.address);
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  try {
+    // A hostile/defective kernel env that claims a different broker address:
+    // the host's forwarded MAIEUTICS_PERMISSION_BROKER wins, so the child's
+    // permission checks resolve through the policy registered for its pid.
+    const handle = await repls.spawnRepl(deriveRequest("repl-derive-3", 2, {
+      env: {
+        MAIEUTICS_REPL_SESSION: "repl-derive-3",
+        MAIEUTICS_REPL_GENERATION: "2",
+        DENO_PERMISSION_BROKER_PATH: "/tmp/not-the-broker.sock",
+      },
+    }));
+    try {
+      const brokerPath = await handle.actor.pregestBrokerPath();
+      assertEquals(brokerPath, broker.address);
+    } finally {
+      await repls.disposeRepl("repl-derive-3");
+    }
+  } finally {
+    if (previous === undefined) Deno.env.delete("MAIEUTICS_PERMISSION_BROKER");
+    else Deno.env.set("MAIEUTICS_PERMISSION_BROKER", previous);
+  }
+});
+
+Deno.test("host.repl.derive rejects a missing entryUrl and reports deriveFailed", async () => {
+  const reports = await runDerive({
+    sessionId: "repl-derive-bad-1",
+    generation: 0,
+    // No entryUrl: the parser rejects the instruction before any spawn.
+    env: {},
+  });
+  assertEquals(reports, [{
+    type: "host.repl.deriveFailed",
+    payload: {
+      sessionId: "repl-derive-bad-1",
+      generation: 0,
+      message: "host.repl.derive requires a non-empty string entryUrl.",
+    },
+  }]);
+  assertEquals(
+    reports.filter((report) => report.type === "host.repl.spawned").length,
+    0,
+    "no spawned report for a rejected derive",
+  );
+});
+
+Deno.test("host.repl.derive rejects a malformed payload without emitting spawned", async () => {
+  // A number sessionId is not a string; the parser rejects the instruction.
+  const reports = await runDerive({ sessionId: 42, entryUrl: REPL_ENTRY_PATH });
+  assertEquals(reports.length, 1);
+  const failed = deriveFailedOf(reports[0]);
+  // The raw payload sessionId is echoed for the kernel to correlate the
+  // rejection; it is not a valid string session id.
+  assertEquals(failed.sessionId, "");
+  assertEquals(failed.generation, 0);
+  assert(
+    failed.message.includes("non-empty string sessionId"),
+    `expected a sessionId validation error, got: ${failed.message}`,
+  );
+  assertEquals(
+    reports.filter((report) => report.type === "host.repl.spawned").length,
+    0,
+    "no spawned report for a malformed derive",
+  );
+});
+
+Deno.test("host.repl.derive rejects a bad env record type without emitting spawned", async () => {
+  const reports = await runDerive({
+    sessionId: "repl-derive-bad-3",
+    generation: 0,
+    entryUrl: REPL_ENTRY_PATH,
+    env: "not-an-object",
+  });
+  assertEquals(reports.length, 1);
+  const failed = deriveFailedOf(reports[0]);
+  assert(
+    failed.message.includes("env must be a string record"),
+    `expected an env validation error, got: ${failed.message}`,
+  );
+  assertEquals(
+    reports.filter((report) => report.type === "host.repl.spawned").length,
+    0,
+  );
+});
+
+Deno.test("host.repl.derive reports deriveFailed on a duplicate running session", async () => {
+  const { reports, reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  try {
+    await repls.spawnRepl(deriveRequest("repl-derive-dup", 0));
+    await repls.derive(deriveEnvelope({
+      sessionId: "repl-derive-dup",
+      generation: 0,
+      entryUrl: REPL_ENTRY_PATH,
+      env: {},
+    }));
+    // The duplicate is rejected before any pid exists: deriveFailed only, and
+    // no second spawned report for a session that already has a running REPL.
+    assertEquals(reports.filter((report) => report.type === "host.repl.deriveFailed"), [{
+      type: "host.repl.deriveFailed",
+      payload: {
+        sessionId: "repl-derive-dup",
+        generation: 0,
+        message: "A REPL process is already running for session 'repl-derive-dup'.",
+      },
+    }]);
+    assertEquals(
+      reports.filter((report) => report.type === "host.repl.spawned").length,
+      1,
+      "only the first derive spawned",
+    );
+  } finally {
+    await repls.disposeAll();
+    // disposeAll emits one exited report for the running handle; the failed
+    // duplicate never enters the registry.
+    assertEquals(
+      reports.filter((report) => report.type === "host.repl.exited").length,
+      1,
+      "one exited report for the running handle only",
+    );
+  }
+});
+
+Deno.test("host.repl.derive with report:false stays silent on the bus", async () => {
+  const reports: HostReplReport[] = [];
+  const reporter: ReplReporter = (report) => reports.push(report);
+  const repls = makeReplManager(reporter);
+  try {
+    const handle = await repls.derive(deriveEnvelope({
+      sessionId: "repl-derive-silent",
+      generation: 0,
+      entryUrl: REPL_ENTRY_PATH,
+      env: { MAIEUTICS_REPL_SESSION: "repl-derive-silent", MAIEUTICS_REPL_GENERATION: "0" },
+      report: false,
+    }));
+    assert(handle !== undefined, "a report:false derive still resolves with a handle");
+    assert(Number.isSafeInteger(handle.pid) && handle.pid > 0, "pid must be a positive integer");
+    // No spawned report, and none after dispose either.
+    assertEquals(
+      reports.filter((report) => report.type === "host.repl.spawned").length,
+      0,
+    );
+  } finally {
+    await repls.disposeAll();
+    assertEquals(
+      reports.filter((report) => report.type === "host.repl.exited").length,
+      0,
+      "report:false derives emit no exited report on dispose",
+    );
+  }
 });
 
 /**
@@ -626,7 +912,7 @@ Deno.test("repl child receives the forwarded broker path in its environment", as
   const { reporter } = collectReports();
   const repls = makeReplManager(reporter);
   try {
-    const handle = await repls.spawnRepl("repl-broker-1", 6);
+    const handle = await repls.spawnRepl(deriveRequest("repl-broker-1", 6));
     try {
       const brokerPath = await handle.actor.pregestBrokerPath();
       assertEquals(brokerPath, broker.address);
@@ -645,7 +931,7 @@ Deno.test("repl child sees no broker path when the host received none", async ()
   const { reporter } = collectReports();
   const repls = makeReplManager(reporter);
   try {
-    const handle = await repls.spawnRepl("repl-broker-2", 7);
+    const handle = await repls.spawnRepl(deriveRequest("repl-broker-2", 7));
     try {
       const brokerPath = await handle.actor.pregestBrokerPath();
       assertEquals(brokerPath, "");

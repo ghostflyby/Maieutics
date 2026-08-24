@@ -16,6 +16,8 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.DenoRepl.Queue.ts", "maieutics-deno-repl/repl_eval_queue.ts"),
         ("Maieutics.Deno.DenoRepl.ProcessMain.ts", "maieutics-deno-repl/process_main.ts"),
         ("Maieutics.Deno.DenoRepl.ProcessRpc.ts", "maieutics-deno-repl/process_rpc.ts"),
+        ("Maieutics.Deno.DenoRepl.ProcessEnv.ts", "maieutics-deno-repl/repl_process_env.ts"),
+        ("Maieutics.Deno.DenoRepl.ProcessRpcTest.ts", "maieutics-deno-repl/process_rpc_test.ts"),
         ("Maieutics.Deno.DenoRepl.Config.json", "maieutics-deno-repl/deno.json"),
         ("Maieutics.Deno.DenoRepl.Lock.json", "maieutics-deno-repl/deno.lock"),
         ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),

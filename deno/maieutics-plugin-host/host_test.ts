@@ -450,14 +450,37 @@ Deno.test("host derives a REPL process actor and receives its pid", async () => 
   }
 });
 
-Deno.test("repl process actor exposes execute and returns the skeleton envelope", async () => {
+Deno.test("repl process actor execute is a control-plane stub over the kernel eval channel", async () => {
   const { reporter } = collectReports();
   const repls = makeReplManager(reporter);
   try {
     const handle = await repls.spawnRepl(deriveRequest("repl-test-2", 1));
     const result = await handle.actor.execute("1 + 1");
-    assertEquals(result.ok, true);
-    assertEquals(result.data, "skeleton: 1 + 1");
+    // C1: real execution is served by the kernel over the eval WebSocket, never
+    // over the actor; the actor execute stays a ReplActorResult-shaped stub so
+    // the host-side call site still type-checks against the migration surface.
+    assertEquals(result.ok, false);
+    assertEquals(result.data, undefined);
+    assert(typeof result.error === "string" && result.error.length > 0);
+  } finally {
+    await repls.disposeAll();
+  }
+});
+
+Deno.test("repl process actor surfaces a failed client start without the kernel env", async () => {
+  const { reporter } = collectReports();
+  const repls = makeReplManager(reporter);
+  try {
+    const handle = await repls.spawnRepl(deriveRequest("repl-test-status", 3));
+    // The host fires startRepl after initialize (C1); without the kernel env
+    // contract the client records the failure, status surfaces it, and the
+    // process stays a control-plane actor.
+    const status = await handle.actor.status();
+    assertEquals(status.started, true);
+    assertEquals(status.ready, false);
+    assert(typeof status.error === "string" && status.error.length > 0);
+    // A subsequent explicit startRepl rejects with the recorded failure.
+    await assertRejects(() => handle.actor.startRepl());
   } finally {
     await repls.disposeAll();
   }

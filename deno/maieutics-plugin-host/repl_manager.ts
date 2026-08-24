@@ -471,6 +471,25 @@ export class ReplManager {
       `[plugin-host] derived REPL process for session '${sessionId}' generation ` +
         `${generation}: pid ${pid}.`,
     );
+    // C1: boot the real WebSocket REPL client inside the child (eval + comm
+    // channels + the Aves worker). The kernel session factory waits for the
+    // eval channel, so the child must connect it. The B3 ordering is preserved:
+    // startRepl runs AFTER the pregest pid report (registered the broker policy
+    // and the session identity) and after initialize(); the child's broker-gated
+    // connects therefore resolve against the kernel-registered policy. Without
+    // the kernel env contract (tests / no-kernel runs) startRepl fails fast and
+    // the child stays a control-plane actor; the failure is logged, never fatal
+    // to the derivation — the kernel observes the eval channel or the child's
+    // exit instead.
+    try {
+      await actor.startRepl();
+    } catch (error) {
+      console.error(
+        `[plugin-host] REPL client start for session '${sessionId}' generation ` +
+          `${generation} failed (the child stays a control-plane actor): ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     return handle;
   }
 

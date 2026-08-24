@@ -4,6 +4,19 @@ Production Deno execution process for Maieutics. The process connects to the own
 process-verified IPC socket at `/v1/repl/eval/ws`, then runs the Aves REPL kernel in a supervised
 worker-actor. All wire messages use the versioned `repl.eval.*` protocol from `protocol.ts`.
 
+There are two process entries that boot the same WebSocket REPL client:
+
+- `main.ts` — the kernel-derived entry: the kernel spawns the child directly and the entry parses
+  the `MAIEUTICS_REPL_*` environment, bootstraps the Windows credential, and runs the `ReplClient`.
+- `process_main.ts` — the host-derived entry (ADR 0020): the plugin host derives the child via
+  worker-actor `spawnProcess`. It serves the host actor surface (`process_rpc.ts`) and, once the
+  host calls `startRepl()` (after the pid report registered the broker policy), runs the SAME
+  `ReplClient` against the kernel eval/comm channels. Real execution flows over the eval WebSocket
+  in both paths; the actor surface is control/query only.
+
+The shared `repl_process_env.ts` parses the env contract and bootstraps the Windows credential for
+both entries.
+
 The main thread owns the WebSocket, bounded inbound/event/outbound queues, pending input requests,
 the active execution, and actor shutdown. Worker output is a worker-actor `AsyncIterable`, so main
 pulls ordered events with transport-level backpressure and receives the terminal as its last item.

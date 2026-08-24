@@ -1,20 +1,20 @@
 /**
  * REPL process entry: the child module the plugin host derives with
- * `spawnProcess` (ADR 0020 migration skeleton).
+ * `spawnProcess` (ADR 0020). C1 makes this process a REAL REPL: it serves the
+ * host actor surface (`process_rpc.ts`) AND runs the same WebSocket REPL client
+ * as the kernel-derived path (`main.ts` + `repl_client.ts` + `repl_worker.ts`)
+ * once the host starts it.
  *
- * This is the process-side counterpart of the host's `ReplManager` in
- * `maieutics-plugin-host/`. The process calls `serveProcess` at top level, then
- * handles the host's RPC calls from `process_rpc.ts`. The existing WebSocket
- * REPL path (`main.ts` + `repl_client.ts` + `repl_worker.ts`) is untouched and
- * keeps working during the dual-track transition (ADR 0020 out of scope).
+ * Lifecycle: `serveProcess(rpc)` runs at module top level and opens the actor
+ * channel; the process does NOT auto-start the REPL client. The host reports
+ * this pid (`host.repl.spawned`) so the kernel registers the broker policy and
+ * session identity (B3), then calls `initialize()` and `startRepl()`, which
+ * boots the eval/comm WebSockets against the kernel. When the eval channel
+ * completes (kernel dispose / failure / host shutdown) the process exits
+ * itself and the host's spawnProcess death detection emits `host.repl.exited`.
  *
- * The process runs the actor surface with whatever `permissions` shell the host
- * passed at spawn. When the host forwards the kernel's broker address under
- * DENO_PERMISSION_BROKER_PATH, every explicit permission check this process
- * makes is resolved by the broker against the policy the kernel registered for
- * this pid (the host reports the pid with `host.repl.spawned` before the actor
- * handshake, B3); the static shell is only the fallback baseline (ADR 0020
- * decision 1), never the security boundary.
+ * The existing kernel-derived WebSocket REPL path is untouched and keeps
+ * working during the dual-track transition (ADR 0020 out of scope).
  */
 
 import { rpc } from "./process_rpc.ts";

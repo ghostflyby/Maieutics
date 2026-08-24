@@ -134,9 +134,12 @@ Deno.test("the worker binds maieutics before creating Aves", async () => {
 });
 
 Deno.test("Windows bootstrap credential is carried by the REPL hello", async () => {
-  const main = await Deno.readTextFile(new URL("./main.ts", import.meta.url));
+  // Both REPL process entries share the env contract + credential bootstrap
+  // through repl_process_env.ts; the client carries the credential into hello.
+  const env = await Deno.readTextFile(new URL("./repl_process_env.ts", import.meta.url));
   const client = await Deno.readTextFile(new URL("./repl_client.ts", import.meta.url));
-  assertEquals(main.includes("bootstrapWindowsCredential"), true);
+  assertEquals(env.includes("bootstrapWindowsCredential"), true);
+  assertEquals(env.includes("MAIEUTICS_REPL_PIPE"), true);
   assertEquals(client.includes("{ credential: this.#options.credential }"), true);
   assertEquals(client.includes("connectIpcWebSocket"), true);
   assertEquals(client.includes("REPL_EVAL_WEBSOCKET_PATH"), true);

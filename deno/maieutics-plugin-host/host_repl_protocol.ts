@@ -44,7 +44,23 @@ export interface HostReplRpc {
     sessionId: string;
     generation: number;
   }>;
-  /** Placeholder execution; returns the ReplActorResult-shaped envelope. */
+  /**
+   * Starts the real WebSocket REPL client (eval + comm channels + the Aves
+   * worker). Resolves once the eval hello/ready handshake completes or the
+   * client fails. The host calls this AFTER initialize(), so the kernel has
+   * already registered this pid's broker policy and session identity (B3
+   * ordering) when the client's broker-gated connect begins.
+   */
+  startRepl(): Promise<void>;
+  /** Health of the WebSocket REPL client (started / ready / terminal error). */
+  status(): Promise<{
+    started: boolean;
+    ready: boolean;
+    error?: string;
+  }>;
+  /** Control-plane stub: real execution is served by the kernel over the eval
+   * WebSocket, never over this actor method. Returns the ReplActorResult-shaped
+   * envelope for host-side call-site compatibility (B5b). */
   execute(code: string): Promise<{
     ok: boolean;
     data?: unknown;

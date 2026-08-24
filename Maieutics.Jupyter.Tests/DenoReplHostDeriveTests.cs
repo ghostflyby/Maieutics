@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using FluentAssertions;
+using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
@@ -246,7 +247,7 @@ public sealed class DenoReplHostDeriveTests
 
         // Simulated host: read the derive instruction from the attached socket, then report the
         // spawned pid (the kernel registers the session identity and broker policy for it).
-        var deriveJson = await harness.Host.ReadSentAsync(deadline.Token);
+        var deriveJson = await harness.Host!.ReadSentAsync(deadline.Token);
         deriveJson.Should().Contain("\"host.repl.derive\"");
         var envelope = JsonSerializer.Deserialize(deriveJson, ReplControlJsonContext.Default.ReplEnvelope)!;
         var payload = JsonSerializer.Deserialize(
@@ -314,7 +315,7 @@ public sealed class DenoReplHostDeriveTests
 
         // The host rejects the derive before any pid exists; the factory must fall back to the
         // kernel-derived path instead of surfacing the host's rejection.
-        var deriveJson = await harness.Host.ReadSentAsync(deadline.Token);
+        var deriveJson = await harness.Host!.ReadSentAsync(deadline.Token);
         deriveJson.Should().Contain("\"host.repl.derive\"");
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.deriveFailed","payload":{"sessionId":"fallback-session","generation":1,"message":"no module graph"}}""");
@@ -336,20 +337,123 @@ public sealed class DenoReplHostDeriveTests
         }
     }
 
+    /// <summary>
+    ///     C1 end-to-end: a REAL plugin host process derives a REAL REPL child
+    ///     (<c>process_main.ts</c>) and the host-derived session factory starts a session whose
+    ///     eval channel is served by that child. The derive instruction flows over the real
+    ///     Kestrel control bus; the host emits <c>host.repl.spawned</c>, the kernel registers the
+    ///     pid, and the child boots its WebSocket REPL client — the factory's
+    ///     <c>WaitForConnectionAsync</c> resolves when the child completes the eval handshake.
+    ///     Then a real Aves execution of <c>1 + 1</c> returns 2 through the session, proving the
+    ///     host-derived path is functionally equivalent to the kernel-derived REPL.
+    /// </summary>
+    [Fact(Timeout = 180_000)]
+    public async Task FactoryStartsARealHostDerivedReplAndExecutesAvesCode()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The real-host harness attaches over a Unix socket (peer identity).
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(150));
+        var registry = new ReplControlSessionRegistry();
+        var credentials = new ReplControlCredentialRegistry();
+        await using var harness = await CreateRealHostHarnessAsync(deadline.Token, registry, credentials);
+
+        var options = new DenoReplOptions
+        {
+            HostDerivedRepl = true,
+            StartupTimeout = TimeSpan.FromSeconds(60),
+            ExecutionTimeout = TimeSpan.FromSeconds(60),
+            AutoInstallModuleGraph = true
+        };
+        var factory = new LocalDenoReplSessionFactory(
+            options,
+            harness.ControlHost,
+            new DenoReplModule(),
+            harness.EvalHost,
+            registry,
+            credentials,
+            NullLogger<DenoReplProcess>.Instance,
+            DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance),
+            pluginHosts: harness.Manager);
+
+        var session = new DenoReplSession(
+            AgentSessionId.Create(),
+            "host-derived-e2e",
+            false,
+            Directory.GetCurrentDirectory(),
+            options,
+            factory,
+            new DenoReplSessionTests.ImmediatePresentationRouter(),
+            NullLogger<DenoReplSession>.Instance);
+        await using (session)
+        {
+            await session.StartAsync(deadline.Token);
+            var result = await session.ExecuteAsync(
+                "1 + 1",
+                AgentToolCallId.Create(),
+                deadline.Token);
+            result.ExecutionStatus.Should().Be("ok");
+            result.Outputs
+                .Where(static item => item is { Kind: "result", Value: not null })
+                .Select(static item => item.Value?.GetInt32())
+                .Should().Contain(2);
+        }
+    }
+
+    /// <summary>Attaches a REAL plugin host process over the Kestrel control bus (no simulated
+    /// host socket): the manager starts the materialized <c>mod.ts</c> host, it connects the
+    /// control bus, and <c>host.repl.derive</c> instructions reach the real <c>ReplManager</c>
+    /// which derives the real REPL child.</summary>
+    private static async Task<HostHarness> CreateRealHostHarnessAsync(
+        CancellationToken cancellationToken,
+        ReplControlSessionRegistry registry,
+        ReplControlCredentialRegistry credentials)
+    {
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var manager = CreateManager(registry, broker: null, fakeDenoPath: null, socketPath);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var evalHost = new ReplEvalWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, cancellationToken);
+
+        // The manager's host process connects the control bus (its hello registers the host pid);
+        // the manager then accepts host.repl.* reports from the real host.
+        await manager.StartAsync(cancellationToken);
+        for (var attempt = 0; attempt < 200 && !manager.GetStatus().ControlConnected; attempt++)
+            await Task.Delay(100, cancellationToken);
+        manager.GetStatus().ControlConnected.Should().BeTrue();
+
+        var harness = new HostHarness
+        {
+            ControlHost = controlHost,
+            EvalHost = evalHost,
+            Manager = manager
+        };
+        harness.Initialize(application, fakeDenoPath: null);
+        return harness;
+    }
+
     private sealed class HostHarness : IAsyncDisposable
     {
         internal required ReplControlHost ControlHost { get; init; }
 
         internal required ReplEvalWebSocketHost EvalHost { get; init; }
 
-        internal required FakeHostWebSocket Host { get; init; }
+        /// <summary>Simulated host WebSocket when the host process is a fake deno
+        /// (see <see cref="CreateHarnessAsync"/>); null when a real host process is
+        /// attached through Kestrel (see <see cref="CreateRealHostHarnessAsync"/>).</summary>
+        internal FakeHostWebSocket? Host { get; init; }
 
         internal required PluginHostManager Manager { get; init; }
 
         private WebApplication? application;
         private string? fakeDenoPath;
 
-        internal void Initialize(WebApplication app, string fakeDenoPath)
+        internal void Initialize(WebApplication app, string? fakeDenoPath)
         {
             application = app;
             this.fakeDenoPath = fakeDenoPath;
@@ -357,7 +461,7 @@ public sealed class DenoReplHostDeriveTests
 
         public async ValueTask DisposeAsync()
         {
-            Host.Dispose();
+            Host?.Dispose();
             await Manager.DisposeAsync().ConfigureAwait(false);
             if (application is not null) await application.DisposeAsync().ConfigureAwait(false);
             if (fakeDenoPath is not null) TryDelete(fakeDenoPath);
@@ -524,11 +628,12 @@ public sealed class DenoReplHostDeriveTests
     private static PluginHostManager CreateManager(
         ReplControlSessionRegistry registry,
         DenoPermissionBroker? broker,
-        string? fakeDenoPath = null)
+        string? fakeDenoPath = null,
+        string? socketPath = null)
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-derive-{Guid.NewGuid():N}"),
-            ReplControlHost.CreateSocketPath(),
+            socketPath ?? ReplControlHost.CreateSocketPath(),
             new DenoReplOptions { Executable = fakeDenoPath ?? "deno" },
             new PluginHostModule(),
             registry,

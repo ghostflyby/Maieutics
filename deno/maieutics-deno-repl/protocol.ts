@@ -13,10 +13,6 @@ export const ReplEvalMessageType = {
   result: "repl.eval.result",
   error: "repl.eval.error",
   cancelled: "repl.eval.cancelled",
-  console: "repl.eval.console",
-  display: "repl.eval.display",
-  updateDisplay: "repl.eval.updateDisplay",
-  clearOutput: "repl.eval.clearOutput",
   inputRequest: "repl.eval.inputRequest",
   inputReply: "repl.eval.inputReply",
 } as const;
@@ -45,28 +41,10 @@ export interface ReplEvalCancelPayload {
   executionId: string;
 }
 
-export interface ReplEvalConsolePayload {
-  executionId: string;
-  sequence: number;
-  stream: "stdout" | "stderr";
-  text: string;
-}
-
-export type ReplMediaBundle = Record<string, string | object>;
-
-export interface ReplEvalDisplayPayload {
-  executionId: string;
-  sequence: number;
-  displayId?: string;
-  data: ReplMediaBundle;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ReplEvalClearOutputPayload {
-  executionId: string;
-  sequence: number;
-  wait: boolean;
-}
+/** MIME bundle of one display/updateDisplay event. Binary MIME values (image
+ * bytes) are carried as native `Uint8Array` values; they never enter the eval
+ * JSON channel — the output endpoint moves them as byte buffers. */
+export type ReplMediaBundle = Record<string, string | object | Uint8Array>;
 
 export interface ReplEvalInputRequestPayload {
   executionId: string;

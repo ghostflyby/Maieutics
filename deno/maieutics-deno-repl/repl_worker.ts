@@ -454,6 +454,10 @@ function createJupyterApi(): typeof Deno.jupyter {
     if (isDisplayable(value)) {
       return normalizeMediaBundle(await value[DISPLAY]());
     }
+    if (value instanceof Uint8Array) {
+      if (isJpg(value)) return { "image/jpeg": value };
+      if (isPng(value)) return { "image/png": value };
+    }
     return { "text/plain": Deno.inspect(value, { colors: false, depth: 6 }) };
   };
 
@@ -533,7 +537,10 @@ function createJupyterApi(): typeof Deno.jupyter {
   const image = (source: string | Uint8Array): Deno.jupyter.Displayable => ({
     [DISPLAY]: async () => {
       const data = typeof source === "string" ? await Deno.readFile(source) : source;
-      return { [imageMime(source, data)]: encodeBase64(data) };
+      // Native bytes only: binary MIME data never leaves this worker base64
+      // encoded (AGENTS.md invariant 26). The output endpoint moves the byte
+      // buffer itself; the kernel reconstructs it into the Jupyter image.
+      return { [imageMime(source, data)]: data };
     },
   } as unknown as Deno.jupyter.Displayable);
 
@@ -583,7 +590,7 @@ function normalizeMediaBundle(value: unknown): ReplMediaBundle {
   }
   const bundle: ReplMediaBundle = {};
   for (const [mime, content] of Object.entries(value)) {
-    if (typeof content === "string" || isRecord(content)) {
+    if (typeof content === "string" || content instanceof Uint8Array || isRecord(content)) {
       bundle[mime] = content;
     }
   }
@@ -625,12 +632,17 @@ function imageMime(source: string | Uint8Array, data: Uint8Array): "image/png" |
   return data[0] === 0xff && data[1] === 0xd8 ? "image/jpeg" : "image/png";
 }
 
-function encodeBase64(data: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < data.length; offset += 0x8000) {
-    binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
+/** True when the bytes start with the JPEG marker and end with its terminator. */
+function isJpg(data: Uint8Array): boolean {
+  return data.length > 3 && data[0] === 0xff && data[1] === 0xd8 &&
+    data[data.length - 2] === 0xff && data[data.length - 1] === 0xd9;
+}
+
+/** True when the bytes start with the 8-byte PNG signature. */
+function isPng(data: Uint8Array): boolean {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  return data.length >= signature.length &&
+    signature.every((byte, index) => data[index] === byte);
 }
 
 function jsonSafeValue(value: unknown): unknown {

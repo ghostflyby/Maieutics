@@ -10,7 +10,7 @@
     "./protocol": "./protocol.ts"
   },
   "tasks": {
-    "check": "deno check main.ts process_main.ts process_rpc.ts repl_test.ts input_mailbox.ts repl_sync_input_test.ts process_rpc_test.ts",
-    "test": "deno test --allow-read=. repl_test.ts input_mailbox_test.ts && deno test --allow-read --allow-env --unstable-worker-options repl_sync_input_test.ts && deno test --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --unstable-worker-options process_rpc_test.ts"
+    "check": "deno check main.ts process_main.ts process_rpc.ts repl_test.ts output_protocol_test.ts input_mailbox.ts repl_sync_input_test.ts process_rpc_test.ts",
+    "test": "deno test --allow-read=. repl_test.ts output_protocol_test.ts input_mailbox_test.ts && deno test --allow-read --allow-env --unstable-worker-options repl_sync_input_test.ts && deno test --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --unstable-worker-options process_rpc_test.ts"
   }
 }

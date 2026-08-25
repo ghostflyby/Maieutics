@@ -12,6 +12,15 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const PENDING_MESSAGE_CAPACITY = 64;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+export interface ConnectIpcWebSocketOptions {
+  /**
+   * Per-connection message size guard, applied to send validation and the
+   * Windows named-pipe receive framing. Defaults to `MAX_MESSAGE_BYTES`
+   * (1 MiB); the REPL output endpoint raises it to its binary buffer ceiling.
+   */
+  maxMessageBytes?: number;
+}
+
 // Written as one literal: JS bitwise OR coerces both operands to int32, so
 // 0x80000000 | 0x40000000 would be -1073741824, which Deno rejects for u32.
 const GENERIC_READ_WRITE = 0xC0000000;
@@ -66,14 +75,15 @@ export function connectIpcWebSocket(
   address: string,
   path: string,
   credential?: string,
+  options?: ConnectIpcWebSocketOptions,
 ): Promise<IpcWebSocket> {
   if (address.length === 0 || !path.startsWith("/")) {
     throw new TypeError("The IPC address and absolute WebSocket path are required.");
   }
   if (Deno.build.os === "windows") {
-    return NativeTcpWebSocket.connect(address, path, credential);
+    return NativeTcpWebSocket.connect(address, path, credential, options);
   }
-  return NativeUnixWebSocket.connect(address, path);
+  return NativeUnixWebSocket.connect(address, path, options);
 }
 
 class NativeTcpWebSocket implements IpcWebSocket {
@@ -81,13 +91,15 @@ class NativeTcpWebSocket implements IpcWebSocket {
   #onClose: (() => void) | undefined;
   #onError: ((error: Error) => void) | undefined;
   readonly #pendingMessages: (string | Uint8Array)[] = [];
+  readonly #maxMessageBytes: number;
   #closed = false;
   #terminalError: Error | undefined;
 
   readonly #socket: WebSocket;
 
-  private constructor(socket: WebSocket) {
+  private constructor(socket: WebSocket, maxMessageBytes: number) {
     this.#socket = socket;
+    this.#maxMessageBytes = maxMessageBytes;
     socket.onmessage = (event) => {
       const data = messageData(event.data);
       if (data !== null) {
@@ -159,6 +171,7 @@ class NativeTcpWebSocket implements IpcWebSocket {
     address: string,
     path: string,
     credential?: string,
+    options?: ConnectIpcWebSocketOptions,
   ): Promise<NativeTcpWebSocket> {
     const parsed = new URL(`http://${address}`);
     if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
@@ -172,10 +185,11 @@ class NativeTcpWebSocket implements IpcWebSocket {
       : { Authorization: `Bearer ${credential}` };
     const socket = new WebSocket(`ws://${address}${path}`, { headers });
     await waitForNativeOpen(socket);
-    return new NativeTcpWebSocket(socket);
+    return new NativeTcpWebSocket(socket, maxMessageBytesOf(options));
   }
 
   send(data: string | Uint8Array): void {
+    validateSendPayload(data, this.#maxMessageBytes);
     this.#socket.send(data);
   }
 
@@ -189,6 +203,7 @@ class NativeUnixWebSocket implements IpcWebSocket {
   #onClose: (() => void) | undefined;
   #onError: ((error: Error) => void) | undefined;
   readonly #pendingMessages: (string | Uint8Array)[] = [];
+  readonly #maxMessageBytes: number;
   #closed = false;
   #terminalError: Error | undefined;
 
@@ -199,9 +214,11 @@ class NativeUnixWebSocket implements IpcWebSocket {
   private constructor(
     http: ReturnType<typeof Deno.createHttpClient>,
     socket: WebSocket,
+    maxMessageBytes: number,
   ) {
     this.#http = http;
     this.#socket = socket;
+    this.#maxMessageBytes = maxMessageBytes;
     socket.onmessage = (event) => {
       const data = messageData(event.data);
       if (data !== null) {
@@ -273,12 +290,16 @@ class NativeUnixWebSocket implements IpcWebSocket {
     this.#onClose?.();
   }
 
-  static async connect(address: string, path: string): Promise<NativeUnixWebSocket> {
+  static async connect(
+    address: string,
+    path: string,
+    options?: ConnectIpcWebSocketOptions,
+  ): Promise<NativeUnixWebSocket> {
     const http = Deno.createHttpClient({
       proxy: { transport: "unix", path: address },
     });
     const socket = new WebSocket(`ws://localhost${path}`, { client: http });
-    const owner = new NativeUnixWebSocket(http, socket);
+    const owner = new NativeUnixWebSocket(http, socket, maxMessageBytesOf(options));
     try {
       await waitForNativeOpen(socket);
       return owner;
@@ -289,6 +310,7 @@ class NativeUnixWebSocket implements IpcWebSocket {
   }
 
   send(data: string | Uint8Array): void {
+    validateSendPayload(data, this.#maxMessageBytes);
     this.#socket.send(data);
   }
 
@@ -362,13 +384,19 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
   readonly #handle: Deno.PointerValue;
   readonly #kernel32: Kernel32;
   readonly #reader: NamedPipeReader;
+  readonly #maxMessageBytes: number;
   #state = WebSocket.CONNECTING;
   #writes: Promise<void> = Promise.resolve();
   #closed = false;
 
-  private constructor(kernel32: Kernel32, handle: Deno.PointerValue) {
+  private constructor(
+    kernel32: Kernel32,
+    handle: Deno.PointerValue,
+    maxMessageBytes: number,
+  ) {
     this.#kernel32 = kernel32;
     this.#handle = handle;
+    this.#maxMessageBytes = maxMessageBytes;
     this.#reader = new NamedPipeReader(kernel32, handle);
   }
 
@@ -376,7 +404,11 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
     return this.#state === WebSocket.OPEN;
   }
 
-  static async connect(pipeName: string, path: string): Promise<WindowsNamedPipeWebSocket> {
+  static async connect(
+    pipeName: string,
+    path: string,
+    options?: ConnectIpcWebSocketOptions,
+  ): Promise<WindowsNamedPipeWebSocket> {
     const systemRoot = Deno.env.get("SystemRoot");
     if (systemRoot === undefined || systemRoot.length === 0) {
       throw new Error("SystemRoot is required to resolve kernel32.dll.");
@@ -387,7 +419,11 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
     );
     try {
       const handle = await openNamedPipe(kernel32, pipeName);
-      const socket = new WindowsNamedPipeWebSocket(kernel32, handle);
+      const socket = new WindowsNamedPipeWebSocket(
+        kernel32,
+        handle,
+        maxMessageBytesOf(options),
+      );
       try {
         await socket.#upgrade(path);
         socket.#state = WebSocket.OPEN;
@@ -407,8 +443,10 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
     if (!this.isOpen) throw new DOMException("The IPC WebSocket is not open.", "InvalidStateError");
     const binary = typeof data === "string";
     const payload = binary ? new TextEncoder().encode(data) : data;
-    if (payload.length > MAX_MESSAGE_BYTES) {
-      throw new RangeError(`The IPC WebSocket message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
+    if (payload.length > this.#maxMessageBytes) {
+      throw new RangeError(
+        `The IPC WebSocket message exceeds ${this.#maxMessageBytes} bytes.`,
+      );
     }
     void this.#enqueueWrite(encodeClientWebSocketFrame(binary ? 0x1 : 0x2, payload));
   }
@@ -482,13 +520,15 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
           0,
           false,
         );
-        if (extended > BigInt(MAX_MESSAGE_BYTES)) {
-          throw new RangeError(`The IPC WebSocket message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
+        if (extended > BigInt(this.#maxMessageBytes)) {
+          throw new RangeError(
+            `The IPC WebSocket message exceeds ${this.#maxMessageBytes} bytes.`,
+          );
         }
         length = Number(extended);
       }
-      if (length > MAX_MESSAGE_BYTES) {
-        throw new RangeError(`The IPC WebSocket frame exceeds ${MAX_MESSAGE_BYTES} bytes.`);
+      if (length > this.#maxMessageBytes) {
+        throw new RangeError(`The IPC WebSocket frame exceeds ${this.#maxMessageBytes} bytes.`);
       }
       const payload = await this.#reader.readExact(length);
       if (opcode >= 0x8) {
@@ -516,8 +556,8 @@ class WindowsNamedPipeWebSocket implements IpcWebSocket {
       }
       fragments.push(payload);
       fragmentBytes += payload.length;
-      if (fragmentBytes > MAX_MESSAGE_BYTES) {
-        throw new RangeError(`The IPC WebSocket message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
+      if (fragmentBytes > this.#maxMessageBytes) {
+        throw new RangeError(`The IPC WebSocket message exceeds ${this.#maxMessageBytes} bytes.`);
       }
       if (!final) continue;
       const message = new Uint8Array(fragmentBytes);
@@ -726,4 +766,17 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   } finally {
     clearTimeout(timer);
   }
+}
+
+function validateSendPayload(data: string | Uint8Array, maxMessageBytes: number): void {
+  const length = typeof data === "string"
+    ? new TextEncoder().encode(data).byteLength
+    : data.byteLength;
+  if (length > maxMessageBytes) {
+    throw new RangeError(`The IPC WebSocket message exceeds ${maxMessageBytes} bytes.`);
+  }
+}
+
+function maxMessageBytesOf(options: ConnectIpcWebSocketOptions | undefined): number {
+  return options?.maxMessageBytes ?? MAX_MESSAGE_BYTES;
 }

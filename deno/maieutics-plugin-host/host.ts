@@ -15,6 +15,10 @@
 
 import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
+import {
+  BOOTSTRAP_WRAPPER_URL,
+  spawnBootstrapWorker,
+} from "../maieutics-runtime/worker_factory.ts";
 
 /** Positive permission grant: `true` allows all, `false` denies, a list allows those entries. */
 export type PermissionGrant = boolean | readonly string[];
@@ -116,9 +120,13 @@ function buildWorkerPermissions(
     // The worker loads the SDK through its entry (and the subpaths it pulls in
     // — runtime, interop, reactive, codecs), so grant the whole SDK directory,
     // not just the entry file. Same for the worker entry module's directory
-    // (it lives beside the host implementation).
+    // (it lives beside the host implementation) and for the shared runtime
+    // directory: a nested worker created through the shared bootstrap enters
+    // the wrapper module (worker_bootstrap.ts) and its imports
+    // (bootstrap_contract.ts, worker_patch.ts) from that directory.
     entries.add(dirnameOf(filePathOf(options.sdkUrl)));
     entries.add(dirnameOf(filePathOf(options.workerEntryUrl)));
+    entries.add(dirnameOf(filePathOf(BOOTSTRAP_WRAPPER_URL)));
     // No DENO_DIR read grant is needed: Deno resolves jsr:/npm: modules
     // internally without a filesystem read permission (the cache is not a
     // user-facing read target), and reading DENO_DIR/HOME here would require
@@ -406,8 +414,11 @@ export class PluginHost {
     handle.state = State.Starting;
     handle.failure = undefined;
     try {
-      const worker = new Worker(this.#options.workerEntryUrl, {
-        type: "module",
+      // The plugin worker is a ROOT worker: the factory spawns it directly at
+      // worker_entry.ts (which installs the shared bootstrap before the SDK),
+      // preserving the caller's deno permission option exactly.
+      const worker = spawnBootstrapWorker(this.#options.workerEntryUrl, {
+        profile: "plugin",
         deno: {
           permissions: buildWorkerPermissions(handle.plugin, this.#options),
         },

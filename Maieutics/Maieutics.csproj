@@ -62,6 +62,10 @@
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\worker_entry.ts" LogicalName="Maieutics.Deno.PluginHostWorker.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\repl_manager.ts" LogicalName="Maieutics.Deno.PluginHostReplManager.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host_repl_protocol.ts" LogicalName="Maieutics.Deno.PluginHostReplProtocol.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-runtime\bootstrap_contract.ts" LogicalName="Maieutics.Deno.Runtime.BootstrapContract.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-runtime\worker_bootstrap.ts" LogicalName="Maieutics.Deno.Runtime.WorkerBootstrap.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-runtime\worker_factory.ts" LogicalName="Maieutics.Deno.Runtime.WorkerFactory.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-runtime\worker_patch.ts" LogicalName="Maieutics.Deno.Runtime.WorkerPatch.ts" />
         <EmbeddedResource Include="..\deno\shared\protocol.ts" LogicalName="Maieutics.Deno.Shared.Protocol.ts" />
         <EmbeddedResource Include="..\deno\shared\bus.ts" LogicalName="Maieutics.Deno.Shared.Bus.ts" />
         <EmbeddedResource Include="..\deno\shared\ipc_websocket.ts" LogicalName="Maieutics.Deno.Shared.IpcWebSocket.ts" />

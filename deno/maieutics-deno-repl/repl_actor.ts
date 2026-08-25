@@ -1,5 +1,6 @@
 import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
 import { failInputMailbox, mailboxFor } from "./input_mailbox.ts";
+import { spawnBootstrapWorker } from "../maieutics-runtime/worker_factory.ts";
 import type * as ReplWorker from "./repl_worker.ts";
 import type { ReplMediaBundle } from "./protocol.ts";
 
@@ -87,7 +88,15 @@ export class ReplActor {
   }
 
   static async create(callbacks: ReplActorCallbacks): Promise<ReplActor> {
-    const worker = new Worker(new URL("./repl_worker.ts", import.meta.url), { type: "module" });
+    // The REPL user worker is a ROOT worker entered through the shared factory:
+    // the factory spawns repl_worker.ts directly (which installs the shared
+    // bootstrap before the REPL profile), preserving the caller's Worker
+    // semantics without a query wrapper (a wrapper would force the worker to
+    // re-resolve the SDK's bare-specifier graph and require import access).
+    const worker = spawnBootstrapWorker(
+      new URL("./repl_worker.ts", import.meta.url),
+      { profile: "repl" },
+    );
     const actor = await spawn<typeof ReplWorker.rpc>(worker, {
       signal: AbortSignal.timeout(10_000),
       onDeath: callbacks.onDeath,

@@ -7,6 +7,7 @@ import { assertEquals } from "@std/assert";
 import { spawn } from "@ghostflyby/worker-actor";
 import { INPUT_MAILBOX_LINK_LABEL } from "./repl_actor.ts";
 import { InputMailboxKind } from "./input_mailbox.ts";
+import { spawnBootstrapWorker } from "../maieutics-runtime/worker_factory.ts";
 import type * as ReplWorker from "./repl_worker.ts";
 
 interface Request {
@@ -24,8 +25,8 @@ async function spawnWorkerWithMailbox(): Promise<{
   interrupt(index: number): void;
   waitForRequests(count: number): Promise<void>;
 }> {
-  const worker = new Worker(new URL("./repl_worker.ts", import.meta.url), {
-    type: "module",
+  const worker = spawnBootstrapWorker(new URL("./repl_worker.ts", import.meta.url), {
+    profile: "repl",
     deno: { permissions: { env: true, read: true } },
   });
   const actor = await spawn<typeof ReplWorker.rpc>(worker, {

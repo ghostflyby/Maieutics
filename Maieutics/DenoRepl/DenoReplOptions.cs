@@ -32,6 +32,22 @@ internal sealed class DenoReplOptions
     /// <summary>Maximum UTF-8 bytes of a digest preview (rune-safe truncation).</summary>
     public int MaxDisplayDigestPreviewBytes { get; set; } = 512;
 
+    /// <summary>Maximum display data bytes per <see cref="DisplayRateLimitWindow"/>, aligned with
+    /// jupyter_server's <c>iopub_data_rate_limit</c> default (1,000,000 bytes per 3 s window).
+    /// Displays that exceed the budget are dropped from the notebook and the model digest; the
+    /// kernel keeps running (<c>limit_rate</c> behavior).</summary>
+    public int MaxDisplayDataRate { get; set; } = 1_000_000;
+
+    /// <summary>Maximum display/updateDisplay messages per <see cref="DisplayRateLimitWindow"/>,
+    /// aligned with jupyter_server's <c>iopub_msg_rate_limit</c> default (1000 messages per 3 s
+    /// window). Excess displays are dropped from the notebook and the model digest; the kernel
+    /// keeps running (<c>limit_rate</c> behavior).</summary>
+    public int MaxDisplayMessageRate { get; set; } = 1000;
+
+    /// <summary>Sliding window for the display rate limits, aligned with jupyter_server's
+    /// <c>rate_limit_window</c> default of 3 seconds.</summary>
+    public TimeSpan DisplayRateLimitWindow { get; set; } = TimeSpan.FromSeconds(3);
+
     public bool AutoInstallModuleGraph { get; set; } = true;
 
     /// <summary>Derives REPL processes through the plugin host (<c>host.repl.derive</c>, ADR
@@ -53,6 +69,9 @@ internal sealed class DenoReplOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxPresentationBundleBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelDisplayDigestBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxDisplayDigestPreviewBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxDisplayDataRate, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxDisplayMessageRate, 1);
+        ValidatePositive(DisplayRateLimitWindow, nameof(DisplayRateLimitWindow));
     }
 
     private static void ValidatePositive(TimeSpan value, string name)

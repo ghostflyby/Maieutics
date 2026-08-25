@@ -16,6 +16,11 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly ILogger<DenoReplSession> logger;
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
+    /// <summary>Session-lifetime display rate limiter, shared by every execution so the sliding
+    /// budget accumulates across turns (aligned with jupyter_server's global iopub rate limit).
+    /// A restart intentionally keeps the window: it is not a new frontend, and the window prunes
+    /// stale samples within <see cref="DenoReplOptions.DisplayRateLimitWindow"/>.</summary>
+    private readonly ReplOutputRateLimiter rateLimiter;
     private readonly Lock stateGate = new();
     private int disposeState;
     private int generation = 1;
@@ -42,6 +47,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         this.factory = factory;
         this.presentationRouter = presentationRouter;
         this.logger = logger;
+        rateLimiter = new ReplOutputRateLimiter(options);
     }
 
     internal AgentSessionId OwnerSessionId { get; }
@@ -169,7 +175,8 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 options,
                 sink,
                 displayIds,
-                execution.ExecutionId);
+                execution.ExecutionId,
+                rateLimiter);
             var completion = collector.ConsumeAsync(activeRuntime.Connection, execution, outputEvents, wait.Token);
             try
             {

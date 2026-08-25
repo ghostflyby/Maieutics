@@ -43,8 +43,9 @@ internal sealed record DenoReplPresentationResult(
     IReadOnlyList<DenoReplDisplayDigest> Digests)
 {
     /// <summary>The total number of presentation items skipped, kept as the sum of the per-category
-    /// counters. <see cref="RateSkippedCount" /> is a placeholder reserved for a future per-display
-    /// rate limit and is always zero on this execution path.</summary>
+    /// counters: <see cref="RateSkippedCount"/> (display rate-limit drops), <see cref="BundleSkippedCount"/>
+    /// (presentation bundle budget), and <see cref="DisplaySkippedCount"/> (every other presentation
+    /// skip).</summary>
     public int SkippedCount => RateSkippedCount + BundleSkippedCount + DisplaySkippedCount;
 }
 

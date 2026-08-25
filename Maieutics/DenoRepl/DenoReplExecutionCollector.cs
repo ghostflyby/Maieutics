@@ -22,6 +22,7 @@ internal sealed class DenoReplExecutionCollector
     private readonly DenoReplOptions options;
     private readonly List<DenoReplOutputItem> outputs = [];
     private readonly IDenoReplPresentationSink presentation;
+    private readonly ReplOutputRateLimiter rateLimiter;
     private readonly string sessionId;
     private int bundleSkippedCount;
     private int clearCount;
@@ -34,6 +35,7 @@ internal sealed class DenoReplExecutionCollector
     private int presentationEvents;
     private int presentationTextBytes;
     private bool presentationTextTruncated;
+    private int rateSkippedCount;
     private bool truncated;
     private int updateCount;
 
@@ -43,7 +45,8 @@ internal sealed class DenoReplExecutionCollector
         DenoReplOptions options,
         IDenoReplPresentationSink presentation,
         Dictionary<string, JupyterDisplayId> displayIds,
-        string executionId)
+        string executionId,
+        ReplOutputRateLimiter? rateLimiter = null)
     {
         this.sessionId = sessionId;
         this.generation = generation;
@@ -51,6 +54,7 @@ internal sealed class DenoReplExecutionCollector
         this.presentation = presentation;
         this.displayIds = displayIds;
         this.executionId = executionId;
+        this.rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
     }
 
     internal async Task<DenoReplExecutionResult> ConsumeAsync(
@@ -180,6 +184,17 @@ internal sealed class DenoReplExecutionCollector
                 await PresentStderrAsync(stderr.Text, cancellationToken).ConfigureAwait(false);
                 break;
             case ReplOutputDisplayFrame display:
+                if (!rateLimiter.TryReserve(display))
+                {
+                    // The display exceeded the sliding display rate budget (jupyter_server iopub
+                    // rate-limit semantics): it is dropped from both the notebook presentation and
+                    // the model digest. It is still counted so the model sees an actionable
+                    // signal that its display was rate-limited and can retry with a smaller
+                    // payload. Dropping the event does not disturb stream order: the output
+                    // stream is still consumed in order and later frames present normally.
+                    rateSkippedCount++;
+                    return;
+                }
                 await PresentDisplayAsync(display, cancellationToken).ConfigureAwait(false);
                 break;
             case ReplOutputClearOutputFrame clear:
@@ -213,7 +228,7 @@ internal sealed class DenoReplExecutionCollector
                 displayCount,
                 updateCount,
                 clearCount,
-                RateSkippedCount: 0,
+                RateSkippedCount: rateSkippedCount,
                 bundleSkippedCount,
                 displaySkippedCount,
                 digestTruncated,
@@ -506,8 +521,8 @@ internal sealed class DenoReplExecutionCollector
 
         // The presentation event cap drops arbitrary presentation events (displays, clears,
         // stderr writes). It is counted under the display skip counter: the per-category breakdown
-        // distinguishes bundle-size skips (BundleSkippedCount) from every other presentation skip,
-        // with RateSkippedCount reserved for a future per-display rate limit.
+        // distinguishes bundle-size skips (BundleSkippedCount) from every other presentation skip
+        // (DisplaySkippedCount); display rate-limit drops are counted separately (RateSkippedCount).
         displaySkippedCount++;
         return false;
     }

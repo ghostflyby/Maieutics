@@ -678,6 +678,53 @@ public sealed class DenoReplExecutionCollectorTests
         sink.Stderr.Should().BeEmpty();
     }
 
+    [Fact(Timeout = 15_000)]
+    public async Task RateLimitedDisplaysAreSkippedWithoutDisturbingLaterPresentation()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var limiter = new ReplOutputRateLimiter(
+            new DenoReplOptions { MaxDisplayDataRate = 100 },
+            timestampProvider: () => 1,
+            frequency: 1);
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1",
+            limiter);
+        var data = JsonSerializer.SerializeToElement(new Dictionary<string, string>
+        {
+            ["text/plain"] = new string('x', 64)
+        });
+        output.Publish(OutputFrames.Display(1, "execution-1", null, data, isUpdate: false));
+        output.Publish(OutputFrames.Display(2, "execution-1", null, data, isUpdate: false));
+        output.Publish(OutputFrames.Stdout(3, "execution-1", "still ordered"));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        // The first display fits the budget; the second is rate-limited: it is not presented and
+        // has no digest entry. The skip counts on the model result, and later frames (stdout)
+        // still present in order.
+        result.Presentation.RateSkippedCount.Should().Be(1);
+        result.Presentation.DisplayCount.Should().Be(1);
+        result.Presentation.SkippedCount.Should().Be(1);
+        result.Presentation.Digests.Should().ContainSingle();
+        result.Outputs.Should().ContainSingle().Which.Text.Should().Be("still ordered");
+        sink.Displays.Should().ContainSingle();
+        sink.BinaryDisplays.Should().ContainSingle();
+    }
+
     private static IReadOnlyDictionary<string, JsonElement> ToDictionary(JsonElement element)
     {
         return element.EnumerateObject().ToDictionary(

@@ -12,7 +12,6 @@
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0",
     "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
   },
-  "minimumDependencyAge": 0,
   "tasks": {
     "check": "deno check entry.ts mod.ts mod_test.ts actor_ref.ts collection_stream.ts runtime.ts interop.ts reactive.ts lint-plugin.ts lint-plugin_test.ts",
     "test": "deno test --allow-read --allow-write --allow-env --allow-net --unstable-worker-options"

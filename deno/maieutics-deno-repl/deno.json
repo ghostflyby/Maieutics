@@ -5,7 +5,6 @@
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0"
   },
-  "minimumDependencyAge": 0,
   "exports": {
     ".": "./main.ts",
     "./protocol": "./protocol.ts"

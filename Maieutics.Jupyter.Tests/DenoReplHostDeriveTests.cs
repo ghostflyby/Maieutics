@@ -92,6 +92,37 @@ public sealed class DenoReplHostDeriveTests
     }
 
     [Fact]
+    public void BuildReplEnvironmentWindowsBranchAddsPipeAndSystemRoot()
+    {
+        // The host-derived child on Windows bootstraps its process-verified credential through the
+        // named pipe and needs SystemRoot for the kernel32 FFI target; the kernel env carries both
+        // (the host appends only the broker path and never invents a pipe name). On unix the same
+        // keys must be absent.
+        var environment = DenoReplEnvironment.Build(
+            "unix:/tmp/mc.sock",
+            "env-session",
+            3,
+            "file:///tmp/mod.ts",
+            windowsPipeName: OperatingSystem.IsWindows() ? "mc-test-pipe" : null);
+
+        if (OperatingSystem.IsWindows())
+        {
+            environment.Should().ContainKey(DenoReplEnvironment.PipeName);
+            environment[DenoReplEnvironment.PipeName].Should().Be("mc-test-pipe");
+            environment.Should().ContainKey("SystemRoot");
+        }
+        else
+        {
+            environment.Should().NotContainKey(DenoReplEnvironment.PipeName);
+            environment.Should().NotContainKey("SystemRoot");
+        }
+
+        // Neither derivation path puts the broker path in the kernel env: the host forwards its own
+        // MAIEUTICS_PERMISSION_BROKER as DENO_PERMISSION_BROKER_PATH for the REPL child it derives.
+        environment.Should().NotContainKey(DenoReplEnvironment.BrokerAddress);
+    }
+
+    [Fact]
     public void PolicyRendersToAHostReplPermissionsStaticShell()
     {
         var policy = PermissionLayerStore.Build(

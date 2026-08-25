@@ -137,6 +137,13 @@ internal sealed class PluginHostManager(
 
     private readonly List<PluginRegistration> registrations = [];
     private readonly List<PluginState> states = [];
+
+    /// <summary>Pids of the REPL processes the attached plugin host derived, keyed by pid to the
+    /// session id the host reported. Used to release the pid-scoped registrations (session identity
+    /// + broker policy) when the host disconnects without reporting <c>host.repl.exited</c> (a
+    /// crashed or killed host never drains its children's registrations; ADR 0020 follow-up).</summary>
+    private readonly ConcurrentDictionary<int, string> hostReplSessions = new();
+
     private FileSystemWatcher? pluginWatcher;
     private CancellationTokenSource? watcherDebounce;
 
@@ -761,6 +768,10 @@ internal sealed class PluginHostManager(
             }
 
             FailPending("The plugin host connection closed.");
+            // A crashed or killed host leaves its derived REPL children registered; release their
+            // session identities and broker policies here (the host's own exited reports never
+            // arrive). Idempotent with the exited-report path.
+            ReleaseHostReplRegistrations();
         }
     }
 
@@ -1012,6 +1023,7 @@ internal sealed class PluginHostManager(
 
         sessionRegistry.Register(payload.Pid, payload.SessionId);
         broker?.RegisterPolicy(payload.Pid, policy);
+        hostReplSessions[payload.Pid] = payload.SessionId;
         logger.LogInformation(
             "Plugin host reported a REPL process for session '{SessionId}' generation {Generation} with pid {Pid}.",
             payload.SessionId,
@@ -1068,6 +1080,7 @@ internal sealed class PluginHostManager(
             return;
         }
 
+        hostReplSessions.TryRemove(payload.Pid, out _);
         sessionRegistry.Unregister(payload.Pid);
         broker?.UnregisterProcess(payload.Pid);
         logger.LogDebug(
@@ -1077,6 +1090,29 @@ internal sealed class PluginHostManager(
             payload.Generation,
             payload.Pid,
             payload.Failure is { } failure ? $" ({failure})" : string.Empty);
+    }
+
+    /// <summary>Releases the registrations of every host-derived REPL still tracked when the host
+    /// connection ends without a matching <c>host.repl.exited</c> report — a crashed, killed, or
+    /// silently disconnected host never drains its children, so the pids would otherwise leak their
+    /// session identity and broker policy forever. Complements the normal exited path: pids the
+    /// host already reported as exited are simply absent here, and a later
+    /// <see cref="UnregisterHostRepl"/> for a pid already released is idempotent. The session-keyed
+    /// policy cache is deliberately untouched: it is kernel-owned and cleared on session close, so a
+    /// reconnecting host re-registers the pid with the same cached policy.</summary>
+    private void ReleaseHostReplRegistrations()
+    {
+        foreach (var pid in hostReplSessions.Keys)
+        {
+            if (!hostReplSessions.TryRemove(pid, out var sessionId)) continue;
+            sessionRegistry.Unregister(pid);
+            broker?.UnregisterProcess(pid);
+            logger.LogWarning(
+                "Released the host-derived REPL registration for session '{SessionId}' (pid {Pid}) " +
+                "after the plugin host disconnected without reporting its exit.",
+                sessionId,
+                pid);
+        }
     }
 
     private void CompletePending(ReplEnvelope envelope)

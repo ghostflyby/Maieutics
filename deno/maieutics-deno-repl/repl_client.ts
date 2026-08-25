@@ -208,6 +208,17 @@ export class ReplClient {
       }
     };
     socket.onError = (error) => this.#fail(error);
+    // The first frame is a JSON hello declaring the session and generation so the
+    // host can attribute the connection to the exact (session, generation) slot —
+    // mirroring the comm endpoint's hello (AGENTS.md invariant 27: endpoints are
+    // deliberate API surface, and a restart must never leak a previous generation's
+    // output connection into the new one).
+    socket.send(
+      JSON.stringify({
+        sessionId: this.#options.sessionId,
+        generation: this.#options.generation,
+      }),
+    );
   }
 
   async #openComm(): Promise<void> {

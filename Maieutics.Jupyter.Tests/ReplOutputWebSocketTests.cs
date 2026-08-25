@@ -202,6 +202,7 @@ public sealed class ReplOutputWebSocketTests
         await using (host)
         {
             var socket = new TestBinarySocket();
+            socket.QueueText(Hello("session-1", 1));
             var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
             var attached = host.AttachAsync(socket, 41, context, deadline.Token);
             var connection = await connectionWait;
@@ -230,6 +231,7 @@ public sealed class ReplOutputWebSocketTests
         await using (host)
         {
             var socket = new TestBinarySocket();
+            socket.QueueText(Hello("session-1", 1));
             var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
             var attached = host.AttachAsync(socket, 41, context, deadline.Token);
             var connection = await connectionWait;
@@ -259,6 +261,7 @@ public sealed class ReplOutputWebSocketTests
         await using (host)
         {
             var socket = new TestBinarySocket();
+            socket.QueueText(Hello("session-1", 1));
             var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
             var attached = host.AttachAsync(socket, 41, context, deadline.Token);
 
@@ -284,6 +287,7 @@ public sealed class ReplOutputWebSocketTests
             new ReplControlSessionRegistry(),
             new ReplControlCredentialRegistry());
         var socket = new TestBinarySocket();
+        socket.QueueText(Hello("unknown-session", 1));
         var attached = host.AttachAsync(socket, 0, new DefaultHttpContext(), deadline.Token);
 
         await socket.Closed.WaitAsync(deadline.Token);
@@ -300,6 +304,13 @@ public sealed class ReplOutputWebSocketTests
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, sessionId);
         return (new ReplOutputWebSocketHost(registry, new ReplControlCredentialRegistry()), new DefaultHttpContext());
+    }
+
+    /// <summary>The JSON hello frame the TS client sends first on the output endpoint, declaring
+    /// the session and generation so the host keys the slot by (session, generation).</summary>
+    private static string Hello(string sessionId, int generation)
+    {
+        return $$"""{"sessionId":"{{sessionId}}","generation":{{generation}}}""";
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
@@ -427,12 +438,17 @@ public sealed class ReplOutputWebSocketTests
 
         internal void QueueBinary(byte[] bytes)
         {
-            inbound.Writer.TryWrite(new InboundFrame(bytes, false));
+            inbound.Writer.TryWrite(new InboundFrame(bytes, false, false));
+        }
+
+        internal void QueueText(string text)
+        {
+            inbound.Writer.TryWrite(new InboundFrame(Encoding.UTF8.GetBytes(text), false, true));
         }
 
         internal void QueueClose()
         {
-            inbound.Writer.TryWrite(new InboundFrame([], true));
+            inbound.Writer.TryWrite(new InboundFrame([], true, false));
         }
 
         public override void Abort()
@@ -481,7 +497,10 @@ public sealed class ReplOutputWebSocketTests
             }
 
             frame.Bytes.AsMemory().CopyTo(buffer.AsMemory());
-            return new WebSocketReceiveResult(frame.Bytes.Length, WebSocketMessageType.Binary, true);
+            return new WebSocketReceiveResult(
+                frame.Bytes.Length,
+                frame.IsText ? WebSocketMessageType.Text : WebSocketMessageType.Binary,
+                true);
         }
 
         public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(
@@ -496,7 +515,10 @@ public sealed class ReplOutputWebSocketTests
             }
 
             frame.Bytes.AsMemory().CopyTo(buffer);
-            return new ValueWebSocketReceiveResult(frame.Bytes.Length, WebSocketMessageType.Binary, true);
+            return new ValueWebSocketReceiveResult(
+                frame.Bytes.Length,
+                frame.IsText ? WebSocketMessageType.Text : WebSocketMessageType.Binary,
+                true);
         }
 
         public override Task SendAsync(
@@ -517,6 +539,6 @@ public sealed class ReplOutputWebSocketTests
             throw new InvalidOperationException("The REPL output endpoint is half-duplex; the host never sends.");
         }
 
-        private sealed record InboundFrame(byte[] Bytes, bool IsClose);
+        private sealed record InboundFrame(byte[] Bytes, bool IsClose, bool IsText);
     }
 }

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Text.Json;
 using Maieutics.Control;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
@@ -29,7 +30,7 @@ internal sealed class ReplOutputWebSocketHost(
     private readonly CancellationTokenSource lifetime = new();
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
-    private readonly ConcurrentDictionary<string, ConnectionSlot> slots = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<ReplOutputConnectionKey, ConnectionSlot> slots = new();
     private int disposeState;
     private int shutdownState;
 
@@ -61,7 +62,7 @@ internal sealed class ReplOutputWebSocketHost(
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentOutOfRangeException.ThrowIfNegative(generation);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
-        var slot = slots.GetOrAdd(sessionId, static _ => new ConnectionSlot());
+        var slot = slots.GetOrAdd(new ReplOutputConnectionKey(sessionId, generation), static _ => new ConnectionSlot());
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         return await slot.Connection.Task.WaitAsync(wait.Token).ConfigureAwait(false);
     }
@@ -88,13 +89,20 @@ internal sealed class ReplOutputWebSocketHost(
             }
         }
 
-        if (!TryResolveSessionId(context, peerProcessId, out var sessionId))
+        // The first frame is a JSON hello declaring the session id and generation (mirrors the
+        // comm endpoint). Resolve both before accepting the connection so the slot is keyed by
+        // the exact (session, generation) pair — a restart must never route a new generation's
+        // frames into a stale connection from the previous generation.
+        var (sessionId, generation) = await ReadHelloAsync(socket, context, peerProcessId, cancellationToken)
+            .ConfigureAwait(false);
+        if (sessionId is null)
         {
             await CloseRejectedAsync(socket, "REPL output identity is not verified").ConfigureAwait(false);
             return;
         }
 
-        var slot = slots.GetOrAdd(sessionId, static _ => new ConnectionSlot());
+        var key = new ReplOutputConnectionKey(sessionId, generation);
+        var slot = slots.GetOrAdd(key, static _ => new ConnectionSlot());
         if (!slot.TryReserve())
         {
             await CloseRejectedAsync(socket, "REPL output connection already attached").ConfigureAwait(false);
@@ -121,7 +129,7 @@ internal sealed class ReplOutputWebSocketHost(
         finally
         {
             slot.Release(connection);
-            slots.TryRemove(KeyValuePair.Create(sessionId, slot));
+            slots.TryRemove(KeyValuePair.Create(key, slot));
             if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
         }
     }
@@ -182,43 +190,67 @@ internal sealed class ReplOutputWebSocketHost(
     }
 
     /// <summary>
-    ///     Resolves the session behind the connection. On Unix the peer process identity is
-    ///     authoritative; on Windows a bearer credential header is required because peer process
-    ///     identity is not available over loopback TCP. When both are present they must agree.
+    ///     Reads the connection's first frame — a JSON hello declaring the session id and
+    ///     generation (the process-to-host side mirrors the comm endpoint's hello). The declared
+    ///     session must be consistent with the peer process identity (Unix) or the bearer
+    ///     credential header (Windows): when both are present they must agree, and a credential is
+    ///     required on Windows where peer process identity is unavailable over loopback TCP.
     /// </summary>
-    private bool TryResolveSessionId(HttpContext context, int peerProcessId, out string sessionId)
+    private async Task<(string? SessionId, int Generation)> ReadHelloAsync(
+        WebSocket socket,
+        HttpContext context,
+        int peerProcessId,
+        CancellationToken cancellationToken)
     {
-        var byProcess = peerProcessId > 0 && sessionRegistry.TryGetSession(peerProcessId, out var byProcessValue)
-            ? byProcessValue
-            : string.Empty;
-        var hasProcess = byProcess.Length > 0;
-        var hasCredential = TryGetCredentialSessionId(context, out var byCredential);
-        if (hasProcess && hasCredential)
+        var text = await Maieutics.Control.ReplControlMessageReader.ReadAsync(socket, cancellationToken)
+            .ConfigureAwait(false);
+        if (text is null) return (null, 0);
+
+        try
         {
-            if (string.Equals(byProcess, byCredential, StringComparison.Ordinal))
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return (null, 0);
+            if (!root.TryGetProperty("sessionId", out var session) ||
+                session.GetString() is not { } sessionId || sessionId.IsWhiteSpace())
+                return (null, 0);
+            if (!root.TryGetProperty("generation", out var generationElement) ||
+                !generationElement.TryGetInt32(out var generation) || generation < 0)
+                return (null, 0);
+
+            string byProcess = string.Empty;
+            if (peerProcessId > 0 && sessionRegistry.TryGetSession(peerProcessId, out var byProcessValue))
+                byProcess = byProcessValue;
+            var hasProcess = byProcess.Length > 0;
+            var hasCredential = TryGetCredentialSessionId(context, out var byCredential);
+            if (hasProcess && hasCredential)
             {
-                sessionId = byProcess;
-                return true;
+                return string.Equals(byProcess, byCredential, StringComparison.Ordinal) &&
+                       string.Equals(byProcess, sessionId, StringComparison.Ordinal)
+                    ? (sessionId, generation)
+                    : (null, 0);
             }
 
-            sessionId = string.Empty;
-            return false;
-        }
+            if (hasProcess)
+            {
+                return string.Equals(byProcess, sessionId, StringComparison.Ordinal)
+                    ? (sessionId, generation)
+                    : (null, 0);
+            }
 
-        if (hasProcess)
+            if (hasCredential)
+            {
+                return string.Equals(byCredential, sessionId, StringComparison.Ordinal)
+                    ? (sessionId, generation)
+                    : (null, 0);
+            }
+
+            return (null, 0);
+        }
+        catch (JsonException)
         {
-            sessionId = byProcess;
-            return true;
+            return (null, 0);
         }
-
-        if (hasCredential)
-        {
-            sessionId = byCredential;
-            return true;
-        }
-
-        sessionId = string.Empty;
-        return false;
     }
 
     private bool TryGetCredentialSessionId(HttpContext context, out string sessionId)
@@ -243,6 +275,8 @@ internal sealed class ReplOutputWebSocketHost(
                 description,
                 CancellationToken.None).ConfigureAwait(false);
     }
+
+    private readonly record struct ReplOutputConnectionKey(string SessionId, int Generation);
 
     private sealed class ConnectionSlot
     {

@@ -1,5 +1,7 @@
 import { createReplKernel, type ReplExecution, type ReplKernel } from "@ghostflyby/aves/repl";
 import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
+import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
 import {
   INPUT_MAILBOX_LINK_LABEL,
@@ -45,6 +47,7 @@ export const rpc = {
     if (kernel !== undefined) {
       throw new Error("The Deno REPL actor is already initialized.");
     }
+    installSharedBootstrap();
     await installMaieuticsNamespace();
     installHostEnvironment();
     kernel = await createReplKernel();
@@ -136,6 +139,20 @@ function requireKernel(): ReplKernel {
     throw new Error("The Deno REPL actor is not initialized.");
   }
   return kernel;
+}
+
+/**
+ * Installs the shared Maieutics Worker bootstrap (recursive Worker patch +
+ * versioned marker) BEFORE the REPL profile globals. The REPL worker is a root
+ * worker entered directly by the factory (its SDK graph is statically
+ * analyzable), so this module installs the shared bootstrap itself. The REPL
+ * profile must never leak into nested workers: the patch routes nested module
+ * workers through the shared wrapper, which imports only the profile-neutral
+ * target and never the REPL globals.
+ */
+function installSharedBootstrap(): void {
+  installWorkerPatch("repl");
+  installBootstrapMarker({ version: 1, profile: "repl" });
 }
 
 async function installMaieuticsNamespace(): Promise<void> {

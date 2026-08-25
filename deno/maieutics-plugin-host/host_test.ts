@@ -44,7 +44,7 @@ function makeHost(plugin: PluginConfig): PluginHost {
   });
 }
 
-Deno.test("worker entry imports only the plugin sdk", async () => {
+Deno.test("worker entry imports only the plugin sdk and the shared runtime bootstrap", async () => {
   const source = await Deno.readTextFile(
     new URL("./worker_entry.ts", import.meta.url),
   );
@@ -52,6 +52,7 @@ Deno.test("worker entry imports only the plugin sdk", async () => {
   for (const specifier of imports) {
     assert(
       specifier.startsWith("../maieutics-plugin-sdk/") ||
+        specifier.startsWith("../maieutics-runtime/") ||
         specifier.startsWith("./"),
       `unexpected import '${specifier}' in the worker entry`,
     );
@@ -137,6 +138,56 @@ Deno.test("a plugin worker cannot import host or shared internals", async () => 
         `expected a permission failure, got: ${attempt}`,
       );
     }
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("shared bootstrap runs before plugin entry loading and routes nested workers", async () => {
+  const dir = Deno.makeTempDirSync();
+  // The nested worker lives in the plugin directory (inside the plugin's read
+  // grant) and reports the versioned bootstrap marker from its own realm. The
+  // marker is installed only when the nested worker entered through the shared
+  // wrapper, which itself proves the patch was installed before the plugin
+  // entry's top-level code ran.
+  Deno.writeTextFileSync(
+    `${dir}/nested.ts`,
+    `
+    const marker = (globalThis as unknown as Record<PropertyKey, unknown>)[
+      Symbol.for("maieutics/bootstrap/v1")
+    ];
+    (self as unknown as { postMessage(value: unknown): void }).postMessage({
+      phase: "nested-plugin-ready",
+      profile: marker !== null && typeof marker === "object"
+        ? (marker as { profile?: unknown }).profile
+        : null,
+    });
+  `,
+  );
+  const plugin = createPlugin(
+    dir,
+    pluginSource(`
+    const nested = new Worker(new URL("./nested.ts", import.meta.url), { type: "module" });
+    const nestedReady = new Promise((resolve) => {
+      nested.onmessage = (event) => { resolve(event.data); nested.terminate(); };
+      nested.onerror = (event) => {
+        resolve({ phase: "nested-error", message: event.message });
+        nested.terminate();
+      };
+    });
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => ({ action: "continue" as const, nested: await nestedReady }),
+    });
+  `),
+  );
+  const host = makeHost(plugin);
+  try {
+    await host.startAll();
+    const value = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      nested?: { phase?: string; profile?: string | null };
+    };
+    assertEquals(value.nested?.phase, "nested-plugin-ready");
+    assertEquals(value.nested?.profile, "plugin");
   } finally {
     host.dispose();
   }

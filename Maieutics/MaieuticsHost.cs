@@ -150,6 +150,7 @@ public static class MaieuticsHost
         });
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
         builder.Services.AddSingleton<ReplEvalWebSocketHost>();
+        builder.Services.AddSingleton<ReplOutputWebSocketHost>();
         builder.Services.AddSingleton<CommFrontendSink>();
         if (OperatingSystem.IsWindows())
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
@@ -235,9 +236,11 @@ public static class MaieuticsHost
         var application = builder.Build();
         var controlHost = application.Services.GetRequiredService<ReplControlHost>();
         var evalHost = application.Services.GetRequiredService<ReplEvalWebSocketHost>();
-        // Terminate eval connections before Kestrel begins its shutdown window so upgraded WebSocket
-        // requests finish immediately instead of blocking the shutdown timeout.
+        var outputHost = application.Services.GetRequiredService<ReplOutputWebSocketHost>();
+        // Terminate eval and output connections before Kestrel begins its shutdown window so
+        // upgraded WebSocket requests finish immediately instead of blocking the shutdown timeout.
         application.Lifetime.ApplicationStopping.Register(evalHost.BeginShutdown);
+        application.Lifetime.ApplicationStopping.Register(outputHost.BeginShutdown);
         if (OperatingSystem.IsWindows())
             application.Lifetime.ApplicationStarted.Register(() =>
             {
@@ -249,6 +252,7 @@ public static class MaieuticsHost
             });
 
         application.Services.GetRequiredService<ReplEvalWebSocketHost>().MapEndpoint(application);
+        application.Services.GetRequiredService<ReplOutputWebSocketHost>().MapEndpoint(application);
         controlHost.MapEndpoints(application);
         return application;
     }

@@ -717,6 +717,12 @@ public sealed class DenoReplHostDeriveTests
         });
         var application = builder.Build();
         evalHost.MapEndpoint(application);
+        // The REPL child now opens the dedicated binary output endpoint as part of its startup;
+        // the test kernel must serve it or the child fails to start.
+        new ReplOutputWebSocketHost(
+                new ReplControlSessionRegistry(),
+                new ReplControlCredentialRegistry())
+            .MapEndpoint(application);
         controlHost.MapEndpoints(application);
         await application.StartAsync(cancellationToken);
         return application;

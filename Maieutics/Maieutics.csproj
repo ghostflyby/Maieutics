@@ -37,6 +37,7 @@
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\windows_bootstrap.ts" LogicalName="Maieutics.Deno.DenoRepl.WindowsBootstrap.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\main.ts" LogicalName="Maieutics.Deno.DenoRepl.Main.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\protocol.ts" LogicalName="Maieutics.Deno.DenoRepl.Protocol.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-deno-repl\output_protocol.ts" LogicalName="Maieutics.Deno.DenoRepl.OutputProtocol.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_client.ts" LogicalName="Maieutics.Deno.DenoRepl.Client.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_actor.ts" LogicalName="Maieutics.Deno.DenoRepl.Actor.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_worker.ts" LogicalName="Maieutics.Deno.DenoRepl.Worker.ts" />

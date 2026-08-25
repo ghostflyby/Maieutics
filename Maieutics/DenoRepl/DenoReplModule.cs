@@ -9,6 +9,7 @@ internal sealed class DenoReplModule
     [
         ("Maieutics.Deno.DenoRepl.Main.ts", "maieutics-deno-repl/main.ts"),
         ("Maieutics.Deno.DenoRepl.Protocol.ts", "maieutics-deno-repl/protocol.ts"),
+        ("Maieutics.Deno.DenoRepl.OutputProtocol.ts", "maieutics-deno-repl/output_protocol.ts"),
         ("Maieutics.Deno.DenoRepl.Client.ts", "maieutics-deno-repl/repl_client.ts"),
         ("Maieutics.Deno.DenoRepl.Actor.ts", "maieutics-deno-repl/repl_actor.ts"),
         ("Maieutics.Deno.DenoRepl.Worker.ts", "maieutics-deno-repl/repl_worker.ts"),

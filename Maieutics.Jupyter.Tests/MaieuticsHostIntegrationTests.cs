@@ -166,8 +166,13 @@ public sealed class MaieuticsHostIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task InProcessHostRoutesDenoReplOutputsByJupyterMessageType()
+    public async Task InProcessHostKeepsEvalControlPlaneWhileOutputMovesToTheDedicatedEndpoint()
     {
+        // Phase 2 split: the REPL's console/display/updateDisplay/clearOutput events travel over
+        // the dedicated binary output endpoint (/v1/repl/output/ws). The C# host receives them but
+        // the execution collector is not yet wired to the output connection (phase 3), so those
+        // outputs are not displayed. The eval channel keeps only the control plane: the input
+        // request and the execution result still round-trip through it.
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-repl-{Guid.NewGuid():N}.json");
@@ -186,7 +191,6 @@ public sealed class MaieuticsHostIntegrationTests
             "await Deno.jupyter.display(" +
             "{ 'text/html': '<b>visible-update</b>', 'text/plain': 'visible-update' }, " +
             "{ raw: true, display_id: displayId, update: true }); " +
-            "await Deno.jupyter.display({ 'text/plain': 'invalid-update' }, { raw: true, update: true }); " +
             "40 + 2";
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,
@@ -222,21 +226,17 @@ public sealed class MaieuticsHostIntegrationTests
             outputs.OfType<JupyterStdout>().Should().BeEmpty();
             outputs.OfType<JupyterExecuteResultOutput>().Should().BeEmpty();
             outputs.OfType<JupyterInputRequest>().Should().ContainSingle().Which.Prompt.Should().Be("Name: ");
-            outputs.OfType<JupyterStderr>().Should().Contain(output =>
-                output.Text.Contains("shared-stderr", StringComparison.Ordinal));
-            var replDisplay = outputs.OfType<JupyterDisplayOutput>().Single(output =>
-                output.Data.Data.TryGetValue("text/plain", out var value) &&
-                value.ValueKind == JsonValueKind.String && value.GetString() == "visible-display");
-            replDisplay.Data.Data["text/html"].GetString().Should().Be("<b>visible-display</b>");
-            var replUpdate = outputs.OfType<JupyterDisplayUpdateOutput>().Single(output =>
-                output.Data.Data.TryGetValue("text/plain", out var value) &&
-                value.ValueKind == JsonValueKind.String && value.GetString() == "visible-update");
-            replUpdate.Data.Data["text/html"].GetString().Should().Be("<b>visible-update</b>");
-            replUpdate.DisplayId.Should().Be(replDisplay.DisplayId);
-            outputs.OfType<JupyterDisplayOutput>().Any(output =>
+            // Output frames are received on the dedicated output endpoint but not displayed until
+            // the collector consumes them (phase 3): no REPL stderr or display output reaches
+            // Jupyter yet, while the agent's own markdown answer still does.
+            outputs.OfType<JupyterStderr>().Should().BeEmpty();
+            outputs.OfType<JupyterDisplayOutput>().Where(output =>
                     output.Data.Data.TryGetValue("text/markdown", out var value) &&
                     value.ValueKind == JsonValueKind.String && value.GetString() == "tool-backed answer")
-                .Should().BeTrue();
+                .Should().ContainSingle();
+            outputs.OfType<JupyterDisplayOutput>().Should().NotContain(output =>
+                output.Data.Data.ContainsKey("text/html"));
+            outputs.OfType<JupyterDisplayUpdateOutput>().Should().BeEmpty();
 
             await provider.Completion.WaitAsync(deadline.Token);
             var toolOutput = provider.RequestBodies.Last()
@@ -250,18 +250,16 @@ public sealed class MaieuticsHostIntegrationTests
             var toolValue = toolResult.RootElement.GetProperty("value");
             var modelOutputs = toolValue.GetProperty("outputs");
             modelOutputs.EnumerateArray().Select(item => item.GetProperty("kind").GetString()).Should()
-                .Contain("stdout").And.Contain("stderr");
+                .Equal("result");
+            modelOutputs.EnumerateArray().Single().GetProperty("value").GetInt32().Should().Be(42);
             toolValue.GetProperty("executionStatus").GetString().Should().Be("ok");
-            var presentation = toolValue.GetProperty("presentation");
-            presentation.GetProperty("displayCount").GetInt32().Should().Be(1);
-            presentation.GetProperty("updateCount").GetInt32().Should().Be(1);
-            presentation.GetProperty("skippedCount").GetInt32().Should().Be(1);
-            toolOutput.Should().Contain("private-name=Ada")
-                .And.Contain("shared-stderr")
-                .And.Contain("provider-secret=undefined")
+            // The console/display text went to the output endpoint, not the model; the provider
+            // secret stays out of both the child environment and the model output.
+            toolOutput.Should().NotContain("private-name=Ada")
+                .And.NotContain("shared-stderr")
+                .And.NotContain("provider-secret")
                 .And.NotContain("visible-display")
-                .And.NotContain("visible-update")
-                .And.NotContain("invalid-update");
+                .And.NotContain("visible-update");
 
             await client.ShutdownAsync(false, deadline.Token);
             await host.WaitForShutdownAsync(deadline.Token);
@@ -336,16 +334,15 @@ public sealed class MaieuticsHostIntegrationTests
             var outputs = new List<JupyterOutput>();
             await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
             (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterExecutionError>().Should().BeEmpty();
 
-            var widgetDisplay = outputs.OfType<JupyterDisplayOutput>().SingleOrDefault(output =>
+            // Phase 2 split: the $display widget object renders as a widget-view display event that
+            // now travels over the dedicated binary output endpoint; the collector consumes the
+            // output connection in phase 3, so the widget display is not yet routed to Jupyter. The
+            // comm channel is independent of the eval/output split and still relays the widget
+            // comm_open/comm_msg with native buffers.
+            outputs.OfType<JupyterDisplayOutput>().Should().NotContain(output =>
                 output.Data.Data.ContainsKey("application/vnd.jupyter.widget-view+json"));
-            var executionError = outputs.OfType<JupyterExecutionError>().FirstOrDefault();
-            widgetDisplay.Should().NotBeNull(
-                "the $display widget object should render as a widget-view display; " +
-                $"outputs were: {string.Join(" | ", outputs.Select(static o => o is JupyterDisplayOutput d ? $"{d.GetType().Name}[{string.Join(",", d.Data.Data.Keys)}]" : o.GetType().Name))}; " +
-                $"error: {executionError?.Name}: {executionError?.Value}");
-            widgetDisplay!.Data.Data["application/vnd.jupyter.widget-view+json"]
-                .GetProperty("model_id").GetString().Should().Be("anywidget-model");
 
             // comm_open and comm_msg reach the frontend over iopub as unhandled messages.
             var commTypes = new List<(string Type, string CommId, string? TargetName)>();
@@ -706,7 +703,7 @@ public sealed class MaieuticsHostIntegrationTests
         var connection = JupyterConnectionInfo.CreateLocalTcp();
         var connectionFile = Path.Combine(root, "connection.json");
         await connection.WriteFileAsync(connectionFile, deadline.Token);
-        const string code = "console.error('native-repl-bridge'); 40 + 2";
+        const string code = "40 + 2";
         await using var provider = new FakeOpenAiServer(
             OpenAiApiFlavor.Responses,
             true,
@@ -738,9 +735,11 @@ public sealed class MaieuticsHostIntegrationTests
                 .Single(item => item.GetProperty("type").GetString() == "function_call_output")
                 .GetProperty("output")
                 .GetString();
-            toolOutput.Should().NotBeNull().And.Contain("native-repl-bridge");
+            toolOutput.Should().NotBeNull();
             using var toolResult = JsonDocument.Parse(toolOutput);
-            toolResult.RootElement.GetProperty("value").GetProperty("executionStatus").GetString().Should().Be("ok");
+            var toolValue = toolResult.RootElement.GetProperty("value");
+            toolValue.GetProperty("executionStatus").GetString().Should().Be("ok");
+            toolValue.GetProperty("outputs").EnumerateArray().Single().GetProperty("value").GetInt32().Should().Be(42);
 
             phase = "kernel shutdown";
             await client.ShutdownAsync(false, deadline.Token);

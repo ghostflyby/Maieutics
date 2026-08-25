@@ -66,29 +66,48 @@ internal sealed class DenoReplExecutionCollector
     {
         switch (replEvent)
         {
-            case ReplEvalConsoleEvent { Stream: "stdout" } stdout:
-                AddText("stdout", stdout.Text);
-                break;
-            case ReplEvalConsoleEvent { Stream: "stderr" } stderr:
-                AddText("stderr", stderr.Text);
-                await PresentStderrAsync(stderr.Text, cancellationToken).ConfigureAwait(false);
-                break;
-            case ReplEvalDisplayEvent display:
-                await PresentDisplayAsync(display, cancellationToken).ConfigureAwait(false);
-                break;
-            case ReplEvalClearOutputEvent clear:
-                if (TryReservePresentationEvent())
-                {
-                    await presentation.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
-                    clearCount++;
-                }
-                break;
+            // The eval channel is the control plane only (AGENTS.md phase 2): console, display,
+            // updateDisplay, and clearOutput events travel over the dedicated binary output
+            // endpoint and are observed through the ReplOutputFrame overload. Input requests
+            // remain on the eval channel.
             case ReplEvalInputRequestEvent input:
                 var value = await presentation.RequestInputAsync(
                     input.Prompt,
                     input.Password,
                     cancellationToken).ConfigureAwait(false);
                 await connection.ReplyInputAsync(input, value, cancellationToken).ConfigureAwait(false);
+                break;
+        }
+    }
+
+    /// <summary>Observes one binary output frame (phase 2 accommodation): console/display/clearOutput
+    /// frames that arrive over the dedicated output endpoint are projected into the model and
+    /// notebook outputs exactly like the equivalent eval-channel events were before the split.
+    /// The collector remains wired to the eval channel until phase 3 moves the event source to the
+    /// output connection.</summary>
+    internal async ValueTask ObserveAsync(
+        IDenoReplConnection connection,
+        ReplOutputFrame frame,
+        CancellationToken cancellationToken)
+    {
+        switch (frame)
+        {
+            case ReplOutputConsoleFrame { Stream: "stdout" } stdout:
+                AddText("stdout", stdout.Text);
+                break;
+            case ReplOutputConsoleFrame { Stream: "stderr" } stderr:
+                AddText("stderr", stderr.Text);
+                await PresentStderrAsync(stderr.Text, cancellationToken).ConfigureAwait(false);
+                break;
+            case ReplOutputDisplayFrame display:
+                await PresentDisplayAsync(display, cancellationToken).ConfigureAwait(false);
+                break;
+            case ReplOutputClearOutputFrame clear:
+                if (TryReservePresentationEvent())
+                {
+                    await presentation.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
+                    clearCount++;
+                }
                 break;
         }
     }
@@ -145,16 +164,55 @@ internal sealed class DenoReplExecutionCollector
     }
 
     private async ValueTask PresentDisplayAsync(
-        ReplEvalDisplayEvent display,
+        ReplOutputDisplayFrame display,
         CancellationToken cancellationToken)
     {
-        var bundle = ToMimeBundle(display.Data);
-        var metadata = ToDictionary(display.Metadata);
+        var bundle = new MimeBundle(display.Data);
+        var metadata = display.Metadata;
         if (!CanPresentBundle(bundle, metadata)) return;
 
-        if (display.IsUpdate)
+        // Rebuild the binary MIME placeholders (`{"$buffer": index}`) into their native byte
+        // arrays. The output endpoint carries binary values as trailing buffers (AGENTS.md
+        // invariant 26); the JSON bundle only ever holds the placeholder, so no base64 was
+        // produced on the wire.
+        var reconstructed = display.Buffers.Count > 0
+            ? new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            : null;
+        if (reconstructed is not null)
         {
-            if (display.DisplayId is null || !displayIds.TryGetValue(display.DisplayId, out var displayId))
+            foreach (var (mime, value) in bundle.Data)
+            {
+                var element = value.Clone();
+                if (element.ValueKind == JsonValueKind.Object &&
+                    element.TryGetProperty("$buffer", out var placeholder) &&
+                    placeholder.ValueKind == JsonValueKind.Number &&
+                    placeholder.TryGetInt32(out var index))
+                {
+                    element = JsonSerializer.SerializeToElement(
+                        display.ResolveBuffer(index),
+                        ReplOutputJsonContext.Default.ByteArray);
+                }
+
+                reconstructed[mime] = element;
+            }
+
+            bundle = new MimeBundle(reconstructed);
+        }
+
+        await PresentDisplayAsync(display.IsUpdate, display.DisplayId, bundle, metadata, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask PresentDisplayAsync(
+        bool isUpdate,
+        string? innerDisplayId,
+        MimeBundle bundle,
+        IReadOnlyDictionary<string, JsonElement> metadata,
+        CancellationToken cancellationToken)
+    {
+        if (isUpdate)
+        {
+            if (innerDisplayId is null || !displayIds.TryGetValue(innerDisplayId, out var displayId))
             {
                 skippedCount++;
                 return;
@@ -165,12 +223,12 @@ internal sealed class DenoReplExecutionCollector
             return;
         }
 
-        if (display.DisplayId is { } innerDisplayId)
+        if (innerDisplayId is { } tracked)
         {
-            if (!displayIds.TryGetValue(innerDisplayId, out var outerDisplayId))
+            if (!displayIds.TryGetValue(tracked, out var outerDisplayId))
             {
                 outerDisplayId = new JupyterDisplayId(Guid.NewGuid().ToString("N"));
-                displayIds.Add(innerDisplayId, outerDisplayId);
+                displayIds.Add(tracked, outerDisplayId);
             }
 
             await presentation.DisplayTrackedAsync(
@@ -327,11 +385,6 @@ internal sealed class DenoReplExecutionCollector
             result = checked(result + Encoding.UTF8.GetByteCount(name) +
                              Encoding.UTF8.GetByteCount(value.GetRawText()));
         return result;
-    }
-
-    private static MimeBundle ToMimeBundle(JsonElement element)
-    {
-        return new MimeBundle(ToDictionary(element));
     }
 
     private static IReadOnlyDictionary<string, JsonElement> ToDictionary(JsonElement? element)

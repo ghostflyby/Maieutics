@@ -28,15 +28,12 @@ public sealed class DenoReplExecutionCollectorTests
             ["text/plain"] = "visible update"
         });
 
-        execution.Publish(new ReplEvalConsoleEvent("execution-1", 1, "stdout", "private stdout"));
-        execution.Publish(new ReplEvalDisplayEvent(
-            "execution-1", 2, false, "inner", display, null));
-        execution.Publish(new ReplEvalDisplayEvent(
-            "execution-1", 3, true, "inner", update, null));
-        execution.Publish(new ReplEvalDisplayEvent(
-            "execution-1", 4, true, "missing", update, null));
-        execution.Publish(new ReplEvalClearOutputEvent("execution-1", 5, true));
-        execution.Publish(new ReplEvalConsoleEvent("execution-1", 6, "stderr", "shared stderr"));
+        await collector.ObserveAsync(connection, OutputFrames.Stdout(1, "execution-1", "private stdout"), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Display(2, "execution-1", "inner", display, isUpdate: false), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Display(3, "execution-1", "inner", update, isUpdate: true), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Display(4, "execution-1", "missing", update, isUpdate: true), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Clear(5, "execution-1", wait: true), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Stderr(6, "execution-1", "shared stderr"), CancellationToken.None);
         var input = new ReplEvalInputRequestEvent(
             "execution-1", 7, "input-1", "Name: ", false);
         execution.Publish(input);
@@ -65,6 +62,43 @@ public sealed class DenoReplExecutionCollectorTests
         sink.Clears.Should().Equal(true);
         sink.Stderr.Should().Equal("shared stderr");
         connection.InputReplies.Should().ContainSingle().Which.Should().Be((input, "Ada"));
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DisplayFrameReconstructsBinaryBuffersFromPlaceholders()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            []);
+        var data = JsonDocument.Parse(
+            """{"image/png":{"$buffer":0},"text/plain":"binary display"}""").RootElement.Clone();
+        var png = new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02 };
+        var frame = new ReplOutputDisplayFrame(
+            1,
+            "execution-1",
+            ToDictionary(data),
+            new Dictionary<string, JsonElement>(),
+            null,
+            false,
+            new List<byte[]> { png });
+        await collector.ObserveAsync(connection, frame, CancellationToken.None);
+        execution.CompleteResult();
+
+        await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            TestContext.Current.CancellationToken);
+
+        sink.BinaryDisplays.Should().ContainSingle().Which.Data["image/png"]
+            .GetString().Should().NotBeNull();
+        sink.BinaryDisplays.Single().Data["image/png"].GetString()!
+            .Should().Be(Convert.ToBase64String(png));
     }
 
     [Theory(Timeout = 15_000)]
@@ -124,18 +158,22 @@ public sealed class DenoReplExecutionCollectorTests
             []);
 
         for (var sequence = 1; sequence <= 20; sequence++)
-            execution.Publish(new ReplEvalConsoleEvent(
-                "execution-1", sequence, "stdout", new string('x', 128)));
-        execution.Publish(new ReplEvalDisplayEvent(
-            "execution-1",
-            21,
-            false,
-            null,
-            JsonSerializer.SerializeToElement(new Dictionary<string, string>
-            {
-                ["text/plain"] = "after truncation"
-            }),
-            null));
+            await collector.ObserveAsync(
+                connection,
+                OutputFrames.Stdout(sequence, "execution-1", new string('x', 128)),
+                CancellationToken.None);
+        await collector.ObserveAsync(
+            connection,
+            OutputFrames.Display(
+                21,
+                "execution-1",
+                null,
+                JsonSerializer.SerializeToElement(new Dictionary<string, string>
+                {
+                    ["text/plain"] = "after truncation"
+                }),
+                isUpdate: false),
+            CancellationToken.None);
         execution.CompleteResult();
 
         var result = await collector.ConsumeAsync(
@@ -192,9 +230,9 @@ public sealed class DenoReplExecutionCollectorTests
         {
             ["text/plain"] = "display"
         });
-        execution.Publish(new ReplEvalDisplayEvent("execution-1", 1, false, null, data, null));
-        execution.Publish(new ReplEvalClearOutputEvent("execution-1", 2, false));
-        execution.Publish(new ReplEvalConsoleEvent("execution-1", 3, "stderr", "still modeled"));
+        await collector.ObserveAsync(connection, OutputFrames.Display(1, "execution-1", null, data, isUpdate: false), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Clear(2, "execution-1", wait: false), CancellationToken.None);
+        await collector.ObserveAsync(connection, OutputFrames.Stderr(3, "execution-1", "still modeled"), CancellationToken.None);
         execution.CompleteResult();
 
         var result = await collector.ConsumeAsync(
@@ -207,6 +245,14 @@ public sealed class DenoReplExecutionCollectorTests
         sink.Displays.Should().ContainSingle();
         sink.Clears.Should().BeEmpty();
         sink.Stderr.Should().BeEmpty();
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> ToDictionary(JsonElement element)
+    {
+        return element.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => property.Value.Clone(),
+            StringComparer.Ordinal);
     }
 
     private sealed class RecordingPresentationSink : IDenoReplPresentationSink
@@ -223,6 +269,8 @@ public sealed class DenoReplExecutionCollectorTests
 
         internal List<(string Name, string Value)> Errors { get; } = [];
 
+        internal List<MimeBundle> BinaryDisplays { get; } = [];
+
         public ValueTask DisplayAsync(
             MimeBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
@@ -230,6 +278,7 @@ public sealed class DenoReplExecutionCollectorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
+            BinaryDisplays.Add(data);
             return ValueTask.CompletedTask;
         }
 
@@ -241,6 +290,7 @@ public sealed class DenoReplExecutionCollectorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
+            BinaryDisplays.Add(data);
             return ValueTask.FromResult(displayId);
         }
 
@@ -252,6 +302,7 @@ public sealed class DenoReplExecutionCollectorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Updates.Add((displayId, data.Data["text/plain"].GetString() ?? string.Empty));
+            BinaryDisplays.Add(data);
             return ValueTask.CompletedTask;
         }
 
@@ -287,6 +338,43 @@ public sealed class DenoReplExecutionCollectorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(InputReply);
+        }
+    }
+
+    /// <summary>Hand-builds output frames as the TS encoder would produce them (byte layout matches
+    /// <c>output_protocol.ts</c>).</summary>
+    private static class OutputFrames
+    {
+        internal static ReplOutputConsoleFrame Stdout(long seq, string executionId, string text)
+        {
+            return new ReplOutputConsoleFrame(seq, executionId, "stdout", text);
+        }
+
+        internal static ReplOutputConsoleFrame Stderr(long seq, string executionId, string text)
+        {
+            return new ReplOutputConsoleFrame(seq, executionId, "stderr", text);
+        }
+
+        internal static ReplOutputClearOutputFrame Clear(long seq, string executionId, bool wait)
+        {
+            return new ReplOutputClearOutputFrame(seq, executionId, wait);
+        }
+
+        internal static ReplOutputDisplayFrame Display(
+            long seq,
+            string executionId,
+            string? displayId,
+            JsonElement data,
+            bool isUpdate)
+        {
+            return new ReplOutputDisplayFrame(
+                seq,
+                executionId,
+                ToDictionary(data),
+                new Dictionary<string, JsonElement>(),
+                displayId,
+                isUpdate,
+                []);
         }
     }
 }

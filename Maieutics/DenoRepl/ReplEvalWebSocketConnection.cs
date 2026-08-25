@@ -381,18 +381,6 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
     {
         switch (envelope.Type)
         {
-            case ReplEvalMessageType.Console:
-                await HandleConsoleAsync(envelope).ConfigureAwait(false);
-                return;
-            case ReplEvalMessageType.Display:
-                await HandleDisplayAsync(envelope, false).ConfigureAwait(false);
-                return;
-            case ReplEvalMessageType.UpdateDisplay:
-                await HandleDisplayAsync(envelope, true).ConfigureAwait(false);
-                return;
-            case ReplEvalMessageType.ClearOutput:
-                await HandleClearOutputAsync(envelope).ConfigureAwait(false);
-                return;
             case ReplEvalMessageType.InputRequest:
                 await HandleInputRequestAsync(envelope).ConfigureAwait(false);
                 return;
@@ -411,47 +399,6 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
                     $"The REPL eval host cannot receive '{envelope.Type}'.",
                     envelope.CorrelationId);
         }
-    }
-
-    private ValueTask HandleConsoleAsync(ReplEvalEnvelope envelope)
-    {
-        var payload = ReplEvalProtocol.ParsePayload(
-            envelope,
-            ReplEvalJsonContext.Default.ReplEvalConsolePayload);
-        if (payload.Stream is not ("stdout" or "stderr"))
-            throw InvalidPayload(envelope, "Console stream must be stdout or stderr.");
-        return PublishEventAsync(
-            envelope,
-            new ReplEvalConsoleEvent(payload.ExecutionId, payload.Sequence, payload.Stream, payload.Text));
-    }
-
-    private ValueTask HandleDisplayAsync(ReplEvalEnvelope envelope, bool isUpdate)
-    {
-        var payload = ReplEvalProtocol.ParsePayload(
-            envelope,
-            ReplEvalJsonContext.Default.ReplEvalDisplayPayload);
-        if (payload.Data.ValueKind != System.Text.Json.JsonValueKind.Object ||
-            payload.Metadata is { ValueKind: not System.Text.Json.JsonValueKind.Object })
-            throw InvalidPayload(envelope, "Display data and metadata must be objects.");
-        return PublishEventAsync(
-            envelope,
-            new ReplEvalDisplayEvent(
-                payload.ExecutionId,
-                payload.Sequence,
-                isUpdate,
-                payload.DisplayId,
-                payload.Data,
-                payload.Metadata));
-    }
-
-    private ValueTask HandleClearOutputAsync(ReplEvalEnvelope envelope)
-    {
-        var payload = ReplEvalProtocol.ParsePayload(
-            envelope,
-            ReplEvalJsonContext.Default.ReplEvalClearOutputPayload);
-        return PublishEventAsync(
-            envelope,
-            new ReplEvalClearOutputEvent(payload.ExecutionId, payload.Sequence, payload.Wait));
     }
 
     private ValueTask HandleInputRequestAsync(ReplEvalEnvelope envelope)

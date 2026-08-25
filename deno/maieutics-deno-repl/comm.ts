@@ -14,7 +14,7 @@
 
 import { connectIpcWebSocket } from "../shared/ipc_websocket.ts";
 
-const MAX_MESSAGE_BYTES = 1024 * 1024;
+const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 export enum CommKind {
   Open = 0,
@@ -50,7 +50,12 @@ export async function connectComm(
   sessionId: string,
   credential?: string,
 ): Promise<CommClient> {
-  const socket = await connectIpcWebSocket(address, "/comm", credential);
+  const socket = await connectIpcWebSocket(
+    address,
+    "/comm",
+    credential,
+    { maxMessageBytes: MAX_MESSAGE_BYTES },
+  );
   const client: CommClient = {
     send: (message) => {
       socket.send(encode(message));

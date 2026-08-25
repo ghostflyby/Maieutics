@@ -10,6 +10,15 @@ internal static class ReplControlLimits
     internal const int MaximumJsonDepth = 64;
     internal const int QueueCapacity = 64;
 
+    /// <summary>Per-message ceiling for the dedicated comm WebSocket. Comm traffic carries
+    /// widget state and native media buffers (ipywidgets Image/Audio/Video values travel as
+    /// raw bytes in the message buffers, ipywidgets/widget.py _remove_buffers), so a single
+    /// comm message can legitimately reach a few MB; 16 MiB covers typical media buffers while
+    /// the control bus keeps its own 1 MiB ceiling (control messages are small). Exceeding the
+    /// ceiling closes the comm connection only — the REPL process and its eval/output channels
+    /// keep running.</summary>
+    internal const int MaximumCommMessageBytes = 16 * 1024 * 1024;
+
     /// <summary>
     ///     How long a control request waits for a peer process to register before the kernel treats
     ///     it as unowned. A Deno child may connect its control socket before its parent finishes

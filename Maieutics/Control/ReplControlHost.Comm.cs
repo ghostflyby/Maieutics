@@ -284,12 +284,12 @@ internal sealed partial class ReplControlHost
                     return null;
                 }
 
-                if (result.Count > ReplControlLimits.MaximumInboundMessageBytes - writer.WrittenCount)
+                if (result.Count > ReplControlLimits.MaximumCommMessageBytes - writer.WrittenCount)
                 {
                     await CloseOutputAsync(
                         socket,
                         WebSocketCloseStatus.MessageTooBig,
-                        $"comm message exceeds {ReplControlLimits.MaximumInboundMessageBytes} bytes",
+                        $"comm message exceeds {ReplControlLimits.MaximumCommMessageBytes} bytes",
                         cancellationToken).ConfigureAwait(false);
                     return null;
                 }
@@ -359,7 +359,7 @@ internal sealed partial class ReplControlHost
             CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(payload);
-            if (payload.Length > ReplControlLimits.MaximumInboundMessageBytes)
+            if (payload.Length > ReplControlLimits.MaximumCommMessageBytes)
                 throw new InvalidOperationException("The comm message exceeds the maximum message size.");
 
             if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))

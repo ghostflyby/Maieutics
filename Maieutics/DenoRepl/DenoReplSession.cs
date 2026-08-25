@@ -16,6 +16,11 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly ILogger<DenoReplSession> logger;
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
+    /// <summary>Session-lifetime display rate limiter, shared by every execution so the sliding
+    /// budget accumulates across turns (aligned with jupyter_server's global iopub rate limit).
+    /// A restart intentionally keeps the window: it is not a new frontend, and the window prunes
+    /// stale samples within <see cref="DenoReplOptions.DisplayRateLimitWindow"/>.</summary>
+    private readonly ReplOutputRateLimiter rateLimiter;
     private readonly Lock stateGate = new();
     private int disposeState;
     private int generation = 1;
@@ -42,6 +47,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         this.factory = factory;
         this.presentationRouter = presentationRouter;
         this.logger = logger;
+        rateLimiter = new ReplOutputRateLimiter(options);
     }
 
     internal AgentSessionId OwnerSessionId { get; }
@@ -162,13 +168,16 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 cancellationToken,
                 lifetime.Token,
                 timeout.Token);
+            var outputEvents = await ResolveOutputEventsAsync(wait.Token).ConfigureAwait(false);
             var collector = new DenoReplExecutionCollector(
                 SessionId,
                 GetGeneration(),
                 options,
                 sink,
-                displayIds);
-            var completion = collector.ConsumeAsync(activeRuntime.Connection, execution, wait.Token);
+                displayIds,
+                execution.ExecutionId,
+                rateLimiter);
+            var completion = collector.ConsumeAsync(activeRuntime.Connection, execution, outputEvents, wait.Token);
             try
             {
                 var result = await completion.WaitAsync(wait.Token).ConfigureAwait(false);
@@ -294,6 +303,28 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             executionGate.Release();
         }
+    }
+
+    /// <summary>
+    ///     Resolves the output events for the current execution. The generation owns the output
+    ///     connection (it awaits the dedicated binary output endpoint attaching during startup);
+    ///     the session-lifetime stream is consumed per execution. When the generation does not
+    ///     expose an output stream (isolated unit harnesses) an empty stream is returned, which
+    ///     ends immediately, so the collector degrades to the eval control plane only.
+    /// </summary>
+    private async Task<IAsyncEnumerable<ReplOutputFrame>> ResolveOutputEventsAsync(
+        CancellationToken cancellationToken)
+    {
+        var activeRuntime = runtime ?? throw CreateFaultedException();
+        var output = activeRuntime.OutputEvents;
+        if (output is null) return EmptyOutputEvents();
+        return await output.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>An output stream that ends immediately, used when no output endpoint is wired.</summary>
+    private static async IAsyncEnumerable<ReplOutputFrame> EmptyOutputEvents()
+    {
+        yield break;
     }
 
     private async Task<bool> CancelAndDrainAsync(

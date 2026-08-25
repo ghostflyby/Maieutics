@@ -62,36 +62,9 @@ public sealed class ReplEvalWebSocketTests
         execute.CorrelationId.Should().Be(execution.ExecutionId);
 
         await using var events = execution.Events.GetAsyncEnumerator(deadline.Token);
-        socket.QueueText(Envelope(
-            ReplEvalMessageType.Console,
-            execution.ExecutionId,
-            new ReplEvalConsolePayload(execution.ExecutionId, 1, "stdout", "hello"),
-            ReplEvalJsonContext.Default.ReplEvalConsolePayload));
-        (await events.MoveNextAsync()).Should().BeTrue();
-        events.Current.Should().Be(new ReplEvalConsoleEvent(execution.ExecutionId, 1, "stdout", "hello"));
-
-        using var displayDocument = JsonDocument.Parse("""{"text/plain":"42"}""");
-        socket.QueueText(Envelope(
-            ReplEvalMessageType.Display,
-            execution.ExecutionId,
-            new ReplEvalDisplayPayload(
-                execution.ExecutionId,
-                2,
-                "display-1",
-                displayDocument.RootElement.Clone()),
-            ReplEvalJsonContext.Default.ReplEvalDisplayPayload));
-        (await events.MoveNextAsync()).Should().BeTrue();
-        events.Current.Should().BeOfType<ReplEvalDisplayEvent>().Which.Should().BeEquivalentTo(new
-        {
-            execution.ExecutionId,
-            Sequence = 2L,
-            IsUpdate = false,
-            DisplayId = "display-1"
-        });
-
         var request = new ReplEvalInputRequestPayload(
             execution.ExecutionId,
-            3,
+            1,
             "input-1",
             "Name?",
             false);
@@ -164,6 +137,49 @@ public sealed class ReplEvalWebSocketTests
         await socket.Closed.WaitAsync(deadline.Token);
 
         socket.CloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task OutputMessageTypesAreUnexpectedOnTheEvalChannel()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(41, "session-1");
+        await using var host = new ReplEvalWebSocketHost(registry, new ReplControlCredentialRegistry());
+        using var socket = new TestWebSocket();
+        var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
+        socket.QueueText(Envelope(
+            ReplEvalMessageType.Hello,
+            "hello-1",
+            new ReplEvalIdentity("session-1", 1),
+            ReplEvalJsonContext.Default.ReplEvalIdentity));
+        var attached = host.AttachAsync(socket, 41, deadline.Token);
+        await socket.ReadSentAsync(deadline.Token);
+        var connection = await connectionWait;
+        var execution = await connection.ExecuteAsync("1 + 1", deadline.Token);
+        await socket.ReadSentAsync(deadline.Token);
+
+        // Console, display, updateDisplay, and clearOutput left the eval control plane and travel
+        // over the dedicated binary output endpoint (phase 2). An envelope claiming one of those
+        // types is rejected during deserialization (the type is no longer in the known set).
+        var consoleJson = JsonSerializer.Serialize(
+            new ReplEvalEnvelope(
+                ReplEvalProtocol.Version,
+                "repl.eval.console",
+                "console-1",
+                JsonSerializer.SerializeToElement(new Dictionary<string, object?>
+                {
+                    ["executionId"] = execution.ExecutionId,
+                    ["sequence"] = 1,
+                    ["stream"] = "stdout",
+                    ["text"] = "hi"
+                })),
+            ReplEvalJsonContext.Default.ReplEvalEnvelope);
+        socket.QueueText(consoleJson);
+        (await connection.Completion.Awaiting(static task => task).Should()
+                .ThrowAsync<ReplEvalProtocolException>())
+            .Which.Code.Should().Be("unknown_message_type");
+        await attached.WaitAsync(deadline.Token);
     }
 
     [Fact(Timeout = 30_000)]

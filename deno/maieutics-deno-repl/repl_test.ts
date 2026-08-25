@@ -20,10 +20,6 @@ Deno.test("the REPL eval protocol uses its domain path and vocabulary", () => {
     "repl.eval.result",
     "repl.eval.error",
     "repl.eval.cancelled",
-    "repl.eval.console",
-    "repl.eval.display",
-    "repl.eval.updateDisplay",
-    "repl.eval.clearOutput",
     "repl.eval.inputRequest",
     "repl.eval.inputReply",
   ]);
@@ -64,9 +60,9 @@ Deno.test("REPL eval encoding enforces the one MiB control boundary", () => {
   const error = assertThrows(
     () =>
       encodeReplEvalEnvelope({
-        type: ReplEvalMessageType.console,
+        type: ReplEvalMessageType.execute,
         correlationId: "execution-1",
-        payload: { text: "x".repeat(REPL_EVAL_MAX_MESSAGE_BYTES) },
+        payload: { executionId: "execution-1", code: "x".repeat(REPL_EVAL_MAX_MESSAGE_BYTES) },
       }),
     ReplEvalProtocolError,
   );

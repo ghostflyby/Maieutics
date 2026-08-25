@@ -7,20 +7,35 @@ namespace Maieutics.DenoRepl;
 internal sealed class DenoReplExecutionCollector
 {
     private const int ModelItemOverheadBytes = 64;
+    private const int DigestOverheadBytes = 64;
+
+    /// <summary>How long the collector keeps draining the output stream after the eval terminal
+    /// arrives. The TS client sends all output frames before the terminal, but the frames travel a
+    /// separate WebSocket, so this window absorbs the cross-socket race between the last frame and
+    /// the terminal at the host.</summary>
+    internal static readonly TimeSpan OutputTailDrainWindow = TimeSpan.FromMilliseconds(100);
+    private readonly Dictionary<string, int> digestIndexByDisplayId = new(StringComparer.Ordinal);
+    private readonly List<DenoReplDisplayDigest> digests = [];
     private readonly Dictionary<string, JupyterDisplayId> displayIds;
+    private readonly string executionId;
     private readonly int generation;
     private readonly DenoReplOptions options;
     private readonly List<DenoReplOutputItem> outputs = [];
     private readonly IDenoReplPresentationSink presentation;
+    private readonly ReplOutputRateLimiter rateLimiter;
     private readonly string sessionId;
+    private int bundleSkippedCount;
     private int clearCount;
+    private int digestBytes;
+    private bool digestTruncated;
     private int displayCount;
+    private int displaySkippedCount;
     private int modelBytes;
     private int omittedBytes;
     private int presentationEvents;
     private int presentationTextBytes;
     private bool presentationTextTruncated;
-    private int skippedCount;
+    private int rateSkippedCount;
     private bool truncated;
     private int updateCount;
 
@@ -29,16 +44,36 @@ internal sealed class DenoReplExecutionCollector
         int generation,
         DenoReplOptions options,
         IDenoReplPresentationSink presentation,
-        Dictionary<string, JupyterDisplayId> displayIds)
+        Dictionary<string, JupyterDisplayId> displayIds,
+        string executionId,
+        ReplOutputRateLimiter? rateLimiter = null)
     {
         this.sessionId = sessionId;
         this.generation = generation;
         this.options = options;
         this.presentation = presentation;
         this.displayIds = displayIds;
+        this.executionId = executionId;
+        this.rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
     }
 
     internal async Task<DenoReplExecutionResult> ConsumeAsync(
+        IDenoReplConnection connection,
+        ReplEvalExecution execution,
+        IAsyncEnumerable<ReplOutputFrame> outputEvents,
+        CancellationToken cancellationToken)
+    {
+        var eval = ConsumeEvalAsync(connection, execution, cancellationToken);
+        var output = ConsumeOutputAsync(execution, outputEvents, cancellationToken);
+        await Task.WhenAll(eval, output).ConfigureAwait(false);
+
+        var terminal = await execution.Completion.ConfigureAwait(false);
+        return await CreateResultAsync(
+            terminal,
+            cancellationToken.IsCancellationRequested ? CancellationToken.None : cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ConsumeEvalAsync(
         IDenoReplConnection connection,
         ReplEvalExecution execution,
         CancellationToken cancellationToken)
@@ -52,11 +87,61 @@ internal sealed class DenoReplExecutionCollector
             {
                 // Cancellation is sent on the eval channel; keep draining ordered events to its terminal.
             }
+    }
 
-        var terminal = await execution.Completion.ConfigureAwait(false);
-        return await CreateResultAsync(
-            terminal,
-            cancellationToken.IsCancellationRequested ? CancellationToken.None : cancellationToken).ConfigureAwait(false);
+    /// <summary>
+    ///     Consumes binary output frames until the eval terminal arrives. The TS client sends every
+    ///     output frame over the output WebSocket before the terminal envelope over the eval channel
+    ///     (it awaits each frame send before sending the terminal), so the frames for this execution
+    ///     are in flight by the time the terminal is observable. The two WebSocket connections are
+    ///     independent, so the terminal can still beat the last frames into the host: after the
+    ///     terminal completes, a short drain window keeps reading so the buffered tail is consumed
+    ///     before the collector stops. The output connection is a session-lifetime stream, so the
+    ///     window expiry also ends the read instead of waiting for the next execution's frames.
+    /// </summary>
+    private async Task ConsumeOutputAsync(
+        ReplEvalExecution execution,
+        IAsyncEnumerable<ReplOutputFrame> outputEvents,
+        CancellationToken cancellationToken)
+    {
+        using var drain = new CancellationTokenSource();
+        _ = execution.Completion.ContinueWith(
+            static (_, state) =>
+            {
+                try
+                {
+                    ((CancellationTokenSource)state!).CancelAfter(OutputTailDrainWindow);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The drain ended before the terminal; there is nothing to cancel.
+                }
+            },
+            drain,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        try
+        {
+            await foreach (var frame in outputEvents.WithCancellation(drain.Token).ConfigureAwait(false))
+            {
+                try
+                {
+                    await ObserveAsync(frame, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Cancellation targets the execution; keep presenting ordered output until the
+                    // eval terminal orders the tail.
+                }
+            }
+        }
+        catch (OperationCanceledException) when (drain.IsCancellationRequested)
+        {
+            // The eval terminal arrived and the drain window elapsed: the frames that preceded
+            // it have been consumed and there is nothing left to drain.
+        }
     }
 
     private async ValueTask ObserveAsync(
@@ -66,29 +151,58 @@ internal sealed class DenoReplExecutionCollector
     {
         switch (replEvent)
         {
-            case ReplEvalConsoleEvent { Stream: "stdout" } stdout:
-                AddText("stdout", stdout.Text);
-                break;
-            case ReplEvalConsoleEvent { Stream: "stderr" } stderr:
-                AddText("stderr", stderr.Text);
-                await PresentStderrAsync(stderr.Text, cancellationToken).ConfigureAwait(false);
-                break;
-            case ReplEvalDisplayEvent display:
-                await PresentDisplayAsync(display, cancellationToken).ConfigureAwait(false);
-                break;
-            case ReplEvalClearOutputEvent clear:
-                if (TryReservePresentationEvent())
-                {
-                    await presentation.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
-                    clearCount++;
-                }
-                break;
+            // The eval channel is the control plane only (AGENTS.md phase 2): console, display,
+            // updateDisplay, and clearOutput events travel over the dedicated binary output
+            // endpoint and are observed through the ReplOutputFrame overload. Input requests
+            // remain on the eval channel.
             case ReplEvalInputRequestEvent input:
                 var value = await presentation.RequestInputAsync(
                     input.Prompt,
                     input.Password,
                     cancellationToken).ConfigureAwait(false);
                 await connection.ReplyInputAsync(input, value, cancellationToken).ConfigureAwait(false);
+                break;
+        }
+    }
+
+    /// <summary>Observes one binary output frame from the dedicated output endpoint. Frames for
+    /// other executions (leftover tail of a previous execution or the next execution racing ahead)
+    /// are ignored: the eval terminal orders the boundary between executions.</summary>
+    internal async ValueTask ObserveAsync(
+        ReplOutputFrame frame,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(frame.ExecutionId, executionId, StringComparison.Ordinal)) return;
+
+        switch (frame)
+        {
+            case ReplOutputConsoleFrame { Stream: "stdout" } stdout:
+                AddText("stdout", stdout.Text);
+                break;
+            case ReplOutputConsoleFrame { Stream: "stderr" } stderr:
+                AddText("stderr", stderr.Text);
+                await PresentStderrAsync(stderr.Text, cancellationToken).ConfigureAwait(false);
+                break;
+            case ReplOutputDisplayFrame display:
+                if (!rateLimiter.TryReserve(display))
+                {
+                    // The display exceeded the sliding display rate budget (jupyter_server iopub
+                    // rate-limit semantics): it is dropped from both the notebook presentation and
+                    // the model digest. It is still counted so the model sees an actionable
+                    // signal that its display was rate-limited and can retry with a smaller
+                    // payload. Dropping the event does not disturb stream order: the output
+                    // stream is still consumed in order and later frames present normally.
+                    rateSkippedCount++;
+                    return;
+                }
+                await PresentDisplayAsync(display, cancellationToken).ConfigureAwait(false);
+                break;
+            case ReplOutputClearOutputFrame clear:
+                if (TryReservePresentationEvent())
+                {
+                    await presentation.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
+                    clearCount++;
+                }
                 break;
         }
     }
@@ -110,7 +224,15 @@ internal sealed class DenoReplExecutionCollector
             null,
             status,
             outputs,
-            new DenoReplPresentationResult(displayCount, updateCount, clearCount, skippedCount),
+            new DenoReplPresentationResult(
+                displayCount,
+                updateCount,
+                clearCount,
+                RateSkippedCount: rateSkippedCount,
+                bundleSkippedCount,
+                displaySkippedCount,
+                digestTruncated,
+                digests),
             truncated,
             omittedBytes);
     }
@@ -145,18 +267,75 @@ internal sealed class DenoReplExecutionCollector
     }
 
     private async ValueTask PresentDisplayAsync(
-        ReplEvalDisplayEvent display,
+        ReplOutputDisplayFrame display,
         CancellationToken cancellationToken)
     {
-        var bundle = ToMimeBundle(display.Data);
-        var metadata = ToDictionary(display.Metadata);
-        if (!CanPresentBundle(bundle, metadata)) return;
+        var bundle = new MimeBundle(display.Data);
+        var metadata = display.Metadata;
 
-        if (display.IsUpdate)
+        // An update that cannot target a previous display is skipped from presentation and has no
+        // digest entry to fold into.
+        if (display.IsUpdate &&
+            (display.DisplayId is null || !displayIds.ContainsKey(display.DisplayId)))
         {
-            if (display.DisplayId is null || !displayIds.TryGetValue(display.DisplayId, out var displayId))
+            displaySkippedCount++;
+            return;
+        }
+
+        if (!CanPresentBundle(bundle, metadata))
+        {
+            // The bundle exceeds the notebook presentation budget, but the model still learns the
+            // display was attempted through its digest entry.
+            AddDisplayDigest(display, bundle);
+            return;
+        }
+
+        // Rebuild the binary MIME placeholders (`{"$buffer": index}`) into their native byte
+        // arrays, then base64 into the Jupyter MimeBundle (the only encoding the wire accepts;
+        // AGENTS.md invariant 26 keeps the output endpoint itself native). The output endpoint
+        // carries binary values as trailing buffers; the JSON bundle only ever holds the
+        // placeholder, so no base64 was produced on the wire.
+        var reconstructed = display.Buffers.Count > 0
+            ? new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            : null;
+        if (reconstructed is not null)
+        {
+            foreach (var (mime, value) in bundle.Data)
             {
-                skippedCount++;
+                var element = value.Clone();
+                if (element.ValueKind == JsonValueKind.Object &&
+                    element.TryGetProperty("$buffer", out var placeholder) &&
+                    placeholder.ValueKind == JsonValueKind.Number &&
+                    placeholder.TryGetInt32(out var index))
+                {
+                    element = JsonSerializer.SerializeToElement(
+                        display.ResolveBuffer(index),
+                        ReplOutputJsonContext.Default.ByteArray);
+                }
+
+                reconstructed[mime] = element;
+            }
+
+            bundle = new MimeBundle(reconstructed);
+        }
+
+        await PresentDisplayAsync(display.IsUpdate, display.DisplayId, bundle, metadata, cancellationToken)
+            .ConfigureAwait(false);
+        AddDisplayDigest(display, bundle);
+    }
+
+    private async ValueTask PresentDisplayAsync(
+        bool isUpdate,
+        string? innerDisplayId,
+        MimeBundle bundle,
+        IReadOnlyDictionary<string, JsonElement> metadata,
+        CancellationToken cancellationToken)
+    {
+        if (isUpdate)
+        {
+            if (innerDisplayId is null || !displayIds.TryGetValue(innerDisplayId, out var displayId))
+            {
+                displaySkippedCount++;
                 return;
             }
 
@@ -165,12 +344,12 @@ internal sealed class DenoReplExecutionCollector
             return;
         }
 
-        if (display.DisplayId is { } innerDisplayId)
+        if (innerDisplayId is { } tracked)
         {
-            if (!displayIds.TryGetValue(innerDisplayId, out var outerDisplayId))
+            if (!displayIds.TryGetValue(tracked, out var outerDisplayId))
             {
                 outerDisplayId = new JupyterDisplayId(Guid.NewGuid().ToString("N"));
-                displayIds.Add(innerDisplayId, outerDisplayId);
+                displayIds.Add(tracked, outerDisplayId);
             }
 
             await presentation.DisplayTrackedAsync(
@@ -187,13 +366,108 @@ internal sealed class DenoReplExecutionCollector
         displayCount++;
     }
 
+    /// <summary>Adds one bounded model digest for a display or update. Updates fold into the
+    /// entry of their display id instead of creating a new one; displays without an id are not
+    /// deduplicated. When the digest budget is exhausted, <see cref="digestTruncated" /> is set and
+    /// later displays are counted (they still present) but not digested.</summary>
+    private void AddDisplayDigest(ReplOutputDisplayFrame display, MimeBundle bundle)
+    {
+        var displayId = display.DisplayId;
+        if (display.IsUpdate && (displayId is null || !digestIndexByDisplayId.ContainsKey(displayId)))
+            return; // targeting failure already counted by PresentDisplayAsync
+
+        var mediaTypes = bundle.Data.Keys.ToArray();
+        var preview = SelectPreview(bundle);
+
+        if (displayId is { } id && digestIndexByDisplayId.TryGetValue(id, out var index))
+        {
+            var existing = digests[index];
+            var updated = existing with
+            {
+                MediaTypes = mediaTypes,
+                Preview = preview ?? existing.Preview,
+                IsUpdate = existing.IsUpdate || display.IsUpdate
+            };
+            var updatedCost = DigestCost(updated);
+            if (digestBytes - DigestCost(existing) + updatedCost <= options.MaxModelDisplayDigestBytes)
+            {
+                digests[index] = updated;
+                digestBytes = digestBytes - DigestCost(existing) + updatedCost;
+            }
+            else
+            {
+                digestTruncated = true;
+            }
+
+            return;
+        }
+
+        if (digestTruncated) return;
+
+        var entry = new DenoReplDisplayDigest(mediaTypes, preview, displayId, display.IsUpdate);
+        var cost = DigestCost(entry);
+        if (digestBytes + cost > options.MaxModelDisplayDigestBytes)
+        {
+            digestTruncated = true;
+            return;
+        }
+
+        digestBytes += cost;
+        digests.Add(entry);
+        if (displayId is { } tracked) digestIndexByDisplayId[tracked] = digests.Count - 1;
+    }
+
+    /// <summary>Picks the digest preview: text/plain first, then the first string <c>text/*</c> or
+    /// <c>*+json</c> mime. Binary mimes (image/*, application/pdf, video/*, audio/*) are listed in
+    /// <see cref="DenoReplDisplayDigest.MediaTypes" /> but never produce a preview.</summary>
+    private string? SelectPreview(MimeBundle bundle)
+    {
+        if (bundle.Data.TryGetValue("text/plain", out var plain) && plain.ValueKind == JsonValueKind.String)
+            return TruncatePreview(plain.GetString());
+
+        foreach (var (mime, value) in bundle.Data)
+        {
+            if (IsBinaryMime(mime) || value.ValueKind != JsonValueKind.String) continue;
+            if (mime.StartsWith("text/", StringComparison.Ordinal) ||
+                mime.EndsWith("+json", StringComparison.Ordinal))
+                return TruncatePreview(value.GetString());
+        }
+
+        return null;
+    }
+
+    private string? TruncatePreview(string? value)
+    {
+        if (value is null || value.Length == 0) return value;
+        var bytes = Encoding.UTF8.GetByteCount(value);
+        return bytes <= options.MaxDisplayDigestPreviewBytes
+            ? value
+            : TruncateUtf8(value, options.MaxDisplayDigestPreviewBytes, out _);
+    }
+
+    private static bool IsBinaryMime(string mime)
+    {
+        return mime.StartsWith("image/", StringComparison.Ordinal) ||
+               mime.StartsWith("video/", StringComparison.Ordinal) ||
+               mime.StartsWith("audio/", StringComparison.Ordinal) ||
+               string.Equals(mime, "application/pdf", StringComparison.Ordinal);
+    }
+
+    private static int DigestCost(DenoReplDisplayDigest digest)
+    {
+        var cost = DigestOverheadBytes;
+        foreach (var mime in digest.MediaTypes)
+            cost = checked(cost + Encoding.UTF8.GetByteCount(mime));
+        return checked(cost + Encoding.UTF8.GetByteCount(digest.Preview ?? string.Empty));
+    }
+
     private async ValueTask PresentStderrAsync(string text, CancellationToken cancellationToken)
     {
         if (!TryReservePresentationEvent()) return;
         var available = options.MaxPresentationTextBytes - presentationTextBytes;
         if (available <= 0)
         {
-            skippedCount++;
+            displaySkippedCount++;
             return;
         }
 
@@ -204,7 +478,7 @@ internal sealed class DenoReplExecutionCollector
         if (fullBytes > available && !presentationTextTruncated)
         {
             presentationTextTruncated = true;
-            skippedCount++;
+            displaySkippedCount++;
         }
     }
 
@@ -218,13 +492,13 @@ internal sealed class DenoReplExecutionCollector
         var available = options.MaxPresentationTextBytes - presentationTextBytes;
         if (available <= 0)
         {
-            skippedCount++;
+            displaySkippedCount++;
             return;
         }
 
         var selected = TruncateUtf8(value, available, out var selectedBytes);
         presentationTextBytes += selectedBytes;
-        if (selectedBytes < Encoding.UTF8.GetByteCount(value)) skippedCount++;
+        if (selectedBytes < Encoding.UTF8.GetByteCount(value)) displaySkippedCount++;
         await presentation.PublishErrorAsync(name, selected, traceback, cancellationToken).ConfigureAwait(false);
     }
 
@@ -233,7 +507,7 @@ internal sealed class DenoReplExecutionCollector
         if (!TryReservePresentationEvent()) return false;
         var bytes = CountJsonBytes(bundle.Data) + CountJsonBytes(metadata);
         if (bytes <= options.MaxPresentationBundleBytes) return true;
-        skippedCount++;
+        bundleSkippedCount++;
         return false;
     }
 
@@ -245,7 +519,11 @@ internal sealed class DenoReplExecutionCollector
             return true;
         }
 
-        skippedCount++;
+        // The presentation event cap drops arbitrary presentation events (displays, clears,
+        // stderr writes). It is counted under the display skip counter: the per-category breakdown
+        // distinguishes bundle-size skips (BundleSkippedCount) from every other presentation skip
+        // (DisplaySkippedCount); display rate-limit drops are counted separately (RateSkippedCount).
+        displaySkippedCount++;
         return false;
     }
 
@@ -327,11 +605,6 @@ internal sealed class DenoReplExecutionCollector
             result = checked(result + Encoding.UTF8.GetByteCount(name) +
                              Encoding.UTF8.GetByteCount(value.GetRawText()));
         return result;
-    }
-
-    private static MimeBundle ToMimeBundle(JsonElement element)
-    {
-        return new MimeBundle(ToDictionary(element));
     }
 
     private static IReadOnlyDictionary<string, JsonElement> ToDictionary(JsonElement? element)

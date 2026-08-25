@@ -278,6 +278,7 @@ public sealed class DenoReplHostDeriveTests
             harness.ControlHost,
             new DenoReplModule(),
             harness.EvalHost,
+            harness.OutputHost,
             registry,
             credentials,
             NullLogger<DenoReplProcess>.Instance,
@@ -350,6 +351,7 @@ public sealed class DenoReplHostDeriveTests
             harness.ControlHost,
             new DenoReplModule(),
             harness.EvalHost,
+            harness.OutputHost,
             registry,
             credentials,
             NullLogger<DenoReplProcess>.Instance,
@@ -420,6 +422,7 @@ public sealed class DenoReplHostDeriveTests
             harness.ControlHost,
             new DenoReplModule(),
             harness.EvalHost,
+            harness.OutputHost,
             registry,
             credentials,
             NullLogger<DenoReplProcess>.Instance,
@@ -467,7 +470,8 @@ public sealed class DenoReplHostDeriveTests
             NullLogger<ReplControlHost>.Instance,
             pluginHosts: manager);
         var evalHost = new ReplEvalWebSocketHost(registry, credentials);
-        var application = await StartHostAsync(socketPath, controlHost, evalHost, cancellationToken);
+        var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, cancellationToken);
 
         // The manager's host process connects the control bus (its hello registers the host pid);
         // the manager then accepts host.repl.* reports from the real host.
@@ -480,6 +484,7 @@ public sealed class DenoReplHostDeriveTests
         {
             ControlHost = controlHost,
             EvalHost = evalHost,
+            OutputHost = outputHost,
             Manager = manager
         };
         harness.Initialize(application, fakeDenoPath: null);
@@ -491,6 +496,8 @@ public sealed class DenoReplHostDeriveTests
         internal required ReplControlHost ControlHost { get; init; }
 
         internal required ReplEvalWebSocketHost EvalHost { get; init; }
+
+        internal required ReplOutputWebSocketHost OutputHost { get; init; }
 
         /// <summary>Simulated host WebSocket when the host process is a fake deno
         /// (see <see cref="CreateHarnessAsync"/>); null when a real host process is
@@ -560,7 +567,8 @@ public sealed class DenoReplHostDeriveTests
             NullLogger<ReplControlHost>.Instance,
             pluginHosts: manager);
         var evalHost = new ReplEvalWebSocketHost(registry, credentials);
-        var application = await StartHostAsync(socketPath, controlHost, evalHost, cancellationToken);
+        var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, cancellationToken);
 
         // The simulated host owns the test process pid so the eval connection's peer identity is
         // resolvable while its credential proves the session.
@@ -576,6 +584,7 @@ public sealed class DenoReplHostDeriveTests
         {
             ControlHost = controlHost,
             EvalHost = evalHost,
+            OutputHost = outputHost,
             Host = fakeSocket,
             Manager = manager
         };
@@ -696,6 +705,7 @@ public sealed class DenoReplHostDeriveTests
         string socketPath,
         ReplControlHost controlHost,
         ReplEvalWebSocketHost evalHost,
+        ReplOutputWebSocketHost outputHost,
         CancellationToken cancellationToken)
     {
         Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
@@ -717,6 +727,9 @@ public sealed class DenoReplHostDeriveTests
         });
         var application = builder.Build();
         evalHost.MapEndpoint(application);
+        // The REPL child now opens the dedicated binary output endpoint as part of its startup;
+        // the test kernel must serve it or the child fails to start.
+        outputHost.MapEndpoint(application);
         controlHost.MapEndpoints(application);
         await application.StartAsync(cancellationToken);
         return application;

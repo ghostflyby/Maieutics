@@ -45,6 +45,38 @@ public sealed class ReplCommCodecTests
     }
 
     [Fact]
+    public void EncodeDecodeRoundTripsCommMessageWithMultiMegabyteBuffer()
+    {
+        // Comm traffic carries native media buffers (ipywidgets Image/Audio/Video values travel
+        // as raw bytes in the message buffers), so a single comm message can legitimately exceed
+        // the control bus's 1 MiB ceiling. The dedicated comm ceiling (MaximumCommMessageBytes)
+        // allows a few MB; this exercises a ~2 MiB media buffer end to end through the codec.
+        var data = JsonSerializer.SerializeToElement(new { marker = "media" });
+        var buffer = new byte[2 * 1024 * 1024];
+        new Random(42).NextBytes(buffer);
+        var message = new JupyterCommMessage(
+            JupyterCommKind.Message,
+            "comm-media",
+            null,
+            data,
+            [buffer],
+            JupyterWireMessage.Create(
+                JupyterMessage.Create(
+                    "comm_msg",
+                    new JupyterCommMsgContent("comm-media", data),
+                    JupyterJsonContext.Default.JupyterCommMsgContent,
+                    JupyterSessionIdentity.Create("test"))));
+
+        var encoded = ReplControlHost.CommCodec.Encode(message);
+        encoded.Length.Should().BeLessThan(ReplControlLimits.MaximumCommMessageBytes);
+        var decoded = ReplControlHost.CommCodec.Decode(encoded);
+
+        decoded.Kind.Should().Be(JupyterCommKind.Message);
+        decoded.CommId.Should().Be("comm-media");
+        decoded.Buffers.Should().ContainSingle().Which.Should().Equal(buffer);
+    }
+
+    [Fact]
     public void EncodeDecodeRoundTripsCommMessageWithoutDataOrBuffers()
     {
         var message = new JupyterCommMessage(

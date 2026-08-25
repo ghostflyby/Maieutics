@@ -242,7 +242,8 @@ public sealed class PluginHostIntegrationTests
             functions,
             manager);
         await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
-        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
+        await using var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, timeout.Token);
         await manager.StartAsync(timeout.Token);
         await using (application)
         await using (manager)
@@ -259,6 +260,7 @@ public sealed class PluginHostIntegrationTests
                 controlHost,
                 new DenoReplModule(),
                 evalHost,
+                outputHost,
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
@@ -294,6 +296,7 @@ public sealed class PluginHostIntegrationTests
         string socketPath,
         ReplControlHost controlHost,
         ReplEvalWebSocketHost evalHost,
+        ReplOutputWebSocketHost outputHost,
         CancellationToken cancellationToken)
     {
         Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
@@ -315,6 +318,7 @@ public sealed class PluginHostIntegrationTests
         });
         var application = builder.Build();
         evalHost.MapEndpoint(application);
+        outputHost.MapEndpoint(application);
         controlHost.MapEndpoints(application);
         await application.StartAsync(cancellationToken);
         return application;

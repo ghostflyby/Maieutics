@@ -36,7 +36,28 @@ internal sealed record DenoReplPresentationResult(
     int DisplayCount,
     int UpdateCount,
     int ClearCount,
-    int SkippedCount);
+    int RateSkippedCount,
+    int BundleSkippedCount,
+    int DisplaySkippedCount,
+    bool DigestTruncated,
+    IReadOnlyList<DenoReplDisplayDigest> Digests)
+{
+    /// <summary>The total number of presentation items skipped, kept as the sum of the per-category
+    /// counters: <see cref="RateSkippedCount"/> (display rate-limit drops), <see cref="BundleSkippedCount"/>
+    /// (presentation bundle budget), and <see cref="DisplaySkippedCount"/> (every other presentation
+    /// skip).</summary>
+    public int SkippedCount => RateSkippedCount + BundleSkippedCount + DisplaySkippedCount;
+}
+
+/// <summary>A bounded model-side digest of one display or update, produced independently of the
+/// full notebook presentation. The preview follows the MIME pick order (text/plain first, then
+/// the first string <c>text/*</c> or <c>*+json</c> mime); binary mimes (image/*, application/pdf,
+/// video/*, audio/*) contribute their mime key only, never a preview.</summary>
+internal sealed record DenoReplDisplayDigest(
+    IReadOnlyList<string> MediaTypes,
+    string? Preview = null,
+    string? DisplayId = null,
+    bool IsUpdate = false);
 
 internal enum DenoReplSessionState
 {

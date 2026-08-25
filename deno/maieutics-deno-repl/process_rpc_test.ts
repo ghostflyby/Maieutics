@@ -1,10 +1,10 @@
 // C1 integration test: the host-derived REPL process (`process_main.ts` /
-// `process_rpc.ts`) boots the REAL WebSocket REPL — eval + comm channels and
-// the shared Aves worker — once the host starts it. This test runs the process
-// through worker-actor's `spawnProcess` exactly like the plugin host derives
-// it, against a minimal in-test WebSocket "kernel" that speaks the eval
-// protocol (hello/ready), the /comm channel, and the /ws control bus, and
-// verifies:
+// `process_rpc.ts`) boots the REAL WebSocket REPL — eval + output + comm
+// channels and the shared Aves worker — once the host starts it. This test
+// runs the process through worker-actor's `spawnProcess` exactly like the
+// plugin host derives it, against a minimal in-test WebSocket "kernel" that
+// speaks the eval protocol (hello/ready), the /comm channel, the /ws control
+// bus, and the binary /v1/repl/output/ws endpoint, and verifies:
 //   - the B3 ordering: pregestPid/initialize resolve before startRepl boots
 //     the client (status stays idle until then);
 //   - startRepl completes the eval hello/ready handshake (status().ready);
@@ -13,6 +13,9 @@
 //     observes the worker's result);
 //   - the script surface binds inside the worker (`globalThis.maieutics`) and
 //     `maieutics.health()` round-trips through the pid-attributed /ws bus;
+//   - the REPL opens the dedicated output endpoint and streams the worker's
+//     output events as binary frames there (console/display/clearOutput no
+//     longer travel on the eval channel);
 //   - disposeRepl ends the channels and the process exits itself.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
@@ -25,6 +28,7 @@ import {
   ReplEvalMessageType,
   type ReplEvalResultPayload,
 } from "./protocol.ts";
+import { decodeOutputFrame, REPL_OUTPUT_WEBSOCKET_PATH } from "./output_protocol.ts";
 import type { HostReplRpc } from "../maieutics-plugin-host/host_repl_protocol.ts";
 
 const ENTRY_URL = new URL("./process_main.ts", import.meta.url).href;
@@ -64,6 +68,10 @@ class FakeKernel implements AsyncDisposable {
   commSessionId: string | undefined;
   /** Whether the script /ws control bus connected. */
   busConnected = false;
+  /** Whether the binary /v1/repl/output/ws endpoint connected. */
+  outputConnected = false;
+  /** Binary output frames decoded from the output endpoint, in wire order. */
+  readonly outputFrames: ReturnType<typeof decodeOutputFrame>[] = [];
 
   private constructor(path: string) {
     this.address = path;
@@ -74,6 +82,11 @@ class FakeKernel implements AsyncDisposable {
     if (path === REPL_EVAL_WEBSOCKET_PATH) {
       const { socket, response } = Deno.upgradeWebSocket(request);
       void this.#serveEval(socket);
+      return response;
+    }
+    if (path === REPL_OUTPUT_WEBSOCKET_PATH) {
+      const { socket, response } = Deno.upgradeWebSocket(request);
+      void this.#serveOutput(socket);
       return response;
     }
     if (path === "/comm") {
@@ -105,6 +118,37 @@ class FakeKernel implements AsyncDisposable {
           payload: { sessionId: SESSION_ID, generation: GENERATION },
         }));
       }
+    };
+    socket.onclose = () => {
+      socket.onmessage = null;
+    };
+  }
+
+  /** Receives the REPL's binary output frames (console/display/clearOutput). */
+  async #serveOutput(socket: WebSocket): Promise<void> {
+    this.outputConnected = true;
+    socket.onmessage = (event) => {
+      void (async () => {
+        let data: Uint8Array;
+        if (typeof event.data === "string") {
+          data = new TextEncoder().encode(event.data);
+        } else if (event.data instanceof Blob) {
+          data = new Uint8Array(await event.data.arrayBuffer());
+        } else if (event.data instanceof ArrayBuffer) {
+          data = new Uint8Array(event.data);
+        } else {
+          data = new Uint8Array(event.data.buffer, event.data.byteOffset, event.data.byteLength);
+        }
+        try {
+          this.outputFrames.push(decodeOutputFrame(data));
+        } catch (error) {
+          console.error(
+            `[test-kernel] undecodable output frame: ${
+              error instanceof Error ? error.message : error
+            }`,
+          );
+        }
+      })();
     };
     socket.onclose = () => {
       socket.onmessage = null;
@@ -186,6 +230,19 @@ class FakeKernel implements AsyncDisposable {
     throw new Error(`Timed out waiting for the result of execution '${executionId}'.`);
   }
 
+  /** Waits until an output frame matching the predicate arrives. */
+  async waitForOutput(
+    predicate: (frame: ReturnType<typeof decodeOutputFrame>) => boolean,
+    timeoutMs = 5_000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.outputFrames.some(predicate)) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("Timed out waiting for a matching output frame.");
+  }
+
   async [Symbol.asyncDispose](): Promise<void> {
     try {
       this.#listener?.close();
@@ -236,6 +293,58 @@ Deno.test("host-derived REPL process runs the real REPL over the eval channel", 
       // round-trips through the /ws control bus, attributed to this session.
       assertEquals(await kernel.execute("await globalThis.maieutics.health()"), "ok");
       assertEquals(kernel.busConnected, true);
+
+      // The output endpoint carries the worker's console events as binary
+      // frames; the eval channel stays a pure JSON control plane.
+      assertEquals(kernel.outputConnected, true);
+      assertEquals(await kernel.execute('console.log("hello output")'), undefined);
+      await kernel.waitForOutput(
+        (frame) => frame.type === 0 && frame.text === "hello output\n",
+      );
+
+      // Comm events ride the dedicated comm channel and must not consume the output frame
+      // sequence: interleaving `Deno.jupyter.broadcast` (comm) with console/display output keeps
+      // the output endpoint's per-execution sequence contiguous (phase 3 exposes the strict
+      // validation; a gap would terminate the connection).
+      await kernel.execute(
+        "const commId = 'probe-comm'; " +
+          "await Deno.jupyter.broadcast('comm_open', " +
+          "{ comm_id: commId, target_name: 'probe', data: {} }, " +
+          "{ buffers: [new Uint8Array([1, 2, 3])] }); " +
+          "console.log('before-display'); " +
+          "await Deno.jupyter.display(" +
+          "{ 'text/plain': 'probe-display' }, { raw: true }); " +
+          "const w = { [Deno.jupyter.$display]: async () => " +
+          "({ 'application/vnd.jupyter.widget-view+json': { model_id: commId } }) }; w",
+      );
+      await kernel.waitForOutput(
+        (frame) => frame.type === 0 && frame.text === "before-display\n",
+      );
+      await kernel.waitForOutput(
+        (frame) => frame.type === 2 && JSON.stringify(frame.data).includes("probe-display"),
+      );
+      await kernel.waitForOutput(
+        (frame) => frame.type === 2 && JSON.stringify(frame.data).includes("widget-view"),
+      );
+      const widgetDisplay = kernel.outputFrames
+        .filter((frame) => frame.type === 2 && JSON.stringify(frame.data).includes("widget-view"))
+        .at(-1);
+      assert(widgetDisplay !== undefined);
+      const outputSequences = kernel.outputFrames
+        .filter((frame) => frame.executionId === widgetDisplay.executionId)
+        .map((frame) => frame.seq);
+      // console(1), display(2), display(3): comm events never appear on the output endpoint.
+      assertEquals(outputSequences, [1, 2, 3]);
+      assertEquals(
+        kernel.evalMessages.every((envelope) =>
+          envelope.type === ReplEvalMessageType.hello ||
+          envelope.type === ReplEvalMessageType.ready ||
+          envelope.type === ReplEvalMessageType.execute ||
+          envelope.type === ReplEvalMessageType.result
+        ),
+        true,
+        "the eval channel must not carry console/display output events",
+      );
 
       // disposeRepl ends the channels and the process exits itself.
       await actor.disposeRepl();

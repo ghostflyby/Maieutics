@@ -232,12 +232,17 @@ public sealed class DenoReplSessionTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int disposeState;
 
-        internal ControlledGeneration(ConcurrencyProbe? probe = null)
+        internal ControlledGeneration(ConcurrencyProbe? probe = null, ControlledOutputConnection? output = null)
         {
             ConnectionImpl = new ControlledConnection(probe);
+            if (output is not null) OutputEvents = Task.FromResult<IAsyncEnumerable<ReplOutputFrame>>(output);
         }
 
         internal ControlledConnection ConnectionImpl { get; init; }
+
+        /// <summary>Optional output frame stream. Null when the harness has no output endpoint;
+        /// the collector then degrades to the eval control plane only.</summary>
+        public Task<IAsyncEnumerable<ReplOutputFrame>>? OutputEvents { get; init; }
 
         public IDenoReplConnection Connection => ConnectionImpl;
 
@@ -532,5 +537,29 @@ public sealed class DenoReplSessionTests
             string prompt,
             bool password,
             CancellationToken cancellationToken) => Task.FromResult(string.Empty);
+    }
+
+    /// <summary>A bounded output frame channel the collector drains. Frames must be published for
+    /// an execution, then <see cref="End" /> closes the stream so the collector's terminal wait
+    /// does not block on the read.</summary>
+    internal sealed class ControlledOutputConnection : IAsyncEnumerable<ReplOutputFrame>
+    {
+        private readonly Channel<ReplOutputFrame> frames = Channel.CreateUnbounded<ReplOutputFrame>();
+
+        internal void Publish(ReplOutputFrame frame)
+        {
+            frames.Writer.TryWrite(frame);
+        }
+
+        internal void End()
+        {
+            frames.Writer.TryComplete();
+        }
+
+        public IAsyncEnumerator<ReplOutputFrame> GetAsyncEnumerator(
+            CancellationToken cancellationToken = default)
+        {
+            return frames.Reader.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+        }
     }
 }

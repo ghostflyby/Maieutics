@@ -107,10 +107,6 @@ internal static class ReplEvalMessageType
     internal const string Result = "repl.eval.result";
     internal const string Error = "repl.eval.error";
     internal const string Cancelled = "repl.eval.cancelled";
-    internal const string Console = "repl.eval.console";
-    internal const string Display = "repl.eval.display";
-    internal const string UpdateDisplay = "repl.eval.updateDisplay";
-    internal const string ClearOutput = "repl.eval.clearOutput";
     internal const string InputRequest = "repl.eval.inputRequest";
     internal const string InputReply = "repl.eval.inputReply";
 
@@ -124,10 +120,6 @@ internal static class ReplEvalMessageType
         Result,
         Error,
         Cancelled,
-        Console,
-        Display,
-        UpdateDisplay,
-        ClearOutput,
         InputRequest,
         InputReply
     };
@@ -147,24 +139,6 @@ internal sealed record ReplEvalIdentity(
 internal sealed record ReplEvalExecutePayload(string ExecutionId, string Code);
 
 internal sealed record ReplEvalCancelPayload(string ExecutionId);
-
-internal sealed record ReplEvalConsolePayload(
-    string ExecutionId,
-    long Sequence,
-    string Stream,
-    string Text);
-
-internal sealed record ReplEvalDisplayPayload(
-    string ExecutionId,
-    long Sequence,
-    string? DisplayId,
-    JsonElement Data,
-    JsonElement? Metadata = null);
-
-internal sealed record ReplEvalClearOutputPayload(
-    string ExecutionId,
-    long Sequence,
-    bool Wait);
 
 internal sealed record ReplEvalInputRequestPayload(
     string ExecutionId,
@@ -191,25 +165,6 @@ internal sealed record ReplEvalErrorPayload(
 internal sealed record ReplEvalCancelledPayload(string ExecutionId);
 
 internal abstract record ReplEvalEvent(string ExecutionId, long Sequence);
-
-internal sealed record ReplEvalConsoleEvent(
-    string ExecutionId,
-    long Sequence,
-    string Stream,
-    string Text) : ReplEvalEvent(ExecutionId, Sequence);
-
-internal sealed record ReplEvalDisplayEvent(
-    string ExecutionId,
-    long Sequence,
-    bool IsUpdate,
-    string? DisplayId,
-    JsonElement Data,
-    JsonElement? Metadata) : ReplEvalEvent(ExecutionId, Sequence);
-
-internal sealed record ReplEvalClearOutputEvent(
-    string ExecutionId,
-    long Sequence,
-    bool Wait) : ReplEvalEvent(ExecutionId, Sequence);
 
 internal sealed record ReplEvalInputRequestEvent(
     string ExecutionId,
@@ -252,9 +207,6 @@ internal sealed class ReplEvalProtocolException(
 [JsonSerializable(typeof(ReplEvalIdentity))]
 [JsonSerializable(typeof(ReplEvalExecutePayload))]
 [JsonSerializable(typeof(ReplEvalCancelPayload))]
-[JsonSerializable(typeof(ReplEvalConsolePayload))]
-[JsonSerializable(typeof(ReplEvalDisplayPayload))]
-[JsonSerializable(typeof(ReplEvalClearOutputPayload))]
 [JsonSerializable(typeof(ReplEvalInputRequestPayload))]
 [JsonSerializable(typeof(ReplEvalInputReplyPayload))]
 [JsonSerializable(typeof(ReplEvalResultPayload))]

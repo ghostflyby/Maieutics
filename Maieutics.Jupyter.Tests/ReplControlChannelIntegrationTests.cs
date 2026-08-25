@@ -53,7 +53,8 @@ public sealed class ReplControlChannelIntegrationTests
             NullLogger<ReplControlHost>.Instance,
             credentials: credentials);
         await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
-        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
+        await using var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, timeout.Token);
         await using (application)
         {
             var options = new DenoReplOptions();
@@ -62,6 +63,7 @@ public sealed class ReplControlChannelIntegrationTests
                 controlHost,
                 new DenoReplModule(),
                 evalHost,
+                outputHost,
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
@@ -113,7 +115,8 @@ public sealed class ReplControlChannelIntegrationTests
             functions,
             credentials: credentials);
         await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
-        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
+        await using var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, timeout.Token);
         await using (application)
         {
             var options = new DenoReplOptions();
@@ -122,6 +125,7 @@ public sealed class ReplControlChannelIntegrationTests
                 controlHost,
                 new DenoReplModule(),
                 evalHost,
+                outputHost,
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
@@ -164,7 +168,8 @@ public sealed class ReplControlChannelIntegrationTests
             NullLogger<ReplControlHost>.Instance,
             credentials: credentials);
         await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
-        var application = await StartHostAsync(socketPath, controlHost, evalHost, timeout.Token);
+        await using var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, timeout.Token);
         await using (application)
         {
             var options = new DenoReplOptions();
@@ -173,6 +178,7 @@ public sealed class ReplControlChannelIntegrationTests
                 controlHost,
                 new DenoReplModule(),
                 evalHost,
+                outputHost,
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
@@ -199,8 +205,7 @@ public sealed class ReplControlChannelIntegrationTests
                 }
 
                 received.Should().Equal(
-                    nameof(ReplEvalInputRequestEvent),
-                    nameof(ReplEvalConsoleEvent));
+                    nameof(ReplEvalInputRequestEvent));
                 var terminal = await execution.Completion.WaitAsync(timeout.Token);
                 terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetString()
                     .Should().Be("Ada");
@@ -214,6 +219,7 @@ public sealed class ReplControlChannelIntegrationTests
         string socketPath,
         ReplControlHost controlHost,
         ReplEvalWebSocketHost evalHost,
+        ReplOutputWebSocketHost outputHost,
         CancellationToken cancellationToken)
     {
         Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
@@ -235,6 +241,9 @@ public sealed class ReplControlChannelIntegrationTests
         });
         var application = builder.Build();
         evalHost.MapEndpoint(application);
+        // The REPL child now opens the dedicated binary output endpoint as part of its startup;
+        // the test kernel must serve it or the child fails to start.
+        outputHost.MapEndpoint(application);
         controlHost.MapEndpoints(application);
         await application.StartAsync(cancellationToken);
         return application;

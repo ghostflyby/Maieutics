@@ -16,6 +16,12 @@ import {
   requireString,
 } from "./protocol.ts";
 import {
+  encodeOutputFrame,
+  type OutputFrame,
+  REPL_OUTPUT_MAX_MESSAGE_BYTES,
+  REPL_OUTPUT_WEBSOCKET_PATH,
+} from "./output_protocol.ts";
+import {
   ReplActor,
   type ReplActorEvent,
   type ReplActorInputRequest,
@@ -87,6 +93,7 @@ export class ReplClient {
   readonly #inputWaiters = new Map<string, InputWaiter>();
   readonly #ownedTasks = new Set<Promise<void>>();
   #socket: IpcWebSocket | undefined;
+  #outputSocket: IpcWebSocket | undefined;
   #actor: ReplActor | undefined;
   #active: ActiveExecution | undefined;
   #commClient: CommClient | undefined;
@@ -132,6 +139,7 @@ export class ReplClient {
     });
     this.#actor.setInputHandler((request) => this.#requestInput(request));
     await this.#openSocket();
+    await this.#openOutputSocket();
     this.#own(this.#openComm().catch((error) => this.#failComm(error)));
     this.#own(this.#outboundPump());
     this.#own(this.#eventPump());
@@ -167,6 +175,50 @@ export class ReplClient {
       }
     };
     socket.onError = (error) => this.#fail(error);
+  }
+
+  /**
+   * Opens the dedicated output endpoint. The output WebSocket is half-duplex:
+   * this side only sends binary output frames (console/display/updateDisplay/
+   * clearOutput) and never expects messages back. A failure of the output
+   * channel is a REPL failure — output is an integral part of an execution,
+   * so losing the channel is treated like losing the eval channel (degraded
+   * fallback is deferred to a later phase).
+   */
+  async #openOutputSocket(): Promise<void> {
+    const socket = await connectIpcWebSocket(
+      this.#options.address,
+      REPL_OUTPUT_WEBSOCKET_PATH,
+      this.#options.credential,
+      { maxMessageBytes: REPL_OUTPUT_MAX_MESSAGE_BYTES },
+    );
+    this.#outputSocket = socket;
+    socket.onMessage = (data) => {
+      // Process -> host only: the host never sends output frames. Any inbound
+      // data is a protocol violation worth surfacing on the error path.
+      this.#fail(
+        new Error(
+          "The REPL output WebSocket received an unexpected message from the host.",
+        ),
+      );
+    };
+    socket.onClose = () => {
+      if (!this.#closeExpected) {
+        this.#fail(new Error("The REPL output WebSocket closed unexpectedly."));
+      }
+    };
+    socket.onError = (error) => this.#fail(error);
+    // The first frame is a JSON hello declaring the session and generation so the
+    // host can attribute the connection to the exact (session, generation) slot —
+    // mirroring the comm endpoint's hello (AGENTS.md invariant 27: endpoints are
+    // deliberate API surface, and a restart must never leak a previous generation's
+    // output connection into the new one).
+    socket.send(
+      JSON.stringify({
+        sessionId: this.#options.sessionId,
+        generation: this.#options.generation,
+      }),
+    );
   }
 
   async #openComm(): Promise<void> {
@@ -551,7 +603,7 @@ export class ReplClient {
         if (active === undefined || active.executionId !== item.event.executionId) {
           throw new Error(`Output arrived for inactive execution '${item.event.executionId}'.`);
         }
-        await this.#send(this.#eventEnvelope(item.event));
+        await this.#sendOutputFrame(this.#outputFrame(item.event));
         item.handled.resolve();
       } catch (error) {
         item.handled.reject(error);
@@ -581,20 +633,37 @@ export class ReplClient {
     });
   }
 
-  #eventEnvelope(event: ReplActorEvent): Omit<ReplEvalEnvelope, "version"> {
-    const common = {
-      correlationId: event.executionId,
-      payload: { ...event, type: undefined },
-    };
+  async #sendOutputFrame(frame: OutputFrame): Promise<void> {
+    const socket = this.#outputSocket;
+    if (socket === undefined || !socket.isOpen) {
+      throw new Error("The REPL output WebSocket is not open.");
+    }
+    socket.send(encodeOutputFrame(frame));
+  }
+
+  #outputFrame(event: ReplActorEvent): OutputFrame {
     switch (event.type) {
       case "console":
-        return { ...common, type: ReplEvalMessageType.console };
+        // A console event's stream selects the stdout or stderr frame type.
+        return {
+          type: event.stream === "stderr" ? 1 : 0,
+          seq: event.sequence,
+          executionId: event.executionId,
+          text: event.text,
+        };
       case "display":
-        return { ...common, type: ReplEvalMessageType.display };
       case "updateDisplay":
-        return { ...common, type: ReplEvalMessageType.updateDisplay };
+        return {
+          type: 2,
+          seq: event.sequence,
+          executionId: event.executionId,
+          data: event.data,
+          ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
+          ...(event.displayId === undefined ? {} : { displayId: event.displayId }),
+          isUpdate: event.type === "updateDisplay",
+        };
       case "clearOutput":
-        return { ...common, type: ReplEvalMessageType.clearOutput };
+        return { type: 3, seq: event.sequence, executionId: event.executionId, wait: event.wait };
       case "commOpen":
       case "commMsg":
       case "commClose":
@@ -712,6 +781,7 @@ export class ReplClient {
 
     this.#closeExpected = true;
     this.#socket?.close(1000, graceful ? "REPL disposed" : "REPL failed");
+    this.#outputSocket?.close(1000, graceful ? "REPL disposed" : "REPL failed");
     const closeReason = reason ?? new Error("The REPL actor is disposed.");
     this.#inbound.close(closeReason);
     this.#events.close(closeReason);

@@ -19,6 +19,11 @@ internal interface IDenoReplGeneration : IAsyncDisposable
 {
     IDenoReplConnection Connection { get; }
 
+    /// <summary>Resolves the generation's output frame stream once the binary output endpoint
+    /// attaches during startup. Null when the generation has no output connection (isolated unit
+    /// harnesses).</summary>
+    Task<IAsyncEnumerable<ReplOutputFrame>>? OutputEvents { get; }
+
     Task Completion { get; }
 
     int? ExitCode { get; }
@@ -33,6 +38,7 @@ internal sealed class LocalDenoReplSessionFactory(
     ReplControlHost controlHost,
     DenoReplModule modules,
     ReplEvalWebSocketHost evalHost,
+    ReplOutputWebSocketHost outputHost,
     ReplControlSessionRegistry sessionRegistry,
     ReplControlCredentialRegistry credentialRegistry,
     ILogger<DenoReplProcess> logger,
@@ -55,6 +61,9 @@ internal sealed class LocalDenoReplSessionFactory(
     private readonly DenoReplModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
     private readonly DenoReplOptions options = options ?? throw new ArgumentNullException(nameof(options));
+
+    private readonly ReplOutputWebSocketHost outputHost =
+        outputHost ?? throw new ArgumentNullException(nameof(outputHost));
 
     private readonly PluginHostManager? pluginHosts = pluginHosts;
 
@@ -153,7 +162,9 @@ internal sealed class LocalDenoReplSessionFactory(
             return new LocalDenoReplGeneration(
                 process,
                 socket,
+                outputHost,
                 sessionId,
+                generation,
                 options.ShutdownTimeout,
                 sessionRegistry,
                 credentialRegistry,
@@ -212,7 +223,9 @@ internal sealed class LocalDenoReplSessionFactory(
             var socket = await connection.ConfigureAwait(false);
             return new HostDerivedDenoReplGeneration(
                 socket,
+                outputHost,
                 sessionId,
+                generation,
                 options.ShutdownTimeout,
                 credentialRegistry,
                 replPolicyRegistrar);
@@ -276,7 +289,9 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
     internal LocalDenoReplGeneration(
         DenoReplProcess process,
         ReplEvalWebSocketConnection connection,
+        ReplOutputWebSocketHost outputHost,
         string sessionId,
+        int generation,
         TimeSpan shutdownTimeout,
         ReplControlSessionRegistry sessionRegistry,
         ReplControlCredentialRegistry credentialRegistry,
@@ -290,9 +305,15 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
         this.credentialRegistry = credentialRegistry;
         this.replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
+        OutputEvents = ReplOutputEvents.MapAsync(outputHost, sessionId, generation);
     }
 
     public IDenoReplConnection Connection { get; }
+
+    /// <summary>The output frame stream for this generation's process. It is a session-lifetime
+    /// connection: the wait resolves once the output WebSocket attaches during startup, and the
+    /// stream stays open (consumed per execution) until the process ends.</summary>
+    public Task<IAsyncEnumerable<ReplOutputFrame>> OutputEvents { get; }
 
     public Task Completion { get; }
 
@@ -381,7 +402,9 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
 
     internal HostDerivedDenoReplGeneration(
         ReplEvalWebSocketConnection connection,
+        ReplOutputWebSocketHost outputHost,
         string sessionId,
+        int generation,
         TimeSpan shutdownTimeout,
         ReplControlCredentialRegistry credentialRegistry,
         IReplPolicyRegistrar? replPolicyRegistrar)
@@ -392,9 +415,15 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
         this.credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
         this.replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
+        OutputEvents = ReplOutputEvents.MapAsync(outputHost, sessionId, generation);
     }
 
     public IDenoReplConnection Connection => connection;
+
+    /// <summary>The output frame stream for this generation's process. The host-derived child
+    /// opens the output endpoint as part of its startup, so the wait resolves once the output
+    /// WebSocket attaches.</summary>
+    public Task<IAsyncEnumerable<ReplOutputFrame>> OutputEvents { get; }
 
     public Task Completion { get; }
 
@@ -459,5 +488,21 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
     private async Task ObserveCompletionAsync()
     {
         await connection.Completion.ConfigureAwait(false);
+    }
+}
+
+/// <summary>Maps the output connection wait into an output frame stream task. The wait itself
+/// faults when the output endpoint never attaches (startup failure), surfacing on the first
+/// execution through the session's <c>ResolveOutputEventsAsync</c>.</summary>
+internal static class ReplOutputEvents
+{
+    internal static async Task<IAsyncEnumerable<ReplOutputFrame>> MapAsync(
+        ReplOutputWebSocketHost outputHost,
+        string sessionId,
+        int generation)
+    {
+        ArgumentNullException.ThrowIfNull(outputHost);
+        var connection = await outputHost.WaitForConnectionAsync(sessionId, generation).ConfigureAwait(false);
+        return connection.Events;
     }
 }

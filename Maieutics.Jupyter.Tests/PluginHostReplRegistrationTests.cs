@@ -413,15 +413,15 @@ public sealed class PluginHostReplRegistrationTests
     }
 
     /// <summary>Creates a fake deno executable (an immediate-exit shell script on unix, the
-    /// always-present <c>color.exe</c> on Windows) so the manager's real host process never connects
-    /// to a control socket and races the simulated host. <c>color.exe</c> ignores all arguments,
-    /// prints its usage text, and exits immediately.</summary>
+    /// always-present <c>cmd.exe</c> on Windows) so the manager's real host process never connects
+    /// to a control socket and races the simulated host. On Windows the host launches
+    /// <c>cmd.exe run --config=...</c>, which prints "'run' is not recognized" and exits
+    /// immediately; <c>cmd.exe</c> is resolved through PATH and is guaranteed present, unlike
+    /// <c>color.exe</c>/<c>where.exe</c> which are not reliably on Windows CI runners.</summary>
     private static string CreateFakeDenoExecutable()
     {
         if (OperatingSystem.IsWindows())
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.System),
-                "color.exe");
+            return "cmd.exe";
 
         var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
         File.WriteAllText(path, "#!/bin/sh\nexit 0\n");

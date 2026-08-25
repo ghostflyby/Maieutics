@@ -126,52 +126,70 @@ function createRoutingWorker(profile) {
     return routeConstruction(filename, options, profile);
   }
   RoutingWorker.prototype = NativeWorker.prototype;
+  // Wire the function object itself to NativeWorker so its constructor statics
+  // are readable through the prototype chain. NativeWorker's only own static
+  // members are the built-in `length`, `name`, and `prototype`
+  // (`Object.getOwnPropertyNames(NativeWorker)` returns exactly those three on
+  // Node 26.7.0; there are no symbols); setPrototypeOf still covers any
+  // current or future static member without duplicating it. RoutingWorker's
+  // own `name`/`length`/`prototype` properties are untouched (own properties
+  // shadow the inherited ones), and `instanceof` semantics are unchanged
+  // because RoutingWorker.prototype remains NativeWorker.prototype.
+  Object.setPrototypeOf(RoutingWorker, NativeWorker);
   return RoutingWorker;
 }
 
 function routeConstruction(filename, options, profile) {
   const opts = options === undefined || options === null ? {} : options;
   if (opts.type === "classic") {
-    throw new TypeError(
+    throw new DOMException(
       "Classic workers are not supported by the Maieutics runtime; use a module worker.",
+      "NotSupportedError",
     );
   }
   if (opts.type === "commonjs") {
-    throw new TypeError(
+    throw new DOMException(
       "CommonJS workers are not supported by the Maieutics runtime; use a module worker.",
+      "NotSupportedError",
     );
   }
   if (opts.type !== undefined && opts.type !== "module") {
-    throw new TypeError(
+    throw new DOMException(
       `Worker type '${String(opts.type)}' is not supported by the Maieutics runtime.`,
+      "NotSupportedError",
     );
   }
   if (opts.eval) {
-    throw new TypeError(
+    throw new DOMException(
       "eval workers are not supported by the Maieutics runtime; the entry must be a file/URL.",
+      "NotSupportedError",
     );
   }
   if (filename instanceof URL) {
     if (filename.protocol === "data:") {
-      throw new TypeError(
+      throw new DOMException(
         "data: worker entries are not supported by the Maieutics runtime.",
+        "NotSupportedError",
       );
     }
     if (
       filename.protocol !== "file:" && filename.protocol !== "http:" &&
       filename.protocol !== "https:"
     ) {
-      throw new TypeError(
+      throw new DOMException(
         `Unsupported Worker entry protocol '${filename.protocol}'; expected a file or HTTP(S) URL.`,
+        "NotSupportedError",
       );
     }
   } else if (typeof filename !== "string") {
-    throw new TypeError(
+    throw new DOMException(
       "Worker entry must be a string path or a file/HTTP(S) URL.",
+      "NotSupportedError",
     );
   } else if (/^data:/i.test(filename)) {
-    throw new TypeError(
+    throw new DOMException(
       "data: worker entries are not supported by the Maieutics runtime.",
+      "NotSupportedError",
     );
   }
 

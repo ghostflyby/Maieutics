@@ -44,8 +44,8 @@ After the preload, both `const { Worker } = require("node:worker_threads")` and
   preload through `process.execArgv`.
 - Supported options are forwarded unchanged: `name`, `execArgv`, `env`, `argv`, `workerData`,
   `transferList`, `resourceLimits`, `stdin`, `stdout`, `stderr`, `trackUnmanagedFds`.
-- Unsupported forms are rejected with a typed `TypeError` before any Worker is created:
-  `type: "classic"`, `type: "commonjs"`, `eval: true`, and `data:` entries.
+- Unsupported forms are rejected with a `DOMException` (`name` `NotSupportedError`) before any
+  Worker is created: `type: "classic"`, `type: "commonjs"`, `eval: true`, and `data:` entries.
 - Unknown options are forwarded as-is (Node itself ignores unknown options, so the adapter does not
   claim to validate what Node does not validate).
 - The target descriptor travels as `workerData` (Node strips the query string from `import.meta.url`

@@ -18,6 +18,15 @@
  *
  * This module is not part of the reusable Jupyter assemblies and not part of
  * the public plugin-author SDK.
+ *
+ * Profile space: this contract runs only inside Deno execution contexts, which
+ * produce exactly two profiles ("repl" and "plugin"). The standalone Node-side
+ * mirror (deno/maieutics-node-runtime/node_bootstrap_contract.cjs) keeps its
+ * own independent "node" profile and is deliberately not part of
+ * `BootstrapProfile`. Both runtimes share the marker symbol
+ * (Symbol.for("maieutics/bootstrap/v1")) and the wrapper-URL query keys for
+ * parity, but a marker is never read across runtimes: each runtime validates
+ * markers against its own profile whitelist.
  */
 
 /** Version of the shared bootstrap contract. Bumped when the wrapper or the
@@ -33,9 +42,14 @@ export const VERSION_QUERY_KEY = "maieuticsVersion";
 /** Query-string key that carries the runtime profile marker. */
 export const PROFILE_QUERY_KEY = "maieuticsProfile";
 
-/** A supported runtime profile. "repl" marks the REPL user worker; "plugin"
- * marks a plugin worker. The marker is non-sensitive and only used for
- * diagnostics and tests. */
+/** A supported Deno runtime profile. "repl" marks the REPL user worker;
+ * "plugin" marks a plugin worker. Deno execution contexts only ever produce
+ * these two profiles; the Node adapter (deno/maieutics-node-runtime/) uses its
+ * own independent "node" profile, which is deliberately NOT part of this
+ * union. Both runtimes share the marker symbol and the wrapper-URL query keys,
+ * but a marker is never read across runtimes: each runtime validates markers
+ * against its own profile whitelist. The marker is non-sensitive and only used
+ * for diagnostics and tests. */
 export type BootstrapProfile = "repl" | "plugin";
 
 /**
@@ -113,6 +127,13 @@ export function installBootstrapMarker(marker: BootstrapMarkerValue): void {
  * Reads the bootstrap marker from the current realm's global scope. Returns
  * null when the shared bootstrap has not run in this realm (the module was not
  * entered through the shared wrapper).
+ *
+ * Validation matches the Node mirror (node_bootstrap_contract.cjs): the value
+ * must be a non-null object, the version must be an integer (Number.isInteger;
+ * the only writer emits the positive BOOTSTRAP_VERSION constant), and the
+ * profile must be in this runtime's own whitelist. The whitelists differ by
+ * design ("repl" | "plugin" here, "repl" | "node" on the Node side); markers
+ * never cross runtimes.
  */
 export function readBootstrapMarker(): BootstrapMarkerValue | null {
   const value = (globalThis as unknown as Record<PropertyKey, unknown>)[BOOTSTRAP_MARKER];

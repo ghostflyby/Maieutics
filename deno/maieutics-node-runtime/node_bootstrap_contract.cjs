@@ -5,8 +5,9 @@
 // the Deno workspace; this Node adapter is deliberately STANDALONE CommonJS so
 // a plain `node --require` preload can install it. It shares the exact marker
 // symbol and the exact wrapper-URL query keys with the Deno module so both
-// runtimes read each other's descriptors. It must never import a Deno module
-// and must never be imported by Deno code.
+// runtimes' descriptors stay mutually parseable. A marker is never read across
+// runtimes: each runtime recognizes only its own profile space. It must never
+// import a Deno module and must never be imported by Deno code.
 //
 // Node strips the query string from import.meta.url inside a worker thread, so
 // the wrapper must receive the target descriptor through `workerData` instead
@@ -17,6 +18,14 @@
 // The adapter-added descriptor contains only the target and non-sensitive
 // bootstrap markers. Caller-provided workerData is forwarded as caller-owned
 // data and may itself contain arbitrary values.
+//
+// Profile space: this Node adapter has its own independent "node" profile,
+// which exists only here. The Deno contract's BootstrapProfile union
+// (deno/maieutics-runtime/bootstrap_contract.ts) covers exactly the two Deno
+// execution contexts ("repl" and "plugin") and intentionally does not include
+// "node". The shared marker symbol and query keys give the two runtimes
+// parity, not cross-runtime reads: readBootstrapMarker accepts only this
+// runtime's whitelist ("repl" | "node" here, "repl" | "plugin" in Deno).
 
 "use strict";
 
@@ -34,6 +43,12 @@ const BOOTSTRAP_MARKER = Symbol.for("maieutics/bootstrap/v1");
  * null when the shared bootstrap has not run in this realm. The marker value
  * is an object with a non-sensitive version and profile; installed by the
  * wrapper before the target module is imported.
+ *
+ * Validation is consistent with the Deno mirror (bootstrap_contract.ts): the
+ * value must be a non-null object, the version must be an integer
+ * (Number.isInteger), and the profile must be in this runtime's own whitelist
+ * ("repl" | "node" here, "repl" | "plugin" in Deno). Markers never cross
+ * runtimes, so the whitelists differing is by design.
  */
 function readBootstrapMarker() {
   const globals = globalThis;

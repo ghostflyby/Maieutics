@@ -48,8 +48,16 @@ Deno.test("worker entry imports only the plugin sdk and the shared runtime boots
   const source = await Deno.readTextFile(
     new URL("./worker_entry.ts", import.meta.url),
   );
-  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
-  for (const specifier of imports) {
+  // Match the module specifier itself, not whole lines: a `from "..."` clause
+  // (single or double quoted) and a bare side-effect `import "..."` (which has
+  // no `from` clause) are both extracted, so no import can slip through a
+  // line-oriented match.
+  const specifiers = [
+    ...source.matchAll(/\bfrom\s+["']([^"']+)["']/g),
+    ...source.matchAll(/\bimport\s+["']([^"']+)["']/g),
+  ].map((match) => match[1]);
+  assert(specifiers.length > 0, "worker entry must import its runtime pieces");
+  for (const specifier of specifiers) {
     assert(
       specifier.startsWith("../maieutics-plugin-sdk/") ||
         specifier.startsWith("../maieutics-runtime/") ||

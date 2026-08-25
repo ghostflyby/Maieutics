@@ -120,6 +120,9 @@ Every change must preserve these invariants:
 25. Call direction between the REPL and extensions is one-way: the REPL calls extension points through actor
     capabilities; extensions cannot call into the REPL, and the REPL exports no actor surface for them
     (ADR 0020). The reverse-call mechanism stays a library capability reserved for the distributed host.
+26. Internal data transfer never carries binary payloads through text, base64, or JSON: binary crosses process
+    boundaries as native binary frames or byte streams, and binary transfer and processing are stream-first;
+    the only permitted encoding is the target Jupyter representation (invariant 14).
 
 Use structured concurrency. Every long-lived loop or child process needs an owner, cancellation source, completion task,
 and deterministic disposal path. Observe background exceptions. Do not hold locks while awaiting provider streams, tool

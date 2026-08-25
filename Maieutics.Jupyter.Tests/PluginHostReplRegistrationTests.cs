@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -111,6 +114,97 @@ public sealed class PluginHostReplRegistrationTests
         broker.UnregisterProcess(424_242);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task HostDisconnectReleasesRegisteredHostReplRegistrations()
+    {
+        // A crashed or killed host never reports host.repl.exited for the REPLs it derived; when
+        // the host connection ends, the manager must release every still-tracked host-derived pid's
+        // session identity and broker policy (the same registrations the spawned report created).
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var registry = new ReplControlSessionRegistry();
+        await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+        var fakeDenoPath = CreateFakeDenoExecutable();
+        var manager = CreateManager(registry, broker, fakeDenoPath);
+        try
+        {
+            await manager.StartAsync(deadline.Token);
+            manager.RegisterReplPolicy("disconnect-session", EffectivePolicy.Default);
+
+            var socket = new FakeHostWebSocket();
+            var attach = manager.AttachHostAsync(socket, deadline.Token);
+            for (var attempt = 0; attempt < 100 && !manager.GetStatus().ControlConnected; attempt++)
+                await Task.Delay(50, deadline.Token);
+            manager.GetStatus().ControlConnected.Should().BeTrue();
+
+            manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
+                "disconnect-session", 1, 424_242)));
+            registry.IsOwnedBy(424_242, "disconnect-session").Should().BeTrue();
+            broker.RegistrationCount.Should().Be(1);
+
+            // The host dies without reporting exits: the attach loop ends and its finally must
+            // release the host-derived pid's session identity and broker policy.
+            socket.Dispose();
+            await attach;
+
+            registry.TryGetSession(424_242, out _).Should().BeFalse();
+            broker.RegistrationCount.Should().Be(0);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            TryDelete(fakeDenoPath);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task HostDisconnectAfterExitedReportsIsIdempotent()
+    {
+        // The host that reported host.repl.exited for a REPL must not be cleaned up twice: the
+        // disconnect fallback only releases pids that are still tracked, so a normal exited report
+        // followed by a disconnect releases nothing and never throws.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var registry = new ReplControlSessionRegistry();
+        await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+        var fakeDenoPath = CreateFakeDenoExecutable();
+        var manager = CreateManager(registry, broker, fakeDenoPath);
+        try
+        {
+            await manager.StartAsync(deadline.Token);
+            manager.RegisterReplPolicy("disconnect-session", EffectivePolicy.Default);
+
+            var socket = new FakeHostWebSocket();
+            var attach = manager.AttachHostAsync(socket, deadline.Token);
+            for (var attempt = 0; attempt < 100 && !manager.GetStatus().ControlConnected; attempt++)
+                await Task.Delay(50, deadline.Token);
+            manager.GetStatus().ControlConnected.Should().BeTrue();
+
+            manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
+                "disconnect-session", 1, 424_242)));
+            registry.IsOwnedBy(424_242, "disconnect-session").Should().BeTrue();
+            broker.RegistrationCount.Should().Be(1);
+
+            // The normal exited path releases the pid first; the later disconnect must find nothing
+            // left to release (idempotent with the disconnect fallback).
+            manager.HandleHostMessage(Envelope(ReplMessageType.HostReplExited, new HostReplExitedPayload(
+                "disconnect-session", 1, 424_242)));
+            registry.TryGetSession(424_242, out _).Should().BeFalse();
+            broker.RegistrationCount.Should().Be(0);
+
+            socket.Dispose();
+            await attach;
+
+            registry.TryGetSession(424_242, out _).Should().BeFalse();
+            broker.RegistrationCount.Should().Be(0);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            TryDelete(fakeDenoPath);
+        }
+    }
+
     [Fact]
     public void MalformedReportsAreIgnoredWithoutThrowing()
     {
@@ -213,12 +307,13 @@ public sealed class PluginHostReplRegistrationTests
 
     private static PluginHostManager CreateManager(
         ReplControlSessionRegistry registry,
-        DenoPermissionBroker? broker)
+        DenoPermissionBroker? broker,
+        string? fakeDenoPath = null)
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-reg-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions(),
+            new DenoReplOptions { Executable = fakeDenoPath ?? "deno" },
             new PluginHostModule(),
             registry,
             NullLogger<PluginHostManager>.Instance,
@@ -314,6 +409,136 @@ public sealed class PluginHostReplRegistrationTests
             }
 
             process.Dispose();
+        }
+    }
+
+    /// <summary>Creates a fake deno executable (an immediate-exit shell script on unix, the
+    /// always-present <c>color.exe</c> on Windows) so the manager's real host process never connects
+    /// to a control socket and races the simulated host. <c>color.exe</c> ignores all arguments,
+    /// prints its usage text, and exits immediately.</summary>
+    private static string CreateFakeDenoExecutable()
+    {
+        if (OperatingSystem.IsWindows())
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "color.exe");
+
+        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
+        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
+        File.SetUnixFileMode(
+            path,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // Best-effort temp cleanup.
+        }
+    }
+
+    /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and
+    /// blocks on receive until disposed (the manager's receive loop then ends and runs its
+    /// disconnect finally). Modeled on the <c>DenoReplHostDeriveTests</c> fake socket.</summary>
+    private sealed class FakeHostWebSocket : WebSocket
+    {
+        private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Channel<string> sent = Channel.CreateUnbounded<string>();
+        private WebSocketCloseStatus? closeStatus;
+        private WebSocketState state = WebSocketState.Open;
+
+        public override WebSocketState State => state;
+
+        public override WebSocketCloseStatus? CloseStatus => closeStatus;
+
+        public override string? CloseStatusDescription => null;
+
+        public override string? SubProtocol => null;
+
+        internal Task Closed => closed.Task;
+
+        public override void Abort()
+        {
+            state = WebSocketState.Aborted;
+            closed.TrySetResult();
+        }
+
+        public override Task CloseAsync(
+            WebSocketCloseStatus closeStatus,
+            string? statusDescription,
+            CancellationToken cancellationToken)
+        {
+            return CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
+        }
+
+        public override Task CloseOutputAsync(
+            WebSocketCloseStatus closeStatus,
+            string? statusDescription,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            this.closeStatus = closeStatus;
+            state = WebSocketState.Closed;
+            closed.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public override void Dispose()
+        {
+            state = WebSocketState.Closed;
+            sent.Writer.TryComplete();
+            closed.TrySetResult();
+        }
+
+        public override async Task<WebSocketReceiveResult> ReceiveAsync(
+            ArraySegment<byte> buffer,
+            CancellationToken cancellationToken)
+        {
+            await closed.Task.WaitAsync(cancellationToken);
+            state = WebSocketState.CloseReceived;
+            return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
+        }
+
+        public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            await closed.Task.WaitAsync(cancellationToken);
+            state = WebSocketState.CloseReceived;
+            return new ValueWebSocketReceiveResult(0, WebSocketMessageType.Close, true);
+        }
+
+        public override Task SendAsync(
+            ArraySegment<byte> buffer,
+            WebSocketMessageType messageType,
+            bool endOfMessage,
+            CancellationToken cancellationToken)
+        {
+            if (buffer.Array is not { } array)
+                throw new ArgumentException("The test WebSocket send buffer requires a backing array.", nameof(buffer));
+            return SendAsync(
+                array.AsMemory(buffer.Offset, buffer.Count),
+                messageType,
+                endOfMessage,
+                cancellationToken).AsTask();
+        }
+
+        public override ValueTask SendAsync(
+            ReadOnlyMemory<byte> buffer,
+            WebSocketMessageType messageType,
+            bool endOfMessage,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (messageType != WebSocketMessageType.Text || !endOfMessage)
+                throw new InvalidOperationException("The test socket only accepts complete text messages.");
+            return sent.Writer.WriteAsync(Encoding.UTF8.GetString(buffer.Span), cancellationToken);
         }
     }
 

@@ -15,7 +15,9 @@ There are two process entries that boot the same WebSocket REPL client:
   in both paths; the actor surface is control/query only.
 
 The shared `repl_process_env.ts` parses the env contract and bootstraps the Windows credential for
-both entries.
+both entries. In the host-derived path the kernel ships the complete child environment through the
+`host.repl.derive` payload, so `process_main.ts` reads the exact same `MAIEUTICS_REPL_*` variables
+and, on Windows, `MAIEUTICS_REPL_PIPE` that the kernel-derived entry reads.
 
 The main thread owns the WebSocket, bounded inbound/event/outbound queues, pending input requests,
 the active execution, and actor shutdown. Worker output is a worker-actor `AsyncIterable`, so main
@@ -37,6 +39,12 @@ hooks inside evaluated cells.
 - `MAIEUTICS_REPL_PIPE`: Windows-only named pipe used once to obtain the process-verified session
   credential.
 - `SystemRoot`: Windows-only system directory used to resolve the exact `kernel32.dll` FFI target.
+- `DENO_PERMISSION_BROKER_PATH`: broker address when the kernel runs with a permission broker. The
+  kernel-derived path injects it at launch; the host-derived path does NOT carry it in the derive
+  payload — the plugin host appends its own forwarded `MAIEUTICS_PERMISSION_BROKER` address to the
+  child env as `DENO_PERMISSION_BROKER_PATH` when deriving the REPL (the host itself never consults
+  the broker). With the broker set it is the single authority for every explicit permission check
+  the child makes; without it the child runs against its static permission shell only.
 
 ## Permissions
 

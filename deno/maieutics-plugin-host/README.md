@@ -30,6 +30,19 @@ exceed the host process grants (Deno rejects escalation at spawn). A kind the pl
 declare is denied inside the worker, so two plugins sharing a host cannot read each other's paths
 unless each declares them.
 
+### Broker forwarding for derived REPL processes
+
+When the kernel runs with a permission broker, it hands the host the broker address under the
+`MAIEUTICS_PERMISSION_BROKER` environment variable. The host itself never consults the broker — it
+launches with every permission kind granted and no policy is ever registered for its pid, so it must
+not carry `DENO_PERMISSION_BROKER_PATH` itself. When the host derives a REPL process
+(`host.repl.derive` / `ReplManager.spawnRepl`), it appends that address to the child's environment
+as `DENO_PERMISSION_BROKER_PATH`; the kernel already registered the child's effective policy with
+the broker for the reported pid (ADR 0020 decision 1), so the REPL's permission checks resolve
+against the kernel authority rather than the host's full grants. A host launched without a broker
+carries no `MAIEUTICS_PERMISSION_BROKER` and forwards nothing; the derived child then runs against
+its static permission shell only.
+
 Permission, manifest, or source changes under the plugins root are detected by a kernel-side
 `FileSystemWatcher`; the kernel ships the owning plugin's full replacement config over the
 `plugin.reload` control message and the host rebuilds that worker (and its transitive dependents)

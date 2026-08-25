@@ -189,7 +189,12 @@ function createCommProxy(): CommProxy {
     return queueAsyncEvent((execution) => ({
       type,
       executionId: execution.executionId,
-      sequence: execution.nextSequence++,
+      // Comm events ride the dedicated comm channel, never the binary output endpoint, so they
+      // must not consume the output frame sequence. The output endpoint validates strictly
+      // increasing per-execution sequences (phase 2); gaps from interleaved comm traffic would
+      // terminate the connection (phase 3 exposes this with `Deno.jupyter.broadcast` + display
+      // in one execution).
+      sequence: 0,
       commId,
       ...(targetName === undefined ? {} : { targetName }),
       ...(data === undefined ? {} : { data }),
@@ -496,7 +501,9 @@ function createJupyterApi(): typeof Deno.jupyter {
       await queueAsyncEvent((execution) => ({
         type: eventType,
         executionId: execution.executionId,
-        sequence: execution.nextSequence++,
+        // Comm events ride the dedicated comm channel, never the binary output endpoint, so they
+        // must not consume the output frame sequence (same contract as createCommProxy).
+        sequence: 0,
         commId,
         ...(messageType === "comm_open" && typeof content.target_name === "string"
           ? { targetName: content.target_name }

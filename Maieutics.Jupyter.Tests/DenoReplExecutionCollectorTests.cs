@@ -8,17 +8,19 @@ namespace Maieutics.Jupyter.Tests;
 public sealed class DenoReplExecutionCollectorTests
 {
     [Fact(Timeout = 15_000)]
-    public async Task OrderedEvalEventsProduceSeparateModelAndNotebookProjections()
+    public async Task OrderedOutputFramesProduceSeparateModelAndNotebookProjections()
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink { InputReply = "Ada" };
         var collector = new DenoReplExecutionCollector(
             "default",
             3,
             new DenoReplOptions(),
             sink,
-            []);
+            [],
+            "execution-1");
         var display = JsonSerializer.SerializeToElement(new Dictionary<string, string>
         {
             ["text/plain"] = "visible display"
@@ -27,13 +29,13 @@ public sealed class DenoReplExecutionCollectorTests
         {
             ["text/plain"] = "visible update"
         });
-
-        await collector.ObserveAsync(connection, OutputFrames.Stdout(1, "execution-1", "private stdout"), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Display(2, "execution-1", "inner", display, isUpdate: false), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Display(3, "execution-1", "inner", update, isUpdate: true), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Display(4, "execution-1", "missing", update, isUpdate: true), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Clear(5, "execution-1", wait: true), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Stderr(6, "execution-1", "shared stderr"), CancellationToken.None);
+        output.Publish(OutputFrames.Stdout(1, "execution-1", "private stdout"));
+        output.Publish(OutputFrames.Display(2, "execution-1", "inner", display, isUpdate: false));
+        output.Publish(OutputFrames.Display(3, "execution-1", "inner", update, isUpdate: true));
+        output.Publish(OutputFrames.Display(4, "execution-1", "missing", update, isUpdate: true));
+        output.Publish(OutputFrames.Clear(5, "execution-1", wait: true));
+        output.Publish(OutputFrames.Stderr(6, "execution-1", "shared stderr"));
+        output.End();
         var input = new ReplEvalInputRequestEvent(
             "execution-1", 7, "input-1", "Name: ", false);
         execution.Publish(input);
@@ -42,6 +44,7 @@ public sealed class DenoReplExecutionCollectorTests
         var result = await collector.ConsumeAsync(
             connection,
             execution.Execution,
+            output,
             TestContext.Current.CancellationToken);
 
         result.Should().BeEquivalentTo(new
@@ -49,7 +52,23 @@ public sealed class DenoReplExecutionCollectorTests
             SessionId = "default",
             Generation = 3,
             ExecutionStatus = "ok",
-            Presentation = new DenoReplPresentationResult(1, 1, 1, 1),
+            Presentation = new DenoReplPresentationResult(
+                1,
+                1,
+                1,
+                RateSkippedCount: 0,
+                BundleSkippedCount: 0,
+                DisplaySkippedCount: 1,
+                DigestTruncated: false,
+                // The update folds into the display's digest entry instead of adding a second one.
+                Digests: new[]
+                {
+                    new DenoReplDisplayDigest(
+                        new[] { "text/plain" },
+                        "visible update",
+                        "inner",
+                        IsUpdate: true)
+                }),
             Truncated = false,
             OmittedBytes = 0
         });
@@ -65,17 +84,58 @@ public sealed class DenoReplExecutionCollectorTests
     }
 
     [Fact(Timeout = 15_000)]
-    public async Task DisplayFrameReconstructsBinaryBuffersFromPlaceholders()
+    public async Task FramesForOtherExecutionsAreIgnored()
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions(),
             sink,
-            []);
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Stdout(1, "other-execution", "stray stdout"));
+        output.Publish(OutputFrames.Display(
+            2,
+            "other-execution",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = "stray display"
+            }),
+            isUpdate: false));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        result.Outputs.Should().BeEmpty();
+        sink.Displays.Should().BeEmpty();
+        result.Presentation.SkippedCount.Should().Be(0);
+        result.Presentation.Digests.Should().BeEmpty();
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DisplayFrameReconstructsBinaryBuffersFromPlaceholdersIntoBase64()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1");
         var data = JsonDocument.Parse(
             """{"image/png":{"$buffer":0},"text/plain":"binary display"}""").RootElement.Clone();
         var png = new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02 };
@@ -87,18 +147,373 @@ public sealed class DenoReplExecutionCollectorTests
             null,
             false,
             new List<byte[]> { png });
-        await collector.ObserveAsync(connection, frame, CancellationToken.None);
+        output.Publish(frame);
+        output.End();
         execution.CompleteResult();
 
-        await collector.ConsumeAsync(
+        var result = await collector.ConsumeAsync(
             connection,
             execution.Execution,
+            output,
             TestContext.Current.CancellationToken);
 
         sink.BinaryDisplays.Should().ContainSingle().Which.Data["image/png"]
             .GetString().Should().NotBeNull();
         sink.BinaryDisplays.Single().Data["image/png"].GetString()!
             .Should().Be(Convert.ToBase64String(png));
+        // The binary mime lists in the digest but never produces a preview.
+        result.Presentation.Digests.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        {
+            MediaTypes = new[] { "image/png", "text/plain" },
+            Preview = "binary display",
+            DisplayId = null as string,
+            IsUpdate = false
+        });
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task BinaryOnlyBundlesDigestTheirMimeKeysWithoutAPreview()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1");
+        var png = new byte[] { 0x89, 0x50, 0x4e, 0x47 };
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, JsonElement>
+            {
+                ["image/png"] = JsonSerializer.SerializeToElement(new Dictionary<string, int>
+                {
+                    ["$buffer"] = 0
+                })
+            }),
+            isUpdate: false,
+            png));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        var digest = result.Presentation.Digests.Should().ContainSingle().Which;
+        digest.MediaTypes.Should().Equal("image/png");
+        digest.Preview.Should().BeNull();
+        sink.BinaryDisplays.Should().ContainSingle().Which.Data["image/png"].GetString()
+            .Should().Be(Convert.ToBase64String(png));
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DigestPreviewPrefersTextPlainOverLaterStringMimes()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/html"] = "<b>html</b>",
+                ["application/vnd.vega.v5+json"] = """{"width":200}""",
+                ["text/plain"] = "plain text"
+            }),
+            isUpdate: false));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        var digest = result.Presentation.Digests.Should().ContainSingle().Which;
+        digest.Preview.Should().Be("plain text");
+        digest.MediaTypes.Should().Equal("text/html", "application/vnd.vega.v5+json", "text/plain");
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DigestPreviewFallsBackToFirstTextOrStructuredStringMime()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["application/vnd.vega.v5+json"] = """{"width":200}"""
+            }),
+            isUpdate: false));
+        output.Publish(OutputFrames.Display(
+            2,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/markdown"] = "# title"
+            }),
+            isUpdate: false));
+        output.Publish(OutputFrames.Display(
+            3,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["application/json"] = """{"key":"value"}"""
+            }),
+            isUpdate: false));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        result.Presentation.Digests.Select(static digest => digest.Preview).Should()
+            .Equal("""{"width":200}""", "# title", null);
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DigestPreviewIsTruncatedToThePreviewBudget()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions { MaxDisplayDigestPreviewBytes = 16 },
+            sink,
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = new string('x', 100)
+            }),
+            isUpdate: false));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+        var digest = result.Presentation.Digests.Should().ContainSingle().Which;
+        digest.Preview.Should().HaveLength(16);
+        digest.Preview.Should().Be(new string('x', 16));
+        result.Presentation.DigestTruncated.Should().BeFalse();
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task DigestBudgetExhaustionFlagsTruncationAndCountsLaterDisplays()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions { MaxModelDisplayDigestBytes = 180 },
+            sink,
+            [],
+            "execution-1");
+        for (var sequence = 1; sequence <= 5; sequence++)
+            output.Publish(OutputFrames.Display(
+                sequence,
+                "execution-1",
+                null,
+                JsonSerializer.SerializeToElement(new Dictionary<string, string>
+                {
+                    ["text/plain"] = "d" + new string('x', 50)
+                }),
+                isUpdate: false));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        result.Presentation.DigestTruncated.Should().BeTrue();
+        result.Presentation.Digests.Should().NotBeEmpty();
+        // The display presentation is independent of the digest budget: every display still shows.
+        sink.Displays.Should().HaveCount(5);
+        result.Presentation.SkippedCount.Should().Be(0);
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task UpdatesFoldIntoTheOriginalDigestEntry()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            "tracked",
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = "initial"
+            }),
+            isUpdate: false));
+        output.Publish(OutputFrames.Display(
+            2,
+            "execution-1",
+            "tracked",
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/html"] = "<b>updated</b>",
+                ["text/plain"] = "updated"
+            }),
+            isUpdate: true));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        result.Presentation.Digests.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        {
+            MediaTypes = new[] { "text/html", "text/plain" },
+            Preview = "updated",
+            DisplayId = "tracked",
+            IsUpdate = true
+        });
+        result.Presentation.DisplayCount.Should().Be(1);
+        result.Presentation.UpdateCount.Should().Be(1);
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task MalformedUpdateIsSkippedWithoutADigestEntry()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions(),
+            sink,
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            "missing",
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = "stray update"
+            }),
+            isUpdate: true));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        result.Presentation.UpdateCount.Should().Be(0);
+        result.Presentation.DisplaySkippedCount.Should().Be(1);
+        result.Presentation.SkippedCount.Should().Be(1);
+        result.Presentation.Digests.Should().BeEmpty();
+        sink.Updates.Should().BeEmpty();
+    }
+
+    [Fact(Timeout = 15_000)]
+    public async Task OversizedPresentationBundleIsSkippedButStillDigested()
+    {
+        var connection = new DenoReplSessionTests.ControlledConnection();
+        var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
+        var sink = new RecordingPresentationSink();
+        var collector = new DenoReplExecutionCollector(
+            "default",
+            1,
+            new DenoReplOptions { MaxPresentationBundleBytes = 64 },
+            sink,
+            [],
+            "execution-1");
+        output.Publish(OutputFrames.Display(
+            1,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = new string('x', 200)
+            }),
+            isUpdate: false));
+        output.End();
+        execution.CompleteResult();
+
+        var result = await collector.ConsumeAsync(
+            connection,
+            execution.Execution,
+            output,
+            TestContext.Current.CancellationToken);
+
+        sink.Displays.Should().BeEmpty();
+        result.Presentation.BundleSkippedCount.Should().Be(1);
+        result.Presentation.SkippedCount.Should().Be(1);
+        result.Presentation.Digests.Should().ContainSingle().Which.Preview.Should()
+            .HaveLength(200);
     }
 
     [Theory(Timeout = 15_000)]
@@ -108,13 +523,15 @@ public sealed class DenoReplExecutionCollectorTests
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink();
         var collector = new DenoReplExecutionCollector(
             "session",
             1,
             new DenoReplOptions(),
             sink,
-            []);
+            [],
+            "execution-1");
 
         if (cancelled)
             execution.CompleteCancelled();
@@ -124,6 +541,7 @@ public sealed class DenoReplExecutionCollectorTests
         var result = await collector.ConsumeAsync(
             connection,
             execution.Execution,
+            output,
             TestContext.Current.CancellationToken);
 
         result.ExecutionStatus.Should().Be(expectedStatus);
@@ -149,36 +567,34 @@ public sealed class DenoReplExecutionCollectorTests
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions { MaxModelOutputBytes = 256 },
             sink,
-            []);
+            [],
+            "execution-1");
 
         for (var sequence = 1; sequence <= 20; sequence++)
-            await collector.ObserveAsync(
-                connection,
-                OutputFrames.Stdout(sequence, "execution-1", new string('x', 128)),
-                CancellationToken.None);
-        await collector.ObserveAsync(
-            connection,
-            OutputFrames.Display(
-                21,
-                "execution-1",
-                null,
-                JsonSerializer.SerializeToElement(new Dictionary<string, string>
-                {
-                    ["text/plain"] = "after truncation"
-                }),
-                isUpdate: false),
-            CancellationToken.None);
+            output.Publish(OutputFrames.Stdout(sequence, "execution-1", new string('x', 128)));
+        output.Publish(OutputFrames.Display(
+            21,
+            "execution-1",
+            null,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>
+            {
+                ["text/plain"] = "after truncation"
+            }),
+            isUpdate: false));
+        output.End();
         execution.CompleteResult();
 
         var result = await collector.ConsumeAsync(
             connection,
             execution.Execution,
+            output,
             TestContext.Current.CancellationToken);
 
         result.Truncated.Should().BeTrue();
@@ -191,17 +607,20 @@ public sealed class DenoReplExecutionCollectorTests
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions { MaxModelOutputBytes = 128 },
             new RecordingPresentationSink(),
-            []);
+            [],
+            "execution-1");
         execution.CompleteResult(JsonSerializer.SerializeToElement(new string('x', 1024)));
 
         var result = await collector.ConsumeAsync(
             connection,
             execution.Execution,
+            output,
             TestContext.Current.CancellationToken);
 
         result.Outputs.Should().ContainSingle().Which.Should().BeEquivalentTo(new
@@ -219,28 +638,40 @@ public sealed class DenoReplExecutionCollectorTests
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
+        var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions { MaxPresentationEventsPerExecution = 1 },
             sink,
-            []);
+            [],
+            "execution-1");
         var data = JsonSerializer.SerializeToElement(new Dictionary<string, string>
         {
             ["text/plain"] = "display"
         });
-        await collector.ObserveAsync(connection, OutputFrames.Display(1, "execution-1", null, data, isUpdate: false), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Clear(2, "execution-1", wait: false), CancellationToken.None);
-        await collector.ObserveAsync(connection, OutputFrames.Stderr(3, "execution-1", "still modeled"), CancellationToken.None);
+        output.Publish(OutputFrames.Display(1, "execution-1", null, data, isUpdate: false));
+        output.Publish(OutputFrames.Clear(2, "execution-1", wait: false));
+        output.Publish(OutputFrames.Stderr(3, "execution-1", "still modeled"));
+        output.End();
         execution.CompleteResult();
 
         var result = await collector.ConsumeAsync(
             connection,
             execution.Execution,
+            output,
             TestContext.Current.CancellationToken);
 
-        result.Presentation.Should().Be(new DenoReplPresentationResult(1, 0, 0, 2));
+        result.Presentation.Should().BeEquivalentTo(new DenoReplPresentationResult(
+            1,
+            0,
+            0,
+            RateSkippedCount: 0,
+            BundleSkippedCount: 0,
+            DisplaySkippedCount: 2,
+            DigestTruncated: false,
+            Digests: new[] { new DenoReplDisplayDigest(new[] { "text/plain" }, "display") }));
         result.Outputs.Should().ContainSingle().Which.Text.Should().Be("still modeled");
         sink.Displays.Should().ContainSingle();
         sink.Clears.Should().BeEmpty();
@@ -277,7 +708,7 @@ public sealed class DenoReplExecutionCollectorTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
+            Displays.Add(PlainTextOf(data));
             BinaryDisplays.Add(data);
             return ValueTask.CompletedTask;
         }
@@ -289,7 +720,7 @@ public sealed class DenoReplExecutionCollectorTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Displays.Add(data.Data["text/plain"].GetString() ?? string.Empty);
+            Displays.Add(PlainTextOf(data));
             BinaryDisplays.Add(data);
             return ValueTask.FromResult(displayId);
         }
@@ -301,7 +732,7 @@ public sealed class DenoReplExecutionCollectorTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Updates.Add((displayId, data.Data["text/plain"].GetString() ?? string.Empty));
+            Updates.Add((displayId, PlainTextOf(data)));
             BinaryDisplays.Add(data);
             return ValueTask.CompletedTask;
         }
@@ -339,6 +770,13 @@ public sealed class DenoReplExecutionCollectorTests
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(InputReply);
         }
+
+        private static string PlainTextOf(MimeBundle data)
+        {
+            return data.Data.TryGetValue("text/plain", out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? string.Empty
+                : string.Empty;
+        }
     }
 
     /// <summary>Hand-builds output frames as the TS encoder would produce them (byte layout matches
@@ -365,7 +803,8 @@ public sealed class DenoReplExecutionCollectorTests
             string executionId,
             string? displayId,
             JsonElement data,
-            bool isUpdate)
+            bool isUpdate,
+            params byte[][] buffers)
         {
             return new ReplOutputDisplayFrame(
                 seq,
@@ -374,7 +813,7 @@ public sealed class DenoReplExecutionCollectorTests
                 new Dictionary<string, JsonElement>(),
                 displayId,
                 isUpdate,
-                []);
+                buffers);
         }
     }
 }

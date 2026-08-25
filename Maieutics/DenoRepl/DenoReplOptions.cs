@@ -24,6 +24,14 @@ internal sealed class DenoReplOptions
 
     public int MaxPresentationBundleBytes { get; set; } = 16 * 1024 * 1024;
 
+    /// <summary>Total byte budget for the model-side display digests of one execution. Once the
+    /// budget is exhausted <see cref="Maieutics.DenoRepl.DenoReplPresentationResult.DigestTruncated" />
+    /// is set and later displays are not digested.</summary>
+    public int MaxModelDisplayDigestBytes { get; set; } = 4096;
+
+    /// <summary>Maximum UTF-8 bytes of a digest preview (rune-safe truncation).</summary>
+    public int MaxDisplayDigestPreviewBytes { get; set; } = 512;
+
     public bool AutoInstallModuleGraph { get; set; } = true;
 
     /// <summary>Derives REPL processes through the plugin host (<c>host.repl.derive</c>, ADR
@@ -43,6 +51,8 @@ internal sealed class DenoReplOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxPresentationTextBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxPresentationEventsPerExecution, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxPresentationBundleBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxModelDisplayDigestBytes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxDisplayDigestPreviewBytes, 1);
     }
 
     private static void ValidatePositive(TimeSpan value, string name)

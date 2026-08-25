@@ -301,6 +301,40 @@ Deno.test("host-derived REPL process runs the real REPL over the eval channel", 
       await kernel.waitForOutput(
         (frame) => frame.type === 0 && frame.text === "hello output\n",
       );
+
+      // Comm events ride the dedicated comm channel and must not consume the output frame
+      // sequence: interleaving `Deno.jupyter.broadcast` (comm) with console/display output keeps
+      // the output endpoint's per-execution sequence contiguous (phase 3 exposes the strict
+      // validation; a gap would terminate the connection).
+      await kernel.execute(
+        "const commId = 'probe-comm'; " +
+        "await Deno.jupyter.broadcast('comm_open', " +
+        "{ comm_id: commId, target_name: 'probe', data: {} }, " +
+        "{ buffers: [new Uint8Array([1, 2, 3])] }); " +
+        "console.log('before-display'); " +
+        "await Deno.jupyter.display(" +
+        "{ 'text/plain': 'probe-display' }, { raw: true }); " +
+        "const w = { [Deno.jupyter.$display]: async () => " +
+        "({ 'application/vnd.jupyter.widget-view+json': { model_id: commId } }) }; w",
+      );
+      await kernel.waitForOutput(
+        (frame) => frame.type === 0 && frame.text === "before-display\n",
+      );
+      await kernel.waitForOutput(
+        (frame) => frame.type === 2 && JSON.stringify(frame.data).includes("probe-display"),
+      );
+      await kernel.waitForOutput(
+        (frame) => frame.type === 2 && JSON.stringify(frame.data).includes("widget-view"),
+      );
+      const widgetDisplay = kernel.outputFrames
+        .filter((frame) => frame.type === 2 && JSON.stringify(frame.data).includes("widget-view"))
+        .at(-1);
+      assert(widgetDisplay !== undefined);
+      const outputSequences = kernel.outputFrames
+        .filter((frame) => frame.executionId === widgetDisplay.executionId)
+        .map((frame) => frame.seq);
+      // console(1), display(2), display(3): comm events never appear on the output endpoint.
+      assertEquals(outputSequences, [1, 2, 3]);
       assertEquals(
         kernel.evalMessages.every((envelope) =>
           envelope.type === ReplEvalMessageType.hello ||

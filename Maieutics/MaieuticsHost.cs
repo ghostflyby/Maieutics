@@ -196,6 +196,7 @@ public static class MaieuticsHost
                 services.GetRequiredService<ReplControlHost>(),
                 services.GetRequiredService<DenoReplModule>(),
                 services.GetRequiredService<ReplEvalWebSocketHost>(),
+                services.GetRequiredService<ReplOutputWebSocketHost>(),
                 services.GetRequiredService<ReplControlSessionRegistry>(),
                 services.GetRequiredService<ReplControlCredentialRegistry>(),
                 services.GetRequiredService<ILogger<DenoReplProcess>>(),

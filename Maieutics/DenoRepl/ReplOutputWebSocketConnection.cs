@@ -152,9 +152,19 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref enumerationState, 1) != 0)
             throw new InvalidOperationException("REPL output events are single-consumer.");
-
-        await foreach (var frame in frames.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            yield return frame;
+        try
+        {
+            await foreach (var frame in frames.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                yield return frame;
+        }
+        finally
+        {
+            // The connection is a session-lifetime stream carrying every execution's frames; each
+            // execution's collector enumerates its own window (bounded by its eval terminal) and
+            // releases the single-concurrent-consumer guard when the window ends. Executions are
+            // serialized per session, so the guard still prevents concurrent readers.
+            Volatile.Write(ref enumerationState, 0);
+        }
     }
 
     private void Terminate(Exception? exception)

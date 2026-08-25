@@ -308,14 +308,14 @@ Deno.test("host-derived REPL process runs the real REPL over the eval channel", 
       // validation; a gap would terminate the connection).
       await kernel.execute(
         "const commId = 'probe-comm'; " +
-        "await Deno.jupyter.broadcast('comm_open', " +
-        "{ comm_id: commId, target_name: 'probe', data: {} }, " +
-        "{ buffers: [new Uint8Array([1, 2, 3])] }); " +
-        "console.log('before-display'); " +
-        "await Deno.jupyter.display(" +
-        "{ 'text/plain': 'probe-display' }, { raw: true }); " +
-        "const w = { [Deno.jupyter.$display]: async () => " +
-        "({ 'application/vnd.jupyter.widget-view+json': { model_id: commId } }) }; w",
+          "await Deno.jupyter.broadcast('comm_open', " +
+          "{ comm_id: commId, target_name: 'probe', data: {} }, " +
+          "{ buffers: [new Uint8Array([1, 2, 3])] }); " +
+          "console.log('before-display'); " +
+          "await Deno.jupyter.display(" +
+          "{ 'text/plain': 'probe-display' }, { raw: true }); " +
+          "const w = { [Deno.jupyter.$display]: async () => " +
+          "({ 'application/vnd.jupyter.widget-view+json': { model_id: commId } }) }; w",
       );
       await kernel.waitForOutput(
         (frame) => frame.type === 0 && frame.text === "before-display\n",

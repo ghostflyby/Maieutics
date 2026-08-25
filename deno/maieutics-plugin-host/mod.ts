@@ -6,14 +6,17 @@
  */
 
 import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
+import { ReplManager } from "./repl_manager.ts";
 import { connectBus } from "../shared/bus.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
+import type { HostReplReport } from "./host_repl_protocol.ts";
 
 const IPC_ENV = "MAIEUTICS_REPL_IPC";
 const HOST_ID_ENV = "MAIEUTICS_PLUGIN_HOST_ID";
 const CONFIG_ENV = "MAIEUTICS_PLUGIN_CONFIG";
 const SDK_ENV = "MAIEUTICS_PLUGIN_SDK";
 const WORKER_ENTRY_ENV = "MAIEUTICS_PLUGIN_WORKER_ENTRY";
+const REPL_ENTRY_ENV = "MAIEUTICS_REPL_PROCESS_ENTRY";
 
 function requireEnv(name: string): string {
   const value = Deno.env.get(name);
@@ -40,6 +43,14 @@ async function main(): Promise<void> {
     workerEntryUrl,
     plugins: config.plugins ?? [],
   });
+  // ADR 0020: the host derives REPL processes. The entry path is optional at
+  // this stage (spawnRepl is not yet called by a kernel path); the pid
+  // registration + broker policy closed loop is covered by host_test.ts. The
+  // reporter is wired below once the control bus is connected — a REPL must
+  // not be derived before the pid report channel exists.
+  const repls = new ReplManager({
+    replEntryPath: Deno.env.get(REPL_ENTRY_ENV) ?? "",
+  });
 
   const registered = await host.startAll();
   console.error(
@@ -62,9 +73,14 @@ async function main(): Promise<void> {
     type: "extension.registry",
     payload: registryPayload(registered, host.states()),
   });
+  // Host → kernel REPL pid reports ride the same bus. The reporter is wired
+  // here, after the hello handshake authenticated this host; ReplManager
+  // refuses to derive a REPL before it is set.
+  repls.setReporter((report: HostReplReport) => bus.send(report));
 
   const shutdown = (): void => {
     host.dispose();
+    void repls.disposeAll();
     bus.close();
   };
   globalThis.addEventListener("unload", shutdown);
@@ -89,7 +105,11 @@ async function main(): Promise<void> {
       }
       return;
     }
-    if (envelope.type === "extension.invoke") {
+    if (envelope.type === "host.invoke") {
+      // Kernel → host extension point call (retired the `extension.invoke` protocol, ADR 0020
+      // §7.2). The host invokes the plugin worker's Remote<T> surface directly in-process
+      // (host.invoke below) and answers with host.invokeResult / host.invokeError, echoing the
+      // instruction's correlationId so the kernel can complete the pending call.
       const payload = envelope.payload as {
         pluginId?: string;
         exportName?: string;
@@ -108,18 +128,28 @@ async function main(): Promise<void> {
           payload.request,
         ).then((value: unknown) => {
           bus.send({
-            type: "extension.result",
+            type: "host.invokeResult",
             payload: { value },
             correlationId: envelope.correlationId,
           });
         }).catch((error: Error) => {
           bus.send({
-            type: "extension.error",
-            payload: { code: "extension_failed", message: error.message },
+            type: "host.invokeError",
+            payload: { code: "host_invoke_failed", message: error.message },
             correlationId: envelope.correlationId,
           });
         });
       }
+      return;
+    }
+    if (envelope.type === "host.repl.derive") {
+      // ADR 0020 / B5a: kernel → host instruction stream. The kernel decides
+      // the REPL entry, the complete child env, and the static permission
+      // shell; ReplManager validates the payload, derives the REPL, and
+      // reports spawned/exited/deriveFailed through the reporter wired above.
+      // Derivation is async; failures are reported fire-and-forget inside
+      // ReplManager.derive (matching the host.invoke style).
+      void repls.derive(envelope);
       return;
     }
   }

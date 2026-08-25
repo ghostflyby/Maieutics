@@ -114,6 +114,12 @@ Every change must preserve these invariants:
     launch-time flags with per-worker narrowing (ADR 0018 decision 8).
 23. The permission store stays Deno-shaped but is not Deno-only: kinds a process sandbox cannot express (env,
     import) are explicit and enforced by their owning layer.
+24. The Deno REPL is derived by the extension host, but its permission authority stays in the kernel: the
+    kernel computes the REPL's `EffectivePolicy` and registers it with the permission broker; the host only
+    enforces it (ADR 0020). The REPL's static permission shell is a baseline, not a security boundary.
+25. Call direction between the REPL and extensions is one-way: the REPL calls extension points through actor
+    capabilities; extensions cannot call into the REPL, and the REPL exports no actor surface for them
+    (ADR 0020). The reverse-call mechanism stays a library capability reserved for the distributed host.
 
 Use structured concurrency. Every long-lived loop or child process needs an owner, cancellation source, completion task,
 and deterministic disposal path. Observe background exceptions. Do not hold locks while awaiting provider streams, tool

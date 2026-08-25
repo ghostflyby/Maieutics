@@ -22,6 +22,8 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginHost.ts", "maieutics-plugin-host/mod.ts"),
         ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),
         ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
+        ("Maieutics.Deno.PluginHostReplManager.ts", "maieutics-plugin-host/repl_manager.ts"),
+        ("Maieutics.Deno.PluginHostReplProtocol.ts", "maieutics-plugin-host/host_repl_protocol.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
         ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts"),
@@ -50,10 +52,11 @@ internal sealed class PluginHostModule
             $$"""
               {
                 "imports": {
-                  "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.1.0",
+                  "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0",
                   "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
                 },
-                "links": ["{{sdkDirectory}}"]
+                "links": ["{{sdkDirectory}}"],
+                "minimumDependencyAge": 0
               }
               """);
     }

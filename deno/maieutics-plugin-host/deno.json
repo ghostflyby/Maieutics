@@ -5,7 +5,7 @@
     ".": "./mod.ts"
   },
   "tasks": {
-    "check": "deno check mod.ts host.ts worker_entry.ts host_test.ts",
-    "test": "deno test --allow-env --allow-read --allow-write --allow-net --unstable-worker-options"
+    "check": "deno check mod.ts host.ts worker_entry.ts repl_manager.ts host_repl_protocol.ts host_test.ts",
+    "test": "deno test --allow-env --allow-read --allow-write --allow-net --allow-run --unstable-worker-options"
   }
 }

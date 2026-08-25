@@ -35,7 +35,7 @@ function deferred<T>(): Deferred<T> {
 
 import { type BusConnection, connectBus } from "../shared/bus.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
-import { type CommClient, CommKind, connectComm } from "./comm.ts";
+import { type CommClient, CommKind, connectComm } from "../maieutics-deno-repl/comm.ts";
 
 export interface ReplClientOptions {
   /** Unix-domain socket path or Windows loopback host:port of the control channel. */

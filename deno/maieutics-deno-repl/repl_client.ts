@@ -1,11 +1,6 @@
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
 import { connectIpcWebSocket, type IpcWebSocket } from "../shared/ipc_websocket.ts";
-import {
-  type CommClient,
-  CommKind,
-  type CommMessage,
-  connectComm,
-} from "../maieutics-repl-client/comm.ts";
+import { type CommClient, CommKind, type CommMessage, connectComm } from "./comm.ts";
 import {
   decodeReplEvalEnvelope,
   encodeReplEvalEnvelope,
@@ -46,6 +41,11 @@ export interface ReplClientOptions {
   sessionId: string;
   generation: number;
   credential?: string;
+  /** Optional readiness hook invoked once when the eval hello/ready handshake
+   * completes. Additive: the host-derived process entry uses it to surface the
+   * eval channel state through its actor surface; the kernel-derived entry and
+   * every existing caller omit it. */
+  onReady?: () => void;
 }
 
 interface ActiveExecution {
@@ -113,6 +113,17 @@ export class ReplClient {
       await this.#shutdown(error, false);
       throw error;
     }
+  }
+
+  /**
+   * Graceful external shutdown for process-management callers (the host-derived
+   * process entry). Equivalent to a kernel repl.eval.dispose except that no
+   * dispose result envelope is sent (no kernel is awaiting one). Idempotent:
+   * the second call returns the same completion task. The kernel-derived entry
+   * never calls this — it relies on the kernel's dispose message.
+   */
+  shutdown(): Promise<void> {
+    return this.#shutdown(undefined, true);
   }
 
   async #start(): Promise<void> {
@@ -286,6 +297,7 @@ export class ReplClient {
     }
     this.#readyReceived = true;
     this.#ready.resolve();
+    this.#options.onReady?.();
   }
 
   #handleExecute(envelope: ReplEvalEnvelope): void {

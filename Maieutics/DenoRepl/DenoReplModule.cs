@@ -14,11 +14,15 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.DenoRepl.Worker.ts", "maieutics-deno-repl/repl_worker.ts"),
         ("Maieutics.Deno.DenoRepl.InputMailbox.ts", "maieutics-deno-repl/input_mailbox.ts"),
         ("Maieutics.Deno.DenoRepl.Queue.ts", "maieutics-deno-repl/repl_eval_queue.ts"),
+        ("Maieutics.Deno.DenoRepl.ProcessMain.ts", "maieutics-deno-repl/process_main.ts"),
+        ("Maieutics.Deno.DenoRepl.ProcessRpc.ts", "maieutics-deno-repl/process_rpc.ts"),
+        ("Maieutics.Deno.DenoRepl.ProcessEnv.ts", "maieutics-deno-repl/repl_process_env.ts"),
+        ("Maieutics.Deno.DenoRepl.ProcessRpcTest.ts", "maieutics-deno-repl/process_rpc_test.ts"),
+        ("Maieutics.Deno.DenoRepl.Comm.ts", "maieutics-deno-repl/comm.ts"),
+        ("Maieutics.Deno.DenoRepl.WindowsBootstrap.ts", "maieutics-deno-repl/windows_bootstrap.ts"),
         ("Maieutics.Deno.DenoRepl.Config.json", "maieutics-deno-repl/deno.json"),
         ("Maieutics.Deno.DenoRepl.Lock.json", "maieutics-deno-repl/deno.lock"),
         ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),
-        ("Maieutics.Deno.ReplClientComm.ts", "maieutics-repl-client/comm.ts"),
-        ("Maieutics.Deno.ReplClientWindowsBootstrap.ts", "maieutics-repl-client/windows_bootstrap.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
         ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts")
@@ -30,6 +34,13 @@ internal sealed class DenoReplModule
     internal string ClientUrl => modules.Value.ClientUrl;
 
     internal string MainUrl => modules.Value.MainUrl;
+
+    /// <summary>File URL of the REPL <em>process</em> entry (<c>process_main.ts</c>), the child
+    /// module the plugin host derives via worker-actor <c>spawnProcess</c> (ADR 0020). It is
+    /// materialized beside <c>deno.json</c>, so the host-derived child resolves its
+    /// <c>@ghostflyby/worker-actor</c> import through the config discovered upward from the entry
+    /// module.</summary>
+    internal string ProcessMainUrl => modules.Value.ProcessMainUrl;
 
     internal string ConfigFile => modules.Value.ConfigFile;
 
@@ -46,6 +57,7 @@ internal sealed class DenoReplModule
         return new MaterializedModules(
             new Uri(Path.Combine(root, "maieutics-repl-client/mod.ts")).AbsoluteUri,
             new Uri(Path.Combine(root, "maieutics-deno-repl/main.ts")).AbsoluteUri,
+            new Uri(Path.Combine(root, "maieutics-deno-repl/process_main.ts")).AbsoluteUri,
             Path.Combine(root, "maieutics-deno-repl/deno.json"),
             Path.Combine(root, "maieutics-deno-repl/deno.lock"),
             root);
@@ -67,6 +79,7 @@ internal sealed class DenoReplModule
     private sealed record MaterializedModules(
         string ClientUrl,
         string MainUrl,
+        string ProcessMainUrl,
         string ConfigFile,
         string LockFile,
         string ModuleDirectory);

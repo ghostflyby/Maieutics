@@ -10,6 +10,7 @@ using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -56,6 +57,22 @@ internal readonly record struct ExtensionCallOutcome(
     }
 }
 
+/// <summary>Outcome of a <c>host.repl.derive</c> instruction. <see cref="Spawned"/> means the host
+/// reported <c>host.repl.spawned</c> (pid + broker policy registered); <see cref="Failed"/> means
+/// the host reported <c>host.repl.deriveFailed</c> before any pid existed.</summary>
+internal readonly record struct ReplDeriveOutcome(bool Failed, string Message)
+{
+    public static ReplDeriveOutcome Spawned()
+    {
+        return new ReplDeriveOutcome(false, string.Empty);
+    }
+
+    public static ReplDeriveOutcome DeriveFailed(string message)
+    {
+        return new ReplDeriveOutcome(true, message);
+    }
+}
+
 /// <summary>
 ///     Owns plugin discovery, the plugin host process, its control-channel WebSocket connection, and
 ///     extension point invocation routing. REPL connections stay in <see cref="ReplControlHost" />;
@@ -70,12 +87,18 @@ internal sealed class PluginHostManager(
     ReplControlSessionRegistry sessionRegistry,
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
-    TimeProvider timeProvider)
-    : IHostedService, IAsyncDisposable
+    TimeProvider timeProvider,
+    DenoPermissionBroker? broker = null)
+    : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>How long a <c>host.repl.derive</c> instruction waits for the host's spawned /
+    /// deriveFailed report before the derive is treated as failed (bounded by the session
+    /// factory's startup timeout, which is the overall start budget).</summary>
+    private static readonly TimeSpan ReplDeriveTimeout = TimeSpan.FromSeconds(15);
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
     private readonly List<PluginDescriptor> descriptors = [];
@@ -93,7 +116,23 @@ internal sealed class PluginHostManager(
 
     private readonly PluginHostModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pending =
+    /// <summary>Completions for in-flight <c>host.invoke</c> extension point calls, keyed by
+    /// correlation id. A <c>host.invokeResult</c> / <c>host.invokeError</c> response for the same
+    /// correlation id completes the matching call (the retired <c>extension.invoke</c> protocol
+    /// used the same pending/complete shape; only the message family changed).</summary>
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pendingInvokes =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Completions for in-flight <c>host.repl.derive</c> instructions, keyed by
+    /// <c>sessionId\0generation</c>. A <c>host.repl.spawned</c> report for the same session and
+    /// generation completes the <see cref="ReplDeriveOutcome.Spawned"/> branch (the host has
+    /// registered the pid + broker policy and may have exited already); a
+    /// <c>host.repl.deriveFailed</c> report completes it with the failure so the session factory
+    /// can surface or downgrade. The host reports no correlation id (B5a), so matching is by
+    /// session and generation — a report for a session/generation no derivation is waiting on is
+    /// ignored (a spontaneous host-derived REPL still registers its pid through
+    /// <see cref="RegisterHostRepl"/>).</summary>
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
         new(StringComparer.Ordinal);
 
     private readonly List<PluginRegistration> registrations = [];
@@ -112,8 +151,22 @@ internal sealed class PluginHostManager(
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
 
+    private readonly DenoPermissionBroker? broker = broker;
+
     private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     private string? configPath;
+
+    /// <summary>
+    ///     Effective REPL policies keyed by session id, registered by the kernel before the host
+    ///     derives a REPL for that session (ADR 0020 decision 1). The permission broker resolves
+    ///     every Deno permission check the REPL child makes against the policy registered for its
+    ///     pid; the host is only the enforcement point, never the authority. The kernel pre-caches
+    ///     the policy at session start (<see cref="DenoReplPolicyCache.PrepareAsync"/>), so a
+    ///     spawned report registers the real policy; a session with no cached policy degrades to
+    ///     <see cref="EffectivePolicy.Default"/> explicitly with a warning — the fallback is a
+    ///     deliberate choice, never a silent one.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
 
     private PluginMcpCoordinator? dynamicMcpCoordinator;
     private PluginHostProcess? process;
@@ -252,6 +305,41 @@ internal sealed class PluginHostManager(
         }
     }
 
+    /// <summary>
+    ///     Caches the effective REPL policy the kernel computed for a session, keyed by session
+    ///     id. A host-derived REPL report (<c>host.repl.spawned</c>) then registers this policy
+    ///     with the permission broker for the REPL's pid, preserving the kernel as the permission
+    ///     authority (ADR 0020 decision 1). The kernel pre-caches the policy at session start via
+    ///     <see cref="DenoReplPolicyCache"/>, which calls this method through
+    ///     <see cref="IReplPolicyRegistrar"/>.
+    /// </summary>
+    internal void RegisterReplPolicy(string sessionId, EffectivePolicy policy)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(policy);
+        replPolicies[sessionId] = policy;
+        logger.LogDebug("Cached the effective REPL policy for session '{SessionId}'.", sessionId);
+    }
+
+    /// <summary>Removes a session's cached REPL policy, so a closed or restarted session's old
+    /// policy cannot leak into the next generation (the next session start re-caches).</summary>
+    internal void UnregisterReplPolicy(string sessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        if (replPolicies.TryRemove(sessionId, out _))
+            logger.LogDebug("Removed the cached REPL policy for session '{SessionId}'.", sessionId);
+    }
+
+    void IReplPolicyRegistrar.RegisterReplPolicy(string sessionId, EffectivePolicy policy)
+    {
+        RegisterReplPolicy(sessionId, policy);
+    }
+
+    void IReplPolicyRegistrar.UnregisterReplPolicy(string sessionId)
+    {
+        UnregisterReplPolicy(sessionId);
+    }
+
     public IReadOnlyList<PluginRegistration> GetRegistrations(string extensionPoint)
     {
         lock (gate)
@@ -296,7 +384,8 @@ internal sealed class PluginHostManager(
                 HostId,
                 modules.SdkUrl,
                 modules.WorkerEntryUrl,
-                modules.ConfigFile),
+                modules.ConfigFile,
+                broker),
             logger);
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         processExitObservation = ObserveExitAsync(process, configPath);
@@ -523,6 +612,16 @@ internal sealed class PluginHostManager(
             exportName);
     }
 
+    /// <summary>
+    ///     Requests one extension point call on one plugin worker through the host connection and
+    ///     waits for the outcome. The request rides the general <c>host.invoke</c> request-response
+    ///     message family: the kernel sends the instruction with a correlation id, the host invokes
+    ///     the plugin worker's <c>Remote&lt;T&gt;</c> surface directly in-process (ADR 0020 §7.2,
+    ///     replacing the retired <c>extension.invoke</c> protocol), and answers
+    ///     <c>host.invokeResult</c> / <c>host.invokeError</c> echoing that id. Failure and timeout
+    ///     semantics are unchanged: an error response becomes <see cref="ExtensionCallOutcome.Error"/>
+    ///     and the call cancels after <see cref="InvokeTimeout" /> or when the host disconnects.
+    /// </summary>
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
         string pluginId,
         string exportName,
@@ -533,7 +632,7 @@ internal sealed class PluginHostManager(
         var correlationId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        pending[correlationId] = tcs;
+        pendingInvokes[correlationId] = tcs;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         timeout.CancelAfter(InvokeTimeout);
         try
@@ -541,20 +640,20 @@ internal sealed class PluginHostManager(
             await using var registration = timeout.Token.Register(
                 static state => (state as TaskCompletionSource<ExtensionCallOutcome>)?.TrySetCanceled(),
                 tcs);
-            var payload = new ExtensionInvokePayload(pluginId, exportName, extensionPoint, request);
+            var payload = new HostInvokePayload(pluginId, exportName, extensionPoint, request);
             await PushAsync(
                 Socket ?? throw new InvalidOperationException("The plugin host is not connected."),
                 new ReplEnvelope(
                     EnvelopeVersion,
-                    ReplMessageType.ExtensionInvoke,
+                    ReplMessageType.HostInvoke,
                     correlationId,
-                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.ExtensionInvokePayload)),
+                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.HostInvokePayload)),
                 timeout.Token).ConfigureAwait(false);
             return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
         }
         finally
         {
-            pending.TryRemove(correlationId, out _);
+            pendingInvokes.TryRemove(correlationId, out _);
         }
     }
 
@@ -564,6 +663,73 @@ internal sealed class PluginHostManager(
     {
         await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         return dynamicMcpCoordinator?.AcquireLeases() ?? [];
+    }
+
+    /// <summary>
+    ///     Instructs the plugin host to derive a Deno REPL process (ADR 0020, B5b) and waits for
+    ///     the outcome. The kernel decides the entry module, the complete child environment, and the
+    ///     static permission shell; the host executes the derive and reports <c>host.repl.spawned</c>
+    ///     / <c>host.repl.deriveFailed</c>. This method completes when the spawned report has been
+    ///     processed (the pid is registered with the session registry and the permission broker by
+    ///     <see cref="RegisterHostRepl"/>), or when the host reports a pre-pid failure. The host may
+    ///     have emitted <c>host.repl.exited</c> already (an init-stage crash balances the spawn);
+    ///     the caller observes the REPL's eval connection or its own completion instead.
+    ///     <para>Correlation: the host does not echo the instruction's correlation id on its reports
+    ///     (B5a), so the completion is matched by session id and generation — a report for a
+    ///     session/generation this kernel did not ask it to derive is ignored here (it still
+    ///     registers the pid through the spawned path). A host that derives concurrently for the
+    ///     same session would be ambiguous; the session factory serializes one derive per session.</para>
+    /// </summary>
+    public Task<ReplDeriveOutcome> RequestReplDeriveAsync(
+        HostReplDerivePayload derive,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(derive);
+        ArgumentException.ThrowIfNullOrWhiteSpace(derive.SessionId);
+        ArgumentOutOfRangeException.ThrowIfNegative(derive.Generation);
+
+        var key = DeriveKey(derive.SessionId, derive.Generation);
+        var tcs = new TaskCompletionSource<ReplDeriveOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!pendingDerives.TryAdd(key, tcs))
+            throw new InvalidOperationException(
+                $"A REPL derive is already in flight for session '{derive.SessionId}' generation {derive.Generation}.");
+
+        return SendDeriveAsync(derive, tcs, key, cancellationToken);
+    }
+
+    private async Task<ReplDeriveOutcome> SendDeriveAsync(
+        HostReplDerivePayload derive,
+        TaskCompletionSource<ReplDeriveOutcome> tcs,
+        string key,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        timeout.CancelAfter(ReplDeriveTimeout);
+        try
+        {
+            await using var registration = timeout.Token.Register(
+                static state => (state as TaskCompletionSource<ReplDeriveOutcome>)?.TrySetCanceled(),
+                tcs);
+            await PushAsync(
+                Socket ?? throw new InvalidOperationException("The plugin host is not connected."),
+                new ReplEnvelope(
+                    EnvelopeVersion,
+                    ReplMessageType.HostReplDerive,
+                    Guid.NewGuid().ToString("N"),
+                    JsonSerializer.SerializeToElement(derive, ReplControlJsonContext.Default.HostReplDerivePayload)),
+                timeout.Token).ConfigureAwait(false);
+            return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            pendingDerives.TryRemove(key, out _);
+        }
+    }
+
+    private static string DeriveKey(string sessionId, int generation)
+    {
+        return $"{sessionId}\u0000{generation.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
     }
 
     /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.</summary>
@@ -768,7 +934,7 @@ internal sealed class PluginHostManager(
             : JsonSerializer.SerializeToElement([.. grant.Values], PluginHostJsonContext.Default.StringArray);
     }
 
-    private void HandleHostMessage(string text)
+    internal void HandleHostMessage(string text)
     {
         ReplEnvelope envelope;
         try
@@ -783,32 +949,152 @@ internal sealed class PluginHostManager(
 
         switch (envelope.Type)
         {
-            case ReplMessageType.ExtensionResult:
-            case ReplMessageType.ExtensionError:
+            case ReplMessageType.HostInvokeResult:
+            case ReplMessageType.HostInvokeError:
                 CompletePending(envelope);
                 break;
             case ReplMessageType.ExtensionRegistry:
                 UpdateRegistry(ParsePayload<ExtensionRegistryPayload>(envelope));
                 break;
+            case ReplMessageType.HostReplSpawned:
+                RegisterHostRepl(ParsePayload<HostReplSpawnedPayload>(envelope));
+                break;
+            case ReplMessageType.HostReplExited:
+                UnregisterHostRepl(ParsePayload<HostReplExitedPayload>(envelope));
+                break;
+            case ReplMessageType.HostReplDeriveFailed:
+                CompleteDeriveFailed(ParsePayload<HostReplDeriveFailedPayload>(envelope));
+                break;
         }
+    }
+
+    /// <summary>
+    ///     Registers a REPL process the plugin host derived (ADR 0020): the pid becomes a
+    ///     session-owned control-channel identity and a broker-scoped permission subject, the
+    ///     same registration effect a kernel-derived REPL has at spawn. The host connection is
+    ///     already authenticated as a trusted host (the <c>control.hello</c> host handshake), and
+    ///     like every other host message this report carries no host id.
+    /// </summary>
+    private void RegisterHostRepl(HostReplSpawnedPayload? payload)
+    {
+        if (payload is null ||
+            payload.Pid <= 0 ||
+            string.IsNullOrWhiteSpace(payload.SessionId))
+        {
+            logger.LogWarning(
+                "Ignored a malformed host REPL spawned report (session '{SessionId}', pid {Pid}).",
+                payload?.SessionId,
+                payload?.Pid);
+            return;
+        }
+
+        if (replPolicies.TryGetValue(payload.SessionId, out var policy))
+            logger.LogDebug(
+                "Host-derived REPL for session '{SessionId}' generation {Generation} registered with pid {Pid}.",
+                payload.SessionId,
+                payload.Generation,
+                payload.Pid);
+        else
+        {
+            // Explicit downgrade: no kernel path cached a policy for this session (the esbuild-
+            // wasm resolution failed at session start, or a non-kernel session was derived).
+            // Registering the empty default policy denies every REPL permission request by
+            // default — a deliberate, surfaced fallback, never a silent one. The kernel must
+            // compute and pre-cache the policy before the host derives the REPL (ADR 0020).
+            policy = EffectivePolicy.Default;
+            logger.LogWarning(
+                "No effective REPL policy is cached for session '{SessionId}'; " +
+                "registered the host-derived REPL pid {Pid} with the default policy. " +
+                "The kernel must compute and pre-cache the REPL policy before the host derives it (ADR 0020).",
+                payload.SessionId,
+                payload.Pid);
+        }
+
+        sessionRegistry.Register(payload.Pid, payload.SessionId);
+        broker?.RegisterPolicy(payload.Pid, policy);
+        logger.LogInformation(
+            "Plugin host reported a REPL process for session '{SessionId}' generation {Generation} with pid {Pid}.",
+            payload.SessionId,
+            payload.Generation,
+            payload.Pid);
+        CompleteDeriveSpawned(payload);
+    }
+
+    /// <summary>Signals the pending <c>host.repl.derive</c> completion that the host's spawned
+    /// report for this session/generation has been fully processed (identity + broker policy
+    /// registered). The report carries no correlation id (B5a), so the match is by session and
+    /// generation.</summary>
+    private void CompleteDeriveSpawned(HostReplSpawnedPayload payload)
+    {
+        if (pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
+            completion.TrySetResult(ReplDeriveOutcome.Spawned());
+    }
+
+    /// <summary>Signals the pending <c>host.repl.derive</c> completion that the host rejected the
+    /// instruction before any pid existed. The report carries no correlation id (B5a), so the
+    /// match is by session and generation; a stale failure (no pending derive) is ignored.</summary>
+    private void CompleteDeriveFailed(HostReplDeriveFailedPayload? payload)
+    {
+        if (payload is null ||
+            string.IsNullOrWhiteSpace(payload.SessionId) ||
+            string.IsNullOrWhiteSpace(payload.Message))
+        {
+            logger.LogWarning("Ignored a malformed host REPL deriveFailed report.");
+            return;
+        }
+
+        logger.LogWarning(
+            "The plugin host could not derive a REPL for session '{SessionId}' generation {Generation}: {Message}",
+            payload.SessionId,
+            payload.Generation,
+            payload.Message);
+        if (pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
+            completion.TrySetResult(ReplDeriveOutcome.DeriveFailed(payload.Message));
+    }
+
+    /// <summary>Releases the pid-scoped identity and broker policy of a host-derived REPL that
+    /// exited (ADR 0020). Idempotent: the pid may already have been unregistered by another
+    /// path.</summary>
+    private void UnregisterHostRepl(HostReplExitedPayload? payload)
+    {
+        if (payload is null ||
+            payload.Pid <= 0 ||
+            string.IsNullOrWhiteSpace(payload.SessionId))
+        {
+            logger.LogWarning(
+                "Ignored a malformed host REPL exited report (session '{SessionId}', pid {Pid}).",
+                payload?.SessionId,
+                payload?.Pid);
+            return;
+        }
+
+        sessionRegistry.Unregister(payload.Pid);
+        broker?.UnregisterProcess(payload.Pid);
+        logger.LogDebug(
+            "Plugin host reported a REPL process exit for session '{SessionId}' generation {Generation} " +
+            "with pid {Pid}{Failure}.",
+            payload.SessionId,
+            payload.Generation,
+            payload.Pid,
+            payload.Failure is { } failure ? $" ({failure})" : string.Empty);
     }
 
     private void CompletePending(ReplEnvelope envelope)
     {
         if (envelope.CorrelationId is not { } correlationId ||
-            !pending.TryRemove(correlationId, out var completion))
+            !pendingInvokes.TryRemove(correlationId, out var completion))
             return;
 
-        if (envelope.Type == ReplMessageType.ExtensionResult)
+        if (envelope.Type == ReplMessageType.HostInvokeResult)
         {
-            var payload = ParsePayload<ExtensionResultPayload>(envelope);
+            var payload = ParsePayload<HostInvokeResultPayload>(envelope);
             completion.TrySetResult(ExtensionCallOutcome.Result(payload?.Value));
             return;
         }
 
-        var error = ParsePayload<ExtensionErrorPayload>(envelope);
+        var error = ParsePayload<HostInvokeErrorPayload>(envelope);
         completion.TrySetResult(
-            ExtensionCallOutcome.Error(error?.Code ?? "extension_failed", error?.Message ?? "the extension failed"));
+            ExtensionCallOutcome.Error(error?.Code ?? "host_invoke_failed", error?.Message ?? "the extension failed"));
     }
 
     private void UpdateRegistry(ExtensionRegistryPayload? payload)
@@ -959,10 +1245,15 @@ internal sealed class PluginHostManager(
 
     private void FailPending(string message)
     {
-        foreach (var completion in pending.Values)
+        foreach (var completion in pendingInvokes.Values)
             completion.TrySetResult(ExtensionCallOutcome.Error("host_disconnected", message));
 
-        pending.Clear();
+        pendingInvokes.Clear();
+
+        foreach (var completion in pendingDerives.Values)
+            completion.TrySetResult(ReplDeriveOutcome.DeriveFailed(message));
+
+        pendingDerives.Clear();
     }
 
     private static T? ParsePayload<T>(ReplEnvelope envelope)
@@ -977,12 +1268,18 @@ internal sealed class PluginHostManager(
     {
         return typeof(T) switch
         {
-            _ when typeof(T) == typeof(ExtensionResultPayload) =>
-                ReplControlJsonContext.Default.ExtensionResultPayload,
-            _ when typeof(T) == typeof(ExtensionErrorPayload) =>
-                ReplControlJsonContext.Default.ExtensionErrorPayload,
+            _ when typeof(T) == typeof(HostInvokeResultPayload) =>
+                ReplControlJsonContext.Default.HostInvokeResultPayload,
+            _ when typeof(T) == typeof(HostInvokeErrorPayload) =>
+                ReplControlJsonContext.Default.HostInvokeErrorPayload,
             _ when typeof(T) == typeof(ExtensionRegistryPayload) =>
                 ReplControlJsonContext.Default.ExtensionRegistryPayload,
+            _ when typeof(T) == typeof(HostReplSpawnedPayload) =>
+                ReplControlJsonContext.Default.HostReplSpawnedPayload,
+            _ when typeof(T) == typeof(HostReplExitedPayload) =>
+                ReplControlJsonContext.Default.HostReplExitedPayload,
+            _ when typeof(T) == typeof(HostReplDeriveFailedPayload) =>
+                ReplControlJsonContext.Default.HostReplDeriveFailedPayload,
             _ => throw new InvalidOperationException($"Unsupported extension payload type '{typeof(T).Name}'.")
         };
     }

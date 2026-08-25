@@ -14,7 +14,8 @@ internal sealed record PluginHostProcessOptions(
     string HostId,
     string SdkUrl,
     string WorkerEntryUrl,
-    string HostConfigFile);
+    string HostConfigFile,
+    DenoPermissionBroker? Broker = null);
 
 /// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the out-of-process plugin host:
 /// launches the host <c>deno run</c> process with the control channel address and the
@@ -108,6 +109,13 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginConfig] = options.ConfigPath;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginSdk] = options.SdkUrl;
         startInfo.EnvironmentVariables[ReplControlEnvironment.PluginWorkerEntry] = options.WorkerEntryUrl;
+        // The broker address is handed to the host under MAIEUTICS_PERMISSION_BROKER, not
+        // DENO_PERMISSION_BROKER_PATH, so the host itself never consults the broker (it runs with
+        // full launch-time grants and no registered policy); a REPL process the host derives later
+        // reads the address and applies it as its own DENO_PERMISSION_BROKER_PATH (ADR 0020
+        // decision 1; B3 wires the host side).
+        foreach (var pair in ReplControlEnvironment.FromHostOptions(options))
+            startInfo.EnvironmentVariables[pair.Key] = pair.Value;
         foreach (var name in AllowedEnvironmentNames)
         {
             var value = Environment.GetEnvironmentVariable(name);

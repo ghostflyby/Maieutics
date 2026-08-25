@@ -30,6 +30,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private static readonly TimeSpan PolicyRegistrationWait = TimeSpan.FromSeconds(10);
     private readonly CancellationTokenSource lifetime = new();
     private readonly ILogger<DenoPermissionBroker> logger;
+    private readonly TimeSpan policyRegistrationWait;
     private readonly ConcurrentDictionary<int, TaskCompletionSource<EffectivePolicy>> registrations = new();
     private readonly string? socketPath;
     private readonly string? pipeName;
@@ -40,12 +41,21 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private DenoPermissionBroker(
         string? socketPath,
         string? pipeName,
-        ILogger<DenoPermissionBroker> logger)
+        ILogger<DenoPermissionBroker> logger,
+        TimeSpan policyRegistrationWait)
     {
         this.socketPath = socketPath;
         this.pipeName = pipeName;
         this.logger = logger;
+        this.policyRegistrationWait = policyRegistrationWait;
     }
+
+    /// <summary>Number of pid registration slots currently held. A request may create a pending
+    /// slot before the owner registers; slots are released on registration, on
+    /// <see cref="UnregisterProcess"/>, on the policy-arrival timeout in
+    /// <see cref="GetPolicyAsync"/>, and on broker disposal. Exposed for tests to assert that a
+    /// timed-out unknown pid leaves no slot behind.</summary>
+    internal int RegistrationCount => registrations.Count;
 
     /// <summary>Address REPL and plugin-host children use to reach the broker via
     /// <c>DENO_PERMISSION_BROKER_PATH</c>: a unix socket path on unix, the full named-pipe path
@@ -66,10 +76,25 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     /// immediately, so no child can be spawned against a broker that is not yet listening.</summary>
     internal static DenoPermissionBroker Create(ILogger<DenoPermissionBroker> logger)
     {
+        return Create(logger, PolicyRegistrationWait);
+    }
+
+    /// <summary>Creates the broker like <see cref="Create(ILogger{DenoPermissionBroker})"/> but
+    /// with an overridden policy-arrival wait, so tests can exercise the timeout path (slot
+    /// cleanup) without waiting the full production bound.</summary>
+    internal static DenoPermissionBroker Create(
+        ILogger<DenoPermissionBroker> logger,
+        TimeSpan policyRegistrationWait)
+    {
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentOutOfRangeException.ThrowIfLessThan(policyRegistrationWait, TimeSpan.Zero);
         if (OperatingSystem.IsWindows())
         {
-            var windowsBroker = new DenoPermissionBroker(null, $"maieutics-broker-{Guid.NewGuid():N}", logger);
+            var windowsBroker = new DenoPermissionBroker(
+                null,
+                $"maieutics-broker-{Guid.NewGuid():N}",
+                logger,
+                policyRegistrationWait);
             windowsBroker.pipeListener = new NamedPipeServerStream(
                 windowsBroker.pipeName!,
                 PipeDirection.InOut,
@@ -81,7 +106,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         }
 
         var socketPath = CreateSocketPath();
-        var broker = new DenoPermissionBroker(socketPath, null, logger);
+        var broker = new DenoPermissionBroker(socketPath, null, logger, policyRegistrationWait);
         var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         listener.Bind(new UnixDomainSocketEndPoint(socketPath));
         listener.Listen(MaximumPendingConnections);
@@ -197,17 +222,29 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             static _ => new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously));
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(PolicyRegistrationWait);
+        timeout.CancelAfter(policyRegistrationWait);
         try
         {
             return await slot.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            // The policy may have arrived exactly as the wait timed out; prefer a concurrent
+            // registration over the default deny.
+            if (slot.Task.IsCompletedSuccessfully)
+                return slot.Task.Result;
+
             logger.LogDebug(
                 "Permission broker policy for process {ProcessId} did not arrive within {Wait}; denying by default.",
                 processId,
-                PolicyRegistrationWait);
+                policyRegistrationWait);
+            // The owner never registered the policy, so no UnregisterProcess will clean this pid
+            // up (that only runs on a reported exit). Remove the pending slot to avoid a permanent
+            // leak for an unknown pid. The removal is safe under concurrency: TryRemove returns the
+            // winning slot, and a concurrent RegisterPolicy that just completed it is observed
+            // through the slot's task — TrySetCanceled is a no-op on an already-completed task.
+            if (registrations.TryRemove(processId, out var removed))
+                removed.TrySetCanceled();
             return EffectivePolicy.Default;
         }
     }

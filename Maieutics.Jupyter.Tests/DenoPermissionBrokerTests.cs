@@ -73,6 +73,52 @@ public sealed class DenoPermissionBrokerTests
         }
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task TimedOutUnknownPidReleasesItsPendingSlot()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var root = Path.Combine(Path.GetTempPath(), $"mc-broker-timeout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var scriptPath = Path.Combine(root, "probe.ts");
+            var targetPath = Path.Combine(root, "target.txt");
+            await File.WriteAllTextAsync(targetPath, "payload", deadline.Token);
+            var escapedTarget = targetPath.Replace("\\", "\\\\");
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "try { await Deno.readTextFile(\"" + escapedTarget + "\"); console.log(\"read OK\"); }\n" +
+                "catch (e) { console.log(\"read DENIED:\", String(e).split(\"\\n\")[0]); }\n",
+                deadline.Token);
+            // A short policy-arrival wait makes the timeout path (and its cleanup) testable
+            // without the production 10s bound.
+            var broker = DenoPermissionBroker.Create(
+                new CollectingLogger<DenoPermissionBroker>(),
+                TimeSpan.FromMilliseconds(500));
+
+            // The child connects and blocks on its first broker request; no policy is ever
+            // registered for it, so the slot times out, the request is denied by default, and the
+            // pending slot must be released instead of leaking (UnregisterProcess never runs for
+            // a pid the owner never registered).
+            var output = await RunChildAsync(
+                broker,
+                EffectivePolicy.Default,
+                scriptPath,
+                deadline.Token,
+                register: false);
+
+            output.Should().Contain("read DENIED: NotCapable");
+            broker.RegistrationCount.Should().Be(
+                0,
+                "a timed-out unknown pid must not leave a pending registration slot behind");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     [Fact]
     public async Task ResolverMatchesExactDenyOverAllow()
     {
@@ -114,7 +160,8 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionBroker broker,
         EffectivePolicy policy,
         string scriptPath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool register = true)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -130,7 +177,7 @@ public sealed class DenoPermissionBrokerTests
         startInfo.ArgumentList.Add(scriptPath);
         using var process = Process.Start(startInfo)
                             ?? throw new InvalidOperationException("The deno probe could not be started.");
-        broker.RegisterPolicy(process.Id, policy);
+        if (register) broker.RegisterPolicy(process.Id, policy);
         try
         {
             var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
@@ -140,7 +187,7 @@ public sealed class DenoPermissionBrokerTests
         }
         finally
         {
-            broker.UnregisterProcess(process.Id);
+            if (register) broker.UnregisterProcess(process.Id);
         }
     }
 

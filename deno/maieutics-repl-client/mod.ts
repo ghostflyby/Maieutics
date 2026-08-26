@@ -357,17 +357,6 @@ class ReplBus {
   }
 }
 
-async function sendAndWait(
-  bus: ReplBus,
-  envelope: Omit<ReplEnvelope, "version" | "correlationId">,
-): Promise<void> {
-  const correlationId = crypto.randomUUID();
-  await bus.connect();
-  const done = bus.waitCorrelation(correlationId);
-  bus.send({ ...envelope, correlationId });
-  await done;
-}
-
 async function healthProbe(bus: ReplBus): Promise<string> {
   const correlationId = crypto.randomUUID();
   await bus.connect();

@@ -193,7 +193,7 @@ export class ReplClient {
       { maxMessageBytes: REPL_OUTPUT_MAX_MESSAGE_BYTES },
     );
     this.#outputSocket = socket;
-    socket.onMessage = (data) => {
+    socket.onMessage = (_data) => {
       // Process -> host only: the host never sends output frames. Any inbound
       // data is a protocol violation worth surfacing on the error path.
       this.#fail(
@@ -237,7 +237,7 @@ export class ReplClient {
     };
   }
 
-  #failComm(error: unknown): void {
+  #failComm(_error: unknown): void {
     // The comm channel is auxiliary: a failure to open it must not take down the
     // REPL eval channel or the worker. Script comm calls fail with a clear error.
     this.#commClient = undefined;
@@ -603,7 +603,7 @@ export class ReplClient {
         if (active === undefined || active.executionId !== item.event.executionId) {
           throw new Error(`Output arrived for inactive execution '${item.event.executionId}'.`);
         }
-        await this.#sendOutputFrame(this.#outputFrame(item.event));
+        this.#sendOutputFrame(this.#outputFrame(item.event));
         item.handled.resolve();
       } catch (error) {
         item.handled.reject(error);
@@ -633,7 +633,7 @@ export class ReplClient {
     });
   }
 
-  async #sendOutputFrame(frame: OutputFrame): Promise<void> {
+  #sendOutputFrame(frame: OutputFrame): void {
     const socket = this.#outputSocket;
     if (socket === undefined || !socket.isOpen) {
       throw new Error("The REPL output WebSocket is not open.");

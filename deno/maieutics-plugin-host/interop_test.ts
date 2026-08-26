@@ -558,7 +558,7 @@ Deno.test("multiple provider workers aggregate into the defining worker's collec
     `,
   );
 
-  const providerSource = (pluginName: string, value: number): string =>
+  const providerSource = (_pluginName: string, value: number): string =>
     `${sdkImport()}
     import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
@@ -733,7 +733,7 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
   // provider-a to a version that no longer contributes must drop its [1]
   // from the definer (host notifies via __maieuticsProviderDead), leaving
   // only provider-b's [2] — never a lingering stale [1].
-  const contributing = (name: string, value: number): string =>
+  const contributing = (_name: string, value: number): string =>
     `${sdkImport()}
     import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
@@ -743,7 +743,7 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
       handler: () => ({ action: "continue" as const }),
     });
     `;
-  const nonContributing = (name: string): string =>
+  const nonContributing = (_name: string): string =>
     `${sdkImport()}
     import { ep } from "@maieutics/definer/main";
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {

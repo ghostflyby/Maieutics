@@ -723,7 +723,7 @@ Deno.test("host.repl.derive derives a REPL from the kernel parameters and report
 });
 
 Deno.test("host.repl.derive injects the kernel env verbatim plus the forwarded broker path", async () => {
-  await using broker = await TestBroker.start();
+  await using broker = TestBroker.start();
   const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
   Deno.env.set("MAIEUTICS_PERMISSION_BROKER", broker.address);
   const { reporter } = collectReports();
@@ -760,7 +760,7 @@ Deno.test("host.repl.derive injects the kernel env verbatim plus the forwarded b
 });
 
 Deno.test("host.repl.derive env never overwrites the host's own broker path", async () => {
-  await using broker = await TestBroker.start();
+  await using broker = TestBroker.start();
   const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
   Deno.env.set("MAIEUTICS_PERMISSION_BROKER", broker.address);
   const { reporter } = collectReports();
@@ -924,7 +924,7 @@ Deno.test("host.repl.derive with report:false stays silent on the bus", async ()
  * the handshake.
  */
 class TestBroker implements AsyncDisposable {
-  static async start(): Promise<TestBroker> {
+  static start(): TestBroker {
     // The unix socket path must stay well under the platform SUN_LEN limit, so
     // use a short /tmp name (like the .NET broker's CreateSocketPath).
     const path = `/tmp/mc-broker-${crypto.randomUUID().slice(0, 8)}.sock`;
@@ -981,6 +981,7 @@ class TestBroker implements AsyncDisposable {
   async [Symbol.asyncDispose](): Promise<void> {
     try {
       this.#listener.close();
+      await Promise.resolve();
     } catch {
       // Already closed.
     }
@@ -988,7 +989,7 @@ class TestBroker implements AsyncDisposable {
 }
 
 Deno.test("repl child receives the forwarded broker path in its environment", async () => {
-  await using broker = await TestBroker.start();
+  await using broker = TestBroker.start();
   const previous = Deno.env.get("MAIEUTICS_PERMISSION_BROKER");
   Deno.env.set("MAIEUTICS_PERMISSION_BROKER", broker.address);
   const { reporter } = collectReports();
@@ -1025,7 +1026,7 @@ Deno.test("repl child sees no broker path when the host received none", async ()
   }
 });
 
-Deno.test("isValidReplPid rejects the host's own pid", async () => {
+Deno.test("isValidReplPid rejects the host's own pid", () => {
   assertEquals(isValidReplPid(Deno.pid), false);
   assertEquals(isValidReplPid(0), false);
   assertEquals(isValidReplPid(-1), false);

@@ -311,7 +311,7 @@ export function changesOf<T>(value: ReactiveValue<T | undefined>): AsyncIterable
     [Symbol.asyncIterator]() {
       let stopped = false;
       let pending: ((v: T | undefined) => void) | undefined;
-      let queue: (T | undefined)[] = [];
+      const queue: (T | undefined)[] = [];
       // The initial value travels separately; the effect's first run must not
       // enqueue it again.
       let first = true;
@@ -552,7 +552,7 @@ export async function* subscribe<T>(
 ): AsyncIterable<T[]> {
   const collectionSignal = collection(extensionPoint);
   let pending: ((value: T[]) => void) | undefined;
-  let queue: T[][] = [];
+  const queue: T[][] = [];
   // The initial snapshot is yielded explicitly below; the effect's first run
   // must not enqueue it again.
   let first = true;
@@ -634,12 +634,9 @@ function valueChanges<T>(
 ): AsyncIterable<T> {
   return {
     [Symbol.asyncIterator]() {
-      const providers = providersByPoint.get(
-        symbolFor(extensionPoint.owner, extensionPoint.name),
-      );
       let stopped = false;
       let pending: ((result: IteratorResult<T>) => void) | undefined;
-      let queue: T[] = [];
+      const queue: T[] = [];
       // Provider id → last emitted value; a changed or new provider emits.
       let lastByProvider = new Map<string, unknown>();
 

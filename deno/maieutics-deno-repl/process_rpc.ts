@@ -87,7 +87,7 @@ export const rpc = {
    * optional on the host side (a child that lacks it falls back to
    * `initialize()`), but must stay side-effect-free here.
    */
-  async pregestPid(): Promise<number> {
+  pregestPid(): number {
     return Deno.pid;
   },
 
@@ -98,7 +98,7 @@ export const rpc = {
    * kernel through the pid the host reported, this process only carries the
    * socket address.
    */
-  async pregestBrokerPath(): Promise<string> {
+  pregestBrokerPath(): string {
     return Deno.env.get(BROKER_PATH_ENV) ?? "";
   },
 
@@ -108,7 +108,7 @@ export const rpc = {
    * pregest pid report so the broker policy for this pid is already registered
    * (B2 then forwards the pid to the kernel broker and control channel).
    */
-  async initialize(): Promise<ReplProcessInfo> {
+  initialize(): ReplProcessInfo {
     const sessionId = Deno.env.get(SESSION_ENV) ?? "";
     const rawGeneration = Deno.env.get(GENERATION_ENV);
     const generation = rawGeneration === undefined || rawGeneration.length === 0
@@ -142,7 +142,7 @@ export const rpc = {
    * eval hello/ready handshake, plus a terminal error when it failed or was
    * disposed. Control-plane only; never gated on the client being up.
    */
-  async status(): Promise<ReplProcessStatus> {
+  status(): ReplProcessStatus {
     return replClientManager.status();
   },
 
@@ -152,7 +152,7 @@ export const rpc = {
    * this actor method; the envelope mirrors the ReplActorResult shape so the
    * host-side caller sees the migration state explicitly.
    */
-  async execute(code: string): Promise<ReplActorResult> {
+  execute(code: string): ReplActorResult {
     if (typeof code !== "string") {
       throw new TypeError("execute expects a code string.");
     }

@@ -2,7 +2,6 @@
 // back over RPC) and verify it carries custom frames bidirectionally.
 import type * as WorkerModule from "./dedicated_channel_worker.ts";
 import { spawnProcess } from "@ghostflyby/worker-actor";
-import { connectToken } from "@ghostflyby/worker-actor/codec";
 
 const actor = await spawnProcess<typeof WorkerModule.rpc>(
   new URL("./dedicated_channel_worker.ts", import.meta.url).pathname,

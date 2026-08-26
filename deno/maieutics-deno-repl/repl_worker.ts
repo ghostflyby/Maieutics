@@ -11,7 +11,6 @@ import {
 } from "./repl_actor.ts";
 import {
   createInputMailbox,
-  type InputMailboxKind,
   InputMailboxStatus,
   mailboxKindCode,
   waitForInputMailbox,
@@ -114,13 +113,13 @@ export const rpc = {
     }
   },
 
-  async deliverComm(message: {
+  deliverComm(message: {
     kind: number;
     commId: string;
     targetName?: string;
     data?: unknown;
     buffers: Uint8Array[];
-  }): Promise<void> {
+  }): void {
     const kind = message.kind === 0 ? "open" : message.kind === 2 ? "close" : "msg";
     deliverCommToHandlers(kind, message);
   },

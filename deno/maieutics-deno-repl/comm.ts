@@ -28,6 +28,8 @@ export interface CommMessage {
   targetName?: string;
   data?: unknown;
   buffers: Uint8Array[];
+  /** Jupyter message metadata (comm_open carries the protocol version). */
+  metadata?: Record<string, unknown>;
 }
 
 export interface CommClient {
@@ -116,9 +118,11 @@ function encode(message: CommMessage): Uint8Array {
   const commId = new TextEncoder().encode(message.commId);
   const targetName = new TextEncoder().encode(message.targetName ?? "");
   const data = message.data === undefined ? new Uint8Array() : encodeData(message.data);
+  const metadata = message.metadata === undefined ? new Uint8Array() : encodeData(message.metadata);
   const buffers = message.buffers;
 
-  let total = 1 + 2 + commId.length + 2 + targetName.length + 4 + data.length + 2;
+  let total = 1 + 2 + commId.length + 2 + targetName.length + 4 + data.length +
+    4 + metadata.length + 2;
   for (const buffer of buffers) total += 4 + buffer.length;
   if (total > MAX_MESSAGE_BYTES) {
     throw new RangeError(`The comm message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
@@ -140,6 +144,10 @@ function encode(message: CommMessage): Uint8Array {
   offset += 4;
   result.set(data, offset);
   offset += data.length;
+  view.setUint32(offset, metadata.length, false);
+  offset += 4;
+  result.set(metadata, offset);
+  offset += metadata.length;
   view.setUint16(offset, buffers.length, false);
   offset += 2;
   for (const buffer of buffers) {
@@ -172,6 +180,15 @@ function decode(frames: Uint8Array): CommMessage {
     data = JSON.parse(new TextDecoder().decode(frames.subarray(offset, offset + dataLength)));
     offset += dataLength;
   }
+  const metadataLength = view.getUint32(offset, false);
+  offset += 4;
+  let metadata: Record<string, unknown> | undefined;
+  if (metadataLength > 0) {
+    metadata = JSON.parse(
+      new TextDecoder().decode(frames.subarray(offset, offset + metadataLength)),
+    );
+    offset += metadataLength;
+  }
   const bufferCount = view.getUint16(offset, false);
   offset += 2;
   const buffers: Uint8Array[] = [];
@@ -181,7 +198,7 @@ function decode(frames: Uint8Array): CommMessage {
     buffers.push(frames.slice(offset, offset + bufferLength));
     offset += bufferLength;
   }
-  return { kind, commId, targetName, data, buffers };
+  return { kind, commId, targetName, data, buffers, metadata };
 }
 
 function encodeData(data: unknown): Uint8Array {

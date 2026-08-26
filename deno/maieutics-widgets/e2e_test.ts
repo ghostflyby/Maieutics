@@ -72,11 +72,11 @@ Deno.test("widget factory creates a model, broadcasts open, and displays widget-
   resetTransport();
   bindWidgetHost(fakeHost());
 
-  const model = IntSlider({ value: 5, min: 0, max: 10 }) as {
+  const model = IntSlider({ value: 5, min: 0, max: 10 }) as unknown as {
     commId: string;
     get(key: string): unknown;
     mimeBundle(): Record<string, unknown>;
-  } & Record<symbol, unknown>;
+  } & { [DISPLAY]: () => Promise<Record<string, unknown>> };
 
   assertEquals(transport.opens.length, 1);
   const open = transport.opens[0];

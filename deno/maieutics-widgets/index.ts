@@ -59,6 +59,11 @@ export function bindWidgetHost(widgetHost: WidgetHost): void {
       buffers: message.buffers,
     });
   });
+  // Release the model registry when the frontend closes a comm; the kernel
+  // keeps running (invariant 18) and a later re-open registers a fresh model.
+  widgetHost.onComm("close", (message) => {
+    runtime?.remove(message.commId);
+  });
 }
 
 /** The runtime bound to the REPL transport; throws before bindWidgetHost. */
@@ -99,12 +104,17 @@ export const ToggleButton = controlFactory("ToggleButton");
 export const IntRangeSlider = controlFactory("IntRangeSlider");
 export const Box = controlFactory("Box");
 
-function controlFactory(kind: string) {
+/** A widget model factory: props (initial state + optional onChange) -> model. */
+export type ControlFactory = (
+  props?: Record<string, unknown> & { onChange?: (key: string, value: unknown) => void },
+) => WidgetModel<Record<string, unknown>>;
+
+function controlFactory(kind: string): ControlFactory {
   const template = controlTemplate(kind);
   if (template === undefined) {
     throw new Error(`Unknown control '${kind}'.`);
   }
-  return (props: Record<string, unknown> = {}): unknown => {
+  return (props = {}): WidgetModel<Record<string, unknown>> => {
     const { onChange, ...stateProps } = props;
     const state = {
       ...WidgetRuntime.identityFields(template.modelName, template.viewName),

@@ -155,9 +155,13 @@ internal sealed partial class ReplControlHost
             var data = message.Data is { } dataElement
                 ? JsonSerializer.SerializeToUtf8Bytes(dataElement, JupyterJsonContext.Default.JsonElement)
                 : [];
+            var metadata = message.Metadata is { } metadataElement
+                ? JsonSerializer.SerializeToUtf8Bytes(metadataElement, JupyterJsonContext.Default.JsonElement)
+                : [];
             var buffers = message.Buffers;
 
-            var total = 1 + 2 + commId.Length + 2 + targetName.Length + 4 + data.Length + 2;
+            var total = 1 + 2 + commId.Length + 2 + targetName.Length + 4 + data.Length +
+                4 + metadata.Length + 2;
             foreach (var buffer in buffers)
                 total += 4 + buffer.Length;
 
@@ -173,6 +177,9 @@ internal sealed partial class ReplControlHost
             WriteUInt32(result, ref offset, data.Length);
             data.CopyTo(result, offset);
             offset += data.Length;
+            WriteUInt32(result, ref offset, metadata.Length);
+            metadata.CopyTo(result, offset);
+            offset += metadata.Length;
             WriteUInt16(result, ref offset, buffers.Count);
             foreach (var buffer in buffers)
             {
@@ -201,6 +208,11 @@ internal sealed partial class ReplControlHost
                 ? null
                 : JsonDocument.Parse(frames.AsMemory(offset, dataLength)).RootElement.Clone();
             offset += dataLength;
+            var metadataLength = ReadUInt32(frames, ref offset);
+            JsonElement? metadata = metadataLength == 0
+                ? null
+                : JsonDocument.Parse(frames.AsMemory(offset, metadataLength)).RootElement.Clone();
+            offset += metadataLength;
             var bufferCount = ReadUInt16(frames, ref offset);
             var buffers = new List<byte[]>(bufferCount);
             for (var index = 0; index < bufferCount; index++)
@@ -217,6 +229,7 @@ internal sealed partial class ReplControlHost
                 commId,
                 targetName,
                 data,
+                metadata,
                 buffers,
                 JupyterWireMessage.Create(
                     new JupyterMessage(

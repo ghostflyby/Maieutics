@@ -46,10 +46,16 @@ export function jsxs(
 }
 
 function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
+  if (type === Fragment) {
+    throw new Error(
+      "JSX fragments (`<>...</>`) are not supported for ipywidgets controls. " +
+        "Wrap the children in a Box/VBox/HBox instead.",
+    );
+  }
   if (typeof type === "string") {
     const template = controlTemplate(type);
     if (template !== undefined) {
-      const { onChange, ...stateProps } = props ?? {};
+      const { onChange, children, ...stateProps } = props ?? {};
       const nested: Record<string, string> = {};
       if (isCssBlock(stateProps.style)) {
         nested.style = bindNestedStyle(useWidgetRuntime(), "StyleModel", stateProps.style);
@@ -57,11 +63,17 @@ function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
       if (isCssBlock(stateProps.layout)) {
         nested.layout = bindNestedStyle(useWidgetRuntime(), "LayoutModel", stateProps.layout);
       }
+      // Layout widgets (Box, VBox, HBox) carry their children as IPY_MODEL_
+      // references; other controls ignore children. Each child element is
+      // instantiated here so its comm_open is broadcast and its model_id
+      // becomes the reference the frontend unpack_models resolves.
+      const childrenState = children === undefined ? {} : { children: toModelRefs(children) };
       const state = {
         ...WidgetRuntime.identityFields(template.modelName, template.viewName),
         ...template.defaults,
         ...stateProps,
         ...nested,
+        ...childrenState,
       };
       return createWidget(
         state,
@@ -70,4 +82,34 @@ function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
     }
   }
   return { type, props: props ?? {}, key: key ?? null };
+}
+
+/**
+ * Convert JSX children (a vnode, a model, or an array) into `IPY_MODEL_<id>`
+ * reference strings. Control children are instantiated through the jsx
+ * factory so their comm_open is broadcast; the returned refs are what the
+ * frontend's `unpack_models` resolves.
+ */
+function toModelRefs(children: unknown): string[] {
+  const nodes = Array.isArray(children) ? children : [children];
+  const refs: string[] = [];
+  for (const node of nodes) {
+    const value = createFromValue(node);
+    if (value !== null && typeof value === "object" && "commId" in value) {
+      refs.push(WidgetRuntime.modelRef((value as { commId: string }).commId));
+    }
+  }
+  return refs;
+}
+
+/** Re-enter the factory for a vnode/model value (used by toModelRefs). */
+function createFromValue(value: unknown): unknown {
+  if (
+    value !== null && typeof value === "object" &&
+    typeof (value as { type?: unknown }).type === "string"
+  ) {
+    const { type, props } = value as { type: string; props: JsxProps | null };
+    return create(type, props);
+  }
+  return value;
 }

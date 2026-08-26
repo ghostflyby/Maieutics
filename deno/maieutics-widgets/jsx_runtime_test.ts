@@ -17,10 +17,10 @@ function bindFakeHost(): { opens: Array<Record<string, unknown>> } {
 
 Deno.test("jsx factory turns a known control tag into a widget model", async () => {
   const { opens } = bindFakeHost();
-  const model = jsx("IntSlider", { value: 5, min: 0, max: 10 }) as {
+  const model = jsx("IntSlider", { value: 5, min: 0, max: 10 }) as unknown as {
     commId: string;
     get(key: string): unknown;
-  } & Record<symbol, unknown>;
+  } & { [DISPLAY]: () => Promise<Record<string, unknown>> };
 
   // comm_open was broadcast with the classic controls identity.
   assertEquals(opens.length, 1);

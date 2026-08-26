@@ -22,7 +22,8 @@ public sealed record JupyterMessage(
     JupyterMessageHeader Header,
     JupyterMessageHeader? ParentHeader,
     JsonElement Metadata,
-    JsonElement Content)
+    JsonElement Content,
+    string? Channel = null)
 {
     public string MessageType => Header.MessageType;
 

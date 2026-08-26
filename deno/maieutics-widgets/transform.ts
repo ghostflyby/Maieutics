@@ -19,17 +19,16 @@ const esbuildWasm = esbuildWasmCjs as unknown as {
   initialize(options: { wasmModule: WebAssembly.Module; worker: boolean }): Promise<void>;
   transform(
     code: string,
-    options: { loader: string; format: string; jsx: string; jsxImportSource: string },
+    options: { loader: string; format: string; jsx?: string; jsxImportSource?: string },
   ): Promise<{ code: string }>;
 };
 
-let transformPromise:
-  | Promise<
-    (code: string) => Promise<{ code: string }>
-  >
-  | null = null;
+type TsxLoader = "ts" | "tsx";
+type CellTransform = (code: string, loader: TsxLoader) => Promise<{ code: string }>;
 
-function getTransform(): Promise<(code: string) => Promise<{ code: string }>> {
+let transformPromise: Promise<CellTransform> | null = null;
+
+function getTransform(): Promise<CellTransform> {
   if (transformPromise === null) {
     transformPromise = (async () => {
       const dir = new URL(
@@ -39,12 +38,11 @@ function getTransform(): Promise<(code: string) => Promise<{ code: string }>> {
       const wasmBytes = await Deno.readFile(new URL("esbuild.wasm", dir));
       const wasmModule = await WebAssembly.compile(wasmBytes);
       await esbuildWasm.initialize({ wasmModule, worker: false });
-      return (code: string) =>
+      return (code: string, loader: "ts" | "tsx") =>
         esbuildWasm.transform(code, {
-          loader: "tsx",
+          loader,
           format: "esm",
-          jsx: "automatic",
-          jsxImportSource: "maieutics-widgets",
+          ...(loader === "tsx" ? { jsx: "automatic", jsxImportSource: "maieutics-widgets" } : {}),
         });
     })();
     transformPromise.catch(() => {
@@ -58,6 +56,11 @@ function getTransform(): Promise<(code: string) => Promise<{ code: string }>> {
  * Aves `CodeTransform` that compiles TSX cells to ESM with the Maieutics
  * widget runtime's automatic JSX runtime. Meant to be passed as
  * `createReplKernel({ transform })`.
+ *
+ * Plain cells use the `ts` loader so existing TypeScript (including generic
+ * arrow functions like `const f = <T>(x: T) => x`, which `tsx` would parse as
+ * JSX) keeps working; the `tsx` loader is selected only when the cell actually
+ * contains JSX.
  */
 export function createTsxTransform(): (
   code: string,
@@ -65,6 +68,12 @@ export function createTsxTransform(): (
 ) => Promise<{ code: string }> {
   return async (code) => {
     const transform = await getTransform();
-    return transform(code);
+    const loader = looksLikeJsx(code) ? "tsx" : "ts";
+    return transform(code, loader);
   };
+}
+
+/** True when the cell text plausibly contains JSX (a `<Tag` element). */
+function looksLikeJsx(code: string): boolean {
+  return /<[A-Za-z][A-Za-z0-9.]*(?:\s|>)/.test(code);
 }

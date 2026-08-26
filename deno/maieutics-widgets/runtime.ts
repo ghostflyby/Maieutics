@@ -225,14 +225,17 @@ export class WidgetRuntime {
    * keeps running per invariant 18).
    */
   handleIncoming(message: IncomingCommMessage): void {
-    if (message.kind !== 1 || message.data === undefined) return;
+    if (message.kind !== 1) return;
+    if (message.data === undefined || typeof message.data !== "object" || message.data === null) {
+      return;
+    }
     const model = this.#models.get(message.commId);
     if (model === undefined) return;
     const data = message.data as Record<string, unknown>;
     if (data.method !== "update") return;
     const state = data.state;
-    if (typeof state !== "object" || state === null) return;
-    for (const [key, value] of Object.entries(state as Record<string, unknown>)) {
+    if (typeof state !== "object" || state === null || Array.isArray(state)) return;
+    for (const [key, value] of Object.entries(state)) {
       if (key in model.state) {
         model.state[key] = value;
         model.onChange(key, value);

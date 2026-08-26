@@ -34,6 +34,7 @@ public sealed class ReplCommChannelTests
                 "comm-9",
                 null,
                 data,
+                null,
                 [new byte[] { 0xAB, 0xCD }],
                 JupyterWireMessage.Create(
                     JupyterMessage.Create(

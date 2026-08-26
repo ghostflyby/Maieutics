@@ -18,7 +18,7 @@ Deno.test("normalizeCssProps maps camelCase CSS to ipywidgets snake_case", () =>
       maxWidth: "200px",
       width: "100%",
       display: "flex",
-      zIndex: "10",
+      gridTemplateColumns: "1fr 1fr",
     }),
     {
       align_items: "center",
@@ -26,7 +26,7 @@ Deno.test("normalizeCssProps maps camelCase CSS to ipywidgets snake_case", () =>
       max_width: "200px",
       width: "100%",
       display: "flex",
-      z_index: "10",
+      grid_template_columns: "1fr 1fr",
     },
   );
 });

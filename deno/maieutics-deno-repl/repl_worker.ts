@@ -185,9 +185,7 @@ async function installMaieuticsNamespace(): Promise<void> {
     IntRangeSlider: widgetModule.IntRangeSlider,
     Box: widgetModule.Box,
     createWidget: widgetModule.createWidget,
-    renderWidgets: widgetModule.renderWidgets,
     useWidgetRuntime: widgetModule.useWidgetRuntime,
-    bindWidgetHost: widgetModule.bindWidgetHost,
   };
 }
 
@@ -552,6 +550,7 @@ function createJupyterApi(): typeof Deno.jupyter {
           ? { targetName: content.target_name }
           : {}),
         ...(content.data === undefined ? {} : { data: content.data }),
+        ...(extra?.metadata === undefined ? {} : { metadata: extra.metadata }),
         buffers,
       }));
       return;

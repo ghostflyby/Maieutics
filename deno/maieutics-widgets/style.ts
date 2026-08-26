@@ -23,8 +23,6 @@ const CSS_TO_IPYWIDGETS: Readonly<Record<string, string>> = {
   justifyContent: "justify_content",
   justifyItems: "justify_items",
   flexFlow: "flex_flow",
-  flexDirection: "flex_direction",
-  flexWrap: "flex_wrap",
   maxHeight: "max_height",
   maxWidth: "max_width",
   minHeight: "min_height",
@@ -33,13 +31,16 @@ const CSS_TO_IPYWIDGETS: Readonly<Record<string, string>> = {
   gridRow: "grid_row",
   gridColumn: "grid_column",
   gridArea: "grid_area",
+  gridAutoColumns: "grid_auto_columns",
+  gridAutoFlow: "grid_auto_flow",
+  gridAutoRows: "grid_auto_rows",
+  gridTemplateColumns: "grid_template_columns",
+  gridTemplateRows: "grid_template_rows",
+  gridTemplateAreas: "grid_template_areas",
   objectFit: "object_fit",
   objectPosition: "object_position",
   overflow: "overflow",
-  overflowX: "overflow_x",
-  overflowY: "overflow_y",
   visibility: "visibility",
-  zIndex: "z_index",
   // StyleModel properties (frontend widget_style.ts).
   fontFamily: "font_family",
   fontSize: "font_size",
@@ -52,7 +53,6 @@ const CSS_TO_IPYWIDGETS: Readonly<Record<string, string>> = {
   borderColor: "border_color",
   borderStyle: "border_style",
   borderWidth: "border_width",
-  borderRadius: "border_radius",
   textAlign: "text_align",
   textDecoration: "text_decoration",
   textTransform: "text_transform",
@@ -63,7 +63,6 @@ const CSS_TO_IPYWIDGETS: Readonly<Record<string, string>> = {
   wordWrap: "word_wrap",
   cursor: "cursor",
   outline: "outline",
-  boxShadow: "box_shadow",
 };
 
 /** Keys passed through unchanged (already snake_case or single words). */
@@ -83,7 +82,6 @@ const CSS_PASSTHROUGH: ReadonlySet<string> = new Set([
   "right",
   "bottom",
   "left",
-  "border",
 ]);
 
 /**

@@ -33,6 +33,7 @@ export type ReplActorEvent =
     commId: string;
     targetName?: string;
     data?: unknown;
+    metadata?: Record<string, unknown>;
     buffers: Uint8Array[];
   };
 

@@ -12,6 +12,7 @@ namespace Maieutics.Jupyter.Kernel;
 /// <param name="CommId">The comm channel identifier.</param>
 /// <param name="TargetName">The comm target name; present only on open.</param>
 /// <param name="Data">The JSON data payload, or null when the message carried none.</param>
+/// <param name="Metadata">The Jupyter message metadata (comm_open carries the protocol version).</param>
 /// <param name="Buffers">The binary buffers that traveled with the wire message.</param>
 /// <param name="WireMessage">The originating wire message, preserved for identity and routing.</param>
 public sealed record JupyterCommMessage(
@@ -19,6 +20,7 @@ public sealed record JupyterCommMessage(
     string CommId,
     string? TargetName,
     JsonElement? Data,
+    JsonElement? Metadata,
     IReadOnlyList<byte[]> Buffers,
     JupyterWireMessage WireMessage);
 

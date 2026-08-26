@@ -80,19 +80,46 @@ export function installWorkerPatch(profile: BootstrapProfile): void {
   const native = globalThis.Worker;
   if (typeof native !== "function") return;
   nativeWorker = native;
-  const routed = new Proxy(native, {
-    construct(_target, args: unknown[]): Worker {
-      return constructWorker(args[0] as string | URL, args[1] as WorkerOptions | undefined);
-    },
-    get(target, prop, receiver): unknown {
-      // Keep `worker instanceof Worker` truthful after the replacement.
-      if (prop === Symbol.hasInstance) {
-        return (value: unknown): boolean => value instanceof native;
-      }
-      return Reflect.get(target, prop, receiver);
-    },
+
+  // The routed constructor is a plain function, NOT a Proxy over the native
+  // constructor. Replacing the global binding with a function whose own
+  // `prototype` property is a plain object lets us redirect every
+  // user-visible `constructor` reference to the routed constructor:
+  //
+  //   - `Worker.prototype.constructor` resolves to RoutingWorker (a plain
+  //     function's own writable `prototype` property, unlike the engine's
+  //     non-configurable Worker.prototype);
+  //   - the native prototype's `constructor` is rewritten to RoutingWorker
+  //     (writable+configurable, verified on Deno 2.9.5), so
+  //     `instance.constructor`, `Object.getPrototypeOf(instance).constructor`,
+  //     and `Object.getPrototypeOf(Worker.prototype).constructor` also resolve
+  //     to RoutingWorker — the instance and prototype-parent chains are closed;
+  //   - `new native(...)` (the only way to create a real Worker with its
+  //     internal isolate slots) stays inside this closure.
+  //
+  // What remains reachable is the native prototype object itself
+  // (Object.getPrototypeOf(instance)); its `constructor` slot is rewritten and
+  // it cannot construct Workers. A worker that starts in an uncontrolled realm
+  // (no preload, no wrapper) is outside this contract.
+  function RoutingWorker(
+    this: unknown,
+    url: string | URL,
+    options?: WorkerOptions,
+  ): Worker {
+    if (new.target === undefined) {
+      throw new TypeError("Worker constructor requires 'new'");
+    }
+    return constructWorker(url, options);
+  }
+  Object.defineProperty(RoutingWorker, Symbol.hasInstance, {
+    value: (value: unknown): boolean => value instanceof native,
   });
-  (globalThis as { Worker: typeof Worker }).Worker = routed;
+  Object.defineProperty(native.prototype as object, "constructor", {
+    value: RoutingWorker,
+    writable: true,
+    configurable: true,
+  });
+  (globalThis as { Worker: typeof Worker }).Worker = RoutingWorker as unknown as typeof Worker;
 }
 
 /**

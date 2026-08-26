@@ -147,6 +147,35 @@ Deno.test("nested module Workers are routed through the wrapper recursively", as
   }
 });
 
+Deno.test("the patch redirects constructor references and keeps instanceof truthful", async () => {
+  // probe_root.ts is a root worker that installs the shared bootstrap and then
+  // spawns nested_probe.ts as a NESTED worker, so the wrapper installs the
+  // patch before the probe's top-level code runs. The routed constructor must
+  // be reachable as Worker.prototype.constructor and as every real instance's
+  // constructor; the prototype parent must not carry the native Worker
+  // constructor; instanceof stays truthful.
+  const { report, worker } = await reportForPhase(
+    TARGET("probe_root.ts"),
+    "nested-probe",
+  );
+  try {
+    const probe = report as BootstrapReport & {
+      protoAccessible?: boolean;
+      protoCtorIsRouted?: boolean;
+      instanceCtorIsRouted?: boolean;
+      parentCtorNameNotNative?: boolean;
+      instanceOfResult?: boolean;
+    };
+    assertEquals(probe.protoAccessible, true);
+    assertEquals(probe.protoCtorIsRouted, true);
+    assertEquals(probe.instanceCtorIsRouted, true);
+    assertEquals(probe.parentCtorNameNotNative, true);
+    assertEquals(probe.instanceOfResult, true);
+  } finally {
+    worker.terminate();
+  }
+});
+
 Deno.test("nested relative specifiers resolve against the caller module", async () => {
   // nested_target.ts creates a nested worker from `./nested/nested_target.ts`
   // (via new URL(..., import.meta.url)); a wrapper-relative resolution would

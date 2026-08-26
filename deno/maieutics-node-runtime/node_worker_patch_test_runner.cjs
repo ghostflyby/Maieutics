@@ -28,6 +28,8 @@ const scenarioNames = [
   "scenario_nested_marker",
   "scenario_options_name",
   "scenario_specifier_resolution",
+  "scenario_prototype_backdoor",
+  "scenario_hostile_preload",
   "scenario_unsupported",
   "scenario_startup_error",
 ];

@@ -126,6 +126,45 @@ The bootstrap may change only the script URL and its own internal metadata. It m
 
 The Deno contract is explicitly module Worker-only. A request for a classic Worker is a typed unsupported operation, even though current Deno rejects that form itself.
 
+#### Constructor redirection, not full removal
+
+The patch replaces the user-visible constructor binding (`globalThis.Worker`,
+the `node:worker_threads.Worker` export) with a plain routing function, and
+redirects every user-visible `constructor` reference to it:
+
+- `Worker.prototype.constructor` — a plain function's own `prototype` property
+  is writable in Node, and the native prototype's `constructor` slot is
+  writable+configurable in both runtimes (verified on Node 26.7.0 and Deno
+  2.9.5);
+- a real instance's `constructor` (`instance.constructor`,
+  `Object.getPrototypeOf(instance).constructor`) — the native prototype's
+  `constructor` is rewritten to the routing function;
+- the prototype parent's `constructor` (`Object.getPrototypeOf(
+  Worker.prototype).constructor`).
+
+The native constructor itself is never exposed: `new native(...)` is the only
+way to create a real Worker with its internal thread/isolate slots, so it lives
+only inside the patch closure. What remains reachable is the native prototype
+object itself (`Object.getPrototypeOf(instance)`); its `constructor` slot is
+rewritten and it cannot construct Workers. An independent audit confirmed the
+native constructor is unreachable from user code in a patched realm on the
+default path (Deno side is fully closed; Node side is closed after the
+constructor redirection).
+
+A worker realm must always start with the Maieutics preload. Node callers can
+provide `execArgv` or `env.NODE_OPTIONS`; the adapter PREPENDS the Maieutics
+preload to both so it runs before any user preload, preventing a hostile
+`--require`/`--import` from capturing the native constructor or creating an
+uninitialized descendant realm (verified by a black-box regression scenario
+that stashes the constructor via both vectors and spawns a grandchild through
+it). This is a targeted defense against accidental or incidental preload
+conflicts, not a guarantee against a caller who fully controls the worker start
+options and deliberately clears the patch — that is a caller-deliberate escape,
+outside the default-path contract. A realm that was never under Maieutics
+control (no preload, no wrapper entry) is likewise outside this contract, and
+closing that requires a separate realm/isolate/process — the permission
+architecture's boundary.
+
 ### 3. Support Node's `node:worker_threads` constructor explicitly
 
 Node support is part of the shared design, not a follow-up option. Patching only `globalThis.Worker` is insufficient.

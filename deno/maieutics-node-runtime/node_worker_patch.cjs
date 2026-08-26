@@ -59,6 +59,10 @@ const contract = require("./node_bootstrap_contract.cjs");
 const WRAPPER_PATH = path.join(__dirname, "node_worker_wrapper.mjs");
 const WRAPPER_URL = pathToFileURL(WRAPPER_PATH).href;
 
+/** The preload entry is always this module's sibling. */
+const PRELOAD_PATH = path.join(__dirname, "node_worker_preload.cjs");
+const PRELOAD_REQUIRE_ARG = `--require=${PRELOAD_PATH}`;
+
 const BOOTSTRAP_VERSION = contract.BOOTSTRAP_VERSION;
 const PROFILE_QUERY_KEY = contract.PROFILE_QUERY_KEY;
 
@@ -66,7 +70,6 @@ const PROFILE_QUERY_KEY = contract.PROFILE_QUERY_KEY;
 const PRELOAD_MARKER = "maieutics.bootstrap";
 
 const NativeWorker = wt.Worker;
-const NativeThreadName = wt.threadName;
 
 /**
  * Reserved workerData keys. The routing wrapper passes
@@ -79,21 +82,6 @@ const BOOTSTRAP_WORKER_DATA_KEY = "__maieuticsWorkerBootstrap";
 const USER_WORKER_DATA_KEY = "__maieuticsUserWorkerData";
 
 let routed = false;
-
-/**
- * Reads the preload marker installed by the preload script. Returns null when
- * the realm did not start through the Maieutics preload.
- */
-function readPreloadMarker() {
-  const value = globalThis[PRELOAD_MARKER];
-  if (
-    typeof value === "object" && value !== null &&
-    value.bootstrapVersion === BOOTSTRAP_VERSION
-  ) {
-    return value;
-  }
-  return null;
-}
 
 /**
  * Installs the recursive Worker routing patch on the current realm's
@@ -111,6 +99,25 @@ function installNodeWorkerPatch(profile) {
     globalThis.Worker = Wrapped;
   }
   try {
+    // Redirect every user-visible `constructor` reference to the routed
+    // constructor. The native prototype's `constructor` is writable and
+    // configurable (verified on Node 26.7.0), so `instance.constructor`,
+    // `Object.getPrototypeOf(instance).constructor`, and
+    // `Object.getPrototypeOf(Worker.prototype).constructor` all resolve to
+    // RoutingWorker — the instance and prototype-parent chains are closed.
+    // The native prototype object itself
+    // (Object.getPrototypeOf(instance)) stays reachable but its `constructor`
+    // is rewritten and it cannot construct Workers.
+    Object.defineProperty(NativeWorker.prototype, "constructor", {
+      value: Wrapped,
+      writable: true,
+      configurable: true,
+    });
+  } catch {
+    // Non-configurable on some host: the native constructor stays reachable
+    // through the instance chain (documented residual exposure).
+  }
+  try {
     // Re-sync the ESM builtin namespace so `import { Worker } from
     // "node:worker_threads"` and `import * as wt from "node:worker_threads"`
     // observe the same patched constructor after a preload patch.
@@ -125,17 +132,30 @@ function createRoutingWorker(profile) {
   function RoutingWorker(filename, options) {
     return routeConstruction(filename, options, profile);
   }
-  RoutingWorker.prototype = NativeWorker.prototype;
-  // Wire the function object itself to NativeWorker so its constructor statics
-  // are readable through the prototype chain. NativeWorker's only own static
-  // members are the built-in `length`, `name`, and `prototype`
-  // (`Object.getOwnPropertyNames(NativeWorker)` returns exactly those three on
-  // Node 26.7.0; there are no symbols); setPrototypeOf still covers any
-  // current or future static member without duplicating it. RoutingWorker's
-  // own `name`/`length`/`prototype` properties are untouched (own properties
-  // shadow the inherited ones), and `instanceof` semantics are unchanged
-  // because RoutingWorker.prototype remains NativeWorker.prototype.
-  Object.setPrototypeOf(RoutingWorker, NativeWorker);
+  // The routing prototype inherits the native instance methods but points its
+  // own `constructor` at RoutingWorker, so `Worker.prototype.constructor` does
+  // not expose the native constructor. `instanceof` is preserved through
+  // Symbol.hasInstance because real Worker instances keep the native
+  // prototype, which has no RoutingWorker.prototype on its chain. Combined
+  // with the install-time rewrite of the native prototype's `constructor`
+  // slot, every user-visible `constructor` reference resolves to RoutingWorker
+  // (verified: `Worker.prototype.constructor`, `instance.constructor`,
+  // `Object.getPrototypeOf(instance).constructor`, and
+  // `Object.getPrototypeOf(Worker.prototype).constructor` all return the
+  // routing function). The native constructor itself lives only inside this
+  // module's closure.
+  const routingPrototype = Object.create(NativeWorker.prototype, {
+    constructor: {
+      value: RoutingWorker,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    },
+  });
+  RoutingWorker.prototype = routingPrototype;
+  Object.defineProperty(RoutingWorker, Symbol.hasInstance, {
+    value: (value) => value instanceof NativeWorker,
+  });
   return RoutingWorker;
 }
 
@@ -234,17 +254,62 @@ function toTargetUrl(filename) {
  * because the wrapper cannot preserve that override for the target. The
  * user's original workerData is preserved under a reserved key so the wrapper
  * entry can restore it before the target is imported.
+ *
+ * A worker realm must always start with the Maieutics preload. The wrapper
+ * entry installs the patch anyway, but a hostile --require/--import that runs
+ * BEFORE the wrapper (via user-provided execArgv or env.NODE_OPTIONS) could
+ * capture the native constructor; prepending our preload makes it run first,
+ * so the realm is patched before any user preload executes.
  */
 function forwardOptions(opts, descriptor) {
   const forwarded = { type: "module" };
   for (const key of WORKER_OPTION_KEYS) {
     if (opts[key] !== undefined) forwarded[key] = opts[key];
   }
+  if (forwarded.execArgv !== undefined) {
+    forwarded.execArgv = ensurePreloadFirst(forwarded.execArgv);
+  }
+  if (
+    forwarded.env !== undefined && forwarded.env !== null &&
+    typeof forwarded.env === "object" &&
+    forwarded.env.NODE_OPTIONS !== undefined
+  ) {
+    forwarded.env = {
+      ...forwarded.env,
+      NODE_OPTIONS: ensurePreloadFirst(String(forwarded.env.NODE_OPTIONS)),
+    };
+  }
   forwarded.workerData = {
     [BOOTSTRAP_WORKER_DATA_KEY]: descriptor,
     [USER_WORKER_DATA_KEY]: opts.workerData,
   };
   return forwarded;
+}
+
+/**
+ * Ensures the Maieutics preload is the FIRST preload in a worker's startup
+ * arguments. Accepts an execArgv array or a NODE_OPTIONS string (both are
+ * used by Node at worker startup). Idempotent: if the preload is already
+ * present, the value is returned unchanged; otherwise it is prepended. The
+ * NODE_OPTIONS string is only prefixed, never split, so quoted arguments the
+ * user may have written are preserved.
+ */
+function ensurePreloadFirst(argv) {
+  if (Array.isArray(argv)) {
+    if (argvContainsPreload(argv)) return argv;
+    return [PRELOAD_REQUIRE_ARG, ...argv];
+  }
+  const value = String(argv);
+  if (value.includes(PRELOAD_PATH)) return value;
+  return value.length === 0 ? PRELOAD_REQUIRE_ARG : `${PRELOAD_REQUIRE_ARG} ${value}`;
+}
+
+/** True when an execArgv array already contains the Maieutics preload. */
+function argvContainsPreload(argv) {
+  return argv.some((entry, index) =>
+    entry === PRELOAD_PATH || entry === PRELOAD_REQUIRE_ARG ||
+    (entry === "--require" && argv[index + 1] === PRELOAD_PATH)
+  );
 }
 
 /** Worker options the adapter forwards unchanged. */
@@ -264,9 +329,6 @@ const WORKER_OPTION_KEYS = [
 
 module.exports = {
   installNodeWorkerPatch,
-  readPreloadMarker,
-  NativeWorker,
-  NativeThreadName,
   WRAPPER_URL,
   PROFILE_QUERY_KEY,
   BOOTSTRAP_VERSION,

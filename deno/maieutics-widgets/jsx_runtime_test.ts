@@ -47,25 +47,49 @@ Deno.test("jsxs factory handles multiple children for control elements", () => {
   assertEquals(model.get("value"), 3);
 });
 
-Deno.test("jsx factory maps style={{}} to a nested StyleModel reference", () => {
+Deno.test("jsx factory maps style={{}} to a nested per-control StyleModel", () => {
   const { opens } = bindFakeHost();
-  const model = jsx("IntSlider", { value: 5, style: { width: "100%", alignItems: "center" } }) as {
-    get(key: string): unknown;
-  };
+  const model = jsx("IntSlider", {
+    value: 5,
+    style: { fontSize: "14px", handleColor: "#f00" },
+  }) as { get(key: string): unknown };
 
   // The control's state.style is the IPY_MODEL_ reference.
   const styleRef = model.get("style") as string;
   assertEquals(styleRef.startsWith("IPY_MODEL_"), true);
 
-  // Two comm_opens: the control plus its nested StyleModel.
+  // Two comm_opens: the control plus its nested per-control SliderStyleModel.
   assertEquals(opens.length, 2);
   const nested = opens.find((open) => {
     const state = (open.data as { state: Record<string, unknown> }).state;
-    return state._model_name === "StyleModel";
+    return state._model_name === "SliderStyleModel";
   })!;
   assertEquals(nested.target_name, "jupyter.widget");
   const nestedState = (nested.data as { state: Record<string, unknown> }).state;
-  assertEquals(nestedState._model_module, "@jupyter-widgets/base");
-  assertEquals(nestedState.width, "100%");
-  assertEquals(nestedState.align_items, "center");
+  assertEquals(nestedState._model_module, "@jupyter-widgets/controls");
+  assertEquals(nestedState.font_size, "14px");
+  assertEquals(nestedState.handle_color, "#f00");
+});
+
+Deno.test("jsx factory maps css={{}} to both LayoutModel and per-control StyleModel", () => {
+  const { opens } = bindFakeHost();
+  const model = jsx("IntSlider", {
+    value: 5,
+    css: { maxWidth: "200px", fontSize: "14px", handleColor: "#f00" },
+  }) as { get(key: string): unknown };
+
+  assertEquals((model.get("layout") as string).startsWith("IPY_MODEL_"), true);
+  assertEquals((model.get("style") as string).startsWith("IPY_MODEL_"), true);
+  // Three comm_opens: the control + LayoutModel + SliderStyleModel.
+  assertEquals(opens.length, 3);
+  const layout = opens.find((open) =>
+    (open.data as { state: Record<string, unknown> }).state._model_name === "LayoutModel"
+  )!;
+  const style = opens.find((open) =>
+    (open.data as { state: Record<string, unknown> }).state._model_name === "SliderStyleModel"
+  )!;
+  assertEquals((layout.data as { state: Record<string, unknown> }).state.max_width, "200px");
+  const styleState = (style.data as { state: Record<string, unknown> }).state;
+  assertEquals(styleState.font_size, "14px");
+  assertEquals(styleState.handle_color, "#f00");
 });

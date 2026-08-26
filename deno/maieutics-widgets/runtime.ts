@@ -84,13 +84,16 @@ export class WidgetRuntime {
 
   /**
    * Register a nested model (layout/style) and broadcast its comm_open. Nested
-   * models live in `@jupyter-widgets/base` (not controls) and have no view;
-   * they are referenced from a control's state via `IPY_MODEL_<commId>`.
+   * models live in `@jupyter-widgets/base` (generic LayoutModel/StyleModel) or
+   * `@jupyter-widgets/controls` (per-control style subclasses such as
+   * SliderStyleModel); they are referenced from a control's state via
+   * `IPY_MODEL_<commId>`.
    */
   initNested<State extends Record<string, unknown>>(
     commId: string,
-    modelName: "LayoutModel" | "StyleModel",
+    modelName: string,
     state: State,
+    modelModule = "@jupyter-widgets/base",
   ): WidgetModel<State> {
     const registered: RegisteredModel = {
       state: { ...state },
@@ -104,7 +107,7 @@ export class WidgetRuntime {
         target_name: WIDGET_COMM_TARGET,
         data: {
           state: {
-            _model_module: "@jupyter-widgets/base",
+            _model_module: modelModule,
             _model_name: modelName,
             _model_module_version: "^2.0.0",
             _view_count: null,

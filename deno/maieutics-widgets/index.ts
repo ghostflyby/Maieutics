@@ -22,7 +22,7 @@
 import { type WidgetModel, WidgetRuntime } from "./runtime.ts";
 import { controlTemplate } from "./controls.ts";
 import { walkWidgets, type WidgetInstance } from "./vnode.ts";
-import { bindNestedStyle, isCssBlock } from "./style.ts";
+import { bindCssProps, type CssProps, isCssBlock } from "./style.ts";
 
 /** Injected by the REPL worker (see installMaieuticsNamespace). */
 interface WidgetHost {
@@ -105,9 +105,13 @@ export const IntRangeSlider = controlFactory("IntRangeSlider");
 export const Box = controlFactory("Box");
 
 /** A widget model factory: props (initial state + optional onChange) -> model. */
-export type ControlFactory = (
-  props?: Record<string, unknown> & { onChange?: (key: string, value: unknown) => void },
-) => WidgetModel<Record<string, unknown>>;
+export type ControlFactoryProps = Record<string, unknown> & {
+  onChange?: (key: string, value: unknown) => void;
+  /** Unified web-style CSS block, split into LayoutModel + per-control StyleModel. */
+  css?: CssProps;
+};
+
+export type ControlFactory = (props?: ControlFactoryProps) => WidgetModel<Record<string, unknown>>;
 
 function controlFactory(kind: string): ControlFactory {
   const template = controlTemplate(kind);
@@ -121,9 +125,9 @@ function controlFactory(kind: string): ControlFactory {
       ...template.defaults,
       ...stateProps,
     };
-    // style={{}} / layout={{}} become nested Layout/Style models referenced by
-    // IPY_MODEL_<commId> in the control's state (frontend unpack_models).
-    const nested = bindNestedProps(useWidgetRuntime(), stateProps);
+    // css={{...}} (unified) / style={{...}} / layout={{...}} become nested
+    // Layout/Style model references in the control's state (IPY_MODEL_<id>).
+    const nested = bindNestedProps(useWidgetRuntime(), kind, stateProps);
     const model = createWidget(
       { ...state, ...nested },
       onChange === undefined
@@ -138,20 +142,27 @@ function controlFactory(kind: string): ControlFactory {
 }
 
 /**
- * Convert style/layout props into nested-model references. `style={{...}}`
- * binds a StyleModel, `layout={{...}}` binds a LayoutModel; the returned
- * object maps `style`/`layout` to their `IPY_MODEL_<commId>` strings.
+ * Convert css/style/layout props into nested-model references. The unified
+ * `css` block is split by trait ownership (layout traits -> LayoutModel,
+ * style traits -> the control's style subclass); `style`/`layout` bind
+ * directly to their models. Returns `{style, layout}` IPY_MODEL_ refs.
  */
 function bindNestedProps(
   rt: WidgetRuntime,
+  kind: string,
   props: Record<string, unknown>,
 ): Partial<Record<"style" | "layout", string>> {
   const result: Partial<Record<"style" | "layout", string>> = {};
+  const css = isCssBlock(props.css) ? props.css : undefined;
+  if (css !== undefined) {
+    Object.assign(result, bindCssProps(rt, kind, css));
+  }
   if (isCssBlock(props.style)) {
-    result.style = bindNestedStyle(rt, "StyleModel", props.style);
+    // style is appearance-only: per-control subclass when known.
+    result.style = bindCssProps(rt, kind, props.style).style;
   }
   if (isCssBlock(props.layout)) {
-    result.layout = bindNestedStyle(rt, "LayoutModel", props.layout);
+    result.layout = bindCssProps(rt, kind, props.layout).layout;
   }
   return result;
 }

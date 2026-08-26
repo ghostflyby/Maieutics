@@ -1,5 +1,5 @@
 /**
- * style/layout/css prop handling for classic controls.
+ * style / styleModel / layoutModel prop handling for classic controls.
  *
  * ipywidgets' `style` and `layout` attributes are nested models (`StyleModel`
  * / `LayoutModel`) in `@jupyter-widgets/base`, referenced from a control's
@@ -13,8 +13,12 @@
  *   - style traits (per-control appearance)        -> the control's style
  *     subclass (SliderStyleModel, ButtonStyleModel, ...)
  *
- * A unified `css={{...}}` block is split by trait ownership; `style={{...}}`
- * and `layout={{...}}` remain supported for ipywidgets-literate callers.
+ * Three entry points:
+ *   - `style={{...}}`  unified web-CSS block, split by trait ownership into
+ *     the LayoutModel and/or per-control StyleModel;
+ *   - `styleModel={{...}}`  bound verbatim to the control's StyleModel
+ *     subclass (ipywidgets-literate);
+ *   - `layoutModel={{...}}`  bound verbatim to the LayoutModel.
  */
 
 import { WidgetRuntime } from "./runtime.ts";
@@ -85,23 +89,36 @@ const STYLE_TO_IPYWIDGETS: Readonly<Record<string, string>> = {
   barColor: "bar_color",
 };
 
-/** Web (camelCase) CSS properties accepted by the unified `css` prop. */
-export type CssProps = Partial<
+/** Web (camelCase) CSS properties accepted by the unified `style` prop. */
+export type StyleProps = Partial<
   Record<keyof typeof LAYOUT_TO_IPYWIDGETS | keyof typeof STYLE_TO_IPYWIDGETS, string>
 >;
 
-/** The split of one css block into layout vs style trait state. */
-export interface SplitCss {
+/** The split of one style block into layout vs style trait state. */
+export interface SplitStyle {
   layout: Record<string, unknown>;
   style: Record<string, unknown>;
 }
 
+/** Map one prop object's camelCase keys through a trait table (unknown keys pass through). */
+function mapProps(
+  props: Record<string, unknown>,
+  table: Readonly<Record<string, string>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(props)) {
+    out[table[key] ?? key] = value;
+  }
+  return out;
+}
+
 /**
- * Split a `css={{...}}` block by trait ownership. Layout traits go to the
+ * Split a `style={{...}}` block by trait ownership. Layout traits go to the
  * LayoutModel state, style traits to the StyleModel state; unknown keys are
- * kept (the frontend ignores unknown traits, so this is safe).
+ * kept on the layout side (the frontend ignores unknown traits, so this is
+ * safe).
  */
-export function splitCssProps(props: Record<string, unknown>): SplitCss {
+export function splitStyleProps(props: Record<string, unknown>): SplitStyle {
   const layout: Record<string, unknown> = {};
   const style: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(props)) {
@@ -120,8 +137,8 @@ export function splitCssProps(props: Record<string, unknown>): SplitCss {
   return { layout, style };
 }
 
-/** True when a value is a plain object (a candidate css/style/layout block). */
-export function isCssBlock(value: unknown): value is Record<string, unknown> {
+/** True when a value is a plain object (a candidate style/styleModel/layoutModel block). */
+export function isStyleBlock(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -152,7 +169,8 @@ function styleModelModule(modelName: string): string {
 /**
  * Create a nested model for one style/layout block and return the
  * `IPY_MODEL_<commId>` reference. The nested model is registered and
- * broadcast by the runtime; its state is the normalized CSS properties.
+ * broadcast by the runtime; the state is passed through verbatim (callers
+ * supply already-mapped snake_case trait keys).
  */
 export function bindNestedStyle(
   runtime: WidgetRuntime,
@@ -166,16 +184,16 @@ export function bindNestedStyle(
 }
 
 /**
- * Bind a unified `css={{...}}` block: split by trait ownership and create the
- * nested LayoutModel and/or per-control StyleModel references. `kind` selects
- * the control's style subclass.
+ * Bind a unified `style={{...}}` block: split by trait ownership and create
+ * the nested LayoutModel and/or per-control StyleModel references. `kind`
+ * selects the control's style subclass.
  */
-export function bindCssProps(
+export function bindStyleProps(
   runtime: WidgetRuntime,
   kind: string,
   props: Record<string, unknown>,
 ): { style?: string; layout?: string } {
-  const { layout, style } = splitCssProps(props);
+  const { layout, style } = splitStyleProps(props);
   const result: { style?: string; layout?: string } = {};
   if (Object.keys(layout).length > 0) {
     result.layout = bindNestedStyle(runtime, "LayoutModel", layout, "@jupyter-widgets/base");
@@ -186,4 +204,32 @@ export function bindCssProps(
     result.style = bindNestedStyle(runtime, modelName, style, styleModelModule(modelName));
   }
   return result;
+}
+
+/**
+ * Bind a `styleModel={{...}}` block verbatim to the control's StyleModel
+ * subclass (ipywidgets-literate): every key is mapped through the style trait
+ * table; layout traits are not split out.
+ */
+export function bindStyleModel(
+  runtime: WidgetRuntime,
+  kind: string,
+  props: Record<string, unknown>,
+): string {
+  const state = mapProps(props, STYLE_TO_IPYWIDGETS);
+  const subclass = styleModelFor(kind);
+  const modelName = subclass?.modelName ?? "StyleModel";
+  return bindNestedStyle(runtime, modelName, state, styleModelModule(modelName));
+}
+
+/**
+ * Bind a `layoutModel={{...}}` block verbatim to the LayoutModel: every key
+ * is mapped through the layout trait table; style traits are not split out.
+ */
+export function bindLayoutModel(
+  runtime: WidgetRuntime,
+  props: Record<string, unknown>,
+): string {
+  const state = mapProps(props, LAYOUT_TO_IPYWIDGETS);
+  return bindNestedStyle(runtime, "LayoutModel", state, "@jupyter-widgets/base");
 }

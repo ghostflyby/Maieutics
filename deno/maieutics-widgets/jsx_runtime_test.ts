@@ -71,11 +71,11 @@ Deno.test("jsx factory maps style={{}} to a nested per-control StyleModel", () =
   assertEquals(nestedState.handle_color, "#f00");
 });
 
-Deno.test("jsx factory maps css={{}} to both LayoutModel and per-control StyleModel", () => {
+Deno.test("jsx factory maps style={{}} to both LayoutModel and per-control StyleModel", () => {
   const { opens } = bindFakeHost();
   const model = jsx("IntSlider", {
     value: 5,
-    css: { maxWidth: "200px", fontSize: "14px", handleColor: "#f00" },
+    style: { maxWidth: "200px", fontSize: "14px", handleColor: "#f00" },
   }) as { get(key: string): unknown };
 
   assertEquals((model.get("layout") as string).startsWith("IPY_MODEL_"), true);

@@ -16,7 +16,7 @@
 import { controlTemplate } from "./controls.ts";
 import { createWidget, useWidgetRuntime } from "./index.ts";
 import { WidgetRuntime } from "./runtime.ts";
-import { bindCssProps, isCssBlock } from "./style.ts";
+import { bindLayoutModel, bindStyleModel, bindStyleProps, isStyleBlock } from "./style.ts";
 
 /** Fragment marker for JSX fragment syntax (`<>...</>`). */
 export const Fragment = Symbol("WidgetFragment");
@@ -57,19 +57,17 @@ function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
     if (template !== undefined) {
       const { onChange, children, ...stateProps } = props ?? {};
       const nested: Record<string, string> = {};
-      const css = isCssBlock(stateProps.css) ? stateProps.css : undefined;
-      if (css !== undefined) {
-        const split = bindCssProps(useWidgetRuntime(), type, css);
+      const style = isStyleBlock(stateProps.style) ? stateProps.style : undefined;
+      if (style !== undefined) {
+        const split = bindStyleProps(useWidgetRuntime(), type, style);
         if (split.style !== undefined) nested.style = split.style;
         if (split.layout !== undefined) nested.layout = split.layout;
       }
-      if (isCssBlock(stateProps.style)) {
-        nested.style = bindCssProps(useWidgetRuntime(), type, stateProps.style).style ??
-          nested.style;
+      if (isStyleBlock(stateProps.styleModel)) {
+        nested.style = bindStyleModel(useWidgetRuntime(), type, stateProps.styleModel);
       }
-      if (isCssBlock(stateProps.layout)) {
-        nested.layout = bindCssProps(useWidgetRuntime(), type, stateProps.layout).layout ??
-          nested.layout;
+      if (isStyleBlock(stateProps.layoutModel)) {
+        nested.layout = bindLayoutModel(useWidgetRuntime(), stateProps.layoutModel);
       }
       // Layout widgets (Box, VBox, HBox) carry their children as IPY_MODEL_
       // references; other controls ignore children. Each child element is

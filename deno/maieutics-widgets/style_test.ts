@@ -1,9 +1,11 @@
 import { assertEquals } from "@std/assert";
 import {
-  bindCssProps,
+  bindLayoutModel,
   bindNestedStyle,
-  isCssBlock,
-  splitCssProps,
+  bindStyleModel,
+  bindStyleProps,
+  isStyleBlock,
+  splitStyleProps,
   styleModelFor,
 } from "./style.ts";
 import { WidgetRuntime } from "./runtime.ts";
@@ -16,8 +18,8 @@ function fakeRuntime(): { runtime: WidgetRuntime; opens: Array<Record<string, un
   return { runtime, opens };
 }
 
-Deno.test("splitCssProps routes layout traits to layout and style traits to style", () => {
-  const split = splitCssProps({
+Deno.test("splitStyleProps routes layout traits to layout and style traits to style", () => {
+  const split = splitStyleProps({
     alignItems: "center",
     maxWidth: "200px",
     fontSize: "14px",
@@ -35,14 +37,14 @@ Deno.test("splitCssProps routes layout traits to layout and style traits to styl
   });
 });
 
-Deno.test("splitCssProps keeps unknown keys on the layout side", () => {
-  const split = splitCssProps({ someCustom: "x" });
+Deno.test("splitStyleProps keeps unknown keys on the layout side", () => {
+  const split = splitStyleProps({ someCustom: "x" });
   assertEquals(split.layout, { someCustom: "x" });
   assertEquals(split.style, {});
 });
 
 Deno.test("ipywidgets-specific style keys map to camelCase names", () => {
-  const split = splitCssProps({
+  const split = splitStyleProps({
     handleColor: "#f00",
     buttonColor: "#0f0",
     barColor: "#00f",
@@ -58,7 +60,7 @@ Deno.test("ipywidgets-specific style keys map to camelCase names", () => {
 });
 
 Deno.test("textWidth maps to the style-side width trait, distinct from layout width", () => {
-  const split = splitCssProps({ width: "200px", textWidth: "120px" });
+  const split = splitStyleProps({ width: "200px", textWidth: "120px" });
   assertEquals(split.layout, { width: "200px" });
   assertEquals(split.style, { width: "120px" });
 });
@@ -72,9 +74,9 @@ Deno.test("styleModelFor selects per-control style subclasses", () => {
   assertEquals(styleModelFor("Box"), undefined);
 });
 
-Deno.test("bindCssProps creates LayoutModel + per-control StyleModel refs", () => {
+Deno.test("bindStyleProps creates LayoutModel + per-control StyleModel refs", () => {
   const { runtime, opens } = fakeRuntime();
-  const refs = bindCssProps(runtime, "IntSlider", {
+  const refs = bindStyleProps(runtime, "IntSlider", {
     maxWidth: "200px",
     fontSize: "14px",
     handleColor: "#f00",
@@ -102,8 +104,8 @@ Deno.test("bindCssProps creates LayoutModel + per-control StyleModel refs", () =
 
 Deno.test("bindNestedStyle registers a LayoutModel comm_open and returns IPY_MODEL_ ref", () => {
   const { runtime, opens } = fakeRuntime();
-  // bindNestedStyle passes the state through verbatim; callers (splitCssProps
-  // / bindCssProps) supply already-mapped snake_case trait keys.
+  // bindNestedStyle passes the state through verbatim; callers (splitStyleProps
+  // / bindStyleProps) supply already-mapped snake_case trait keys.
   const ref = bindNestedStyle(runtime, "LayoutModel", { width: "50%", align_items: "center" });
 
   assertEquals(ref.startsWith("IPY_MODEL_"), true);
@@ -117,9 +119,43 @@ Deno.test("bindNestedStyle registers a LayoutModel comm_open and returns IPY_MOD
   assertEquals(data.state.align_items, "center");
 });
 
-Deno.test("isCssBlock rejects primitives and arrays", () => {
-  assertEquals(isCssBlock({ width: "1px" }), true);
-  assertEquals(isCssBlock("100%"), false);
-  assertEquals(isCssBlock([1, 2]), false);
-  assertEquals(isCssBlock(null), false);
+Deno.test("isStyleBlock rejects primitives and arrays", () => {
+  assertEquals(isStyleBlock({ width: "1px" }), true);
+  assertEquals(isStyleBlock("100%"), false);
+  assertEquals(isStyleBlock([1, 2]), false);
+  assertEquals(isStyleBlock(null), false);
+});
+
+Deno.test("bindStyleModel maps keys through the style table verbatim", () => {
+  const { runtime, opens } = fakeRuntime();
+  const ref = bindStyleModel(runtime, "Text", {
+    fontSize: "14px",
+    textWidth: "120px",
+    color: "red",
+  });
+
+  assertEquals(ref.startsWith("IPY_MODEL_"), true);
+  assertEquals(opens.length, 1);
+  const data = opens[0].data as { state: Record<string, unknown> };
+  assertEquals(data.state._model_name, "TextStyleModel");
+  assertEquals(data.state.font_size, "14px");
+  assertEquals(data.state.width, "120px"); // textWidth -> style width
+  assertEquals(data.state.color, "red");
+});
+
+Deno.test("bindLayoutModel maps keys through the layout table verbatim", () => {
+  const { runtime, opens } = fakeRuntime();
+  const ref = bindLayoutModel(runtime, {
+    maxWidth: "200px",
+    alignItems: "center",
+    width: "100%",
+  });
+
+  assertEquals(ref.startsWith("IPY_MODEL_"), true);
+  assertEquals(opens.length, 1);
+  const data = opens[0].data as { state: Record<string, unknown> };
+  assertEquals(data.state._model_name, "LayoutModel");
+  assertEquals(data.state.max_width, "200px");
+  assertEquals(data.state.align_items, "center");
+  assertEquals(data.state.width, "100%");
 });

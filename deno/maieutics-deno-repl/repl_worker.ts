@@ -1,4 +1,5 @@
 import { createReplKernel, type ReplExecution, type ReplKernel } from "@ghostflyby/aves/repl";
+import { createTsxTransform } from "../maieutics-widgets/transform.ts";
 import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
@@ -49,7 +50,7 @@ export const rpc = {
     installSharedBootstrap();
     await installMaieuticsNamespace();
     installHostEnvironment();
-    kernel = await createReplKernel();
+    kernel = await createReplKernel({ transform: createTsxTransform() });
   },
 
   async *execute(
@@ -160,8 +161,34 @@ async function installMaieuticsNamespace(): Promise<void> {
     throw new Error(`Missing ${CLIENT_ENV} environment variable.`);
   }
   const namespace = await import(moduleUrl) as Record<string, unknown>;
-  const injected = { ...namespace, comm: createCommProxy() };
+  const comm = createCommProxy();
+  const injected = { ...namespace, comm };
   (globalThis as unknown as Record<string, unknown>).maieutics = injected;
+
+  // Bind the widget runtime to the comm transport this proxy owns, and expose
+  // the widget API under `maieutics.widgets` so TSX cells can
+  // `const { IntSlider } = maieutics.widgets` without an import specifier.
+  // The widget module is imported lazily by the REPL worker; its esbuild-wasm
+  // payload loads only when a widget cell actually compiles (createTsxTransform
+  // stays lazy, and the wasm initialize is deferred to first transform).
+  const widgetModule = await import("../maieutics-widgets/index.ts");
+  widgetModule.bindWidgetHost({
+    broadcast: (messageType, content, extra) => Deno.jupyter.broadcast(messageType, content, extra),
+    onComm: (event, handler) => comm.on(event, handler),
+  });
+  (globalThis as unknown as { maieutics: Record<string, unknown> }).maieutics.widgets = {
+    IntSlider: widgetModule.IntSlider,
+    FloatSlider: widgetModule.FloatSlider,
+    Button: widgetModule.Button,
+    Text: widgetModule.Text,
+    ToggleButton: widgetModule.ToggleButton,
+    IntRangeSlider: widgetModule.IntRangeSlider,
+    Box: widgetModule.Box,
+    createWidget: widgetModule.createWidget,
+    renderWidgets: widgetModule.renderWidgets,
+    useWidgetRuntime: widgetModule.useWidgetRuntime,
+    bindWidgetHost: widgetModule.bindWidgetHost,
+  };
 }
 
 interface CommProxy {

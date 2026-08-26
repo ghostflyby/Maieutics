@@ -122,7 +122,7 @@ Deno.test("the standalone manifest pins the production actor dependencies", asyn
 Deno.test("the worker binds maieutics before creating Aves", async () => {
   const worker = await Deno.readTextFile(new URL("./repl_worker.ts", import.meta.url));
   assertEquals(
-    /await installMaieuticsNamespace\(\);[\s\S]*kernel = await createReplKernel\(\);/.test(worker),
+    /await installMaieuticsNamespace\(\);[\s\S]*kernel = await createReplKernel\(\{/.test(worker),
     true,
   );
   assertEquals(worker.includes(".maieutics = injected"), true);

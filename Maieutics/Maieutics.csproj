@@ -49,6 +49,14 @@
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\process_rpc_test.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessRpcTest.ts" />
         <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Maieutics.Deno.DenoRepl.Config.json" />
         <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Maieutics.Deno.DenoRepl.Lock.json" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\index.ts" LogicalName="Maieutics.Deno.Widgets.Index.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\runtime.ts" LogicalName="Maieutics.Deno.Widgets.Runtime.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\controls.ts" LogicalName="Maieutics.Deno.Widgets.Controls.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\vnode.ts" LogicalName="Maieutics.Deno.Widgets.VNode.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\transform.ts" LogicalName="Maieutics.Deno.Widgets.Transform.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\style.ts" LogicalName="Maieutics.Deno.Widgets.Style.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\jsx-runtime.ts" LogicalName="Maieutics.Deno.Widgets.JsxRuntime.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-widgets\deno.json" LogicalName="Maieutics.Deno.Widgets.Config.json" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts" LogicalName="Maieutics.Deno.PluginSdk.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\entry.ts" LogicalName="Maieutics.Deno.PluginSdkEntry.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\runtime.ts" LogicalName="Maieutics.Deno.PluginSdkRuntime.ts" />

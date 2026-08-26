@@ -1,0 +1,11 @@
+{
+  "name": "@maieutics/widgets",
+  "version": "0.1.0",
+  "imports": {
+    "esbuild-wasm": "npm:esbuild-wasm@0.25.12"
+  },
+  "exports": {
+    ".": "./index.ts",
+    "./transform": "./transform.ts"
+  }
+}

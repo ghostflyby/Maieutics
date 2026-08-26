@@ -16,6 +16,22 @@
 | `image(path \| Uint8Array)` | ✅ | PNG/JPEG 自动判定,base64 传输 |
 | `prompt` / `confirm` / `alert` | ✅ | 经 input_request 通道回前端 |
 
+## 经典 ipywidgets 控件（TSX 单元格）
+
+REPL 单元格支持 TSX。JSX 元素经 `maieutics-widgets/jsx-runtime` 直接映射到经典
+`@jupyter-widgets/controls` 的模型（内核侧只维护模型状态,控件 DOM 由前端 JupyterLab 的
+`@jupyter-widgets/jupyterlab-manager` 渲染）:
+
+- 转换:REPL 的 Aves kernel 注入 `createTsxTransform()`(`loader: "tsx"`,
+  `jsxImportSource: "maieutics-widgets"`),TSX 单元格编译为 ESM 后走 Aves 持久作用域改写。
+- 控件工厂:`maieutics.widgets.IntSlider` 等返回可显示模型(comm_open `jupyter.widget` +
+  `application/vnd.jupyter.widget-view+json` display)。
+- 双向绑定:内核→前端经 `comm_msg {method:"update"}`;前端→内核经入站 comm 更新模型 state
+  并触发 `onChange` 回调。
+- 身份字段(`_model_module`/`_view_name`/版本)来自经典 controls 模板,前端 manager 按此渲染。
+
+支持的控件:IntSlider / FloatSlider / Button / Text / ToggleButton / IntRangeSlider / Box。
+
 ## comm 通道
 
 脚本经 `maieutics.comm`(注入的命名空间)与前端双向交换 comm 消息:
@@ -41,10 +57,12 @@ C# 侧 `ReplControlHost.CommCodec` 与 Deno 侧 `maieutics-repl-client/comm.ts` 
 
 ## 明确不做
 
-- **ipywidgets 协议**(target_name `jupyter.widget` 注册/版本协商):只透传 comm 消息,不实现 widget 内核侧
-  协议。`@anywidget/deno` 这类纯 relay 库可工作;现代 ipywidgets 需 kernel 侧协议,不做。
 - **comm 之外的任意 iopub 广播**:见上表。
+- **`_esm` 自定义前端组件**(anywidget 路线):本实现用经典 `@jupyter-widgets/controls` 控件集,不
+  托管任意前端 JS。需要任意前端渲染时走 anywidget(经 comm 透传,已支持)。
+- **ipywidgets 协议 v1**(`backbone`/`sync_data`):只实现 v2(`method:"update"`),老前端不支持。
 
 ## 触发重新评审
 
-出现真实 widget 需求(需 comm + 二进制 buffers 之外的内核侧协议)时,先走 ADR 评审再扩展。
+出现经典控件集之外的真实 widget 需求(需 comm + 二进制 buffers 之外的内核侧协议,或需要托管任意
+前端 JS 的 `_esm` 组件)时,先走 ADR 评审再扩展。

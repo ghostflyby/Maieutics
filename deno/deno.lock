@@ -54,19 +54,26 @@
       "jsr:@ghostflyby/aves@0.6.0",
       "jsr:@ghostflyby/worker-actor@0.4.0",
       "jsr:@std/assert@^1.0.19",
-      "npm:@preact/signals-core@1.14.4"
+      "npm:@preact/signals-core@1.14.4",
+      "npm:esbuild-wasm@0.25.12"
     ],
     "members": {
       "maieutics-deno-repl": {
         "dependencies": [
           "jsr:@ghostflyby/aves@0.6.0",
-          "jsr:@ghostflyby/worker-actor@0.4.0"
+          "jsr:@ghostflyby/worker-actor@0.4.0",
+          "npm:esbuild-wasm@0.25.12"
         ]
       },
       "maieutics-plugin-sdk": {
         "dependencies": [
           "jsr:@ghostflyby/worker-actor@0.4.0",
           "npm:@preact/signals-core@1.14.4"
+        ]
+      },
+      "maieutics-widgets": {
+        "dependencies": [
+          "npm:esbuild-wasm@0.25.12"
         ]
       }
     }

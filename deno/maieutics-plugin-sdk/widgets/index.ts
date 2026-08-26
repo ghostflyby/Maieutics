@@ -183,7 +183,10 @@ function controlFactory(kind: string): ControlFactory {
   if (template === undefined) {
     throw new Error(`Unknown control '${kind}'.`);
   }
-  return (props = {}): WidgetModel<Record<string, unknown>> => {
+  // Tag the factory with its control kind so the jsx-runtime can recognize
+  // component-identifier elements like `<IntSlider />` (the factory itself is
+  // the component function; calling it yields the widget model).
+  const factory = (props: ControlFactoryProps = {}): WidgetModel<Record<string, unknown>> => {
     const { onChange, ...stateProps } = props;
     const state = {
       ...WidgetRuntime.identityFields(template.modelName, template.viewName),
@@ -208,6 +211,7 @@ function controlFactory(kind: string): ControlFactory {
     // through $display when the cell evaluates it.
     return model;
   };
+  return Object.assign(factory, { kind }) as ControlFactory;
 }
 
 /**

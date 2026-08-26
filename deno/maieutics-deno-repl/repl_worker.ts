@@ -1,5 +1,5 @@
 import { createReplKernel, type ReplExecution, type ReplKernel } from "@ghostflyby/aves/repl";
-import { createTsxTransform } from "../maieutics-widgets/transform.ts";
+import { createTsxTransform } from "../maieutics-plugin-sdk/widgets/transform.ts";
 import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
@@ -171,7 +171,7 @@ async function installMaieuticsNamespace(): Promise<void> {
   // The widget module is imported lazily by the REPL worker; its esbuild-wasm
   // payload loads only when a widget cell actually compiles (createTsxTransform
   // stays lazy, and the wasm initialize is deferred to first transform).
-  const widgetModule = await import("../maieutics-widgets/index.ts");
+  const widgetModule = await import("../maieutics-plugin-sdk/widgets/index.ts");
   widgetModule.bindWidgetHost({
     broadcast: (messageType, content, extra) => Deno.jupyter.broadcast(messageType, content, extra),
     onComm: (event, handler) => comm.on(event, handler),

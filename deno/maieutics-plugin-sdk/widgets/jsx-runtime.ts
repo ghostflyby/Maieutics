@@ -47,10 +47,55 @@ export function jsxs(
 
 function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
   if (type === Fragment) {
-    throw new Error(
-      "JSX fragments (`<>...</>`) are not supported for ipywidgets controls. " +
-        "Wrap the children in a Box/VBox/HBox instead.",
-    );
+    // A fragment has no single widget representation; render its children as
+    // a Box container so `<><IntSlider/></>` displays a real widget.
+    const children = props?.children;
+    const childModels = toModelRefs(children);
+    const boxTemplate = controlTemplate("Box");
+    if (boxTemplate === undefined) {
+      throw new Error("The Box control is not registered.");
+    }
+    const state: Record<string, unknown> = {
+      ...WidgetRuntime.identityFields(boxTemplate.modelName, boxTemplate.viewName),
+      ...boxTemplate.defaults,
+      children: childModels,
+    };
+    return createWidget(state, undefined);
+  }
+  // Component identifier: the factory function itself (e.g. `IntSlider`).
+  if (typeof type === "function") {
+    const kind = (type as { kind?: unknown }).kind;
+    if (typeof kind === "string") {
+      const template = controlTemplate(kind);
+      if (template !== undefined) {
+        const { onChange, children, ...stateProps } = props ?? {};
+        const nested: Record<string, string> = {};
+        const style = isStyleBlock(stateProps.style) ? stateProps.style : undefined;
+        if (style !== undefined) {
+          const split = bindStyleProps(useWidgetRuntime(), kind, style);
+          if (split.style !== undefined) nested.style = split.style;
+          if (split.layout !== undefined) nested.layout = split.layout;
+        }
+        if (isStyleBlock(stateProps.styleModel)) {
+          nested.style = bindStyleModel(useWidgetRuntime(), kind, stateProps.styleModel);
+        }
+        if (isStyleBlock(stateProps.layoutModel)) {
+          nested.layout = bindLayoutModel(useWidgetRuntime(), stateProps.layoutModel);
+        }
+        const childrenState = children === undefined ? {} : { children: toModelRefs(children) };
+        const state = {
+          ...WidgetRuntime.identityFields(template.modelName, template.viewName),
+          ...template.defaults,
+          ...stateProps,
+          ...nested,
+          ...childrenState,
+        };
+        return createWidget(
+          state,
+          onChange === undefined ? undefined : (k, v) => onChange(k, v),
+        );
+      }
+    }
   }
   if (typeof type === "string") {
     const template = controlTemplate(type);

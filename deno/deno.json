@@ -2,7 +2,6 @@
   "workspace": [
     "./maieutics-repl-client",
     "./maieutics-deno-repl",
-    "./maieutics-widgets",
     "./maieutics-plugin-sdk",
     "./maieutics-plugin-host"
   ],
@@ -15,12 +14,12 @@
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0",
     "@preact/signals-core": "npm:@preact/signals-core@1.14.4",
     "@std/assert": "jsr:@std/assert@^1.0.19",
-    "maieutics-widgets": "./maieutics-widgets/index.ts",
-    "maieutics-widgets/jsx-runtime": "./maieutics-widgets/jsx-runtime.ts",
+    "maieutics-widgets": "./maieutics-plugin-sdk/widgets/index.ts",
+    "maieutics-widgets/jsx-runtime": "./maieutics-plugin-sdk/widgets/jsx-runtime.ts",
     "esbuild-wasm": "npm:esbuild-wasm@0.25.12"
   },
   "tasks": {
-    "check": "deno check maieutics-repl-client/mod.ts maieutics-repl-client/mod_test.ts maieutics-deno-repl/main.ts maieutics-deno-repl/process_main.ts maieutics-deno-repl/process_rpc.ts maieutics-deno-repl/repl_test.ts maieutics-deno-repl/output_protocol_test.ts maieutics-deno-repl/comm.ts maieutics-deno-repl/windows_bootstrap.ts maieutics-widgets/index.ts maieutics-widgets/runtime.ts maieutics-widgets/controls.ts maieutics-widgets/vnode.ts maieutics-widgets/transform.ts maieutics-widgets/style.ts maieutics-widgets/jsx-runtime.ts maieutics-plugin-sdk/mod.ts maieutics-plugin-sdk/mod_test.ts maieutics-plugin-host/mod.ts maieutics-plugin-host/host.ts maieutics-plugin-host/worker_entry.ts maieutics-plugin-host/repl_manager.ts maieutics-plugin-host/host_repl_protocol.ts maieutics-plugin-host/host_test.ts maieutics-runtime/bootstrap_contract.ts maieutics-runtime/worker_bootstrap.ts maieutics-runtime/worker_factory.ts maieutics-runtime/worker_patch.ts maieutics-runtime/worker_patch_test.ts maieutics-runtime/worker_bootstrap_test.ts maieutics-node-runtime/node_bootstrap_contract.cjs maieutics-node-runtime/node_worker_patch.cjs maieutics-node-runtime/node_worker_wrapper.mjs maieutics-node-runtime/node_worker_preload.cjs maieutics-node-runtime/node_worker_patch_test_runner.cjs shared/bus.ts shared/protocol.ts",
-    "test": "deno test --allow-env --allow-read --allow-write --allow-net --allow-run --unstable-worker-options maieutics-repl-client maieutics-plugin-sdk maieutics-plugin-host maieutics-runtime && deno test --allow-env --allow-read --allow-net maieutics-widgets/ && node maieutics-node-runtime/node_worker_patch_test_runner.cjs && deno task --config maieutics-deno-repl/deno.json test"
+    "check": "deno check maieutics-repl-client/mod.ts maieutics-repl-client/mod_test.ts maieutics-deno-repl/main.ts maieutics-deno-repl/process_main.ts maieutics-deno-repl/process_rpc.ts maieutics-deno-repl/repl_test.ts maieutics-deno-repl/output_protocol_test.ts maieutics-deno-repl/comm.ts maieutics-deno-repl/windows_bootstrap.ts maieutics-plugin-sdk/widgets/index.ts maieutics-plugin-sdk/widgets/runtime.ts maieutics-plugin-sdk/widgets/controls.ts maieutics-plugin-sdk/widgets/vnode.ts maieutics-plugin-sdk/widgets/transform.ts maieutics-plugin-sdk/widgets/style.ts maieutics-plugin-sdk/widgets/jsx-runtime.ts maieutics-plugin-sdk/mod.ts maieutics-plugin-sdk/mod_test.ts maieutics-plugin-host/mod.ts maieutics-plugin-host/host.ts maieutics-plugin-host/worker_entry.ts maieutics-plugin-host/repl_manager.ts maieutics-plugin-host/host_repl_protocol.ts maieutics-plugin-host/host_test.ts maieutics-runtime/bootstrap_contract.ts maieutics-runtime/worker_bootstrap.ts maieutics-runtime/worker_factory.ts maieutics-runtime/worker_patch.ts maieutics-runtime/worker_patch_test.ts maieutics-runtime/worker_bootstrap_test.ts maieutics-node-runtime/node_bootstrap_contract.cjs maieutics-node-runtime/node_worker_patch.cjs maieutics-node-runtime/node_worker_wrapper.mjs maieutics-node-runtime/node_worker_preload.cjs maieutics-node-runtime/node_worker_patch_test_runner.cjs shared/bus.ts shared/protocol.ts",
+    "test": "deno test --allow-env --allow-read --allow-write --allow-net --allow-run --unstable-worker-options maieutics-repl-client maieutics-plugin-sdk maieutics-plugin-host maieutics-runtime && deno test --allow-env --allow-read --allow-net maieutics-plugin-sdk/widgets/ && node maieutics-node-runtime/node_worker_patch_test_runner.cjs && deno task --config maieutics-deno-repl/deno.json test"
   }
 }

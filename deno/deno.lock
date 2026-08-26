@@ -70,11 +70,6 @@
           "jsr:@ghostflyby/worker-actor@0.4.0",
           "npm:@preact/signals-core@1.14.4"
         ]
-      },
-      "maieutics-widgets": {
-        "dependencies": [
-          "npm:esbuild-wasm@0.25.12"
-        ]
       }
     }
   }

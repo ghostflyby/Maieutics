@@ -50,20 +50,38 @@ Deno.test("walkWidgets rejects unknown control tags", () => {
 });
 
 Deno.test("controls catalog covers the factories exposed by index", () => {
-  for (
-    const name of [
-      "IntSlider",
-      "FloatSlider",
-      "Button",
-      "Text",
-      "ToggleButton",
-      "IntRangeSlider",
-      "Box",
-    ]
-  ) {
+  const all = [
+    "IntSlider",
+    "FloatSlider",
+    "Button",
+    "Text",
+    "ToggleButton",
+    "IntRangeSlider",
+    "Box",
+    "VBox",
+    "HBox",
+    "Checkbox",
+    "Label",
+    "HTML",
+    "Textarea",
+    "Password",
+    "IntText",
+    "FloatText",
+    "BoundedIntText",
+    "IntProgress",
+    "FloatProgress",
+    "DatePicker",
+    "Dropdown",
+    "Select",
+    "ToggleButtons",
+    "RadioButtons",
+  ];
+  for (const name of all) {
     assertEquals(CONTROLS.has(name), true, `missing ${name}`);
   }
   const slider = CONTROLS.get("IntSlider");
   assertEquals(slider?.modelName, "IntSliderModel");
   assertEquals(slider?.viewName, "IntSliderView");
+  assertEquals(CONTROLS.get("VBox")?.modelName, "VBoxModel");
+  assertEquals(CONTROLS.get("Dropdown")?.selection, true);
 });

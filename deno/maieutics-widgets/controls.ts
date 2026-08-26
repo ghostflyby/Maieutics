@@ -14,6 +14,8 @@ export interface ControlTemplate {
   modelName: string;
   viewName: string;
   defaults: Record<string, unknown>;
+  /** True for selection controls whose `options` prop needs label-value normalization. */
+  selection?: boolean;
 }
 
 export const CONTROLS: ReadonlyMap<string, ControlTemplate> = new Map([
@@ -128,6 +130,247 @@ export const CONTROLS: ReadonlyMap<string, ControlTemplate> = new Map([
         children: [],
         layout: null,
       },
+    },
+  ],
+  [
+    "VBox",
+    {
+      modelName: "VBoxModel",
+      viewName: "VBoxView",
+      defaults: {
+        children: [],
+        layout: null,
+      },
+    },
+  ],
+  [
+    "HBox",
+    {
+      modelName: "HBoxModel",
+      viewName: "HBoxView",
+      defaults: {
+        children: [],
+        layout: null,
+      },
+    },
+  ],
+  [
+    "Checkbox",
+    {
+      modelName: "CheckboxModel",
+      viewName: "CheckboxView",
+      defaults: {
+        value: false,
+        indent: true,
+        description: "",
+        disabled: false,
+        style: null,
+      },
+    },
+  ],
+  [
+    "Label",
+    {
+      modelName: "LabelModel",
+      viewName: "LabelView",
+      defaults: {
+        value: "",
+        placeholder: "",
+        description: "",
+        disabled: false,
+      },
+    },
+  ],
+  [
+    "HTML",
+    {
+      modelName: "HTMLModel",
+      viewName: "HTMLView",
+      defaults: {
+        value: "",
+        placeholder: "",
+        description: "",
+        disabled: false,
+      },
+    },
+  ],
+  [
+    "Textarea",
+    {
+      modelName: "TextareaModel",
+      viewName: "TextareaView",
+      defaults: {
+        value: "",
+        placeholder: "",
+        description: "",
+        disabled: false,
+        rows: null,
+        continuous_update: true,
+      },
+    },
+  ],
+  [
+    "Password",
+    {
+      modelName: "PasswordModel",
+      viewName: "PasswordView",
+      defaults: {
+        value: "",
+        placeholder: "",
+        description: "",
+        disabled: false,
+        continuous_update: false,
+      },
+    },
+  ],
+  [
+    "IntText",
+    {
+      modelName: "IntTextModel",
+      viewName: "IntTextView",
+      defaults: {
+        value: 0,
+        step: 1,
+        description: "",
+        disabled: false,
+        continuous_update: false,
+      },
+    },
+  ],
+  [
+    "FloatText",
+    {
+      modelName: "FloatTextModel",
+      viewName: "FloatTextView",
+      defaults: {
+        value: 0,
+        step: null,
+        description: "",
+        disabled: false,
+        continuous_update: false,
+      },
+    },
+  ],
+  [
+    "BoundedIntText",
+    {
+      modelName: "BoundedIntTextModel",
+      viewName: "IntTextView",
+      defaults: {
+        value: 0,
+        min: 0,
+        max: 100,
+        step: 1,
+        description: "",
+        disabled: false,
+        continuous_update: false,
+      },
+    },
+  ],
+  [
+    "IntProgress",
+    {
+      modelName: "IntProgressModel",
+      viewName: "ProgressView",
+      defaults: {
+        value: 0,
+        min: 0,
+        max: 100,
+        bar_style: "",
+        description: "",
+        style: null,
+      },
+    },
+  ],
+  [
+    "FloatProgress",
+    {
+      modelName: "FloatProgressModel",
+      viewName: "ProgressView",
+      defaults: {
+        value: 0,
+        min: 0,
+        max: 100,
+        bar_style: "",
+        description: "",
+        style: null,
+      },
+    },
+  ],
+  [
+    "DatePicker",
+    {
+      modelName: "DatePickerModel",
+      viewName: "DatePickerView",
+      defaults: {
+        value: null,
+        description: "",
+        disabled: false,
+      },
+    },
+  ],
+  [
+    "Dropdown",
+    {
+      modelName: "DropdownModel",
+      viewName: "DropdownView",
+      defaults: {
+        options: [],
+        _options_labels: [],
+        index: null,
+        description: "",
+        disabled: false,
+      },
+      selection: true,
+    },
+  ],
+  [
+    "Select",
+    {
+      modelName: "SelectModel",
+      viewName: "SelectView",
+      defaults: {
+        options: [],
+        _options_labels: [],
+        index: null,
+        rows: 5,
+        description: "",
+        disabled: false,
+      },
+      selection: true,
+    },
+  ],
+  [
+    "ToggleButtons",
+    {
+      modelName: "ToggleButtonsModel",
+      viewName: "ToggleButtonsView",
+      defaults: {
+        options: [],
+        _options_labels: [],
+        index: null,
+        button_style: "",
+        description: "",
+        disabled: false,
+        style: null,
+      },
+      selection: true,
+    },
+  ],
+  [
+    "RadioButtons",
+    {
+      modelName: "RadioButtonsModel",
+      viewName: "RadioButtonsView",
+      defaults: {
+        options: [],
+        _options_labels: [],
+        index: null,
+        description: "",
+        disabled: false,
+        style: null,
+      },
+      selection: true,
     },
   ],
 ]);

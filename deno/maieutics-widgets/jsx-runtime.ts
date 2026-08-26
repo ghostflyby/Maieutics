@@ -14,7 +14,7 @@
  */
 
 import { controlTemplate } from "./controls.ts";
-import { createWidget, useWidgetRuntime } from "./index.ts";
+import { createWidget, normalizeSelectionOptions, useWidgetRuntime } from "./index.ts";
 import { WidgetRuntime } from "./runtime.ts";
 import { bindLayoutModel, bindStyleModel, bindStyleProps, isStyleBlock } from "./style.ts";
 
@@ -57,6 +57,7 @@ function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
     if (template !== undefined) {
       const { onChange, children, ...stateProps } = props ?? {};
       const nested: Record<string, string> = {};
+      const selection = normalizeSelectionOptions(template, stateProps);
       const style = isStyleBlock(stateProps.style) ? stateProps.style : undefined;
       if (style !== undefined) {
         const split = bindStyleProps(useWidgetRuntime(), type, style);
@@ -78,6 +79,9 @@ function create(type: unknown, props: JsxProps | null, key?: unknown): unknown {
         ...WidgetRuntime.identityFields(template.modelName, template.viewName),
         ...template.defaults,
         ...stateProps,
+        // Normalize AFTER stateProps so the derived options/_options_labels
+        // win over a raw `options` array (see controlFactory).
+        ...selection,
         ...nested,
         ...childrenState,
       };

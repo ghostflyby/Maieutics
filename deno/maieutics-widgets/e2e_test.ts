@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { bindWidgetHost, IntSlider } from "./index.ts";
+import { bindWidgetHost, Dropdown, IntSlider, VBox } from "./index.ts";
 import { WidgetRuntime } from "./runtime.ts";
 
 const DISPLAY = Symbol.for("Jupyter.display");
@@ -115,4 +115,32 @@ Deno.test("useWidgetRuntime throws before binding", () => {
   // WidgetRuntime class is exported and usable standalone.
   const rt = new WidgetRuntime(async () => {});
   assertEquals(typeof rt.init, "function");
+});
+
+Deno.test("Dropdown normalizes options into label-value pairs and _options_labels", () => {
+  resetTransport();
+  bindWidgetHost(fakeHost());
+
+  const dropdown = Dropdown({
+    options: ["a", "b", "c"],
+    index: 1,
+    description: "pick",
+  }) as { get(key: string): unknown };
+
+  assertEquals(dropdown.get("options"), [["a", "a"], ["b", "b"], ["c", "c"]]);
+  assertEquals(dropdown.get("_options_labels"), ["a", "b", "c"]);
+  assertEquals(dropdown.get("index"), 1);
+  // The comm_open carries the Dropdown identity.
+  const open = transport.opens[0];
+  assertEquals(open.data.state._model_name, "DropdownModel");
+  assertEquals(open.data.state._view_name, "DropdownView");
+});
+
+Deno.test("VBox is a layout container with children", () => {
+  resetTransport();
+  bindWidgetHost(fakeHost());
+
+  const box = VBox({ layoutModel: { width: "200px" } }) as { get(key: string): unknown };
+  assertEquals(box.get("layout")?.toString().startsWith("IPY_MODEL_"), true);
+  assertEquals((box.get("layout") as string).startsWith("IPY_MODEL_"), true);
 });

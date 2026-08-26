@@ -20,7 +20,7 @@
  */
 
 import { type WidgetModel, WidgetRuntime } from "./runtime.ts";
-import { controlTemplate } from "./controls.ts";
+import { type ControlTemplate, controlTemplate } from "./controls.ts";
 import { walkWidgets, type WidgetInstance } from "./vnode.ts";
 import {
   bindLayoutModel,
@@ -109,6 +109,23 @@ export const Text = controlFactory("Text");
 export const ToggleButton = controlFactory("ToggleButton");
 export const IntRangeSlider = controlFactory("IntRangeSlider");
 export const Box = controlFactory("Box");
+export const VBox = controlFactory("VBox");
+export const HBox = controlFactory("HBox");
+export const Checkbox = controlFactory("Checkbox");
+export const Label = controlFactory("Label");
+export const HTML = controlFactory("HTML");
+export const Textarea = controlFactory("Textarea");
+export const Password = controlFactory("Password");
+export const IntText = controlFactory("IntText");
+export const FloatText = controlFactory("FloatText");
+export const BoundedIntText = controlFactory("BoundedIntText");
+export const IntProgress = controlFactory("IntProgress");
+export const FloatProgress = controlFactory("FloatProgress");
+export const DatePicker = controlFactory("DatePicker");
+export const Dropdown = controlFactory("Dropdown");
+export const Select = controlFactory("Select");
+export const ToggleButtons = controlFactory("ToggleButtons");
+export const RadioButtons = controlFactory("RadioButtons");
 
 /** A widget model factory: props (initial state + optional onChange) -> model. */
 export type ControlFactoryProps = Record<string, unknown> & {
@@ -123,6 +140,44 @@ export type ControlFactoryProps = Record<string, unknown> & {
 
 export type ControlFactory = (props?: ControlFactoryProps) => WidgetModel<Record<string, unknown>>;
 
+/**
+ * Normalize a selection control's `options` prop into the frontend's expected
+ * shape: `options` as label-value pairs plus `_options_labels` (the labels).
+ * Accepts `["a","b"]` (label = value), `[["a",1],["b",2]]` (pairs), or
+ * `[{label, value}]` objects; an explicitly supplied `_options_labels` wins.
+ */
+export function normalizeSelectionOptions(
+  template: ControlTemplate,
+  props: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!template.selection) return {};
+  const raw = props.options;
+  if (!Array.isArray(raw)) return {};
+  const pairs: unknown[] = [];
+  const labels: unknown[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string" || typeof entry === "number") {
+      pairs.push([entry, entry]);
+      labels.push(entry);
+    } else if (
+      Array.isArray(entry) && entry.length >= 1
+    ) {
+      pairs.push(entry);
+      labels.push(entry[0]);
+    } else if (
+      typeof entry === "object" && entry !== null &&
+      "label" in entry
+    ) {
+      pairs.push([entry.label, "value" in entry ? entry.value : entry.label]);
+      labels.push(entry.label);
+    }
+  }
+  return {
+    options: pairs,
+    _options_labels: labels,
+  };
+}
+
 function controlFactory(kind: string): ControlFactory {
   const template = controlTemplate(kind);
   if (template === undefined) {
@@ -134,6 +189,10 @@ function controlFactory(kind: string): ControlFactory {
       ...WidgetRuntime.identityFields(template.modelName, template.viewName),
       ...template.defaults,
       ...stateProps,
+      // Normalize AFTER stateProps so the derived options/_options_labels
+      // win over a raw `options` array (an explicit _options_labels in props
+      // still overrides because it lives in stateProps).
+      ...normalizeSelectionOptions(template, stateProps),
     };
     // style={{...}} (unified) / styleModel={{...}} / layoutModel={{...}} become
     // nested Layout/Style model references in the control's state (IPY_MODEL_<id>).

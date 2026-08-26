@@ -40,6 +40,17 @@ After the preload, both `const { Worker } = require("node:worker_threads")` and
 - The adapter patches `node:worker_threads.Worker` and synchronizes later ESM named imports. If a
   runtime already exposes that exact native constructor as `globalThis.Worker`, the alias is patched
   too. Node 26.7.0 has no global `Worker`, so the adapter does not create one.
+- Every user-visible `constructor` reference points at the routed constructor:
+  `Worker.prototype.constructor`, `instance.constructor`,
+  `Object.getPrototypeOf(instance).constructor`, and
+  `Object.getPrototypeOf(Worker.prototype).constructor`. The native constructor lives only inside
+  the patch module's closure.
+- A worker realm always starts with the Maieutics preload. If the caller provides `execArgv` or
+  `env.NODE_OPTIONS`, the Maieutics preload is PREPENDED so it runs before any user preload — a
+  hostile `--require`/`--import` cannot capture the native constructor or create an uninitialized
+  descendant realm. This is a targeted defense, not a guarantee against a caller who wants to run an
+  intentionally unpatched worker (clearing the preload entirely is still possible via a fresh
+  process).
 - Nested Workers (created by target code) are routed recursively; the child realm inherits the
   preload through `process.execArgv`.
 - Supported options are forwarded unchanged: `name`, `execArgv`, `env`, `argv`, `workerData`,
@@ -61,17 +72,19 @@ node deno/maieutics-node-runtime/node_worker_patch_test_runner.cjs
 
 The runner spawns a fresh `node --require <preload>` child per scenario so each observes a clean
 process state. Scenarios cover the named-import patch, the ESM namespace sync, nested marker
-installation, options/name propagation, unsupported-form rejection, and startup-error behavior.
+installation, options/name propagation, prototype-constructor redirection, hostile `execArgv`/
+`NODE_OPTIONS` preload defense, unsupported-form rejection, and startup-error behavior.
 
 ## Limitations
 
-- A caller can bypass the patch with an explicit `execArgv` that omits the preload, or by clearing
-  `execArgv`. This is inherent to preload-only startup and is documented in
-  `docs/runtime-bootstrapping-design.md` as a limitation, not a supported bypass.
 - The wrapper entry is an ESM `.mjs` file, so routed workers are created with `type: "module"` for
   the wrapper. Targets use their file and package metadata for CommonJS or ESM resolution. An
   explicit `type: "commonjs"` request is rejected because the wrapper cannot preserve that override
   for the target.
+- The hostile-preload defense prepends the Maieutics preload to user `execArgv`/`NODE_OPTIONS`, but
+  a caller who fully controls the worker start options can still choose to clear or bypass the patch
+  entirely — that is a caller-deliberate, out-of-contract escape, not a silent hole in the default
+  path.
 - Node's `--import` runs after `--require`; install this file with `--require` when both mechanisms
   are used.
 - `BroadcastChannel` and permissions are out of scope for this adapter.

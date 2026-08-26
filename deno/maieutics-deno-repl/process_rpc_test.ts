@@ -40,7 +40,7 @@ const GENERATION = 0;
  * The eval channel relays `execute` envelopes to the real worker inside the
  * REPL process and collects the `result` envelopes the worker produces. */
 class FakeKernel implements AsyncDisposable {
-  static async start(): Promise<FakeKernel> {
+  static start(): FakeKernel {
     const path = `/tmp/mc-repl-test-${crypto.randomUUID().slice(0, 8)}.sock`;
     const kernel = new FakeKernel(path);
     kernel.#server = Deno.serve(
@@ -77,7 +77,7 @@ class FakeKernel implements AsyncDisposable {
     this.address = path;
   }
 
-  async #handleRequest(request: Request): Promise<Response> {
+  #handleRequest(request: Request): Response {
     const path = new URL(request.url).pathname;
     if (path === REPL_EVAL_WEBSOCKET_PATH) {
       const { socket, response } = Deno.upgradeWebSocket(request);
@@ -102,7 +102,7 @@ class FakeKernel implements AsyncDisposable {
     return new Response("not found", { status: 404 });
   }
 
-  async #serveEval(socket: WebSocket): Promise<void> {
+  #serveEval(socket: WebSocket): void {
     this.#evalSocket = socket;
     socket.onmessage = (event) => {
       const text = typeof event.data === "string"
@@ -125,7 +125,7 @@ class FakeKernel implements AsyncDisposable {
   }
 
   /** Receives the REPL's binary output frames (console/display/clearOutput). */
-  async #serveOutput(socket: WebSocket): Promise<void> {
+  #serveOutput(socket: WebSocket): void {
     this.outputConnected = true;
     socket.onmessage = (event) => {
       void (async () => {
@@ -155,7 +155,7 @@ class FakeKernel implements AsyncDisposable {
     };
   }
 
-  async #serveComm(socket: WebSocket): Promise<void> {
+  #serveComm(socket: WebSocket): void {
     socket.onmessage = (event) => {
       const text = typeof event.data === "string"
         ? event.data
@@ -167,7 +167,7 @@ class FakeKernel implements AsyncDisposable {
     };
   }
 
-  async #serveBus(socket: WebSocket): Promise<void> {
+  #serveBus(socket: WebSocket): void {
     socket.onmessage = (event) => {
       const text = typeof event.data === "string"
         ? event.data
@@ -246,7 +246,7 @@ class FakeKernel implements AsyncDisposable {
   async [Symbol.asyncDispose](): Promise<void> {
     try {
       this.#listener?.close();
-      this.#server?.shutdown();
+      await this.#server?.shutdown();
     } catch {
       // Already closed.
     }
@@ -254,7 +254,7 @@ class FakeKernel implements AsyncDisposable {
 }
 
 Deno.test("host-derived REPL process runs the real REPL over the eval channel", async () => {
-  await using kernel = await FakeKernel.start();
+  await using kernel = FakeKernel.start();
   const previousEnv = captureEnv();
   setKernelEnv(kernel.address);
   try {

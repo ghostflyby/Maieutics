@@ -46,11 +46,10 @@ import {
   openChannel,
   registerControlHandler,
   registerRelease,
-  type serializeError,
   setMainAcquire,
   triggerAcquire,
 } from "@ghostflyby/worker-actor/codec";
-import { type createRpcProxy, makeRpcHandler, type PeerRpc } from "@ghostflyby/worker-actor/codec";
+import { makeRpcHandler } from "@ghostflyby/worker-actor/codec";
 import { RemoteError } from "@ghostflyby/worker-actor";
 
 export const ACTOR_CODEC_TAG = "maieutics/actor";
@@ -331,9 +330,9 @@ function refIdFor(specifier: string): string {
 
 function serveRefOwner(
   channel: Channel,
-  refId: string,
+  _refId: string,
   handler: ReturnType<typeof makeRpcHandler>,
-  registry: EncodeContext["registry"],
+  _registry: EncodeContext["registry"],
 ): void {
   channel.onMessage(async (message) => {
     const frame = message as RefFrame;
@@ -369,7 +368,7 @@ function serveRefOwner(
 function createRefProxy(
   channel: Channel,
   registry: DecodeContext["registry"],
-  refId: string,
+  _refId: string,
 ): RemoteActor<object> {
   const pending = new Map<
     number,
@@ -766,6 +765,8 @@ registerControlHandler("__serve-ref", (frame: ControlFrame) => {
       : flattenSurface(namespaceSurface);
     const handler = makeRpcHandler(api, registry);
     serveRefOwner(channel, frame.refId, handler, registry);
-  } catch (error) {
+  } catch {
+    // An acquire frame for an unknown surface is dropped: the referencing
+    // side treats the closed channel as the ref being unavailable.
   }
 });

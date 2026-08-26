@@ -79,11 +79,15 @@ import {
 const NAMESPACE = "maieutics/extensionPoint/v1";
 
 /** Versioned extension point identity markers. */
-export const ExtensionPoint = {
+export const ExtensionPoint: {
+  readonly McpDiscover: symbol;
+  readonly ToolPreInvoke: symbol;
+  readonly ToolPostInvoke: symbol;
+} = {
   McpDiscover: Symbol.for(`${NAMESPACE}/mcp.discover`),
   ToolPreInvoke: Symbol.for(`${NAMESPACE}/tools.preInvoke`),
   ToolPostInvoke: Symbol.for(`${NAMESPACE}/tools.postInvoke`),
-} as const;
+};
 
 export type ExtensionPointName = keyof typeof ExtensionPoint;
 
@@ -462,7 +466,7 @@ interface WorkerInitConfig {
 }
 
 let ownSpecifierValue = "";
-let servingApi: Record<string, (...args: unknown[]) => unknown> = {};
+const servingApi: Record<string, (...args: unknown[]) => unknown> = {};
 let configResolve: ((config: WorkerInitConfig) => void) | undefined;
 let configReject: ((error: Error) => void) | undefined;
 let configPromise: Promise<WorkerInitConfig> | undefined;
@@ -569,8 +573,6 @@ interface InitFrame {
   type: "init";
   entryUrl: string;
 }
-
-interface Disposed {}
 
 let linkedSurface: Record<string, unknown> = {};
 

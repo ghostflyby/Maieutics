@@ -141,18 +141,16 @@ function isCallTo(
   return false;
 }
 
-const entrypointRegisteredRule = {
+const entrypointRegisteredRule: Deno.lint.Rule = {
   create(context: Deno.lint.RuleContext) {
     let defineActorNames: Set<string> | undefined;
     let namespaceNames: Set<string> | undefined;
-    let fileHasActorExport = false;
     let registeredEntrypoints: Set<string> | undefined;
 
     const ensureNames = (): void => {
       if (defineActorNames !== undefined) return;
       defineActorNames = new Set();
       namespaceNames = new Set();
-      fileHasActorExport = false;
       registeredEntrypoints = readEntrypointScriptsOrEmpty(context.filename);
     };
 
@@ -184,7 +182,6 @@ const entrypointRegisteredRule = {
         for (const declarator of declaration.declarations) {
           const init = declarator.init;
           if (isDefineActorCall(init, defineActorNames!, namespaceNames!)) {
-            fileHasActorExport = true;
             if (
               registeredEntrypoints !== undefined &&
               !isEntrypoint(context.filename, registeredEntrypoints)
@@ -212,7 +209,7 @@ const entrypointRegisteredRule = {
   },
 };
 
-const entrypointExportsRule = {
+const entrypointExportsRule: Deno.lint.Rule = {
   create(context: Deno.lint.RuleContext) {
     let registeredEntrypoints: Set<string> | undefined;
     let defineActorNames: Set<string> | undefined;
@@ -346,8 +343,6 @@ const entrypointExportsRule = {
       },
       ExportDefaultDeclaration(node: Deno.lint.ExportDefaultDeclaration) {
         if (!isEntrypointFile()) return;
-        const declaration = (node as { declaration?: unknown }).declaration;
-        const decl = declaration as { type?: string; id?: { name?: string } } | null;
         // export default function / class / object literal — a bare default
         // export is not a defineActor surface.
         context.report({
@@ -381,7 +376,7 @@ const entrypointExportsRule = {
  * is a hygiene check, not a correctness gate. The runtime still treats each
  * provide as an independent contribution.
  */
-const provideOnceRule = {
+const provideOnceRule: Deno.lint.Rule = {
   create(context: Deno.lint.RuleContext) {
     let provideNames: Set<string> | undefined;
     let namespaceNames: Set<string> | undefined;
@@ -481,7 +476,7 @@ const FUNCTION_NODE_TYPES = new Set([
  * top-level provides (e.g. `if (env === "prod") provide(ep, s)`) are allowed:
  * they evaluate once and stay declarative.
  */
-const provideTopLevelRule = {
+const provideTopLevelRule: Deno.lint.Rule = {
   create(context: Deno.lint.RuleContext) {
     let provideNames: Set<string> | undefined;
     let namespaceNames: Set<string> | undefined;

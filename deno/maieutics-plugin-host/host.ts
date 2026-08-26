@@ -187,7 +187,7 @@ const enum State {
   Crashed = "crashed",
 }
 
-function specifierOf(plugin: PluginConfig, worker: PluginWorkerConfig): string {
+function specifierOf(_plugin: PluginConfig, worker: PluginWorkerConfig): string {
   return worker.specifier;
 }
 
@@ -569,7 +569,7 @@ export class PluginHost {
     for (const wave of waves) {
       await Promise.all(
         wave.map((key) =>
-          this.#startWorker(key).catch((error) => {
+          this.#startWorker(key).catch(() => {
             const handle = this.#workers.get(key);
             if (handle) handle.state = State.Failed;
           })
@@ -652,7 +652,7 @@ export class PluginHost {
     let grew = true;
     while (grew) {
       grew = false;
-      for (const [key, handle] of this.#workers) {
+      for (const key of this.#workers.keys()) {
         if (closure.has(key)) continue;
         if (this.#dependencyOf(key).some((dep) => closure.has(dep))) {
           closure.add(key);

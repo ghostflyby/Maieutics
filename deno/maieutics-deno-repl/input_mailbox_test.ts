@@ -2,7 +2,7 @@
 // in Atomics.wait while the answering side writes answers / interrupts /
 // errors into the shared buffer.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   createInputMailbox,
   failInputMailbox,

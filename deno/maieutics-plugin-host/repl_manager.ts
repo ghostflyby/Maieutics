@@ -38,11 +38,11 @@
 
 import { type ActorHandle, type Remote, spawnProcess } from "@ghostflyby/worker-actor";
 import type { ReplEnvelope } from "../shared/protocol.ts";
-import {
-  type HostReplDerivePayload,
-  type HostReplPermissions,
-  type HostReplReport,
-  type HostReplRpc,
+import type {
+  HostReplDerivePayload,
+  HostReplPermissions,
+  HostReplReport,
+  HostReplRpc,
 } from "./host_repl_protocol.ts";
 
 const SESSION_ENV = "MAIEUTICS_REPL_SESSION";

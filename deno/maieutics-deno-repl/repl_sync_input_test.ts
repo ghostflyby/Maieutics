@@ -101,7 +101,7 @@ Deno.test("sync prompt/confirm/alert block and are answered through the mailbox"
   const previous = Deno.env.get(envName);
   Deno.env.set(envName, "data:text/javascript,export%20default%20%7B%7D");
   try {
-    const { worker, actor, requests, answer, waitForRequests } = await spawnWorkerWithMailbox();
+    const { worker, actor, answer, waitForRequests } = await spawnWorkerWithMailbox();
     await actor.initialize();
 
     const executionPromise = (async () => {

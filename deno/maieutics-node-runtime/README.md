@@ -40,10 +40,11 @@ After the preload, both `const { Worker } = require("node:worker_threads")` and
 - The adapter patches `node:worker_threads.Worker` and synchronizes later ESM named imports. If a
   runtime already exposes that exact native constructor as `globalThis.Worker`, the alias is patched
   too. Node 26.7.0 has no global `Worker`, so the adapter does not create one.
-- Every user-visible `constructor` reference points at the routed constructor: `Worker.prototype.constructor`,
-  `instance.constructor`, `Object.getPrototypeOf(instance).constructor`, and
-  `Object.getPrototypeOf(Worker.prototype).constructor`. The native constructor lives only inside the
-  patch module's closure.
+- Every user-visible `constructor` reference points at the routed constructor:
+  `Worker.prototype.constructor`, `instance.constructor`,
+  `Object.getPrototypeOf(instance).constructor`, and
+  `Object.getPrototypeOf(Worker.prototype).constructor`. The native constructor lives only inside
+  the patch module's closure.
 - A worker realm always starts with the Maieutics preload. If the caller provides `execArgv` or
   `env.NODE_OPTIONS`, the Maieutics preload is PREPENDED so it runs before any user preload — a
   hostile `--require`/`--import` cannot capture the native constructor or create an uninitialized
@@ -81,9 +82,9 @@ installation, options/name propagation, prototype-constructor redirection, hosti
   explicit `type: "commonjs"` request is rejected because the wrapper cannot preserve that override
   for the target.
 - The hostile-preload defense prepends the Maieutics preload to user `execArgv`/`NODE_OPTIONS`, but
-  a caller who fully controls the worker start options can still choose to clear or bypass the
-  patch entirely — that is a caller-deliberate, out-of-contract escape, not a silent hole in the
-  default path.
+  a caller who fully controls the worker start options can still choose to clear or bypass the patch
+  entirely — that is a caller-deliberate, out-of-contract escape, not a silent hole in the default
+  path.
 - Node's `--import` runs after `--require`; install this file with `--require` when both mechanisms
   are used.
 - `BroadcastChannel` and permissions are out of scope for this adapter.

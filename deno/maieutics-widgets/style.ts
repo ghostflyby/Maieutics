@@ -78,6 +78,10 @@ const STYLE_TO_IPYWIDGETS: Readonly<Record<string, string>> = {
   whiteSpace: "white_space",
   handleColor: "handle_color",
   buttonColor: "button_color",
+  // TextStyleModel's internal width (the style-side `width` trait). Distinct
+  // from the layout `width` (container geometry); on non-Text controls the
+  // frontend style subclass ignores the unknown trait.
+  textWidth: "width",
   barColor: "bar_color",
 };
 

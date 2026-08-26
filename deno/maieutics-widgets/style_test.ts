@@ -57,6 +57,12 @@ Deno.test("ipywidgets-specific style keys map to camelCase names", () => {
   assertEquals(split.layout, {});
 });
 
+Deno.test("textWidth maps to the style-side width trait, distinct from layout width", () => {
+  const split = splitCssProps({ width: "200px", textWidth: "120px" });
+  assertEquals(split.layout, { width: "200px" });
+  assertEquals(split.style, { width: "120px" });
+});
+
 Deno.test("styleModelFor selects per-control style subclasses", () => {
   assertEquals(styleModelFor("IntSlider")?.modelName, "SliderStyleModel");
   assertEquals(styleModelFor("FloatSlider")?.modelName, "SliderStyleModel");

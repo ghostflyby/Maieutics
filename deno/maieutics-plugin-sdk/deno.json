@@ -6,14 +6,17 @@
     "./runtime": "./runtime.ts",
     "./interop": "./interop.ts",
     "./reactive": "./reactive.ts",
-    "./lint": "./lint-plugin.ts"
+    "./lint": "./lint-plugin.ts",
+    "./widgets": "./widgets/index.ts",
+    "./widgets/jsx-runtime": "./widgets/jsx-runtime.ts",
+    "./widgets/transform": "./widgets/transform.ts"
   },
   "imports": {
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0",
     "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
   },
   "tasks": {
-    "check": "deno check entry.ts mod.ts mod_test.ts actor_ref.ts collection_stream.ts runtime.ts interop.ts reactive.ts lint-plugin.ts lint-plugin_test.ts",
+    "check": "deno check entry.ts mod.ts mod_test.ts actor_ref.ts collection_stream.ts runtime.ts interop.ts reactive.ts lint-plugin.ts lint-plugin_test.ts widgets/index.ts widgets/runtime.ts widgets/controls.ts widgets/vnode.ts widgets/transform.ts widgets/style.ts widgets/jsx-runtime.ts",
     "test": "deno test --allow-read --allow-write --allow-env --allow-net --unstable-worker-options"
   }
 }

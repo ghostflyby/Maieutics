@@ -629,6 +629,7 @@ export class ReplClient {
       commId: event.commId,
       targetName: event.targetName,
       data: event.data,
+      ...(event.metadata === undefined ? {} : { metadata: event.metadata }),
       buffers: event.buffers,
     });
   }

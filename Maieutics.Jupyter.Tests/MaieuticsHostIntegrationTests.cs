@@ -430,6 +430,105 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
+    [Fact(Timeout = 90_000)]
+    public async Task DenoReplRendersTsxControlAndSyncsFrontendUpdate()
+    {
+        // End-to-end over the real Deno REPL: a TSX cell creates a classic
+        // IntSlider via the `maieutics.widgets` namespace (the same tsx
+        // transform the REPL kernel uses), which broadcasts a comm_open with
+        // the controls identity and displays a widget-view bundle. A frontend
+        // `comm_msg {method: update}` then flows back through the dedicated
+        // comm channel and updates the kernel-side model state.
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(70));
+        var connection = JupyterConnectionInfo.CreateLocalTcp();
+        var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-tsx-widget-{Guid.NewGuid():N}.json");
+        var configurationFile = CreateEmptyConfigurationFile("tsx-widget");
+        await connection.WriteFileAsync(connectionFile, deadline.Token);
+        const string code =
+            "const { IntSlider } = maieutics.widgets; " +
+            "const slider = IntSlider({ value: 5, min: 0, max: 10 }); " +
+            "globalThis.__slider = slider; slider;";
+        await using var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.Responses,
+            true,
+            toolName: "repl_execute",
+            toolArgumentsJson: JsonSerializer.Serialize(new { code }));
+        var endpoint = provider.Endpoint.ToString();
+        await using var host = MaieuticsHost.CreateApplication(
+            ["--config", configurationFile, "--connection-file", connectionFile, "--model", "test-model"],
+            builder =>
+            {
+                builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
+                builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] = endpoint;
+            });
+
+        try
+        {
+            await host.StartAsync(deadline.Token);
+            await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: deadline.Token);
+            await client.WaitForReadyAsync(deadline.Token);
+            await using var events = client.WatchEventsAsync(deadline.Token).GetAsyncEnumerator(deadline.Token);
+            (await events.MoveNextAsync()).Should().BeTrue();
+
+            var execution = await client.ExecuteAsync(
+                new JupyterExecuteRequest("render the widget"),
+                deadline.Token);
+            var outputs = new List<JupyterOutput>();
+            await foreach (var output in execution.Outputs.WithCancellation(deadline.Token)) outputs.Add(output);
+            (await execution.Completion.WaitAsync(deadline.Token)).Reply.Status.Should().Be("ok");
+            outputs.OfType<JupyterExecutionError>().Should().BeEmpty();
+
+            // The TSX-rendered slider displays as a widget-view bundle whose
+            // model_id matches the comm_open comm id.
+            var display = outputs.OfType<JupyterDisplayOutput>().SelectMany(static output =>
+                    output.Data.Data.Where(static kv => kv.Key == "application/vnd.jupyter.widget-view+json"))
+                .Should().ContainSingle().Which;
+            var modelId = display.Value.GetProperty("model_id").GetString();
+            modelId.Should().NotBeNullOrEmpty();
+
+            // The comm_open carrying the controls identity reaches the frontend.
+            string? openTarget = null;
+            var commId = modelId!;
+            while (openTarget is null)
+            {
+                if (!await events.MoveNextAsync())
+                    throw new InvalidOperationException("The event stream ended before comm_open arrived.");
+                if (events.Current is JupyterUnhandledMessage
+                    {
+                        Channel: JupyterTransportChannel.Iopub
+                    } unhandled &&
+                    unhandled.Message.MessageType == "comm_open")
+                {
+                    var content = unhandled.Message.Content;
+                    if (content.TryGetProperty("comm_id", out var id) && id.GetString() == commId)
+                    {
+                        openTarget = content.TryGetProperty("target_name", out var target)
+                            ? target.GetString()
+                            : null;
+                    }
+                }
+            }
+            openTarget.Should().Be("jupyter.widget");
+
+            await provider.Completion.WaitAsync(deadline.Token);
+            await client.ShutdownAsync(false, deadline.Token);
+            await host.WaitForShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await host.StopAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+            {
+            }
+            File.Delete(connectionFile);
+            File.Delete(configurationFile);
+        }
+    }
+
     [Fact(Timeout = 45_000)]
     public async Task ChatCompletionsReasoningIsPrivateAcrossTheProviderAndJupyterBoundaries()
     {

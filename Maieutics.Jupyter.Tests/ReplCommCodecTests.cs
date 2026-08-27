@@ -23,6 +23,7 @@ public sealed class ReplCommCodecTests
             "comm-42",
             "widget-test",
             data,
+            null,
             buffers,
             JupyterWireMessage.Create(
                 JupyterMessage.Create(
@@ -59,6 +60,7 @@ public sealed class ReplCommCodecTests
             "comm-media",
             null,
             data,
+            null,
             [buffer],
             JupyterWireMessage.Create(
                 JupyterMessage.Create(
@@ -82,6 +84,7 @@ public sealed class ReplCommCodecTests
         var message = new JupyterCommMessage(
             JupyterCommKind.Close,
             "comm-7",
+            null,
             null,
             null,
             [],

@@ -100,7 +100,8 @@ public sealed class JupyterKernelHost : IJupyterKernel
                         message.TargetName ?? string.Empty,
                         message.Data),
                     JupyterJsonContext.Default.JupyterCommOpenContent,
-                    session),
+                    session,
+                    metadata: message.Metadata),
                 JupyterCommKind.Close => JupyterMessage.Create(
                     "comm_close",
                     new JupyterCommCloseContent(message.CommId, message.Data),
@@ -504,7 +505,8 @@ public sealed class JupyterKernelHost : IJupyterKernel
                    content.TryGetProperty("data", out var dataProperty)
             ? (JsonElement?)dataProperty
             : null;
-        return new JupyterCommMessage(kind, commId, targetName, data, wireRequest.Buffers, wireRequest);
+        var metadata = wireRequest.Message.Metadata;
+        return new JupyterCommMessage(kind, commId, targetName, data, metadata, wireRequest.Buffers, wireRequest);
     }
 
     private static string GetRequiredString(JsonElement content, string property, string messageType)

@@ -34,13 +34,17 @@ unless each declares them.
 
 Each plugin gets its own `localStorage` (persistent) and `sessionStorage` (per realm), available
 with **zero** Deno permissions — the storage channel never touches the worker's grant surface. The
-authoritative store lives in this host's main isolate, keyed by plugin identity; every worker of a
-plugin (each entrypoint and every nested worker) shares its plugin's `localStorage` like a browser
-origin, while `sessionStorage` stays per realm. The kernel assigns each plugin a data directory
-under the platform application-data root and ships it in the plugin config; the host persists
-per-plugin storage there as a versioned JSON document with debounced atomic writes (temp file +
-rename) and a bounded flush on shutdown. The per-store quota is 5 MiB (UTF-16 code units) and a
-single request must fit the 1 MiB mailbox payload; overflows surface as `QuotaExceededError`.
+authoritative store is one SQLite database per plugin (`local-storage.db`, node:sqlite
+`DatabaseSync`) in the kernel-assigned data directory: the database IS the store, with no in-memory
+shadow copy and no flush step. Ops are synchronous indexed point queries and WAL appends
+(`synchronous=NORMAL`, no per-commit fsync), so an op completes in microseconds-to-sub-millisecond
+on the host main isolate and every committed write survives host crashes. Every worker of a plugin
+(each entrypoint and every nested worker) shares its plugin's `localStorage` like a browser origin,
+while `sessionStorage` stays per realm. The kernel assigns each plugin a data directory under the
+platform application-data root and ships it in the plugin config. Schema changes are versioned via
+`PRAGMA user_version`; a store written by a newer host fails with a typed error. The per-store quota
+is 5 MiB (UTF-16 code units) and a single request must fit the 1 MiB mailbox payload; overflows
+surface as `QuotaExceededError`.
 
 The transport follows the admission handshake pattern (request direction `postMessage`, reply
 direction a per-realm SharedArrayBuffer mailbox, bounded `Atomics.wait`). Routing never trusts a

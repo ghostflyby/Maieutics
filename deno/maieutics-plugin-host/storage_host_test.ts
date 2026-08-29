@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { DatabaseSync } from "node:sqlite";
 import {
   createStorageMailbox,
   STORAGE_PAYLOAD_BYTES,
@@ -9,13 +10,12 @@ import {
   type StorageRequest,
   type StorageResponse,
 } from "../maieutics-runtime/storage_channel.ts";
-import { PluginStorageHost, STORAGE_FILE_NAME, STORAGE_FORMAT_VERSION } from "./storage_host.ts";
+import { PluginStorageHost, STORAGE_FILE_NAME } from "./storage_host.ts";
 
 /**
- * Drives one op through the real responder without parking the test thread:
- * the request is announced on a mailbox, `handle()` runs its async processing
- * on the event loop, and the test polls for the response announcement (a
- * parked `Atomics.wait` would block the single test thread forever).
+ * Drives one op through the real responder: the request is announced on a
+ * mailbox and `handle()` answers synchronously (the poll loop below only
+ * survives for symmetry with an async responder).
  */
 function createDriver(
   host: PluginStorageHost,
@@ -49,62 +49,63 @@ function announce(mailbox: StorageMailbox, request: StorageRequest): void {
   Atomics.store(mailbox.state, 0, STORAGE_STATE_REQUEST);
 }
 
-async function readDocument(dataDir: string): Promise<unknown> {
-  return JSON.parse(await Deno.readTextFile(`${dataDir}/${STORAGE_FILE_NAME}`));
-}
-
-async function waitForFile(path: string): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (true) {
-    try {
-      await Deno.stat(path);
-      return;
-    } catch {
-      if (Date.now() > deadline) throw new Error(`'${path}' never appeared`);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-  }
-}
-
-Deno.test("persists ops atomically to the plugin data directory", async () => {
-  const dataDir = Deno.makeTempDirSync();
-  const host = new PluginStorageHost();
-  const op = createDriver(host, { id: "p1", storage: { dataDir } });
-  try {
-    assertEquals(await op({ op: "get", key: "a" }), { ok: true, value: null });
-    assertEquals(await op({ op: "set", key: "a", value: "1" }), { ok: true });
-    assertEquals(await op({ op: "set", key: "b", value: "2" }), { ok: true });
-    await host.flushAll();
-    assertEquals(await readDocument(dataDir), {
-      version: STORAGE_FORMAT_VERSION,
-      entries: [["a", "1"], ["b", "2"]],
-    });
-    // The atomic write leaves no temp files behind.
-    assertEquals(
-      [...Deno.readDirSync(dataDir)].map((entry) => entry.name).filter((n) => n.endsWith(".tmp")),
-      [],
-    );
-  } finally {
-    host.dispose();
-  }
-});
-
-Deno.test("a fresh host loads the persisted document", async () => {
+Deno.test("ops are durable immediately and survive close and reopen", async () => {
   const dataDir = Deno.makeTempDirSync();
   const writer = new PluginStorageHost();
   const write = createDriver(writer, { id: "p1", storage: { dataDir } });
-  await write({ op: "set", key: "keep", value: "me" });
-  await writer.flushAll();
+  assertEquals(await write({ op: "set", key: "a", value: "1" }), { ok: true });
+  assertEquals(await write({ op: "set", key: "b", value: "2" }), { ok: true });
+  // The database IS the store: closing without any flush step keeps the rows.
   writer.dispose();
 
   const reader = new PluginStorageHost();
   const read = createDriver(reader, { id: "p1", storage: { dataDir } });
   try {
-    assertEquals(await read({ op: "get", key: "keep" }), { ok: true, value: "me" });
-    assertEquals(await read({ op: "length" }), { ok: true, length: 1 });
-    assertEquals(await read({ op: "keyAt", index: 0 }), { ok: true, key: "keep" });
+    assertEquals(await read({ op: "get", key: "a" }), { ok: true, value: "1" });
+    assertEquals(await read({ op: "length" }), { ok: true, length: 2 });
+    assertEquals(await read({ op: "keyAt", index: 0 }), { ok: true, key: "a" });
+    assertEquals(await read({ op: "keyAt", index: 1 }), { ok: true, key: "b" });
   } finally {
     reader.dispose();
+  }
+});
+
+Deno.test("insertion order survives removals and overwrites keep position", async () => {
+  const dataDir = Deno.makeTempDirSync();
+  const host = new PluginStorageHost();
+  const op = createDriver(host, { id: "p1", storage: { dataDir } });
+  try {
+    await op({ op: "set", key: "a", value: "1" });
+    await op({ op: "set", key: "b", value: "2" });
+    await op({ op: "remove", key: "a" });
+    await op({ op: "set", key: "c", value: "3" });
+    // The freed ordinal must NOT be reused: c comes after b.
+    assertEquals(await op({ op: "keyAt", index: 0 }), { ok: true, key: "b" });
+    assertEquals(await op({ op: "keyAt", index: 1 }), { ok: true, key: "c" });
+    assertEquals(await op({ op: "keyAt", index: 2 }), { ok: true, key: null });
+    // Overwriting keeps the original position.
+    await op({ op: "set", key: "b", value: "2b" });
+    assertEquals(await op({ op: "keyAt", index: 0 }), { ok: true, key: "b" });
+    assertEquals(await op({ op: "get", key: "b" }), { ok: true, value: "2b" });
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("clear empties the store and restarts the insertion order", async () => {
+  const dataDir = Deno.makeTempDirSync();
+  const host = new PluginStorageHost();
+  const op = createDriver(host, { id: "p1", storage: { dataDir } });
+  try {
+    await op({ op: "set", key: "a", value: "1" });
+    await op({ op: "remove", key: "absent" });
+    await op({ op: "clear" });
+    await op({ op: "clear" });
+    assertEquals(await op({ op: "length" }), { ok: true, length: 0 });
+    await op({ op: "set", key: "c", value: "3" });
+    assertEquals(await op({ op: "keyAt", index: 0 }), { ok: true, key: "c" });
+  } finally {
+    host.dispose();
   }
 });
 
@@ -131,6 +132,28 @@ Deno.test("enforces the per-plugin quota with a typed error", async () => {
     assertEquals(await op({ op: "get", key: "chunk-5" }), { ok: true, value: null });
   } finally {
     host.dispose();
+  }
+});
+
+Deno.test("quota accounting survives a reopen", async () => {
+  const dataDir = Deno.makeTempDirSync();
+  const writer = new PluginStorageHost();
+  const write = createDriver(writer, { id: "p1", storage: { dataDir } });
+  for (let index = 0; index < 5; index++) {
+    await write({ op: "set", key: `chunk-${index}`, value: "x".repeat(950_000) });
+  }
+  writer.dispose();
+
+  // The reopened host hydrates its quota accounting from the rows on disk:
+  // the store is already at ~4.75 MiB, so the next near-limit write fails.
+  const reader = new PluginStorageHost();
+  const read = createDriver(reader, { id: "p1", storage: { dataDir } });
+  try {
+    const rejected = await read({ op: "set", key: "chunk-5", value: "x".repeat(950_000) });
+    assertEquals(rejected.ok, false);
+    if (!rejected.ok) assertEquals(rejected.name, "QuotaExceededError");
+  } finally {
+    reader.dispose();
   }
 });
 
@@ -187,62 +210,33 @@ Deno.test("an unknown op fails with a typed error", async () => {
   host.dispose();
 });
 
-Deno.test("the debounced flush writes within its window", async () => {
+Deno.test("a database with a newer schema version fails with a typed error", async () => {
   const dataDir = Deno.makeTempDirSync();
-  const host = new PluginStorageHost({ flushDebounceMs: 10 });
+  const probe = new DatabaseSync(`${dataDir}/${STORAGE_FILE_NAME}`);
+  probe.exec("PRAGMA user_version = 99");
+  probe.close();
+
+  const host = new PluginStorageHost();
   const op = createDriver(host, { id: "p1", storage: { dataDir } });
-  try {
-    await op({ op: "set", key: "k", value: "v" });
-    await waitForFile(`${dataDir}/${STORAGE_FILE_NAME}`);
-    assertEquals(await readDocument(dataDir), {
-      version: STORAGE_FORMAT_VERSION,
-      entries: [["k", "v"]],
-    });
-  } finally {
-    host.dispose();
+  const response = await op({ op: "get", key: "a" });
+  assertEquals(response.ok, false);
+  if (!response.ok) {
+    assertEquals(response.name, "StorageError");
+    assert(response.message.includes("schema version"));
   }
+  host.dispose();
 });
 
-Deno.test("dispose cancels pending flushes and rejects later ops", async () => {
+Deno.test("dispose closes the database and rejects later ops", async () => {
   const dataDir = Deno.makeTempDirSync();
-  const host = new PluginStorageHost({ flushDebounceMs: 60_000 });
+  const host = new PluginStorageHost();
   const op = createDriver(host, { id: "p1", storage: { dataDir } });
   await op({ op: "set", key: "k", value: "v" });
   host.dispose();
-  // Nothing was flushed (debounce had not fired) and the store is closed.
-  await assertFileAbsent(`${dataDir}/${STORAGE_FILE_NAME}`);
   const response = await op({ op: "get", key: "k" });
   assertEquals(response, {
     ok: false,
     name: "StorageUnavailable",
     message: "The plugin storage host is shutting down.",
   });
-});
-
-async function assertFileAbsent(path: string): Promise<void> {
-  try {
-    await Deno.stat(path);
-  } catch {
-    return;
-  }
-  throw new Error(`'${path}' must not exist`);
-}
-
-Deno.test("clear and remove are idempotent and persist", async () => {
-  const dataDir = Deno.makeTempDirSync();
-  const host = new PluginStorageHost();
-  const op = createDriver(host, { id: "p1", storage: { dataDir } });
-  try {
-    await op({ op: "set", key: "a", value: "1" });
-    await op({ op: "remove", key: "absent" });
-    await op({ op: "clear" });
-    await op({ op: "clear" });
-    await host.flushAll();
-    assertEquals(await readDocument(dataDir), {
-      version: STORAGE_FORMAT_VERSION,
-      entries: [],
-    });
-  } finally {
-    host.dispose();
-  }
 });

@@ -64,6 +64,27 @@ let context: PatchContext | null = null;
 let nativeWorker: typeof Worker | null = null;
 let installed = false;
 
+/** Observers invoked with every Worker created through the routed constructor
+ * in this realm. The plugin storage client (ADR 0022) uses one to attach its
+ * upward relay to each child: a child's postMessage lands on the CHILD WORKER
+ * OBJECT in the parent realm, not on the parent's global scope, so a realm
+ * cannot forward child frames without observing creations. */
+type WorkerCreationListener = (worker: Worker) => void;
+const creationListeners: WorkerCreationListener[] = [];
+
+/**
+ * Registers a listener invoked with every Worker created through the routed
+ * constructor in this realm, at creation time (before the child has loaded).
+ * Returns an unregister function. Install-time-only usage is expected.
+ */
+export function onControlledWorkerCreated(listener: WorkerCreationListener): () => void {
+  creationListeners.push(listener);
+  return () => {
+    const index = creationListeners.indexOf(listener);
+    if (index >= 0) creationListeners.splice(index, 1);
+  };
+}
+
 /** Path of THIS module (no query), used to skip patch frames in the stack scan. */
 const patchPath = new URL(import.meta.url).pathname;
 
@@ -163,7 +184,12 @@ function constructWorker(specifier: string | URL, options: WorkerOptions | undef
   );
   const forwarded = { ...(options ?? {}), type: "module" as const };
   const ctor = nativeWorker ?? globalThis.Worker;
-  return new (ctor as new (url: URL, options?: WorkerOptions) => Worker)(wrapperUrl, forwarded);
+  const worker = new (ctor as new (url: URL, options?: WorkerOptions) => Worker)(
+    wrapperUrl,
+    forwarded,
+  );
+  for (const listener of creationListeners) listener(worker);
+  return worker;
 }
 
 function requireContext(): PatchContext {

@@ -33,12 +33,14 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),
         ("Maieutics.Deno.PluginHostHttp.ts", "maieutics-plugin-host/http.ts"),
         ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
+        ("Maieutics.Deno.PluginHostStorage.ts", "maieutics-plugin-host/storage_host.ts"),
         ("Maieutics.Deno.PluginHostReplManager.ts", "maieutics-plugin-host/repl_manager.ts"),
         ("Maieutics.Deno.PluginHostReplProtocol.ts", "maieutics-plugin-host/host_repl_protocol.ts"),
         ("Maieutics.Deno.Runtime.BootstrapContract.ts", "maieutics-runtime/bootstrap_contract.ts"),
         ("Maieutics.Deno.Runtime.WorkerBootstrap.ts", "maieutics-runtime/worker_bootstrap.ts"),
         ("Maieutics.Deno.Runtime.WorkerFactory.ts", "maieutics-runtime/worker_factory.ts"),
         ("Maieutics.Deno.Runtime.WorkerPatch.ts", "maieutics-runtime/worker_patch.ts"),
+        ("Maieutics.Deno.Runtime.StorageChannel.ts", "maieutics-runtime/storage_channel.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
         ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts"),
@@ -107,6 +109,7 @@ internal sealed class PluginHostModule
 [JsonSerializable(typeof(PluginHostConfigPlugin))]
 [JsonSerializable(typeof(PluginHostConfigWorker))]
 [JsonSerializable(typeof(PluginHostConfigPermissions))]
+[JsonSerializable(typeof(PluginHostConfigStorage))]
 [JsonSerializable(typeof(PluginReloadPayload))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(string[]))]
@@ -119,9 +122,15 @@ internal sealed record PluginHostConfigPlugin(
     string RootDir,
     IReadOnlyList<PluginHostConfigWorker> Workers,
     PluginHostConfigPermissions Permissions,
-    IReadOnlyList<string> Dependencies);
+    IReadOnlyList<string> Dependencies,
+    PluginHostConfigStorage? Storage = null);
 
 internal sealed record PluginHostConfigWorker(string ExportName, string EntryUrl, string Specifier);
+
+/// <summary>The kernel-assisted persistent-storage directory for one plugin (ADR 0022): the
+/// authoritative store lives in the Deno host process and persists here. The kernel derives the
+/// path; the host never does.</summary>
+internal sealed record PluginHostConfigStorage(string DataDir);
 
 internal sealed record PluginHostConfigPermissions(
     JsonElement Env,

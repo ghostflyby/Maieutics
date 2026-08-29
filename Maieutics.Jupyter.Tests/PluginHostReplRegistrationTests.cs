@@ -312,6 +312,7 @@ public sealed class PluginHostReplRegistrationTests
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-reg-{Guid.NewGuid():N}"),
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions { Executable = fakeDenoPath ?? "deno" },
             new PluginHostModule(),

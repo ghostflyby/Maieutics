@@ -85,7 +85,12 @@ async function main(): Promise<void> {
   repls.setReporter((report: HostReplReport) => bus.send(report));
 
   const shutdown = (): void => {
-    host.dispose();
+    // The unload event cannot await: the bounded storage flush runs alongside
+    // teardown. The debounce loop has normally persisted long before this, so
+    // the flush is a bounded best-effort pass over what is still dirty.
+    void host.shutdown().catch((error: Error) => {
+      console.error(`[plugin-host] storage flush on shutdown failed: ${error.message}`);
+    });
     void repls.disposeAll();
     bus.close();
   };

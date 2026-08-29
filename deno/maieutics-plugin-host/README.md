@@ -30,6 +30,26 @@ exceed the host process grants (Deno rejects escalation at spawn). A kind the pl
 declare is denied inside the worker, so two plugins sharing a host cannot read each other's paths
 unless each declares them.
 
+### Plugin storage (ADR 0022)
+
+Each plugin gets its own `localStorage` (persistent) and `sessionStorage` (per realm), available
+with **zero** Deno permissions — the storage channel never touches the worker's grant surface. The
+authoritative store lives in this host's main isolate, keyed by plugin identity; every worker of a
+plugin (each entrypoint and every nested worker) shares its plugin's `localStorage` like a browser
+origin, while `sessionStorage` stays per realm. The kernel assigns each plugin a data directory
+under the platform application-data root and ships it in the plugin config; the host persists
+per-plugin storage there as a versioned JSON document with debounced atomic writes (temp file +
+rename) and a bounded flush on shutdown. The per-store quota is 5 MiB (UTF-16 code units) and a
+single request must fit the 1 MiB mailbox payload; overflows surface as `QuotaExceededError`.
+
+The transport follows the admission handshake pattern (request direction `postMessage`, reply
+direction a per-realm SharedArrayBuffer mailbox, bounded `Atomics.wait`). Routing never trusts a
+client-declared identity: frames are mapped to the sending worker's owning plugin and each mailbox
+is bound to that plugin on first sight, so a mailbox handed across plugins through an actor port is
+rejected. Internal storage frames (`type: "maieutics-storage"`) are visible on a nested worker's
+parent-side message surface, like the admission frames; plugin code that inspects child messages
+must skip them by frame type.
+
 ### Broker forwarding for derived REPL processes
 
 When the kernel runs with a permission broker, it hands the host the broker address under the

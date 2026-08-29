@@ -34,6 +34,7 @@ public sealed class PluginHostIntegrationTests
         var socketPath = ReplControlHost.CreateSocketPath();
         var manager = new PluginHostManager(
             pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             socketPath,
             new DenoReplOptions(),
             new PluginHostModule(),
@@ -91,6 +92,7 @@ public sealed class PluginHostIntegrationTests
         var pluginsRoot = Path.Combine(Path.GetTempPath(), $"mc-scaffold-{Guid.NewGuid():N}");
         var manager = new PluginHostManager(
             pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions(),
             new PluginHostModule(),
@@ -129,6 +131,7 @@ public sealed class PluginHostIntegrationTests
         var pluginsRoot = CreatePluginsRoot("integration");
         var manager = new PluginHostManager(
             pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions { Executable = $"missing-deno-{Guid.NewGuid():N}" },
             new PluginHostModule(),
@@ -169,6 +172,7 @@ public sealed class PluginHostIntegrationTests
         var pluginsRoot = CreatePluginsRoot("integration");
         var manager = new PluginHostManager(
             pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             socketPath,
             new DenoReplOptions { Executable = "deno" },
             modules,
@@ -228,6 +232,7 @@ public sealed class PluginHostIntegrationTests
         var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
         var manager = new PluginHostManager(
             pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             socketPath,
             new DenoReplOptions { Executable = "deno" },
             modules,

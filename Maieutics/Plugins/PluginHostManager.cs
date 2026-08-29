@@ -81,6 +81,7 @@ internal readonly record struct ReplDeriveOutcome(bool Failed, string Message)
 /// </summary>
 internal sealed class PluginHostManager(
     string pluginsRoot,
+    string pluginDataRoot,
     string socketPath,
     DenoReplOptions denoOptions,
     PluginHostModule modules,
@@ -890,7 +891,7 @@ internal sealed class PluginHostManager(
                descriptor.Permissions.Ffi.AllowAll || descriptor.Permissions.Ffi.Values.Count > 0;
     }
 
-    private static string WriteConfigFile(IReadOnlyList<PluginDescriptor> plugins)
+    private string WriteConfigFile(IReadOnlyList<PluginDescriptor> plugins)
     {
         var config = BuildConfig(plugins);
         var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
@@ -900,23 +901,46 @@ internal sealed class PluginHostManager(
     }
 
     /// <summary>Builds the host config for one plugin set. A plugin's config carries the full
-    /// replacement surface (permissions, workers, dependencies) so a reload can ship a single
-    /// plugin's new config to the host without rewriting the shared file.</summary>
-    private static PluginHostConfigFile BuildConfig(IReadOnlyList<PluginDescriptor> plugins)
+    /// replacement surface (permissions, workers, dependencies, storage) so a reload can ship a
+    /// single plugin's new config to the host without rewriting the shared file.</summary>
+    private PluginHostConfigFile BuildConfig(IReadOnlyList<PluginDescriptor> plugins)
     {
-        return new PluginHostConfigFile(
-            plugins.Select(descriptor => new PluginHostConfigPlugin(
-                descriptor.Id,
-                descriptor.RootDirectory,
-                [
-                    .. descriptor.Workers
-                        .Select(worker => new PluginHostConfigWorker(
-                            worker.ExportName,
-                            worker.EntryUrl,
-                            SpecifierOf(descriptor, worker.ExportName)))
-                ],
-                ToConfigPermissions(descriptor.Permissions),
-                descriptor.Dependencies.ToArray())).ToArray());
+        // Storage directories derive from the manifest identity; a name
+        // collision would silently merge two stores, so the whole colliding
+        // group starts WITHOUT storage (typed runtime errors) instead of
+        // failing the resident host over a manifest name.
+        var storage = PluginStoragePaths.Assign(
+            pluginDataRoot,
+            plugins.Select(descriptor =>
+                string.IsNullOrWhiteSpace(descriptor.Name) ? descriptor.Id : descriptor.Name));
+        var configured = plugins
+            .Select(descriptor =>
+            {
+                var identity = string.IsNullOrWhiteSpace(descriptor.Name) ? descriptor.Id : descriptor.Name;
+                var dataDir = storage[identity];
+                if (dataDir is null)
+                {
+                    logger.LogError(
+                        "Plugin '{PluginId}' storage directory collides with another plugin; " +
+                        "it starts without plugin storage.",
+                        descriptor.Id);
+                }
+                return new PluginHostConfigPlugin(
+                    descriptor.Id,
+                    descriptor.RootDirectory,
+                    [
+                        .. descriptor.Workers
+                            .Select(worker => new PluginHostConfigWorker(
+                                worker.ExportName,
+                                worker.EntryUrl,
+                                SpecifierOf(descriptor, worker.ExportName)))
+                    ],
+                    ToConfigPermissions(descriptor.Permissions),
+                    descriptor.Dependencies.ToArray(),
+                    dataDir is null ? null : new PluginHostConfigStorage(dataDir));
+            })
+            .ToArray();
+        return new PluginHostConfigFile(configured);
     }
 
     /// <summary>Canonical interop specifier of one worker entrypoint: `&lt;name&gt;/&lt;entrypoint&gt;`.</summary>

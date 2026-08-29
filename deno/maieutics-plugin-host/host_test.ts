@@ -18,16 +18,26 @@ function pathToFileUrl(path: string): string {
 }
 
 function createPlugin(dir: string, source: string): PluginConfig {
+  return createPluginConfig(dir, "test", source);
+}
+
+function createPluginConfig(
+  dir: string,
+  id: string,
+  source: string,
+  storage?: { dataDir: string },
+): PluginConfig {
   const entryPath = `${dir}/mod.ts`;
   Deno.writeTextFileSync(entryPath, source);
   return {
-    id: "test",
+    id,
     rootDir: dir,
     permissions: { read: [dir] },
+    ...(storage === undefined ? {} : { storage }),
     workers: [{
       exportName: "./main",
       entryUrl: pathToFileUrl(entryPath),
-      specifier: "@maieutics/test/main",
+      specifier: `@maieutics/${id}/main`,
     }],
   };
 }
@@ -41,6 +51,14 @@ function makeHost(plugin: PluginConfig): PluginHost {
     sdkUrl: SDK_URL,
     workerEntryUrl: WORKER_ENTRY_URL,
     plugins: [plugin],
+  });
+}
+
+function makeMultiHost(plugins: readonly PluginConfig[]): PluginHost {
+  return new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [...plugins],
   });
 }
 
@@ -488,6 +506,211 @@ function collectReports(): { reports: HostReplReport[]; reporter: ReplReporter }
     },
   };
 }
+
+// —— Plugin storage (ADR 0022) ——
+
+/** A plugin whose handler drives its own storage over a tiny command surface. */
+function storageCommandPlugin(
+  dir: string,
+  id: string,
+  dataDir: string,
+  mark: string,
+): PluginConfig {
+  return createPluginConfig(
+    dir,
+    id,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async (request: { cmd?: string }) => {
+        if (request.cmd === "set") {
+          localStorage.setItem("who", ${JSON.stringify(mark)});
+          return { action: "continue" as const, value: "set" };
+        }
+        return { action: "continue" as const, value: localStorage.getItem("who") };
+      },
+    });
+  `),
+    { dataDir },
+  );
+}
+
+Deno.test("plugin storage is isolated per plugin and survives a worker reload", async () => {
+  const dirA = Deno.makeTempDirSync();
+  const dirB = Deno.makeTempDirSync();
+  const dataA = Deno.makeTempDirSync();
+  const dataB = Deno.makeTempDirSync();
+  const host = makeMultiHost([
+    storageCommandPlugin(dirA, "alpha", dataA, "A"),
+    storageCommandPlugin(dirB, "beta", dataB, "B"),
+  ]);
+  try {
+    await host.startAll();
+    // Fresh stores, then each plugin writes its own mark.
+    assertEquals(await valueOf(host, "alpha"), null);
+    assertEquals(await valueOf(host, "beta"), null);
+    await invokeCmd(host, "alpha", "set");
+    await invokeCmd(host, "beta", "set");
+    // Each plugin reads back only its own mark: no cross-plugin leakage.
+    assertEquals(await valueOf(host, "alpha"), "A");
+    assertEquals(await valueOf(host, "beta"), "B");
+    // Hot reload replaces the worker; the authoritative store survives it.
+    await host.reload("alpha", "./main", storageCommandPlugin(dirA, "alpha", dataA, "A"));
+    assertEquals(await valueOf(host, "alpha"), "A");
+  } finally {
+    host.dispose();
+  }
+});
+
+async function valueOf(host: PluginHost, pluginId: string): Promise<unknown> {
+  const value = await host.invoke(pluginId, "./main", "ToolPreInvoke", {}) as {
+    value?: unknown;
+  };
+  return value.value;
+}
+
+async function invokeCmd(host: PluginHost, pluginId: string, cmd: string): Promise<void> {
+  await host.invoke(pluginId, "./main", "ToolPreInvoke", { cmd });
+}
+
+Deno.test("nested plugin workers share localStorage while sessionStorage stays per realm", async () => {
+  const dir = Deno.makeTempDirSync();
+  const dataDir = Deno.makeTempDirSync();
+  Deno.writeTextFileSync(
+    `${dir}/nested.ts`,
+    `
+    sessionStorage.setItem("nested", "1");
+    localStorage.setItem("nested", "1");
+    (self as unknown as { postMessage(value: unknown): void }).postMessage({
+      localParent: localStorage.getItem("local"),
+      localNested: localStorage.getItem("nested"),
+      sessionNested: sessionStorage.getItem("nested"),
+      sessionParent: sessionStorage.getItem("parent"),
+    });
+  `,
+  );
+  const plugin = createPluginConfig(
+    dir,
+    "test",
+    pluginSource(`
+    localStorage.setItem("local", "parent");
+    sessionStorage.setItem("parent", "1");
+    const nested = new Worker(new URL("./nested.ts", import.meta.url), { type: "module" });
+    const nestedReady = new Promise((resolve) => {
+      nested.onmessage = (event) => {
+        // Internal storage frames transit the parent's message surface (like
+        // the admission frames do); user handlers skip them by frame type.
+        if (event.data?.type === "maieutics-storage") return;
+        resolve(event.data);
+        nested.terminate();
+      };
+      nested.onerror = (event) => {
+        resolve({ error: event.message });
+        nested.terminate();
+      };
+    });
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => ({
+        action: "continue" as const,
+        nested: await nestedReady,
+        localNestedAfter: localStorage.getItem("nested"),
+        sessionNestedAfter: sessionStorage.getItem("nested"),
+      }),
+    });
+  `),
+    { dataDir },
+  );
+  const host = makeHost(plugin);
+  try {
+    await host.startAll();
+    const value = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      nested?: {
+        localParent?: string | null;
+        localNested?: string | null;
+        sessionNested?: string | null;
+        sessionParent?: string | null;
+      };
+      localNestedAfter?: string | null;
+      sessionNestedAfter?: string | null;
+    };
+    // The nested realm is the same origin: it sees the parent's localStorage
+    // and its writes are visible to the parent through the authoritative store.
+    assertEquals(value.nested?.localParent, "parent");
+    assertEquals(value.nested?.localNested, "1");
+    assertEquals(value.localNestedAfter, "1");
+    // sessionStorage is per realm, like a browser tab.
+    assertEquals(value.nested?.sessionNested, "1");
+    assertEquals(value.nested?.sessionParent, null);
+    assertEquals(value.sessionNestedAfter, null);
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("plugin storage flushes to the kernel-assigned directory on shutdown", async () => {
+  const dir = Deno.makeTempDirSync();
+  const dataDir = Deno.makeTempDirSync();
+  const host = makeHost(
+    createPluginConfig(
+      dir,
+      "test",
+      pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        localStorage.setItem("disk", "1");
+        return { action: "continue" as const, value: localStorage.getItem("disk") };
+      },
+    });
+  `),
+      { dataDir },
+    ),
+  );
+  await host.startAll();
+  await valueOf(host, "test");
+  await host.shutdown();
+  const document = JSON.parse(await Deno.readTextFile(`${dataDir}/local-storage.json`)) as {
+    version?: number;
+    entries?: [string, string][];
+  };
+  assertEquals(document.version, 1);
+  assertEquals(document.entries, [["disk", "1"]]);
+});
+
+Deno.test("plugin storage enforces the per-plugin quota as a typed error", async () => {
+  const dir = Deno.makeTempDirSync();
+  const dataDir = Deno.makeTempDirSync();
+  // Values ride a 1 MiB mailbox payload, so the quota is reached with a few
+  // near-limit writes instead of one oversized write.
+  const plugin = createPluginConfig(
+    dir,
+    "test",
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        let exceeded: string | null = null;
+        for (let index = 0; index < 7; index++) {
+          try {
+            localStorage.setItem("chunk-" + index, "x".repeat(900_000));
+          } catch (error) {
+            exceeded = (error as Error).name;
+            break;
+          }
+        }
+        return { action: "continue" as const, value: exceeded };
+      },
+    });
+  `),
+    { dataDir },
+  );
+  const host = makeHost(plugin);
+  try {
+    await host.startAll();
+    // 7 × 900_000 exceeds the 5 MiB quota: the write that crosses it fails
+    // with QuotaExceededError and the earlier chunks stay intact.
+    assertEquals(await valueOf(host, "test"), "QuotaExceededError");
+  } finally {
+    host.dispose();
+  }
+});
 
 // —— REPL process derivation (ADR 0020) ——
 

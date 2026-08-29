@@ -53,6 +53,12 @@ async function main(): Promise<void> {
   });
 
   const registered = await host.startAll();
+  await host.httpGateway().startRouter({
+    token: crypto.randomUUID(),
+    onListening: (address) => {
+      console.error(`[plugin-host] HTTP gateway listening on ${address.hostname}:${address.port}`);
+    },
+  });
   console.error(
     `[plugin-host] ${hostId}: ${registered.length} extension registration(s) across ` +
       `${config.plugins?.length ?? 0} plugin(s).`,

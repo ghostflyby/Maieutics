@@ -200,6 +200,8 @@ transcript.
 - [ADR 0015](decisions/0015-turn-budget-and-truncation.md): Turn budgets and truncated turn commits
 - [ADR 0016](decisions/0016-script-plugins-and-extension-points.md): Out-of-process script plugins and
   symbol-identified extension points
+- [ADR 0021](decisions/0021-plugin-http-ui-host-mounted-zero-permission-handlers.md): Plugin HTTP UI —
+  host-mounted zero-permission fetch handlers
 
 ## Explicitly deferred
 

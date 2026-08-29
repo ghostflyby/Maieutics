@@ -15,6 +15,10 @@
 
 import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
+import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
+import { HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
+import { type AdmissionRequestFrame } from "../maieutics-plugin-sdk/admission.ts";
+import { HttpGateway } from "./http.ts";
 import {
   BOOTSTRAP_WRAPPER_URL,
   spawnBootstrapWorker,
@@ -198,6 +202,12 @@ export class PluginHost {
   #bySpecifier = new Map<string, string>(); // specifier → workerKey
   #options: HostOptions;
   #acquireRouterInstalled = false;
+  #http: HttpGateway | undefined;
+
+  /** The plugin HTTP gateway (aggregator + router), created on first use. */
+  httpGateway(): HttpGateway {
+    return this.#http ??= new HttpGateway();
+  }
 
   constructor(options: HostOptions) {
     this.#options = options;
@@ -332,6 +342,7 @@ export class PluginHost {
   }
 
   dispose(): void {
+    void this.#http?.stopRouter();
     for (const handle of this.#workers.values()) {
       if (handle.actor !== undefined && handle.state !== State.Stopped) {
         try {
@@ -361,7 +372,27 @@ export class PluginHost {
         specifier?: unknown;
         refId?: unknown;
         name?: unknown;
+        ep?: unknown;
+        def?: unknown;
+        providerKey?: unknown;
+        providerModule?: unknown;
+        sab?: unknown;
       };
+      if (frame?.type === "__admit") {
+        const requester = event.currentTarget as Worker;
+        const provider = [...this.#workers.values()].find((handle) => handle.worker === requester);
+        if (
+          provider !== undefined &&
+          typeof frame.ep === "string" &&
+          typeof frame.def === "string" &&
+          typeof frame.providerKey === "string" &&
+          typeof frame.providerModule === "string" &&
+          frame.sab instanceof SharedArrayBuffer
+        ) {
+          this.httpGateway().admit(frame as AdmissionRequestFrame, provider.specifier);
+        }
+        return;
+      }
       if (frame?.type !== "__acquire-actor") return;
       const specifier = frame.specifier;
       const refId = frame.refId;
@@ -374,6 +405,15 @@ export class PluginHost {
 
   /** Bootstraps the owner↔holder channel for a specifier acquire. */
   #routeAcquire(requester: Worker, specifier: string, refId: string, name?: string): void {
+    if (specifier === HTTP_AGGREGATOR_SPECIFIER) {
+      const { port1, port2 } = new MessageChannel();
+      this.httpGateway().serveCollection(port1);
+      requester.postMessage(
+        { type: "__ref-acquired", refId, port: port2 },
+        { transfer: [port2] },
+      );
+      return;
+    }
     const key = this.#bySpecifier.get(specifier);
     if (key === undefined) {
       return;
@@ -436,9 +476,9 @@ export class PluginHost {
         },
       });
       const actor = await spawn<WorkerRpc>(worker, {
-        codecs: [actorRefCodec, collectionStreamCodec],
+        codecs: [actorRefCodec, collectionStreamCodec, httpCodec],
         signal: AbortSignal.timeout(this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS),
-        onDeath: (reason) => this.#handleDeath(key, reason),
+        onDeath: (reason: unknown) => this.#handleDeath(key, reason),
       });
       handle.actor = actor;
       handle.worker = worker;

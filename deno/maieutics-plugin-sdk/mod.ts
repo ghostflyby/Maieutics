@@ -47,6 +47,15 @@ import {
 import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 import {
+  type AdmissionContext,
+  type AdmissionHook,
+  admissionMailboxFor,
+  type AdmissionRequestFrame,
+  answerAdmission,
+} from "./admission.ts";
+import { http, HTTP_AGGREGATOR_SPECIFIER } from "./http.ts";
+import { httpCodec } from "./http_codec.ts";
+import {
   bindDefiningWorker,
   collection,
   type CollectionStream,
@@ -55,6 +64,7 @@ import {
   CURRENT_MODULE,
   defineExtensionPoint as defineReactiveExtensionPoint,
   defineServiceExtensionPoint as defineServiceExtensionPointReactive,
+  evaluateAdmissionHook,
   type ExtensionPointIdentity,
   isExtensionPoint,
   isLocalExtensionPoint,
@@ -540,7 +550,7 @@ export async function initPluginWorker(): Promise<void> {
   installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
-    codecs: [actorRefCodec, collectionStreamCodec],
+    codecs: [actorRefCodec, collectionStreamCodec, httpCodec],
     onLink(link: LinkHandle): void {
       // A peer linked directly (host or another worker). Expose the flattened
       // plugin namespace over the link; the peer calls through link.rpc.
@@ -564,6 +574,25 @@ export async function initPluginWorker(): Promise<void> {
     } else if (frame?.type === "dispose") {
       disposePlugin();
     }
+  });
+
+  // Admission verdicts (ADR 0021 decision 9): when this worker defines a
+  // contract, the host relays providers' `__admit` frames here. The hook runs
+  // synchronously inside the message handler — the providing worker is parked
+  // on the shared buffer. Without a hook the contract accepts everything, but
+  // the verdict is always written so the provider never waits out its timeout.
+  scope.addEventListener("message", (event: MessageEvent): void => {
+    const frame = event.data as Partial<AdmissionRequestFrame>;
+    if (frame?.type !== "__admit" || !(frame.sab instanceof SharedArrayBuffer)) {
+      return;
+    }
+    answerAdmission(admissionMailboxFor(frame.sab), () =>
+      evaluateAdmissionHook(frame.ep ?? "", {
+        extensionPoint: frame.ep ?? "",
+        providerSpecifier: contributorPrefix(frame.providerKey ?? ""),
+        providerModule: frame.providerModule ?? "",
+        existingProviders: existingContributorPrefixes(frame.ep ?? ""),
+      }));
   });
 }
 
@@ -688,6 +717,38 @@ interface RemoteContribution {
  * (the acquiring worker's refId prefix serves as the per-provider key; one
  * provider contributes once per extension point). */
 const remoteContributions = new Map<string, Map<string, RemoteContribution>>();
+
+/**
+ * The contributing worker's canonical specifier: everything before the last
+ * `:` of a provider key (`<specifier>:<uuid>`). Specifiers never contain `:`
+ * (they are `<plugin>/<entrypoint>`), so the split is unambiguous.
+ */
+function contributorPrefix(providerKey: string): string {
+  const cut = providerKey.lastIndexOf(":");
+  return cut === -1 ? providerKey : providerKey.slice(0, cut);
+}
+
+/**
+ * Specifiers of the contract's current live contributors — the aggregate's
+ * `existingProviders` view for admission hooks (ADR 0021 decision 9). Remote
+ * contributions come from the provider keys; a local contribution is this
+ * worker itself.
+ */
+function existingContributorPrefixes(name: string): string[] {
+  const prefixes = new Set<string>();
+  for (const key of remoteContributions.get(name)?.keys() ?? []) {
+    prefixes.add(contributorPrefix(key));
+  }
+  try {
+    const identity = lookupIdentity(name);
+    if (identity !== undefined && providerCount(identity) > 0) {
+      prefixes.add(ownSpecifier());
+    }
+  } catch {
+    // Pre-init (no specifier): local providers cannot exist yet.
+  }
+  return [...prefixes];
+}
 
 /** The provider identity of an incoming contribution: the caller's worker id
  * prefix from the acquire refId (rewritten by the host to the owner id, but
@@ -1350,3 +1411,7 @@ export type {
   Remote,
 };
 export { computed, effect, signal } from "./reactive.ts";
+export { evaluateAdmissionHook, setAdmissionHook } from "./reactive.ts";
+export type { AdmissionContext, AdmissionHook } from "./admission.ts";
+export { http, HTTP_AGGREGATOR_SPECIFIER } from "./http.ts";
+export { httpCodec } from "./http_codec.ts";

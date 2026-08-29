@@ -18,6 +18,9 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginSdkActorRef.ts", "maieutics-plugin-sdk/actor_ref.ts"),
         ("Maieutics.Deno.PluginSdkReactive.ts", "maieutics-plugin-sdk/reactive.ts"),
         ("Maieutics.Deno.PluginSdkCollectionStream.ts", "maieutics-plugin-sdk/collection_stream.ts"),
+        ("Maieutics.Deno.PluginSdkAdmission.ts", "maieutics-plugin-sdk/admission.ts"),
+        ("Maieutics.Deno.PluginSdkHttp.ts", "maieutics-plugin-sdk/http.ts"),
+        ("Maieutics.Deno.PluginSdkHttpCodec.ts", "maieutics-plugin-sdk/http_codec.ts"),
         ("Maieutics.Deno.PluginSdkLint.ts", "maieutics-plugin-sdk/lint-plugin.ts"),
         ("Maieutics.Deno.Widgets.Index.ts", "maieutics-plugin-sdk/widgets/index.ts"),
         ("Maieutics.Deno.Widgets.Runtime.ts", "maieutics-plugin-sdk/widgets/runtime.ts"),
@@ -28,6 +31,7 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.Widgets.JsxRuntime.ts", "maieutics-plugin-sdk/widgets/jsx-runtime.ts"),
         ("Maieutics.Deno.PluginHost.ts", "maieutics-plugin-host/mod.ts"),
         ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),
+        ("Maieutics.Deno.PluginHostHttp.ts", "maieutics-plugin-host/http.ts"),
         ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
         ("Maieutics.Deno.PluginHostReplManager.ts", "maieutics-plugin-host/repl_manager.ts"),
         ("Maieutics.Deno.PluginHostReplProtocol.ts", "maieutics-plugin-host/host_repl_protocol.ts"),
@@ -63,7 +67,7 @@ internal sealed class PluginHostModule
             $$"""
               {
                 "imports": {
-                  "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0",
+                  "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
                   "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
                 },
                 "links": ["{{sdkDirectory}}"],

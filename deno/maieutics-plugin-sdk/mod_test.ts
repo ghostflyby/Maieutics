@@ -46,6 +46,9 @@ Deno.test("the sdk module imports only worker-actor, signals-core and its local 
       specifier === "./actor_ref.ts" ||
         specifier === "./collection_stream.ts" ||
         specifier === "./reactive.ts" ||
+        specifier === "./http.ts" ||
+        specifier === "./admission.ts" ||
+        specifier === "./http_codec.ts" ||
         specifier === "@ghostflyby/worker-actor" ||
         specifier.startsWith("@ghostflyby/worker-actor/") ||
         specifier === "@preact/signals-core",

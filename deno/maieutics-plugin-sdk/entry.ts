@@ -51,6 +51,17 @@ export {
 
 export { computed, effect, signal } from "./reactive.ts";
 
+// —— Plugin HTTP root (ADR 0021) ——
+
+export {
+  evaluateAdmissionHook,
+  http,
+  httpCodec,
+  HTTP_AGGREGATOR_SPECIFIER,
+  setAdmissionHook,
+} from "./mod.ts";
+export type { AdmissionContext, AdmissionHook } from "./mod.ts";
+
 // —— Built-in extension point markers ——
 
 export { ExtensionPoint } from "./mod.ts";

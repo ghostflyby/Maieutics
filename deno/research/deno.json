@@ -1,6 +1,6 @@
 {
   "imports": {
-    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0"
+    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0"
   },
   "minimumDependencyAge": 0
 }

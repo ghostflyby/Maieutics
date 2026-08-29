@@ -63,9 +63,13 @@
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\actor_ref.ts" LogicalName="Maieutics.Deno.PluginSdkActorRef.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\reactive.ts" LogicalName="Maieutics.Deno.PluginSdkReactive.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\collection_stream.ts" LogicalName="Maieutics.Deno.PluginSdkCollectionStream.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\admission.ts" LogicalName="Maieutics.Deno.PluginSdkAdmission.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\http.ts" LogicalName="Maieutics.Deno.PluginSdkHttp.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\http_codec.ts" LogicalName="Maieutics.Deno.PluginSdkHttpCodec.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\lint-plugin.ts" LogicalName="Maieutics.Deno.PluginSdkLint.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\mod.ts" LogicalName="Maieutics.Deno.PluginHost.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host.ts" LogicalName="Maieutics.Deno.PluginHostImpl.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\http.ts" LogicalName="Maieutics.Deno.PluginHostHttp.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\worker_entry.ts" LogicalName="Maieutics.Deno.PluginHostWorker.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\repl_manager.ts" LogicalName="Maieutics.Deno.PluginHostReplManager.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host_repl_protocol.ts" LogicalName="Maieutics.Deno.PluginHostReplProtocol.ts" />

@@ -24,9 +24,44 @@
  */
 
 import { computed, effect, type Signal, signal } from "@preact/signals-core";
+import { type AdmissionContext, type AdmissionHook, requestAdmission } from "./admission.ts";
 
 /** A reactive value: a signals-core signal holding `T`. */
 export type ReactiveValue<T> = Signal<T>;
+
+// —— Admission hooks (ADR 0021 decision 9) ——
+
+/**
+ * Synchronous admission policies by extension point name, installed by the
+ * contract's aggregator (`setAdmissionHook`). A hook runs at aggregation time
+ * for every incoming remote contribution; it must be fast (no I/O, no calls
+ * into the providing worker — its thread is parked on the verdict).
+ */
+const admissionHooks = new Map<string, AdmissionHook>();
+
+/** Installs (or, with `undefined`, removes) the admission hook for a contract. */
+export function setAdmissionHook(
+  name: string,
+  hook: AdmissionHook | undefined,
+): void {
+  if (hook === undefined) admissionHooks.delete(name);
+  else admissionHooks.set(name, hook);
+}
+
+/**
+ * Evaluates the contract's admission hook. Accepts on `void`, rejects on a
+ * returned string (reason) or a thrown error — the caller (the `__admit`
+ * frame handler) turns the outcome into the provider's in-place verdict.
+ * Contracts without a hook accept everything.
+ */
+export function evaluateAdmissionHook(
+  name: string,
+  context: AdmissionContext,
+): void | string {
+  const hook = admissionHooks.get(name);
+  if (hook === undefined) return;
+  return hook(context);
+}
 
 /** Re-export the signals-core primitives the SDK builds on. */
 export { computed, effect, signal };
@@ -404,6 +439,15 @@ export function provide<T>(
     }
     const specifier = defSpecifier;
     const providerKey = `${currentWorkerSpecifier()}:${crypto.randomUUID()}`;
+    // Admission handshake (ADR 0021 decision 9): the aggregator answers the
+    // shared-buffer verdict synchronously; a rejection throws here, at the
+    // provide() call site, before anything is aggregated.
+    requestAdmission({
+      ep: extensionPoint.name,
+      def: specifier,
+      providerKey,
+      providerModule: currentModuleUrl(),
+    });
     // Service extension points convert each value to a remote actor reference
     // placeholder here, in the providing worker — exactly like the local path —
     // so a service contributed across workers travels as a reference (with the

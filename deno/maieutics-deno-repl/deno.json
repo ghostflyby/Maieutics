@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "imports": {
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
-    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.4.0",
+    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
     "maieutics-widgets": "../maieutics-plugin-sdk/widgets/index.ts",
     "maieutics-widgets/jsx-runtime": "../maieutics-plugin-sdk/widgets/jsx-runtime.ts",
     "esbuild-wasm": "npm:esbuild-wasm@0.25.12"

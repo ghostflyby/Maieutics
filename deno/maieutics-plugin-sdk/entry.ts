@@ -56,8 +56,8 @@ export { computed, effect, signal } from "./reactive.ts";
 export {
   evaluateAdmissionHook,
   http,
-  httpCodec,
   HTTP_AGGREGATOR_SPECIFIER,
+  httpCodec,
   setAdmissionHook,
 } from "./mod.ts";
 export type { AdmissionContext, AdmissionHook } from "./mod.ts";

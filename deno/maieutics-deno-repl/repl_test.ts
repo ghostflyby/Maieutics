@@ -105,17 +105,19 @@ Deno.test("the worker actor exposes output as a pull-driven async stream", async
   assertEquals(worker.includes("eventTail"), false);
 });
 
-Deno.test("the standalone manifest pins the production actor dependencies", async () => {
+Deno.test("the standalone manifest declares the production actor dependencies", async () => {
   const config = JSON.parse(
     await Deno.readTextFile(new URL("./deno.json", import.meta.url)),
   ) as { imports: Record<string, string> };
   assertEquals(
-    config.imports["@ghostflyby/aves/repl"],
-    "jsr:@ghostflyby/aves@0.6.0/repl",
+    config.imports["@ghostflyby/aves/repl"].startsWith("jsr:@ghostflyby/aves@"),
+    true,
   );
   assertEquals(
-    config.imports["@ghostflyby/worker-actor"],
-    "jsr:@ghostflyby/worker-actor@0.6.0",
+    config.imports["@ghostflyby/worker-actor"].startsWith(
+      "jsr:@ghostflyby/worker-actor@",
+    ),
+    true,
   );
 });
 

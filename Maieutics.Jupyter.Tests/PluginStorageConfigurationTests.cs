@@ -36,17 +36,23 @@ public sealed class PluginStorageConfigurationTests
             applicationData,
             xdgDataHome,
             userProfile);
-        Normalize(root).Should().Be(Normalize(expected));
+        BeSamePath(root, expected);
     }
 
     private static string Normalize(string path) => path.Replace('\\', '/');
+
+    /// <summary>Asserts two path spellings match after separator normalization: the production
+    /// code joins with the platform separator, so on Windows a POSIX-styled root produces mixed
+    /// separators that only compare equal once normalized.</summary>
+    private static void BeSamePath(string actual, string expected) =>
+        Normalize(actual).Should().Be(Normalize(expected));
 
     // —— PluginStoragePaths (identity → directory naming) ——
 
     [Fact]
     public void KeepsSafeManifestNamesVerbatim()
     {
-        PluginStoragePaths.DirectoryFor("/data", "my-plugin").Should().Be(Normalize("/data/my-plugin"));
+        BeSamePath(PluginStoragePaths.DirectoryFor("/data", "my-plugin"), "/data/my-plugin");
     }
 
     [Fact]
@@ -75,12 +81,11 @@ public sealed class PluginStorageConfigurationTests
     {
         // Distinct safe names keep their own directories.
         var distinct = PluginStoragePaths.Assign("/data", ["alpha", "beta"]);
-        distinct["alpha"].Should().Be(Normalize("/data/alpha"));
-        distinct["beta"].Should().Be(Normalize("/data/beta"));
+        BeSamePath(distinct["alpha"]!, "/data/alpha");
+        BeSamePath(distinct["beta"]!, "/data/beta");
 
         // One identity listed twice is still one store, not a collision.
-        PluginStoragePaths.Assign("/data", ["alpha", "alpha"])["alpha"].Should()
-            .Be(Normalize("/data/alpha"));
+        BeSamePath(PluginStoragePaths.Assign("/data", ["alpha", "alpha"])["alpha"]!, "/data/alpha");
 
         // A real directory collision needs two distinct identities whose
         // derived directory names coincide (an 8-hex hash-prefix collision,

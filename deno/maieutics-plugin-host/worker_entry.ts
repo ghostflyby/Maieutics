@@ -9,10 +9,12 @@
  */
 
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
+import { installPluginStorage } from "../maieutics-runtime/storage_channel.ts";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { initPluginWorker } from "../maieutics-plugin-sdk/runtime.ts";
 
 installWorkerPatch("plugin");
+installPluginStorage();
 installBootstrapMarker({ version: 1, profile: "plugin" });
 
 void initPluginWorker();

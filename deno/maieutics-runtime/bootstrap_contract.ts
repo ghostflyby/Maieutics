@@ -6,7 +6,9 @@
  * the REPL runtime (maieutics-deno-repl) and the plugin host runtime
  * (maieutics-plugin-host): each profile composes its own capabilities AFTER
  * the shared bootstrap, and the shared bootstrap never injects profile
- * globals.
+ * globals. Nested realms have no profile entry module; their wrapper
+ * (worker_bootstrap.ts) composes the profile capability there under the
+ * profile condition (the plugin storage client, ADR 0022).
  *
  * The contract has one idea: a Worker that must participate in Maieutics
  * runtime initialization enters through the shared wrapper entry instead of

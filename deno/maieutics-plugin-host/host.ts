@@ -17,8 +17,10 @@ import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
 import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
 import { HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
-import { type AdmissionRequestFrame } from "../maieutics-plugin-sdk/admission.ts";
+import type { AdmissionRequestFrame } from "../maieutics-plugin-sdk/admission.ts";
+import { STORAGE_FRAME_TYPE } from "../maieutics-runtime/storage_channel.ts";
 import { HttpGateway } from "./http.ts";
+import { PluginStorageHost } from "./storage_host.ts";
 import {
   BOOTSTRAP_WRAPPER_URL,
   spawnBootstrapWorker,
@@ -55,6 +57,10 @@ export interface PluginConfig {
   permissions: PermissionGrants;
   /** Declared dependency plugin ids (directory names), resolved by the kernel. */
   dependencies?: readonly string[];
+  /** Kernel-assigned per-plugin storage directory (ADR 0022). The authoritative
+   * store lives in this host process; the directory is only the persistence
+   * target. Omitted configs make plugin storage fail with a typed error. */
+  storage?: { readonly dataDir: string };
 }
 
 export interface RegisteredExtension {
@@ -203,6 +209,9 @@ export class PluginHost {
   #options: HostOptions;
   #acquireRouterInstalled = false;
   #http: HttpGateway | undefined;
+  /** Authoritative per-plugin storage (ADR 0022): the frame router feeds it,
+   * the shutdown path flushes it. Inert until a plugin worker posts a frame. */
+  readonly #storage = new PluginStorageHost();
 
   /** The plugin HTTP gateway (aggregator + router), created on first use. */
   httpGateway(): HttpGateway {
@@ -343,6 +352,7 @@ export class PluginHost {
 
   dispose(): void {
     void this.#http?.stopRouter();
+    this.#storage.dispose();
     for (const handle of this.#workers.values()) {
       if (handle.actor !== undefined && handle.state !== State.Stopped) {
         try {
@@ -352,6 +362,17 @@ export class PluginHost {
         }
       }
       handle.state = State.Stopped;
+    }
+  }
+
+  /** Flushes authoritative plugin storage to disk (bounded) and disposes the
+   * host. The process exit path (mod.ts) awaits this; `dispose()` alone keeps
+   * the fast synchronous teardown used by tests and crash paths. */
+  async shutdown(): Promise<void> {
+    try {
+      await this.#storage.shutdown();
+    } finally {
+      this.dispose();
     }
   }
 
@@ -378,6 +399,16 @@ export class PluginHost {
         providerModule?: unknown;
         sab?: unknown;
       };
+      if (frame?.type === STORAGE_FRAME_TYPE) {
+        const requester = event.currentTarget as Worker;
+        const sender = [...this.#workers.values()].find((handle) => handle.worker === requester);
+        if (sender !== undefined && frame.sab instanceof SharedArrayBuffer) {
+          // Identity comes from the worker→plugin mapping, never from the
+          // frame: a relayed mailbox cannot claim another plugin's store.
+          this.#storage.handle(sender.plugin, frame.sab);
+        }
+        return;
+      }
       if (frame?.type === "__admit") {
         const requester = event.currentTarget as Worker;
         const provider = [...this.#workers.values()].find((handle) => handle.worker === requester);

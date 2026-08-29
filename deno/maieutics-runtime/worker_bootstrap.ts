@@ -8,7 +8,12 @@
  *      version/profile markers) from its own module URL query string;
  *   2. installs the shared Worker patch BEFORE the target module is evaluated;
  *   3. installs the versioned bootstrap marker;
- *   4. imports the target module.
+ *   4. composes the profile capability for nested realms — there is no profile
+ *      entry module here, so the wrapper is the composition point. The only
+ *      profile-conditional capability is the plugin storage client (ADR 0022),
+ *      installed for "plugin" realms so nested workers share their plugin's
+ *      `localStorage` through the host;
+ *   5. imports the target module.
  *
  * A bootstrap import failure rejects this module's top-level evaluation, which
  * Deno surfaces as Worker startup failure — the actor owner observes the death
@@ -25,6 +30,7 @@
  */
 
 import { installBootstrapMarker, readBootstrapMetadata } from "./bootstrap_contract.ts";
+import { installPluginStorage } from "./storage_channel.ts";
 import { installWorkerPatch } from "./worker_patch.ts";
 
 const metadata = readBootstrapMetadata(import.meta.url);
@@ -37,5 +43,6 @@ if (metadata === null) {
 
 installWorkerPatch(metadata.profile);
 installBootstrapMarker({ version: metadata.version, profile: metadata.profile });
+if (metadata.profile === "plugin") installPluginStorage();
 
 await import(metadata.targetUrl);

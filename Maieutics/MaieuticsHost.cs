@@ -158,11 +158,13 @@ public static class MaieuticsHost
             );
 
         builder.Services.AddSingleton<PluginHostModule>();
+        builder.Services.AddSingleton(ApplicationPaths.Resolve());
         builder.Services.AddSingleton(services => new PluginHostManager(
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "Maieutics",
                 "plugins"),
+            services.GetRequiredService<ApplicationPaths>().PluginDataRoot,
             controlSocketPath,
             services.GetRequiredService<DenoReplOptions>(),
             services.GetRequiredService<PluginHostModule>(),

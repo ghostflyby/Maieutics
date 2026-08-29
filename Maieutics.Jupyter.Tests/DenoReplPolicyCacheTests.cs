@@ -234,6 +234,7 @@ public sealed class DenoReplPolicyCacheTests
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-cache-{Guid.NewGuid():N}"),
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions(),
             new PluginHostModule(),

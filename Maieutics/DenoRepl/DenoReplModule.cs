@@ -38,6 +38,10 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.Runtime.WorkerBootstrap.ts", "maieutics-runtime/worker_bootstrap.ts"),
         ("Maieutics.Deno.Runtime.WorkerFactory.ts", "maieutics-runtime/worker_factory.ts"),
         ("Maieutics.Deno.Runtime.WorkerPatch.ts", "maieutics-runtime/worker_patch.ts"),
+        // worker_bootstrap.ts imports the storage channel (the nested plugin
+        // realm composes plugin storage there), so the REPL materialization
+        // needs the module on disk even though the REPL never installs it.
+        ("Maieutics.Deno.Runtime.StorageChannel.ts", "maieutics-runtime/storage_channel.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
         ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts")

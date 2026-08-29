@@ -207,6 +207,7 @@ public sealed class PluginHostInvokeTests
         var registry = new ReplControlSessionRegistry();
         var manager = new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-host-invoke-{Guid.NewGuid():N}"),
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions(),
             new PluginHostModule(),
@@ -238,6 +239,7 @@ public sealed class PluginHostInvokeTests
         var fakeDenoPath = CreateFakeDenoExecutable();
         var manager = new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-host-invoke-{Guid.NewGuid():N}"),
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions { Executable = fakeDenoPath },
             new PluginHostModule(),

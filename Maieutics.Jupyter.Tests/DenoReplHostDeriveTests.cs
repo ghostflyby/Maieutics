@@ -691,6 +691,7 @@ public sealed class DenoReplHostDeriveTests
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-derive-{Guid.NewGuid():N}"),
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             socketPath ?? ReplControlHost.CreateSocketPath(),
             new DenoReplOptions { Executable = fakeDenoPath ?? "deno" },
             new PluginHostModule(),

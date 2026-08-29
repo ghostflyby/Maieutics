@@ -115,7 +115,7 @@ Deno.test("the standalone manifest pins the production actor dependencies", asyn
   );
   assertEquals(
     config.imports["@ghostflyby/worker-actor"],
-    "jsr:@ghostflyby/worker-actor@0.4.0",
+    "jsr:@ghostflyby/worker-actor@0.6.0",
   );
 });
 

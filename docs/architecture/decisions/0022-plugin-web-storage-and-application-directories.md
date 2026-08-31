@@ -2,7 +2,9 @@
 
 Status: Draft
 
-Date: 2026-08-29
+Date: 2026-08-29 (revised 2026-08-29: persistence switched from per-plugin JSON
+to per-plugin SQLite via `node:sqlite` before any release; no migration path
+kept)
 
 ## Context
 
@@ -70,15 +72,24 @@ frames by `type`.
 
 Plugin workers need **zero** Deno permissions for storage: the mailbox is
 allocated inside the requesting realm, and only the trusted host touches the
-filesystem. The host persists per-plugin storage to the kernel-assigned data
-directory as a versioned JSON document
-(`{"version":1,"entries":[[k,v],…]}`) with debounced atomic writes
-(temp file + rename) and a bounded flush on shutdown; a broken document starts
-empty with a logged error instead of bricking the plugin. Quota is 5 MiB
-(UTF-16 code units, keys + values) per store, and a single request must fit
-the 1 MiB mailbox payload; overflows surface as `QuotaExceededError`. Hot
-reload replaces the worker, not the store. Deleting a plugin keeps its data
-directory on disk, like an uninstaller that preserves user data.
+filesystem. The host persists each plugin to one SQLite database
+(`local-storage.db`, `node:sqlite` `DatabaseSync`) in the kernel-assigned data
+directory, and the database IS the store: no in-memory shadow copy, no flush
+step. Ops are synchronous indexed point queries and WAL appends
+(`synchronous=NORMAL`, no per-commit fsync), so a parked plugin's op completes
+in microseconds-to-sub-millisecond on the main isolate and every committed
+write survives host crashes. The schema is
+`kv(key TEXT PRIMARY KEY, value TEXT NOT NULL, ordinal INTEGER NOT NULL)
+WITHOUT ROWID` plus an index on `ordinal`; the ordinal is a monotonic counter
+assigned only on INSERT and never reused, because `ORDER BY rowid` breaks
+after deletions (SQLite reuses freed rowids) and `keyAt(i)` must keep browser
+insertion-order semantics. Schema changes are versioned through
+`PRAGMA user_version`; a store written by a newer host fails with a typed
+error. Quota is 5 MiB (UTF-16 code units, keys + values) per store, hydrated
+from the rows at open, and a single request must fit the 1 MiB mailbox
+payload; overflows surface as `QuotaExceededError`. Hot reload replaces the
+worker, not the database. Deleting a plugin keeps its data directory on disk,
+like an uninstaller that preserves user data.
 
 ### 2. The kernel derives storage paths; the Deno side never does
 
@@ -127,6 +138,16 @@ The same review pass covered the rest of the plugin-visible surface:
 - The kernel owns one more path decision (`ApplicationPaths`), consistent
   with "no launch path builds its own grant list": no host-side path
   derivation exists to drift.
+- The host process gains a `node:sqlite` (DatabaseSync) dependency — stable
+  on the supported Deno, builtin, no package download. DatabaseSync is
+  synchronous by design, which is what allows the database itself to be the
+  authoritative store without a worker bridging async I/O back to a
+  synchronous read path; WAL with `synchronous=NORMAL` keeps per-op cost at
+  an unsynchronized append, at the documented cost that a power loss (not an
+  app crash) may drop the most recent commits.
+- The per-plugin physical boundary is retained (one database file per
+  plugin): corruption and quota are per-plugin concerns, and
+  `PRAGMA user_version` carries schema evolution.
 - Internal `maieutics-storage` frames join `__admit` frames as
   parent-side-visible protocol frames; the README documents skipping them.
 - The single outstanding op per realm is a structural property (a parked
@@ -138,14 +159,16 @@ The same review pass covered the rest of the plugin-visible surface:
 ## Verification evidence
 
 - `deno test` (workspace): mailbox protocol round-trips, oversized-rejection
-  before posting, timeout + mailbox poisoning, quota (memory and
-  host-authoritative), cross-plugin mailbox rejection, unconfigured-storage
-  typed error, atomic persistence round-trip, debounced flush, dispose
-  semantics.
+  before posting, timeout + mailbox poisoning, quota (client-side memory and
+  host-authoritative, including hydration across a reopen), cross-plugin
+  mailbox rejection, unconfigured-storage and newer-schema typed errors,
+  durable persistence across close/reopen, insertion order surviving
+  removals and restarts, dispose semantics.
 - `host_test.ts` (real Deno workers, real host): two-plugin isolation,
   zero-write-grant storage use, reload continuity, nested-worker
-  localStorage sharing with per-realm sessionStorage, shutdown flush to the
-  kernel-assigned directory, quota as a typed plugin-visible error.
+  localStorage sharing with per-realm sessionStorage, plain-SQLite readback
+  of a plugin write from the kernel-assigned directory, quota as a typed
+  plugin-visible error.
 - `dotnet test`: platform path resolution (Windows / macOS / XDG with
   relative-`XDG_DATA_HOME` rejection), identity→directory naming
   (verbatim safe names, hashed sanitized names, determinism), wire-format

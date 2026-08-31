@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { DatabaseSync } from "node:sqlite";
 import { type PluginConfig, PluginHost } from "./host.ts";
 import {
   isValidReplPid,
@@ -646,7 +647,7 @@ Deno.test("nested plugin workers share localStorage while sessionStorage stays p
   }
 });
 
-Deno.test("plugin storage flushes to the kernel-assigned directory on shutdown", async () => {
+Deno.test("plugin storage persists to the kernel-assigned directory", async () => {
   const dir = Deno.makeTempDirSync();
   const dataDir = Deno.makeTempDirSync();
   const host = makeHost(
@@ -667,12 +668,17 @@ Deno.test("plugin storage flushes to the kernel-assigned directory on shutdown",
   await host.startAll();
   await valueOf(host, "test");
   await host.shutdown();
-  const document = JSON.parse(await Deno.readTextFile(`${dataDir}/local-storage.json`)) as {
-    version?: number;
-    entries?: [string, string][];
-  };
-  assertEquals(document.version, 1);
-  assertEquals(document.entries, [["disk", "1"]]);
+  // The database IS the store: a plain SQLite client reads what the plugin
+  // wrote, in the directory the kernel assigned.
+  const db = new DatabaseSync(`${dataDir}/local-storage.db`);
+  try {
+    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get("disk") as {
+      value: string;
+    };
+    assertEquals(row.value, "1");
+  } finally {
+    db.close();
+  }
 });
 
 Deno.test("plugin storage enforces the per-plugin quota as a typed error", async () => {

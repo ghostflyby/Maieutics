@@ -1,21 +1,21 @@
 /**
- * Authoritative per-plugin storage for the plugin host main isolate (ADR 0022).
+ * Storage engine: opens and applies per-plugin SQLite stores (ADR 0022).
  *
- * Each plugin owns one SQLite database (`local-storage.db`, node:sqlite
- * `DatabaseSync`) in the kernel-assigned data directory, and the database IS
- * the store: there is no in-memory map and no flush step. Ops are synchronous
- * indexed point queries and WAL appends (`synchronous=NORMAL`, no per-commit
- * fsync), so a parked plugin's op completes in microseconds-to-sub-millisecond
- * on the main isolate and every committed write survives host crashes.
- * `sessionStorage` never reaches this module — it is per-realm memory inside
- * the worker.
+ * One instance runs inside each storage pool worker; the host main isolate is
+ * only a router (see storage_pool.ts). Each plugin owns one SQLite database
+ * (`local-storage.db`, `node:sqlite` `DatabaseSync`) in the kernel-assigned
+ * data directory, and the database IS the store: no in-memory shadow copy, no
+ * flush step. Ops are synchronous indexed point queries and WAL appends
+ * (`synchronous=NORMAL`, no per-commit fsync), so a parked plugin's op
+ * completes in microseconds-to-sub-millisecond on the pool worker's thread
+ * and every committed write survives crashes. `sessionStorage` never reaches
+ * this module — it is per-realm memory inside the plugin worker.
  *
- * Request routing is identity-safe by construction: `handle()` receives the
- * plugin the FRAME SENDER was resolved to (the host maps the worker to its
- * owning plugin; a client-declared id is never consulted) and binds each
- * mailbox to that plugin on first sight. A mailbox that reappears under a
- * different plugin is rejected, so a mailbox handed across plugins through an
- * actor port cannot borrow another plugin's store.
+ * Ownership contract: a database is opened by exactly one pool worker at a
+ * time (sticky assignment in the pool). Single-connection ownership is what
+ * keeps the ordinal counter and the quota accounting correct without any
+ * database-side transaction protocol; the pool must never route one plugin's
+ * frames to two workers.
  *
  * Schema (one database per plugin, schema version in `PRAGMA user_version`):
  *   kv(key TEXT PRIMARY KEY, value TEXT NOT NULL, ordinal INTEGER NOT NULL)
@@ -59,22 +59,16 @@ interface PluginDatabase {
   };
 }
 
-/** The slice of PluginConfig the responder needs per frame. */
-export interface PluginStorageOwner {
-  id: string;
-  storage?: { readonly dataDir: string };
-}
-
-export class PluginStorageHost {
+export class StorageEngine {
   readonly #databases = new Map<string, PluginDatabase>();
-  /** Mailbox → owning plugin id, bound on first sight and validated after. */
-  readonly #mailboxes = new Map<SharedArrayBuffer, string>();
   #disposed = false;
 
-  /** Entry from the host's frame router. Synchronous: the reply is always
-   * written to the mailbox (success or typed error), so a parked worker never
-   * waits past its bounded `Atomics.wait`. */
-  handle(plugin: PluginStorageOwner, sab: SharedArrayBuffer): void {
+  /** Handles one routed op: validates the mailbox, opens the plugin database
+   * on first use, applies the request synchronously, and writes the reply
+   * (success or typed error) directly into the mailbox. Never throws: every
+   * failure surfaces as a typed reply, so a parked realm never waits past its
+   * bounded `Atomics.wait`. */
+  handle(pluginId: string, dataDir: string, sab: SharedArrayBuffer): void {
     let mailbox: StorageMailbox;
     try {
       mailbox = storageMailboxFor(sab);
@@ -89,48 +83,6 @@ export class PluginStorageHost {
       });
       return;
     }
-    const bound = this.#mailboxes.get(sab);
-    if (bound !== undefined && bound !== plugin.id) {
-      writeStorageResponse(mailbox, {
-        ok: false,
-        name: "StorageAccessDenied",
-        message: "This storage mailbox is bound to another plugin.",
-      });
-      return;
-    }
-    this.#mailboxes.set(sab, plugin.id);
-    if (plugin.storage === undefined) {
-      writeStorageResponse(mailbox, {
-        ok: false,
-        name: "StorageUnavailable",
-        message: "The kernel did not configure a storage directory for this plugin.",
-      });
-      return;
-    }
-    this.#process(plugin.id, plugin.storage.dataDir, mailbox);
-  }
-
-  /** Closes every open database (each close checkpoints its WAL) and stops
-   * serving. Called on the host's process exit path and from dispose. */
-  shutdown(): void {
-    this.#disposed = true;
-    for (const [pluginId, record] of this.#databases) {
-      try {
-        record.db.close();
-      } catch (error) {
-        console.error(`[plugin-host] storage close failed for '${pluginId}':`, error);
-      }
-    }
-    this.#databases.clear();
-  }
-
-  /** Alias kept for the host's dispose path; with a database-backed store
-   * there is no buffered state, so both mean the same thing. */
-  dispose(): void {
-    this.shutdown();
-  }
-
-  #process(pluginId: string, dataDir: string, mailbox: StorageMailbox): void {
     try {
       const record = this.#databases.get(pluginId) ?? this.#open(pluginId, dataDir);
       const request = readStorageRequest(mailbox);
@@ -149,8 +101,24 @@ export class PluginStorageHost {
     }
   }
 
+  /** Closes every open database (each close checkpoints its WAL) and stops
+   * serving. Called on the pool worker's shutdown path. */
+  shutdown(): void {
+    this.#disposed = true;
+    for (const [pluginId, record] of this.#databases) {
+      try {
+        record.db.close();
+      } catch (error) {
+        console.error(`[plugin-host] storage close failed for '${pluginId}':`, error);
+      }
+    }
+    this.#databases.clear();
+  }
+
   #open(pluginId: string, dataDir: string): PluginDatabase {
-    Deno.mkdir(dataDir, { recursive: true });
+    // Synchronous on purpose: the engine runs on a pool worker thread, and a
+    // fire-and-forget async mkdir would race the database open below.
+    Deno.mkdirSync(dataDir, { recursive: true });
     const db = new DatabaseSync(`${dataDir}/${STORAGE_FILE_NAME}`);
     try {
       db.exec("PRAGMA journal_mode = WAL");

@@ -37,11 +37,13 @@ async function main(): Promise<void> {
 
   const config = JSON.parse(await Deno.readTextFile(configPath)) as {
     plugins: PluginConfig[];
+    storageDataRoot?: string;
   };
   const host = new PluginHost({
     sdkUrl,
     workerEntryUrl,
     plugins: config.plugins ?? [],
+    storageDataRoot: config.storageDataRoot,
   });
   // ADR 0020: the host derives REPL processes. The entry path is optional at
   // this stage (spawnRepl is not yet called by a kernel path); the pid

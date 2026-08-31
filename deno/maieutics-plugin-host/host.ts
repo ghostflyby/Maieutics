@@ -20,7 +20,7 @@ import { HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
 import type { AdmissionRequestFrame } from "../maieutics-plugin-sdk/admission.ts";
 import { STORAGE_FRAME_TYPE } from "../maieutics-runtime/storage_channel.ts";
 import { HttpGateway } from "./http.ts";
-import { PluginStorageHost } from "./storage_host.ts";
+import { PluginStoragePool } from "./storage_pool.ts";
 import {
   BOOTSTRAP_WRAPPER_URL,
   spawnBootstrapWorker,
@@ -91,6 +91,9 @@ export interface HostOptions {
   /** File URL of the worker entry module (materialized by the kernel). */
   workerEntryUrl: string;
   plugins: readonly PluginConfig[];
+  /** Root directory that contains every plugin's storage data directory
+   * (ADR 0022); the storage pool workers receive read+write on it. */
+  storageDataRoot?: string;
   /** Invocation timeout per extension point call. */
   invokeTimeoutMs?: number;
   /** Maximum restarts per worker before it is disabled. */
@@ -209,9 +212,10 @@ export class PluginHost {
   #options: HostOptions;
   #acquireRouterInstalled = false;
   #http: HttpGateway | undefined;
-  /** Authoritative per-plugin storage (ADR 0022): the frame router feeds it,
-   * the shutdown path flushes it. Inert until a plugin worker posts a frame. */
-  readonly #storage = new PluginStorageHost();
+  /** Authoritative per-plugin storage execution pool (ADR 0022): the frame
+   * router feeds it, the shutdown path closes it. Inert until a plugin worker
+   * posts a frame. */
+  readonly #storage: PluginStoragePool;
 
   /** The plugin HTTP gateway (aggregator + router), created on first use. */
   httpGateway(): HttpGateway {
@@ -220,6 +224,18 @@ export class PluginHost {
 
   constructor(options: HostOptions) {
     this.#options = options;
+    // The pool workers' grants are narrower than the host's: read+write on
+    // the plugin-data root plus read on the materialized module directories
+    // (the pool worker entry, the engine, and the shared channel module).
+    const moduleDirs = [
+      dirnameOf(filePathOf(options.workerEntryUrl)),
+      dirnameOf(filePathOf(BOOTSTRAP_WRAPPER_URL)),
+    ];
+    const dataRoot = options.storageDataRoot;
+    this.#storage = new PluginStoragePool({
+      readDirs: dataRoot === undefined ? moduleDirs : [...moduleDirs, dataRoot],
+      writeDirs: dataRoot === undefined ? [] : [dataRoot],
+    });
     for (const plugin of options.plugins) {
       for (const workerConfig of plugin.workers) {
         const key = workerKey(plugin.id, workerConfig.exportName);
@@ -365,9 +381,10 @@ export class PluginHost {
     }
   }
 
-  /** Flushes authoritative plugin storage to disk (bounded) and disposes the
+  /** Closes the storage pool (databases checkpoint on close) and disposes the
    * host. The process exit path (mod.ts) awaits this; `dispose()` alone keeps
-   * the fast synchronous teardown used by tests and crash paths. */
+   * the fast synchronous teardown used by tests and crash paths (a terminated
+   * pool worker is crash-equivalent for SQLite: WAL recovery on reopen). */
   async shutdown(): Promise<void> {
     try {
       await this.#storage.shutdown();

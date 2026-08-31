@@ -940,7 +940,7 @@ internal sealed class PluginHostManager(
                     dataDir is null ? null : new PluginHostConfigStorage(dataDir));
             })
             .ToArray();
-        return new PluginHostConfigFile(configured);
+        return new PluginHostConfigFile(configured, pluginDataRoot);
     }
 
     /// <summary>Canonical interop specifier of one worker entrypoint: `&lt;name&gt;/&lt;entrypoint&gt;`.</summary>

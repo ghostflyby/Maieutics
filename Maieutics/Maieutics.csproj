@@ -71,7 +71,9 @@
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host.ts" LogicalName="Maieutics.Deno.PluginHostImpl.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\http.ts" LogicalName="Maieutics.Deno.PluginHostHttp.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\worker_entry.ts" LogicalName="Maieutics.Deno.PluginHostWorker.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_host.ts" LogicalName="Maieutics.Deno.PluginHostStorage.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_engine.ts" LogicalName="Maieutics.Deno.PluginHostStorageEngine.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_pool.ts" LogicalName="Maieutics.Deno.PluginHostStoragePool.ts" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_pool_worker.ts" LogicalName="Maieutics.Deno.PluginHostStoragePoolWorker.ts" />
         <EmbeddedResource Include="..\deno\maieutics-runtime\storage_channel.ts" LogicalName="Maieutics.Deno.Runtime.StorageChannel.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\repl_manager.ts" LogicalName="Maieutics.Deno.PluginHostReplManager.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-host\host_repl_protocol.ts" LogicalName="Maieutics.Deno.PluginHostReplProtocol.ts" />

@@ -3,8 +3,9 @@
 Status: Draft
 
 Date: 2026-08-29 (revised 2026-08-29: persistence switched from per-plugin JSON
-to per-plugin SQLite via `node:sqlite` before any release; no migration path
-kept)
+to per-plugin SQLite via `node:sqlite` before any release, no migration path
+kept; same day, storage execution moved off the host main isolate into a
+bounded elastic pool of dedicated workers — see "Execution pool" below)
 
 ## Context
 
@@ -71,14 +72,14 @@ the admission frames; plugin code that inspects child messages must skip
 frames by `type`.
 
 Plugin workers need **zero** Deno permissions for storage: the mailbox is
-allocated inside the requesting realm, and only the trusted host touches the
-filesystem. The host persists each plugin to one SQLite database
+allocated inside the requesting realm, and only trusted host-side code touches
+the filesystem. Each plugin persists to one SQLite database
 (`local-storage.db`, `node:sqlite` `DatabaseSync`) in the kernel-assigned data
 directory, and the database IS the store: no in-memory shadow copy, no flush
 step. Ops are synchronous indexed point queries and WAL appends
 (`synchronous=NORMAL`, no per-commit fsync), so a parked plugin's op completes
-in microseconds-to-sub-millisecond on the main isolate and every committed
-write survives host crashes. The schema is
+in microseconds-to-sub-millisecond and every committed write survives host
+crashes. The schema is
 `kv(key TEXT PRIMARY KEY, value TEXT NOT NULL, ordinal INTEGER NOT NULL)
 WITHOUT ROWID` plus an index on `ordinal`; the ordinal is a monotonic counter
 assigned only on INSERT and never reused, because `ORDER BY rowid` breaks
@@ -89,7 +90,66 @@ error. Quota is 5 MiB (UTF-16 code units, keys + values) per store, hydrated
 from the rows at open, and a single request must fit the 1 MiB mailbox
 payload; overflows surface as `QuotaExceededError`. Hot reload replaces the
 worker, not the database. Deleting a plugin keeps its data directory on disk,
-like an uninstaller that preserves user data.
+like an uninstaller that preserves user data. The SQLite statements run inside
+a dedicated storage execution pool (see "Execution pool" below), not on the
+host main isolate.
+
+### Execution pool
+
+Moving the synchronous SQLite work off the host main isolate (which also
+routes extension invocations, the HTTP gateway, and the control bus) is a
+design study with one hard conclusion: **the per-database invariants — the
+ordinal counter and the quota accounting — depend on a single writer, so the
+pool must be shaped around per-database ownership, not around SQLite's
+concurrency.**
+
+Adopted shape:
+
+- **Topology.** The host main isolate becomes a pure router: it resolves the
+  sending worker to its owning plugin, validates the mailbox binding, and
+  forwards the frame to the plugin's bound pool worker. The pool worker
+  executes the op and writes the reply into the mailbox directly
+  (`Atomics.notify`) — the main isolate never blocks on storage.
+- **Sticky ownership.** Each plugin database is opened by exactly one pool
+  worker at a time (first-op assignment, sticky for the plugin's lifetime).
+  One connection per database makes read/write exclusion a property of the
+  topology — no reader/writer locks are needed, and multi-connection schemas
+  (which would push the ordinal counter and quota into database-side
+  transactions) are rejected. Read/insert/edit/delete serialize on the owning
+  worker's event loop, preserving per-plugin operation order exactly like the
+  previous single-threaded responder.
+- **Bounded elastic growth.** Pool workers spawn lazily on first assignment
+  up to a cap (4); further plugins attach to the least-recently-assigned
+  worker, which then owns several databases (still one connection each).
+  No hash sharding (rebinding on plugin churn) and no work stealing (ops are
+  sub-millisecond; coordination costs more than it saves).
+- **Acknowledgement on receipt.** A pool worker acks a forwarded frame before
+  executing it. The router keeps the frame in a pending registry only for
+  that window; on worker `error` (crash) the router fails every unacked
+  pending with a typed error reply. Because a realm has at most one
+  outstanding op, an unacked pending's realm is by definition still parked on
+  it — a failure reply can never race that realm's next request, so no
+  sequence numbers are needed in the mailbox protocol. A worker dying after
+  the ack but before replying leaves the realm parked on its own bounded
+  `Atomics.wait` timeout (typed `StorageTimeout`), the same failure shape as
+  the responder dying entirely.
+- **Rebinding.** On worker death its plugins are unbound; the next op for
+  such a plugin opens the database on another worker (WAL recovery replays
+  committed writes). Rebinding happens on the single-threaded router before
+  any frame is forwarded, so two writers per database cannot arise.
+- **Permissions.** Pool workers are trusted internal Deno children spawned by
+  the host; they receive read+write on the plugin-data root (all plugin
+  databases live under it) plus read on the materialized module directories.
+  The root travels top-level in the host config (`storageDataRoot`).
+
+Rejected alternatives, for the record: read/write separated worker pools and
+multiple connections per database (break single-writer invariants, gain
+nothing at this scale); a pool of one (valid minimal variant — isolates the
+main isolate without the assignment problem — subsumed by the cap being
+configurable); keeping execution on the main isolate (works today, but
+head-of-line blocking across plugins and multi-megabyte hydration scans on
+the orchestrator thread are structural, and the pool removes them at the
+price of one extra async hop).
 
 ### 2. The kernel derives storage paths; the Deno side never does
 

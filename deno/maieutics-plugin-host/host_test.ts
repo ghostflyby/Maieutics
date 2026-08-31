@@ -47,11 +47,21 @@ function pluginSource(body: string): string {
   return `import { defineExtensionPoint } from ${JSON.stringify(SDK_URL)};\n${body}\n`;
 }
 
+// Pool workers receive read+write on this root only, so every plugin data
+// directory in these tests must live under it.
+const STORAGE_DATA_ROOT = Deno.makeTempDirSync();
+
+/** A plugin storage data directory under the pool workers' write grant. */
+function makeDataDir(): string {
+  return `${STORAGE_DATA_ROOT}/${crypto.randomUUID()}`;
+}
+
 function makeHost(plugin: PluginConfig): PluginHost {
   return new PluginHost({
     sdkUrl: SDK_URL,
     workerEntryUrl: WORKER_ENTRY_URL,
     plugins: [plugin],
+    storageDataRoot: STORAGE_DATA_ROOT,
   });
 }
 
@@ -60,6 +70,7 @@ function makeMultiHost(plugins: readonly PluginConfig[]): PluginHost {
     sdkUrl: SDK_URL,
     workerEntryUrl: WORKER_ENTRY_URL,
     plugins: [...plugins],
+    storageDataRoot: STORAGE_DATA_ROOT,
   });
 }
 
@@ -538,8 +549,8 @@ function storageCommandPlugin(
 Deno.test("plugin storage is isolated per plugin and survives a worker reload", async () => {
   const dirA = Deno.makeTempDirSync();
   const dirB = Deno.makeTempDirSync();
-  const dataA = Deno.makeTempDirSync();
-  const dataB = Deno.makeTempDirSync();
+  const dataA = makeDataDir();
+  const dataB = makeDataDir();
   const host = makeMultiHost([
     storageCommandPlugin(dirA, "alpha", dataA, "A"),
     storageCommandPlugin(dirB, "beta", dataB, "B"),
@@ -575,7 +586,7 @@ async function invokeCmd(host: PluginHost, pluginId: string, cmd: string): Promi
 
 Deno.test("nested plugin workers share localStorage while sessionStorage stays per realm", async () => {
   const dir = Deno.makeTempDirSync();
-  const dataDir = Deno.makeTempDirSync();
+  const dataDir = makeDataDir();
   Deno.writeTextFileSync(
     `${dir}/nested.ts`,
     `
@@ -649,7 +660,7 @@ Deno.test("nested plugin workers share localStorage while sessionStorage stays p
 
 Deno.test("plugin storage persists to the kernel-assigned directory", async () => {
   const dir = Deno.makeTempDirSync();
-  const dataDir = Deno.makeTempDirSync();
+  const dataDir = makeDataDir();
   const host = makeHost(
     createPluginConfig(
       dir,
@@ -683,7 +694,7 @@ Deno.test("plugin storage persists to the kernel-assigned directory", async () =
 
 Deno.test("plugin storage enforces the per-plugin quota as a typed error", async () => {
   const dir = Deno.makeTempDirSync();
-  const dataDir = Deno.makeTempDirSync();
+  const dataDir = makeDataDir();
   // Values ride a 1 MiB mailbox payload, so the quota is reached with a few
   // near-limit writes instead of one oversized write.
   const plugin = createPluginConfig(

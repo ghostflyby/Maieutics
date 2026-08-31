@@ -33,7 +33,9 @@ internal sealed class PluginHostModule
         ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),
         ("Maieutics.Deno.PluginHostHttp.ts", "maieutics-plugin-host/http.ts"),
         ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
-        ("Maieutics.Deno.PluginHostStorage.ts", "maieutics-plugin-host/storage_host.ts"),
+        ("Maieutics.Deno.PluginHostStorageEngine.ts", "maieutics-plugin-host/storage_engine.ts"),
+        ("Maieutics.Deno.PluginHostStoragePool.ts", "maieutics-plugin-host/storage_pool.ts"),
+        ("Maieutics.Deno.PluginHostStoragePoolWorker.ts", "maieutics-plugin-host/storage_pool_worker.ts"),
         ("Maieutics.Deno.PluginHostReplManager.ts", "maieutics-plugin-host/repl_manager.ts"),
         ("Maieutics.Deno.PluginHostReplProtocol.ts", "maieutics-plugin-host/host_repl_protocol.ts"),
         ("Maieutics.Deno.Runtime.BootstrapContract.ts", "maieutics-runtime/bootstrap_contract.ts"),
@@ -115,7 +117,9 @@ internal sealed class PluginHostModule
 [JsonSerializable(typeof(string[]))]
 internal sealed partial class PluginHostJsonContext : JsonSerializerContext;
 
-internal sealed record PluginHostConfigFile(IReadOnlyList<PluginHostConfigPlugin> Plugins);
+internal sealed record PluginHostConfigFile(
+    IReadOnlyList<PluginHostConfigPlugin> Plugins,
+    string? StorageDataRoot = null);
 
 internal sealed record PluginHostConfigPlugin(
     string Id,

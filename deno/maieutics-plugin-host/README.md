@@ -38,21 +38,28 @@ authoritative store is one SQLite database per plugin (`local-storage.db`, node:
 `DatabaseSync`) in the kernel-assigned data directory: the database IS the store, with no in-memory
 shadow copy and no flush step. Ops are synchronous indexed point queries and WAL appends
 (`synchronous=NORMAL`, no per-commit fsync), so an op completes in microseconds-to-sub-millisecond
-on the host main isolate and every committed write survives host crashes. Every worker of a plugin
-(each entrypoint and every nested worker) shares its plugin's `localStorage` like a browser origin,
-while `sessionStorage` stays per realm. The kernel assigns each plugin a data directory under the
-platform application-data root and ships it in the plugin config. Schema changes are versioned via
-`PRAGMA user_version`; a store written by a newer host fails with a typed error. The per-store quota
-is 5 MiB (UTF-16 code units) and a single request must fit the 1 MiB mailbox payload; overflows
-surface as `QuotaExceededError`.
+and every committed write survives host crashes. Every worker of a plugin (each entrypoint and every
+nested worker) shares its plugin's `localStorage` like a browser origin, while `sessionStorage`
+stays per realm. The kernel assigns each plugin a data directory under the platform application-data
+root and ships it in the plugin config. Schema changes are versioned via `PRAGMA user_version`; a
+store written by a newer host fails with a typed error. The per-store quota is 5 MiB (UTF-16 code
+units) and a single request must fit the 1 MiB mailbox payload; overflows surface as
+`QuotaExceededError`.
 
+Storage executes on a bounded pool of dedicated workers, not on the host main isolate. The main
+isolate is a pure router: it resolves the sending worker to its owning plugin, binds mailboxes on
+first sight (a mailbox handed across plugins through an actor port is rejected), and forwards the
+frame to the plugin's bound pool worker, which replies by writing the mailbox directly. Each plugin
+database is owned by exactly one pool worker at a time (sticky first-op assignment, pool capped at
+4), which keeps the ordinal counter and quota accounting single-writer without any locks; pool
+workers hold read+write on the plugin-data root (plus read on the materialized modules) — plugin
+workers themselves need nothing. A crashed pool worker fails its unacknowledged ops with typed
+errors and its plugins rebind to a fresh worker on the next op (WAL recovery replays committed
+writes); a crash after the acknowledgement leaves the parked realm on its own bounded wait timeout.
 The transport follows the admission handshake pattern (request direction `postMessage`, reply
-direction a per-realm SharedArrayBuffer mailbox, bounded `Atomics.wait`). Routing never trusts a
-client-declared identity: frames are mapped to the sending worker's owning plugin and each mailbox
-is bound to that plugin on first sight, so a mailbox handed across plugins through an actor port is
-rejected. Internal storage frames (`type: "maieutics-storage"`) are visible on a nested worker's
-parent-side message surface, like the admission frames; plugin code that inspects child messages
-must skip them by frame type.
+direction a per-realm SharedArrayBuffer mailbox, bounded `Atomics.wait`). Internal storage frames
+(`type: "maieutics-storage"`) are visible on a nested worker's parent-side message surface, like the
+admission frames; plugin code that inspects child messages must skip them by frame type.
 
 ### Broker forwarding for derived REPL processes
 

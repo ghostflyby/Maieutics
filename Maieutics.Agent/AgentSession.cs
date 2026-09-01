@@ -15,6 +15,7 @@ public sealed class AgentSession : IAgentSession
     private readonly ImmutableArray<AIFunction> fixedTools;
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly IAgentTranscriptStore? transcriptStore;
+    private readonly IAgentObjectStore? objectStore;
     private readonly Lock transcriptGate = new();
     private AgentTranscriptState canonicalState;
     private int runInProgress;
@@ -25,6 +26,7 @@ public sealed class AgentSession : IAgentSession
         AgentSessionOptions? options = null,
         IEnumerable<AIFunction>? tools = null,
         IAgentTranscriptStore? transcriptStore = null,
+        IAgentObjectStore? objectStore = null,
         AgentSessionId? sessionId = null)
         : this(
             new FixedAgentRunProfileProvider(
@@ -33,6 +35,7 @@ public sealed class AgentSession : IAgentSession
                     options ?? new AgentSessionOptions(),
                     tools: CreateToolRegistry(tools).Values)),
             transcriptStore: transcriptStore,
+            objectStore: objectStore,
             sessionId: sessionId)
     {
     }
@@ -44,6 +47,10 @@ public sealed class AgentSession : IAgentSession
     ///     The optional durable store that receives every committed turn. When omitted, the canonical
     ///     transcript stays in memory only and process exit loses the session.
     /// </param>
+    /// <param name="objectStore">
+    ///     The optional store that receives tool results exceeding the inline envelope limit. When
+    ///     omitted, oversized results fail the tool.
+    /// </param>
     /// <param name="sessionId">
     ///     The session identity to reuse when reopening a stored session; a new identity is created when omitted.
     /// </param>
@@ -51,10 +58,12 @@ public sealed class AgentSession : IAgentSession
         IAgentRunProfileProvider profileProvider,
         IEnumerable<AIFunction>? tools = null,
         IAgentTranscriptStore? transcriptStore = null,
+        IAgentObjectStore? objectStore = null,
         AgentSessionId? sessionId = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.transcriptStore = transcriptStore;
+        this.objectStore = objectStore;
         fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
 
         Id = sessionId ?? AgentSessionId.Create();
@@ -73,7 +82,8 @@ public sealed class AgentSession : IAgentSession
         IAgentRunProfileProvider profileProvider,
         IAgentTranscriptStore transcriptStore,
         AgentSessionId sessionId,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        IAgentObjectStore? objectStore = null)
     {
         ArgumentNullException.ThrowIfNull(profileProvider);
         ArgumentNullException.ThrowIfNull(transcriptStore);
@@ -81,7 +91,12 @@ public sealed class AgentSession : IAgentSession
         var transcript = transcriptStore.LoadTranscript(sessionId) ??
                          throw new AgentSessionNotFoundException(sessionId);
 
-        var restored = new AgentSession(profileProvider, tools: tools, transcriptStore: transcriptStore, sessionId);
+        var restored = new AgentSession(
+            profileProvider,
+            tools: tools,
+            transcriptStore: transcriptStore,
+            objectStore: objectStore,
+            sessionId);
         var turns = ImmutableArray.CreateBuilder<AgentTranscriptStateTurn>(transcript.Turns.Length);
         foreach (var turn in transcript.Turns)
             turns.Add(AgentTranscriptCodec.DetachPrivateTurn(turn.RunId, turn.ModelIdentity, turn.Messages, turn.Truncated));
@@ -164,7 +179,7 @@ public sealed class AgentSession : IAgentSession
         var options = profile.Options;
         ValidateModelCapabilities(profile, run.Tools.Count);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
-        var toolState = new RunToolState(this, run, recordingClient, options);
+        var toolState = new RunToolState(this, run, recordingClient, options, objectStore);
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
         using var functionClient = new FunctionInvokingChatClient(recordingClient)
         {
@@ -436,7 +451,8 @@ public sealed class AgentSession : IAgentSession
         AgentSession owner,
         AgentRun run,
         RecordingChatClient recordingClient,
-        AgentSessionOptions options)
+        AgentSessionOptions options,
+        IAgentObjectStore? objectStore)
     {
         private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
         private readonly List<ChatMessage> intermediateMessages = [];
@@ -505,6 +521,7 @@ public sealed class AgentSession : IAgentSession
             invocation.Arguments.Context[typeof(AgentToolContext)] = context;
 
             JsonElement envelope;
+            var successResult = true;
             try
             {
                 var result = await function.InvokeAsync(invocation.Arguments, cancellationToken).ConfigureAwait(false);
@@ -518,6 +535,7 @@ public sealed class AgentSession : IAgentSession
             }
             catch (AgentToolException exception)
             {
+                successResult = false;
                 envelope = ToolJson.CreateFailureEnvelope(exception.Code, exception.Message);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -537,10 +555,23 @@ public sealed class AgentSession : IAgentSession
 
             if (Encoding.UTF8.GetByteCount(envelope.GetRawText()) > options.MaxToolResultBytes)
             {
-                await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
-                throw new AgentToolLimitExceededException(
-                    nameof(AgentSessionOptions.MaxToolResultBytes),
-                    options.MaxToolResultBytes);
+                // An oversized success result is preserved whole in the object store and replaced
+                // by a truncated preview envelope; failures and stores-less configurations keep
+                // the original typed limit failure.
+                if (objectStore is null || !successResult)
+                {
+                    await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
+                    throw new AgentToolLimitExceededException(
+                        nameof(AgentSessionOptions.MaxToolResultBytes),
+                        options.MaxToolResultBytes);
+                }
+
+                var descriptor = objectStore.Ingest(
+                    new MemoryStream(Encoding.UTF8.GetBytes(envelope.GetRawText()), writable: false));
+                envelope = ToolJson.CreateTruncatedSuccessEnvelope(
+                    descriptor.Sha256,
+                    descriptor.Size,
+                    "application/json");
             }
 
             intermediateMessages.Add(new ChatMessage(
@@ -1010,6 +1041,23 @@ internal static class ToolJson
         return JsonSerializer.SerializeToElement(
             new ToolSuccessEnvelope("ok", value?.Clone()),
             AgentToolJsonSerializerContext.Default.ToolSuccessEnvelope);
+    }
+
+    internal static JsonElement CreateTruncatedSuccessEnvelope(string sha256, long size, string mediaType)
+    {
+        var node = new JsonObject
+        {
+            ["status"] = "ok",
+            ["value"] = $"<result truncated: the full {size} byte JSON result is available as object {sha256}>",
+            ["truncated"] = true,
+            ["object"] = new JsonObject
+            {
+                ["sha256"] = sha256,
+                ["size"] = size,
+                ["mediaType"] = mediaType,
+            },
+        };
+        return ParseElement(node);
     }
 
     internal static JsonElement CreateFailureEnvelope(string code, string message)

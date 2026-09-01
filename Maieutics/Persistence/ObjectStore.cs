@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Maieutics.Agent;
 
 namespace Maieutics.Persistence;
 
@@ -17,7 +18,7 @@ namespace Maieutics.Persistence;
 ///     The write path never rewrites or deletes published objects; a crash may leave staging
 ///     temporaries, which <see cref="SweepStaging" /> reclaims.
 /// </summary>
-internal sealed class ObjectStore
+internal sealed class ObjectStore : IAgentObjectStore
 {
     private readonly string objectsRoot;
     private readonly string stagingRoot;
@@ -168,5 +169,11 @@ internal sealed class ObjectStore
         {
             // The temporary becomes staging garbage and is reclaimed by the next sweep.
         }
+    }
+
+    AgentObjectDescriptor IAgentObjectStore.Ingest(Stream content)
+    {
+        var ingested = Ingest(content);
+        return new AgentObjectDescriptor(ingested.Sha256, ingested.Size);
     }
 }

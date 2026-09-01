@@ -20,6 +20,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly string? familiesRoot;
     private readonly Func<AgentSessionId, IAgentTranscriptStore>? storeFactory;
+    private readonly IAgentObjectStore? objectStore;
     private readonly Lock gate = new();
     private readonly Dictionary<string, IAgentTranscriptStore> stores = new(StringComparer.Ordinal);
     private IAgentSession current;
@@ -27,12 +28,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
         string? familiesRoot,
-        Func<AgentSessionId, IAgentTranscriptStore>? storeFactory)
+        Func<AgentSessionId, IAgentTranscriptStore>? storeFactory,
+        IAgentObjectStore? objectStore = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.familiesRoot = familiesRoot;
         this.storeFactory = storeFactory;
-        current = new AgentSession(profileProvider, transcriptStore: OpenStore(AgentSessionId.Create()));
+        this.objectStore = objectStore;
+        current = new AgentSession(
+            profileProvider,
+            transcriptStore: OpenStore(AgentSessionId.Create()),
+            objectStore: objectStore);
     }
 
     public bool PersistenceEnabled => storeFactory is not null;
@@ -83,7 +89,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         if (sessionId == Id) return sessionId;
 
         var familyId = ResolveFamily(sessionId) ?? throw new AgentSessionNotFoundException(sessionId);
-        var restored = AgentSession.Resume(profileProvider, RequiredStore(familyId), sessionId);
+        var restored = AgentSession.Resume(profileProvider, RequiredStore(familyId), sessionId, objectStore: objectStore);
         lock (gate)
         {
             current = restored;
@@ -99,7 +105,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         var sessionId = AgentSessionId.Create();
         lock (gate)
         {
-            current = new AgentSession(profileProvider, transcriptStore: OpenStore(sessionId));
+            current = new AgentSession(
+                profileProvider,
+                transcriptStore: OpenStore(sessionId),
+                objectStore: objectStore);
             return sessionId;
         }
     }

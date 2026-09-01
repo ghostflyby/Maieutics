@@ -118,6 +118,8 @@ public static class MaieuticsHost
             var applicationPaths = ApplicationPaths.Resolve();
             applicationPaths.EnsureAgentRoot();
             builder.Services.AddSingleton(applicationPaths);
+            builder.Services.AddSingleton<IAgentObjectStore>(static services => new ObjectStore(
+                services.GetRequiredService<ApplicationPaths>().AgentObjectsRoot));
         }
 
         builder.Services.AddSingleton(configurationFile);
@@ -288,7 +290,8 @@ public static class MaieuticsHost
             profileProvider,
             paths.AgentFamiliesRoot,
             familyId => new SqliteTranscriptStore(
-                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)));
+                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)),
+            services.GetService<IAgentObjectStore>());
     }
 
     [SupportedOSPlatform("windows")]

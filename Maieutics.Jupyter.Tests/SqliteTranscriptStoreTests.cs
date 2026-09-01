@@ -31,11 +31,11 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
     }
 
     [Fact]
-    public void FamilyDatabasePathJoinsTheSessionDirectory()
+    public void FamilyDatabasePathJoinsTheFamilyDirectory()
     {
         var familyId = AgentSessionId.Create();
-        var path = SqliteTranscriptStore.FamilyDatabasePath("/data/agent/sessions", familyId);
-        path.Replace('\\', '/').Should().Be($"/data/agent/sessions/{familyId.Value.ToString("N")}/history.db");
+        var path = SqliteTranscriptStore.FamilyDatabasePath("/data/agent/families", familyId);
+        path.Replace('\\', '/').Should().Be($"/data/agent/families/{familyId.Value.ToString("N")}/history.db");
     }
 
     [Fact]

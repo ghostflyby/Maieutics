@@ -27,8 +27,9 @@ internal sealed record ApplicationPaths(
 
     public string AgentRoot => Path.Combine(DataRoot, "agent");
 
-    /// <summary>Per-family transcript databases: one <c>history.db</c> per fork family.</summary>
-    public string AgentSessionsRoot => Path.Combine(AgentRoot, "sessions");
+    /// <summary>Per-family transcript databases: one <c>history.db</c> per fork family, keyed
+    /// by the family root session id.</summary>
+    public string AgentFamiliesRoot => Path.Combine(AgentRoot, "families");
 
     /// <summary>Content-addressed blob objects.</summary>
     public string AgentObjectsRoot => Path.Combine(AgentRoot, "objects");

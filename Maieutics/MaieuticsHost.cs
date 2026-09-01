@@ -281,14 +281,14 @@ public static class MaieuticsHost
         var paths = services.GetService<ApplicationPaths>();
         if (paths is null)
         {
-            return new MaieuticsAgentSessionManager(profileProvider, sessionsRoot: null, storeFactory: null);
+            return new MaieuticsAgentSessionManager(profileProvider, familiesRoot: null, storeFactory: null);
         }
 
         return new MaieuticsAgentSessionManager(
             profileProvider,
-            paths.AgentSessionsRoot,
+            paths.AgentFamiliesRoot,
             familyId => new SqliteTranscriptStore(
-                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentSessionsRoot, familyId)));
+                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)));
     }
 
     [SupportedOSPlatform("windows")]

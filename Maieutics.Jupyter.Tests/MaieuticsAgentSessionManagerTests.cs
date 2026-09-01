@@ -32,7 +32,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     public void DisabledPersistenceGuardsTheRecoverySurface()
     {
         using var manager = new MaieuticsAgentSessionManager(
-            new FixedProfileProvider(), sessionsRoot: null, storeFactory: null);
+            new FixedProfileProvider(), familiesRoot: null, storeFactory: null);
 
         manager.PersistenceEnabled.Should().BeFalse();
         manager.ListStoredSessions().Should().BeEmpty();

@@ -9,7 +9,7 @@ namespace Maieutics.Jupyter;
 ///     kernel application. Runs already started keep executing against the session they began
 ///     on; a swap only affects later turns.
 ///     With persistence enabled, every session belongs to one fork family and each family owns
-///     exactly one <c>sessions/&lt;family-id&gt;/history.db</c>. Fork does not exist yet, so a
+///     exactly one <c>families/&lt;family-id&gt;/history.db</c>. Fork does not exist yet, so a
 ///     session's family id is its own id; when fork arrives, a child opens its root ancestor's
 ///     family file and this layout is unchanged. Family databases are opened lazily, cached,
 ///     and disposed with the manager. Recovery is manual only: nothing is restored until a
@@ -18,7 +18,7 @@ namespace Maieutics.Jupyter;
 internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 {
     private readonly IAgentRunProfileProvider profileProvider;
-    private readonly string? sessionsRoot;
+    private readonly string? familiesRoot;
     private readonly Func<AgentSessionId, IAgentTranscriptStore>? storeFactory;
     private readonly Lock gate = new();
     private readonly Dictionary<string, IAgentTranscriptStore> stores = new(StringComparer.Ordinal);
@@ -26,11 +26,11 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
-        string? sessionsRoot,
+        string? familiesRoot,
         Func<AgentSessionId, IAgentTranscriptStore>? storeFactory)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
-        this.sessionsRoot = sessionsRoot;
+        this.familiesRoot = familiesRoot;
         this.storeFactory = storeFactory;
         current = new AgentSession(profileProvider, transcriptStore: OpenStore(AgentSessionId.Create()));
     }
@@ -53,14 +53,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// first. Sessions that never committed a turn have no row and are not listed.</summary>
     public IReadOnlyList<AgentSessionDescriptor> ListStoredSessions()
     {
-        if (storeFactory is null || sessionsRoot is null || !Directory.Exists(sessionsRoot)) return [];
+        if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return [];
 
         var descriptors = new List<AgentSessionDescriptor>();
-        foreach (var directory in Directory.EnumerateDirectories(sessionsRoot))
+        foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
         {
             if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
-            descriptors.AddRange(OpenStore(new AgentSessionId(familyId)).ListSessions());
+            descriptors.AddRange(RequiredStore(new AgentSessionId(familyId)).ListSessions());
         }
 
         return descriptors
@@ -138,16 +138,16 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     }
 
     /// <summary>Locates the family that owns a session. Today every session is its own family
-    /// root, so the direct <c>sessions/&lt;id&gt;</c> directory almost always answers; the scan
+    /// root, so the direct <c>families/&lt;id&gt;</c> directory almost always answers; the scan
     /// covers the future fork case where children live in their ancestor's family file.</summary>
     private AgentSessionId? ResolveFamily(AgentSessionId sessionId)
     {
-        if (sessionsRoot is null) return null;
-        if (File.Exists(SqliteTranscriptStore.FamilyDatabasePath(sessionsRoot, sessionId))) return sessionId;
+        if (familiesRoot is null) return null;
+        if (File.Exists(SqliteTranscriptStore.FamilyDatabasePath(familiesRoot, sessionId))) return sessionId;
 
-        if (Directory.Exists(sessionsRoot))
+        if (Directory.Exists(familiesRoot))
         {
-            foreach (var directory in Directory.EnumerateDirectories(sessionsRoot))
+            foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
             {
                 if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 

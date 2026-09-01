@@ -31,6 +31,14 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
     }
 
     [Fact]
+    public void FamilyDatabasePathJoinsTheSessionDirectory()
+    {
+        var familyId = AgentSessionId.Create();
+        var path = SqliteTranscriptStore.FamilyDatabasePath("/data/agent/sessions", familyId);
+        path.Replace('\\', '/').Should().Be($"/data/agent/sessions/{familyId.Value.ToString("N")}/history.db");
+    }
+
+    [Fact]
     public void AppendedTurnsSurviveReopenWithCanonicalContent()
     {
         var sessionId = AgentSessionId.Create();

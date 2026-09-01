@@ -11,7 +11,6 @@ namespace Maieutics.Jupyter.Tests;
 public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 {
     private readonly string databaseDirectory;
-    private readonly string databasePath;
 
     public MaieuticsAgentSessionManagerTests()
     {
@@ -19,7 +18,6 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             Path.GetTempPath(),
             "maieutics-session-manager-tests",
             Guid.NewGuid().ToString("N"));
-        databasePath = Path.Combine(databaseDirectory, "history.db");
     }
 
     public void Dispose()
@@ -33,7 +31,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     [Fact]
     public void DisabledPersistenceGuardsTheRecoverySurface()
     {
-        var manager = new MaieuticsAgentSessionManager(new FixedProfileProvider(), transcriptStore: null);
+        using var manager = new MaieuticsAgentSessionManager(
+            new FixedProfileProvider(), sessionsRoot: null, storeFactory: null);
 
         manager.PersistenceEnabled.Should().BeFalse();
         manager.ListStoredSessions().Should().BeEmpty();
@@ -49,12 +48,14 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     public void ResumeReplacesTheActiveSessionWithTheStoredHistory()
     {
         var sessionId = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath);
-        store.AppendTurn(sessionId, Turn(sessionId, "a", "Question one", "Answer one"));
-        store.AppendTurn(sessionId, Turn(sessionId, "b", "Question two", "Answer two"));
-        var manager = new MaieuticsAgentSessionManager(new FixedProfileProvider(), store);
-        var freshId = manager.Id;
-        freshId.Should().NotBe(sessionId);
+        using (var store = new SqliteTranscriptStore(FamilyPath(sessionId)))
+        {
+            store.AppendTurn(sessionId, Turn(sessionId, "a", "Question one", "Answer one"));
+            store.AppendTurn(sessionId, Turn(sessionId, "b", "Question two", "Answer two"));
+        }
+
+        using var manager = CreateManager();
+        manager.Id.Should().NotBe(sessionId);
 
         manager.Resume(sessionId).Should().Be(sessionId);
         manager.Id.Should().Be(sessionId);
@@ -70,6 +71,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         var afterNew = manager.StartNew();
         afterNew.Should().NotBe(sessionId);
         manager.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        // A fresh session has no committed turns, so it does not appear in the list.
+        manager.ListStoredSessions().Should().ContainSingle();
 
         manager.Resume(sessionId);
         manager.Id.Should().Be(sessionId);
@@ -78,14 +81,45 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     }
 
     [Fact]
+    public void ListsSessionsAcrossFamilyDatabasesMostRecentFirst()
+    {
+        var older = AgentSessionId.Create();
+        var newer = AgentSessionId.Create();
+        using (var first = new SqliteTranscriptStore(FamilyPath(older)))
+        {
+            first.AppendTurn(older, Turn(older, "a", "old question", "old answer"));
+        }
+
+        using (var second = new SqliteTranscriptStore(FamilyPath(newer)))
+        {
+            second.AppendTurn(newer, Turn(newer, "b", "new question", "new answer"));
+        }
+
+        using var manager = CreateManager();
+        var sessions = manager.ListStoredSessions();
+        sessions.Select(session => session.Id).Should().Contain([older, newer]);
+        sessions.First().LastActivityAt.Should().BeOnOrAfter(sessions.Last().LastActivityAt);
+    }
+
+    [Fact]
     public void ResumeUnknownSessionThrowsTyped()
     {
-        using var store = new SqliteTranscriptStore(databasePath);
-        var manager = new MaieuticsAgentSessionManager(new FixedProfileProvider(), store);
+        using var manager = CreateManager();
 
         manager.Invoking(m => m.Resume(AgentSessionId.Create()))
             .Should().Throw<AgentSessionNotFoundException>();
     }
+
+    private MaieuticsAgentSessionManager CreateManager()
+    {
+        return new MaieuticsAgentSessionManager(
+            new FixedProfileProvider(),
+            databaseDirectory,
+            familyId => new SqliteTranscriptStore(FamilyPath(familyId)));
+    }
+
+    private string FamilyPath(AgentSessionId familyId) =>
+        SqliteTranscriptStore.FamilyDatabasePath(databaseDirectory, familyId);
 
     private static AgentTranscriptTurn Turn(
         AgentSessionId sessionId,

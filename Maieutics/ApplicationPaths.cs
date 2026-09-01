@@ -27,8 +27,14 @@ internal sealed record ApplicationPaths(
 
     public string AgentRoot => Path.Combine(DataRoot, "agent");
 
-    /// <summary>The SQLite database backing the canonical Agent transcript store.</summary>
-    public string AgentDatabasePath => Path.Combine(AgentRoot, "history.db");
+    /// <summary>Per-family transcript databases: one <c>history.db</c> per fork family.</summary>
+    public string AgentSessionsRoot => Path.Combine(AgentRoot, "sessions");
+
+    /// <summary>Content-addressed blob objects.</summary>
+    public string AgentObjectsRoot => Path.Combine(AgentRoot, "objects");
+
+    /// <summary>Same-volume ingest staging for atomic blob publication.</summary>
+    public string AgentStagingRoot => Path.Combine(AgentObjectsRoot, ".staging");
 
     /// <summary>Creates the directory that backs <see cref="AgentDatabasePath" /> when persistence is enabled.</summary>
     public void EnsureAgentRoot()

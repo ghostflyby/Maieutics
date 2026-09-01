@@ -18,6 +18,13 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 {
     private const int CurrentSchemaVersion = 1;
 
+    /// <summary>One database file per fork family; the family directory is keyed by the family
+    /// root session id so derived scanners and backups can glob <c>sessions/*/history.db</c>.</summary>
+    internal static string FamilyDatabasePath(string sessionsRoot, AgentSessionId familyId)
+    {
+        return Path.Combine(sessionsRoot, familyId.Value.ToString("N"), "history.db");
+    }
+
     private readonly Lock gate = new();
     private readonly SqliteConnection connection;
     private bool disposed;

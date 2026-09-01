@@ -46,7 +46,9 @@ public sealed class PluginStorageConfigurationTests
         var paths = new ApplicationPaths("/base/Maieutics", "/base/Maieutics", null, "/tmp/Maieutics");
         BeSamePath(paths.PluginDataRoot, "/base/Maieutics/plugin-data");
         BeSamePath(paths.AgentRoot, "/base/Maieutics/agent");
-        BeSamePath(paths.AgentDatabasePath, "/base/Maieutics/agent/history.db");
+        BeSamePath(paths.AgentSessionsRoot, "/base/Maieutics/agent/sessions");
+        BeSamePath(paths.AgentObjectsRoot, "/base/Maieutics/agent/objects");
+        BeSamePath(paths.AgentStagingRoot, "/base/Maieutics/agent/objects/.staging");
     }
 
     [Theory]

@@ -61,6 +61,44 @@ public sealed class AgentSession : IAgentSession
         canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
     }
 
+    /// <summary>Creates a session whose canonical history is restored from a stored transcript.</summary>
+    /// <param name="profileProvider">The provider used to acquire each run's model client and options.</param>
+    /// <param name="transcriptStore">The store the session was persisted in; new turns are appended to it.</param>
+    /// <param name="sessionId">The stored session identity to restore.</param>
+    /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <returns>A session whose committed history contains every stored turn of the session.</returns>
+    /// <exception cref="AgentSessionNotFoundException">The store holds no session with this identity.</exception>
+    /// <exception cref="AgentContentCompatibilityException">A stored turn cannot be represented canonically.</exception>
+    public static AgentSession Resume(
+        IAgentRunProfileProvider profileProvider,
+        IAgentTranscriptStore transcriptStore,
+        AgentSessionId sessionId,
+        IEnumerable<AIFunction>? tools = null)
+    {
+        ArgumentNullException.ThrowIfNull(profileProvider);
+        ArgumentNullException.ThrowIfNull(transcriptStore);
+
+        var transcript = transcriptStore.LoadTranscript(sessionId) ??
+                         throw new AgentSessionNotFoundException(sessionId);
+
+        var restored = new AgentSession(profileProvider, tools: tools, transcriptStore: transcriptStore, sessionId);
+        var turns = ImmutableArray.CreateBuilder<AgentTranscriptStateTurn>(transcript.Turns.Length);
+        foreach (var turn in transcript.Turns)
+            turns.Add(AgentTranscriptCodec.DetachPrivateTurn(turn.RunId, turn.ModelIdentity, turn.Messages, turn.Truncated));
+
+        restored.InitializeRestoredState(new AgentTranscriptState(sessionId, turns.Count, turns.ToImmutable()));
+        return restored;
+    }
+
+    /// <summary>Installs a restored canonical state; called once by <see cref="Resume" /> before the session is visible.</summary>
+    private void InitializeRestoredState(AgentTranscriptState restoredState)
+    {
+        lock (transcriptGate)
+        {
+            canonicalState = restoredState;
+        }
+    }
+
     /// <inheritdoc />
     public AgentSessionId Id { get; }
 

@@ -231,7 +231,9 @@ public static class MaieuticsHost
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
             .. services.GetRequiredService<DenoReplFunctions>().Functions
         ]);
-        builder.Services.AddSingleton(CreateAgentSession);
+        builder.Services.AddSingleton(CreateAgentSessionManager);
+        builder.Services.AddSingleton<IAgentSession>(static services =>
+            services.GetRequiredService<MaieuticsAgentSessionManager>());
         builder.Services.AddSingleton<MaieuticsStatusProvider>();
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
@@ -275,11 +277,11 @@ public static class MaieuticsHost
         return application;
     }
 
-    private static IAgentSession CreateAgentSession(IServiceProvider services)
+    private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)
     {
-        return new AgentSession(
+        return new MaieuticsAgentSessionManager(
             services.GetRequiredService<IAgentRunProfileProvider>(),
-            transcriptStore: services.GetService<IAgentTranscriptStore>());
+            services.GetService<IAgentTranscriptStore>());
     }
 
     [SupportedOSPlatform("windows")]
@@ -295,8 +297,9 @@ public static class MaieuticsHost
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {
         var runtimeConfiguration = services.GetRequiredService<IMaieuticsRuntimeConfiguration>();
+        var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
         return new MaieuticsAgentKernelApplication(
-            services.GetRequiredService<IAgentSession>(),
+            sessionManager,
             runtimeConfiguration.GetKernelOptions,
             runtimeConfiguration,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
@@ -305,7 +308,8 @@ public static class MaieuticsHost
             mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
             statusProvider: services.GetRequiredService<MaieuticsStatusProvider>(),
             replControlHost: services.GetRequiredService<ReplControlHost>(),
-            replRegistry: services.GetRequiredService<DenoReplRegistry>());
+            replRegistry: services.GetRequiredService<DenoReplRegistry>(),
+            sessionManager: sessionManager);
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

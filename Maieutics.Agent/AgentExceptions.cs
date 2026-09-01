@@ -98,6 +98,10 @@ public sealed class AgentModelIterationLimitExceededException(int maximumIterati
     public int MaximumIterations { get; } = maximumIterations;
 }
 
+/// <summary>Indicates that a requested stored session does not exist in the transcript store.</summary>
+public sealed class AgentSessionNotFoundException(AgentSessionId sessionId)
+    : AgentException($"No stored agent session matches '{sessionId.Value.ToString("N")}'.");
+
 /// <summary>Indicates that a turn exhausted its wall-clock budget before a final answer.</summary>
 public sealed class AgentTurnDurationExceededException(TimeSpan maximumDuration)
     : AgentException($"The Agent turn exceeded the configured duration limit of {maximumDuration}.")

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -26,6 +27,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
     private readonly DenoReplRegistry? replRegistry;
     private readonly JupyterDenoReplPresentationRouter? replPresentationRouter;
     private readonly ReplControlHost? replControlHost;
+    private readonly MaieuticsAgentSessionManager? sessionManager;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
 
     private readonly IAgentSession session;
@@ -53,7 +55,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         IMaieuticsMcpController? mcpController = null,
         MaieuticsStatusProvider? statusProvider = null,
         ReplControlHost? replControlHost = null,
-        DenoReplRegistry? replRegistry = null)
+        DenoReplRegistry? replRegistry = null,
+        MaieuticsAgentSessionManager? sessionManager = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.getOptions = getOptions ?? throw new ArgumentNullException(nameof(getOptions));
@@ -64,6 +67,7 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         this.statusProvider = statusProvider;
         this.replControlHost = replControlHost;
         this.replRegistry = replRegistry;
+        this.sessionManager = sessionManager;
         if (runtimeConfiguration is null) this.getOptions().Validate();
 
         this.logger = logger ?? NullLogger<MaieuticsAgentKernelApplication>.Instance;
@@ -200,6 +204,10 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             {
                 output = ExecuteStatusCommand(arguments);
             }
+            else if (string.Equals(arguments[1], MaieuticsCommandLanguage.Session, StringComparison.OrdinalIgnoreCase))
+            {
+                output = ExecuteSessionCommand(arguments);
+            }
             else
             {
                 throw new ArgumentException("Unknown Maieutics command.");
@@ -320,6 +328,90 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             throw new ArgumentException("Status is not available in this host.");
 
         return MaieuticsStatusRenderer.Render(statusProvider.Capture());
+    }
+
+    private string ExecuteSessionCommand(string[] arguments)
+    {
+        if (sessionManager is null)
+            throw new ArgumentException("Session commands are not available in this host.");
+
+        if (arguments.Length == 2 ||
+            (arguments.Length == 3 && string.Equals(
+                arguments[2],
+                MaieuticsCommandLanguage.Current,
+                StringComparison.OrdinalIgnoreCase)))
+            return RenderSession(sessionManager);
+
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
+            return RenderStoredSessions(sessionManager);
+
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.New, StringComparison.OrdinalIgnoreCase))
+        {
+            sessionManager.StartNew();
+            return RenderSession(sessionManager);
+        }
+
+        if (arguments.Length == 4 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Resume, StringComparison.OrdinalIgnoreCase))
+        {
+            var sessionId = ResolveStoredSessionId(sessionManager, arguments[3]);
+            try
+            {
+                sessionManager.Resume(sessionId);
+            }
+            catch (AgentException exception)
+            {
+                throw new ArgumentException(exception.Message, exception);
+            }
+
+            return RenderSession(sessionManager);
+        }
+
+        throw new ArgumentException("Unknown session command or invalid arguments.");
+    }
+
+    private static AgentSessionId ResolveStoredSessionId(MaieuticsAgentSessionManager manager, string input)
+    {
+        if (Guid.TryParse(input, out var parsed)) return new AgentSessionId(parsed);
+
+        var matches = manager.ListStoredSessions()
+            .Where(session => session.Id.Value.ToString("N").StartsWith(input, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return matches.Length switch
+        {
+            1 => matches[0].Id,
+            0 => throw new ArgumentException($"No stored session matches '{input}'."),
+            _ => throw new ArgumentException($"'{input}' matches multiple stored sessions; use a longer prefix."),
+        };
+    }
+
+    private static string RenderSession(MaieuticsAgentSessionManager manager)
+    {
+        var turns = manager.GetTranscriptSnapshot().Turns.Length;
+        var persistence = manager.PersistenceEnabled ? "enabled" : "disabled";
+        return $"**Session** `{manager.Id.Value.ToString("N")}` — {turns} turn(s) in memory · persistence {persistence}.";
+    }
+
+    private static string RenderStoredSessions(MaieuticsAgentSessionManager manager)
+    {
+        if (!manager.PersistenceEnabled)
+            return "Transcript persistence is disabled (`Maieutics:Agent:Persistence:Enabled`).";
+
+        var sessions = manager.ListStoredSessions();
+        if (sessions.Count == 0) return "No stored sessions yet.";
+
+        var builder = new StringBuilder();
+        builder.AppendLine("| Session | Turns | Created (UTC) | Last activity (UTC) |");
+        builder.Append("|---|---:|---|---|");
+        foreach (var session in sessions)
+        {
+            builder.AppendLine();
+            builder.Append(CultureInfo.InvariantCulture, $"| `{session.Id.Value.ToString("N")[..12]}` | {session.TurnCount} | {session.CreatedAt.ToUniversalTime():yyyy-MM-dd HH:mm} | {session.LastActivityAt.ToUniversalTime():yyyy-MM-dd HH:mm} |");
+        }
+
+        return builder.ToString();
     }
 
     private static string GetRemainderAfterTokens(string code, int tokenCount)

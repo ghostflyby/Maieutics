@@ -12,6 +12,7 @@ using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
+using Maieutics.Persistence;
 using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
@@ -107,6 +108,20 @@ public static class MaieuticsHost
         var terminalOptions = new TerminalOptions();
         builder.Configuration.GetSection(TerminalOptions.SectionName).Bind(terminalOptions);
         terminalOptions.Validate();
+        // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
+        var agentPersistenceOptions = new MaieuticsAgentPersistenceOptions();
+        builder.Configuration
+            .GetSection($"{MaieuticsOptions.SectionName}:Agent:Persistence")
+            .Bind(agentPersistenceOptions);
+        if (agentPersistenceOptions.Enabled)
+        {
+            var applicationPaths = ApplicationPaths.Resolve();
+            applicationPaths.EnsureAgentRoot();
+            builder.Services.AddSingleton(applicationPaths);
+            builder.Services.AddSingleton<IAgentTranscriptStore>(static services =>
+                new SqliteTranscriptStore(services.GetRequiredService<ApplicationPaths>().AgentDatabasePath));
+        }
+
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
@@ -158,7 +173,7 @@ public static class MaieuticsHost
             );
 
         builder.Services.AddSingleton<PluginHostModule>();
-        builder.Services.AddSingleton(ApplicationPaths.Resolve());
+        builder.Services.TryAddSingleton(ApplicationPaths.Resolve());
         builder.Services.AddSingleton(services => new PluginHostManager(
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -262,7 +277,9 @@ public static class MaieuticsHost
 
     private static IAgentSession CreateAgentSession(IServiceProvider services)
     {
-        return new AgentSession(services.GetRequiredService<IAgentRunProfileProvider>());
+        return new AgentSession(
+            services.GetRequiredService<IAgentRunProfileProvider>(),
+            transcriptStore: services.GetService<IAgentTranscriptStore>());
     }
 
     [SupportedOSPlatform("windows")]

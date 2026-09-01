@@ -101,7 +101,7 @@ internal static class AgentTranscriptCodec
         return new AgentTranscript(state.SessionId, state.Version, turns.ToImmutable());
     }
 
-    private static byte[] SerializeMessages(IReadOnlyList<ChatMessage> messages)
+    internal static byte[] SerializeMessages(IReadOnlyList<ChatMessage> messages)
     {
         try
         {
@@ -113,7 +113,7 @@ internal static class AgentTranscriptCodec
         }
     }
 
-    private static ChatMessage[] DeserializeMessages(ReadOnlySpan<byte> messages)
+    internal static ChatMessage[] DeserializeMessages(ReadOnlySpan<byte> messages)
     {
         return JsonSerializer.Deserialize(messages, ChatMessageArrayTypeInfo)
                ?? throw new JsonException("A canonical Agent transcript turn contains no message array.");

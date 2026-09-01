@@ -14,6 +14,7 @@ public sealed class AgentSession : IAgentSession
 {
     private readonly ImmutableArray<AIFunction> fixedTools;
     private readonly IAgentRunProfileProvider profileProvider;
+    private readonly IAgentTranscriptStore? transcriptStore;
     private readonly Lock transcriptGate = new();
     private AgentTranscriptState canonicalState;
     private int runInProgress;
@@ -22,27 +23,41 @@ public sealed class AgentSession : IAgentSession
     public AgentSession(
         IChatClient chatClient,
         AgentSessionOptions? options = null,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        IAgentTranscriptStore? transcriptStore = null,
+        AgentSessionId? sessionId = null)
         : this(
             new FixedAgentRunProfileProvider(
                 new AgentRunProfile(
                     chatClient ?? throw new ArgumentNullException(nameof(chatClient)),
                     options ?? new AgentSessionOptions(),
-                    tools: CreateToolRegistry(tools).Values)))
+                    tools: CreateToolRegistry(tools).Values)),
+            transcriptStore: transcriptStore,
+            sessionId: sessionId)
     {
     }
 
     /// <summary>Initializes an Agent session whose profile is captured independently for each run.</summary>
     /// <param name="profileProvider">The provider used to acquire each run's model client and options.</param>
     /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <param name="transcriptStore">
+    ///     The optional durable store that receives every committed turn. When omitted, the canonical
+    ///     transcript stays in memory only and process exit loses the session.
+    /// </param>
+    /// <param name="sessionId">
+    ///     The session identity to reuse when reopening a stored session; a new identity is created when omitted.
+    /// </param>
     public AgentSession(
         IAgentRunProfileProvider profileProvider,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        IAgentTranscriptStore? transcriptStore = null,
+        AgentSessionId? sessionId = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        this.transcriptStore = transcriptStore;
         fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
 
-        Id = AgentSessionId.Create();
+        Id = sessionId ?? AgentSessionId.Create();
         canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
     }
 
@@ -189,6 +204,13 @@ public sealed class AgentSession : IAgentSession
         AgentTranscriptState committed;
         lock (transcriptGate)
         {
+            // The durable store commits before the in-memory state changes, so a store failure
+            // rolls the turn back instead of leaving memory ahead of persisted history.
+            if (transcriptStore is not null)
+                transcriptStore.AppendTurn(
+                    Id,
+                    new AgentTranscriptTurn(runId, detachedTurn.Messages, modelIdentity, truncated));
+
             var builder = canonicalState.Turns.ToBuilder();
             builder.Add(detachedTurn);
 

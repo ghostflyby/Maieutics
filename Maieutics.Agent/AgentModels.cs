@@ -18,10 +18,12 @@ public readonly record struct AgentSessionId
     /// <summary>Gets the underlying value.</summary>
     public Guid Value { get; }
 
-    /// <summary>Creates a new identifier.</summary>
+    /// <summary>Creates a new identifier as a UUIDv7: the 48-bit millisecond timestamp sorts
+    /// chronologically, so directory listings order approximately by creation time and SQLite
+    /// B-tree inserts stay time-local. Ordering within one millisecond is not guaranteed.</summary>
     public static AgentSessionId Create()
     {
-        return new AgentSessionId(Guid.NewGuid());
+        return new AgentSessionId(Guid.CreateVersion7());
     }
 
     /// <inheritdoc />

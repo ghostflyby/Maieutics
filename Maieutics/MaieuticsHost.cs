@@ -298,7 +298,9 @@ public static class MaieuticsHost
             familyId => new SqliteTranscriptStore(
                 SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)),
             services.GetService<IAgentObjectStore>(),
-            services.GetService<IObjectReclaimer>());
+            services.GetService<IObjectReclaimer>(),
+            paths.AgentViewSessionsRoot,
+            paths.AgentObjectsRoot);
     }
 
     [SupportedOSPlatform("windows")]

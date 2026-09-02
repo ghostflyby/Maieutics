@@ -380,6 +380,13 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             return RenderGc(sessionManager, graceHours);
         }
 
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Repair, StringComparison.OrdinalIgnoreCase))
+        {
+            var links = sessionManager.RepairObjectView();
+            return $"**View** ensured {links} object link(s) under view/sessions.";
+        }
+
         throw new ArgumentException("Unknown session command or invalid arguments.");
     }
 

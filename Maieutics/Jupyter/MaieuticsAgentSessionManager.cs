@@ -22,6 +22,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly Func<AgentSessionId, SqliteTranscriptStore>? storeFactory;
     private readonly IAgentObjectStore? objectStore;
     private readonly IObjectReclaimer? reclaimer;
+    private readonly string? viewSessionsRoot;
+    private readonly string? objectsRoot;
     private readonly Lock gate = new();
     private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
     private IAgentSession current;
@@ -31,13 +33,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         string? familiesRoot,
         Func<AgentSessionId, SqliteTranscriptStore>? storeFactory,
         IAgentObjectStore? objectStore = null,
-        IObjectReclaimer? reclaimer = null)
+        IObjectReclaimer? reclaimer = null,
+        string? viewSessionsRoot = null,
+        string? objectsRoot = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.familiesRoot = familiesRoot;
         this.storeFactory = storeFactory;
         this.objectStore = objectStore;
         this.reclaimer = reclaimer;
+        this.viewSessionsRoot = viewSessionsRoot;
+        this.objectsRoot = objectsRoot;
         current = new AgentSession(
             profileProvider,
             transcriptStore: OpenStore(AgentSessionId.Create()),
@@ -150,6 +156,30 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
 
         return reclaimer.DeleteExcept(live, DateTimeOffset.UtcNow - gracePeriod);
+    }
+
+    /// <summary>Maintenance pass: rebuilds the derived inspection view (one relative link per
+    /// referenced object per session) from the canonical databases. Best effort — platforms
+    /// without symlink support simply keep an empty view. Returns the number of live links.</summary>
+    /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>
+    public int RepairObjectView()
+    {
+        if (storeFactory is null || familiesRoot is null || viewSessionsRoot is null || objectsRoot is null)
+            throw new ArgumentException(
+                "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to build the object view.");
+
+        var familyStores = new List<SqliteTranscriptStore>();
+        if (Directory.Exists(familiesRoot))
+        {
+            foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+            {
+                if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
+
+                familyStores.Add(RequiredStore(new AgentSessionId(familyId)));
+            }
+        }
+
+        return AgentObjectView.Repair(viewSessionsRoot, objectsRoot, familyStores);
     }
 
     private SqliteTranscriptStore? OpenStore(AgentSessionId familyId)

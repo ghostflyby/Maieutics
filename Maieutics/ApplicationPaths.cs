@@ -31,6 +31,9 @@ internal sealed record ApplicationPaths(
     /// by the family root session id.</summary>
     public string AgentFamiliesRoot => Path.Combine(AgentRoot, "families");
 
+    /// <summary>Derived inspection view: per-session relative links into the object store.</summary>
+    public string AgentViewSessionsRoot => Path.Combine(AgentRoot, "view", "sessions");
+
     /// <summary>Content-addressed blob objects.</summary>
     public string AgentObjectsRoot => Path.Combine(AgentRoot, "objects");
 

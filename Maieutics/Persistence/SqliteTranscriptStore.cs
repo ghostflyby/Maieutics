@@ -202,6 +202,27 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         }
     }
 
+    /// <summary>Collects this family's (session, object address) pairs in commit order; the
+    /// derived inspection view is rebuilt from these pairs.</summary>
+    internal IReadOnlyList<(AgentSessionId Session, string Sha256)> GetSessionObjectReferences()
+    {
+        lock (gate)
+        {
+            using var query = connection.CreateCommand();
+            query.CommandText = "SELECT session_id, sha256 FROM blob_refs ORDER BY session_id, seq;";
+            using var reader = query.ExecuteReader();
+            var references = new List<(AgentSessionId, string)>();
+            while (reader.Read())
+            {
+                references.Add((
+                    new AgentSessionId(Guid.ParseExact(reader.GetString(0), "N")),
+                    reader.GetString(1)));
+            }
+
+            return references;
+        }
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, true)) return;

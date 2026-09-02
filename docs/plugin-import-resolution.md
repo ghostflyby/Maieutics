@@ -183,12 +183,27 @@ worker produces no ready frame and no error output within 90s, while:
   `import: false`/`true`/omitted) all pass.
 
 The delta is specific to the full host topology (real SDK worker bootstrap, materialized
-`links`, plugin-root entry import). Suspected: a hooks/loader interaction during
-registry resolution of import-mapped values inside the worker isolate (F6-class).
-Next steps: capture the worker-side resolution trace inside the real host; file the
-upstream issue with this repro; if the pipeline proves unable to resolve
-import-mapped `jsr:` values in workers, fall back to concretizing merged entries via
-the toolchain (deno.lock) at scan time.
+`links`, plugin-root entry import). Bisection over the worker's import form
+(`WorkerReadinessBisection`, kept in the integration suite) refined the finding:
+
+- **sdk-only** (SDK import only; merged entries present but unused): reliably ready —
+  merged entries in the process config do not harm the worker.
+- **sdk-alias** (bare alias through the process import map): **non-deterministic** —
+  one run resolved the alias, executed the aliased import and completed registration
+  (the kernel's dynamic discovery logged an invalid-definition warning, proving the
+  handler ran); another run of identical code never became ready.
+- **sdk-direct-jsr** (self-contained `jsr:@std/bytes@1/concat` written directly):
+  reliably hangs/fails — registry `jsr:` specifiers inside the hooked worker do not
+  resolve in the host topology.
+
+This is the F6 non-determinism manifesting in the real topology: registry resolution
+of `jsr:` inputs inside the worker's hooks pipeline is unreliable. Impact: alias
+imports through the merged map work only intermittently (worse than not working),
+and jsr-installed plugins' own self-contained imports are exposed to the same
+instability. Path forward: file the upstream issue with this repro; until the hooks
+pipeline reliably concretizes `jsr:` inputs in workers, bare-alias support stays
+behind this test, and a toolchain-mediated concretization of merged entries (deno.lock
+at scan time) is the fallback candidate.
 
 ## 6. SDK changes
 

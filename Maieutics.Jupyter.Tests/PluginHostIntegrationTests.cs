@@ -215,21 +215,21 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
-    // Open blocker (docs/plugin-import-resolution.md §5.1): the merged entry reaches the
-    // process config, but the plugin worker's alias import never completes inside the real
-    // host topology (no ready frame, no error output; minimal worker replicas pass). Kept
-    // as the verification instrument for the follow-up investigation.
-    [Fact(Timeout = 120_000, Skip = "Open blocker: plugin worker alias import hangs in the real host topology — see docs/plugin-import-resolution.md §5.1")]
-    public async Task ResolvesPluginDenoJsonAliasesThroughTheMergedProcessImportMap()
+    // Bisection (docs/plugin-import-resolution.md §5.1): which import form leaves the
+    // plugin worker without a ready frame in the real host topology?
+    [Theory(Timeout = 45_000)]
+    [InlineData("sdk-only")]
+    [InlineData("sdk-alias")]
+    public async Task WorkerReadinessBisection(string variant)
     {
         if (OperatingSystem.IsWindows()) return;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(90));
+        timeout.CancelAfter(TimeSpan.FromSeconds(40));
         var registry = new ReplControlSessionRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
-        var pluginsRoot = CreateAliasedPluginsRoot();
+        var pluginsRoot = CreateAliasedPluginsRoot(variant);
         var manager = new PluginHostManager(
             pluginsRoot,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
@@ -237,8 +237,8 @@ public sealed class PluginHostIntegrationTests
             new DenoReplOptions { Executable = "deno" },
             modules,
             registry,
-            NullLogger<PluginHostManager>.Instance,
-            NullLoggerFactory.Instance,
+            new DebugConsoleLogger<PluginHostManager>(),
+            new DebugConsoleLoggerFactory(),
             TimeProvider.System);
         var controlHost = new ReplControlHost(
             socketPath,
@@ -250,7 +250,8 @@ public sealed class PluginHostIntegrationTests
         await using (application)
         await using (manager)
         {
-            // The plugin's deno.json alias reached the process import map (§4 merge).
+            // The merged entry is present in every variant: only the worker's import
+            // form differs, so the variants isolate the failing resolution path.
             File.ReadAllText(modules.ConfigFile).Should().Contain("\"@std/bytes\"");
 
             var registrations = await WaitForRegistrationsAsync(
@@ -259,9 +260,6 @@ public sealed class PluginHostIntegrationTests
                 timeout.Token);
             registrations.Should().NotBeEmpty();
 
-            // The discovery result is the runtime output of the aliased import:
-            // concat(Uint8Array [1,2], [3,4]) renders as "1,2,3,4" — the alias
-            // resolved and executed inside the plugin worker.
             var outcome = await manager.InvokeExtensionPointAsync(
                 registrations[0].PluginId,
                 registrations[0].ExportName,
@@ -269,8 +267,10 @@ public sealed class PluginHostIntegrationTests
                 null,
                 timeout.Token);
             outcome.IsError.Should().BeFalse(outcome.Message);
-            outcome.Value!.Value.GetRawText().Should().Contain("1,2,3,4");
+            if (variant != "sdk-only")
+                outcome.Value!.Value.GetRawText().Should().Contain("1,2,3,4");
         }
+        Console.WriteLine($"[bisection] {variant}: READY");
     }
 
     [Fact(Timeout = 120_000)]
@@ -455,8 +455,21 @@ public sealed class PluginHostIntegrationTests
     /// <summary>Same layout as CreatePluginsRoot plus a deno.json alias import
     /// whose runtime resolution the merged process import map must provide
     /// (docs/plugin-import-resolution.md §8).</summary>
-    private static string CreateAliasedPluginsRoot()
+    private static string CreateAliasedPluginsRoot(string variant)
     {
+        // deno.json imports are identical in every variant: the process import map is
+        // constant, and only the worker's import FORM differs (§5.1 bisection).
+        var importLine = variant switch
+        {
+            "sdk-alias" => "import { concat } from \"@std/bytes/concat\";",
+            "sdk-direct-jsr" => "import { concat } from \"jsr:@std/bytes@1/concat\";",
+            _ => "",
+        };
+        var sdkImport = "import { defineExtensionPoint } from \"jsr:@maieutics/plugin-sdk@^0.1\";";
+        var moduleBody = variant == "sdk-only"
+            ? $"{sdkImport}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\" }} }}],\n}});"
+            : $"{sdkImport}\n{importLine}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\", args: [String(concat(new Uint8Array([1, 2]), new Uint8Array([3, 4])))] }} }}],\n}});";
+
         var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         File.WriteAllText(
@@ -478,16 +491,27 @@ public sealed class PluginHostIntegrationTests
               "entrypoints": { "main": ["./mod.ts"] }
             }
             """);
-        File.WriteAllText(
-            Path.Combine(root, "mod.ts"),
-            """
-            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
-            import { concat } from "@std/bytes/concat";
-            export const discover = defineExtensionPoint("McpDiscover", {
-              handler: () => [{ module: String(concat(new Uint8Array([1, 2]), new Uint8Array([3, 4]))) }],
-            });
-            """);
+        File.WriteAllText(Path.Combine(root, "mod.ts"), moduleBody + "\n");
         return root;
+    }
+
+    private sealed class DebugConsoleLogger<T> : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            var line = formatter(state, exception);
+            if (!string.IsNullOrWhiteSpace(line)) Console.WriteLine($"[host:{logLevel}] {line}");
+            if (exception is not null) Console.WriteLine(exception);
+        }
+    }
+
+    private sealed class DebugConsoleLoggerFactory : ILoggerFactory
+    {
+        public void AddProvider(ILoggerProvider provider) { }
+        public ILogger CreateLogger(string categoryName) => new DebugConsoleLogger<object>();
+        public void Dispose() { }
     }
 
 

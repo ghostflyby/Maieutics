@@ -105,6 +105,21 @@ public sealed class ObjectStoreTests : IDisposable
     }
 
     [Fact]
+    public void DeleteExceptReclaimsUnreferencedObjects()
+    {
+        var store = CreateStore();
+        var keep = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("keep")));
+        var drop = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("drop")));
+
+        var removed = store.DeleteExcept([keep.Sha256]);
+
+        removed.Should().Be(1);
+        store.Exists(keep.Sha256).Should().BeTrue();
+        store.Exists(drop.Sha256).Should().BeFalse();
+        store.DeleteExcept([keep.Sha256]).Should().Be(0);
+    }
+
+    [Fact]
     public void DeleteRemovesThePublishedObject()
     {
         var store = CreateStore();

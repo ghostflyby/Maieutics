@@ -16,7 +16,7 @@ namespace Maieutics.Persistence;
 /// </summary>
 internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 {
-    private const int CurrentSchemaVersion = 1;
+    private const int CurrentSchemaVersion = 2;
 
     /// <summary>One database file per fork family; the family directory is keyed by the family
     /// root session id so derived scanners and backups can glob <c>families/*/history.db</c>.</summary>
@@ -48,11 +48,13 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         Migrate();
     }
 
-    public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn)
+    public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
     {
         ArgumentNullException.ThrowIfNull(turn);
+        ArgumentNullException.ThrowIfNull(objectReferences);
         var now = DateTimeOffset.UtcNow.ToString("O");
         var messages = AgentTranscriptEncoding.Encode(turn.Messages);
+        var familyId = sessionId.Value.ToString("N");
         lock (gate)
         {
             using var transaction = connection.BeginTransaction();
@@ -63,7 +65,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                 VALUES($id, $now, $now, 0)
                 ON CONFLICT(id) DO NOTHING;
                 """;
-            session.Parameters.AddWithValue("$id", sessionId.Value.ToString("N"));
+            session.Parameters.AddWithValue("$id", familyId);
             session.Parameters.AddWithValue("$now", now);
             session.ExecuteNonQuery();
 
@@ -87,7 +89,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                 SET last_activity_at = $now, turn_count = turn_count + 1
                 WHERE id = $id;
                 """;
-            append.Parameters.AddWithValue("$id", sessionId.Value.ToString("N"));
+            append.Parameters.AddWithValue("$id", familyId);
             append.Parameters.AddWithValue("$runId", turn.RunId.Value.ToString("N"));
             append.Parameters.AddWithValue("$truncated", turn.Truncated ? 1L : 0L);
             append.Parameters.AddWithValue("$profileId", turn.ModelIdentity?.ProfileId.Value as object ?? DBNull.Value);
@@ -97,6 +99,30 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             append.Parameters.AddWithValue("$byteCount", messages.LongLength);
             append.Parameters.AddWithValue("$now", now);
             append.ExecuteNonQuery();
+
+            if (objectReferences.Count > 0)
+            {
+                var seq = connection.CreateCommand();
+                seq.Transaction = transaction;
+                seq.CommandText = "SELECT COALESCE(MAX(seq), -1) FROM turns WHERE session_id = $id;";
+                seq.Parameters.AddWithValue("$id", familyId);
+                var turnSeq = Convert.ToInt64(seq.ExecuteScalar()!);
+
+                foreach (var sha256 in objectReferences.Distinct(StringComparer.Ordinal))
+                {
+                    var reference = connection.CreateCommand();
+                    reference.Transaction = transaction;
+                    reference.CommandText = """
+                        INSERT OR IGNORE INTO blob_refs(session_id, seq, sha256)
+                        VALUES($id, $seq, $sha256);
+                        """;
+                    reference.Parameters.AddWithValue("$id", familyId);
+                    reference.Parameters.AddWithValue("$seq", turnSeq);
+                    reference.Parameters.AddWithValue("$sha256", sha256);
+                    reference.ExecuteNonQuery();
+                }
+            }
+
             transaction.Commit();
         }
     }
@@ -137,8 +163,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     }
 
     public IReadOnlyList<AgentSessionDescriptor> ListSessions()
-    {
-        lock (gate)
+    {        lock (gate)
         {
             using var query = connection.CreateCommand();
             query.CommandText = """
@@ -158,6 +183,22 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             }
 
             return sessions;
+        }
+    }
+
+    /// <summary>Collects the distinct object addresses this family's turns reference; the union
+    /// across family databases is the live set for object garbage collection.</summary>
+    internal IReadOnlyCollection<string> GetReferencedObjectIds()
+    {
+        lock (gate)
+        {
+            using var query = connection.CreateCommand();
+            query.CommandText = "SELECT DISTINCT sha256 FROM blob_refs;";
+            using var reader = query.ExecuteReader();
+            var ids = new List<string>();
+            while (reader.Read()) ids.Add(reader.GetString(0));
+
+            return ids;
         }
     }
 
@@ -189,33 +230,36 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             using var transaction = connection.BeginTransaction();
             var migrate = connection.CreateCommand();
             migrate.Transaction = transaction;
-            migrate.CommandText = CurrentSchemaVersion switch
-            {
-                1 when current < 1 => """
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        id TEXT PRIMARY KEY,
-                        created_at TEXT NOT NULL,
-                        last_activity_at TEXT NOT NULL,
-                        turn_count INTEGER NOT NULL);
+            // The full idempotent script: every step uses IF NOT EXISTS, so a fresh database
+            // and any older version both converge to the current schema in one transaction.
+            migrate.CommandText = """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    last_activity_at TEXT NOT NULL,
+                    turn_count INTEGER NOT NULL);
 
-                    CREATE TABLE IF NOT EXISTS turns (
-                        session_id TEXT NOT NULL REFERENCES sessions(id),
-                        seq INTEGER NOT NULL,
-                        run_id TEXT NOT NULL,
-                        truncated INTEGER NOT NULL,
-                        profile_id TEXT,
-                        model_provider TEXT,
-                        model_name TEXT,
-                        messages BLOB NOT NULL,
-                        byte_count INTEGER NOT NULL,
-                        created_at TEXT NOT NULL,
-                        PRIMARY KEY (session_id, seq));
+                CREATE TABLE IF NOT EXISTS turns (
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    seq INTEGER NOT NULL,
+                    run_id TEXT NOT NULL,
+                    truncated INTEGER NOT NULL,
+                    profile_id TEXT,
+                    model_provider TEXT,
+                    model_name TEXT,
+                    messages BLOB NOT NULL,
+                    byte_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, seq));
 
-                    PRAGMA user_version=1;
-                    """,
-                _ => throw new InvalidOperationException(
-                    $"No migration path from Agent transcript schema version {current} to {CurrentSchemaVersion}."),
-            };
+                CREATE TABLE IF NOT EXISTS blob_refs (
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    seq INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    PRIMARY KEY (session_id, seq, sha256));
+
+                PRAGMA user_version=2;
+                """;
             migrate.ExecuteNonQuery();
             transaction.Commit();
         }

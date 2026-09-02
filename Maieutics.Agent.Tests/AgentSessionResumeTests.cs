@@ -101,7 +101,7 @@ public sealed class AgentSessionResumeTests
         private readonly Lock gate = new();
         private readonly Dictionary<string, List<AgentTranscriptTurn>> sessions = new(StringComparer.Ordinal);
 
-        public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn)
+        public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
         {
             lock (gate)
             {

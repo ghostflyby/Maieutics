@@ -152,6 +152,39 @@ internal sealed class ObjectStore : IAgentObjectStore
         return removed;
     }
 
+    /// <summary>Reclamation for garbage collection: deletes every published object whose
+    /// address is not in the live set. Absent objects are ignored and individual failures (a
+    /// scanner holding a lock) are skipped; both surface on the next pass.</summary>
+    /// <returns>The number of objects removed.</returns>
+    internal int DeleteExcept(IReadOnlyCollection<string> liveSha256)
+    {
+        if (!Directory.Exists(objectsRoot)) return 0;
+
+        var keep = liveSha256.ToHashSet(StringComparer.Ordinal);
+        var removed = 0;
+        foreach (var directory in Directory.EnumerateDirectories(objectsRoot))
+        {
+            // Dot-prefixed directories (.staging, future .trash) are not object fan-out.
+            if (Path.GetFileName(directory).StartsWith(".", StringComparison.Ordinal)) continue;
+
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                if (keep.Contains(Path.GetFileName(file))) continue;
+
+                try
+                {
+                    File.Delete(file);
+                    removed++;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+
+        return removed;
+    }
+
     internal static void ValidateId(string sha256)
     {
         if (sha256.Length != 64 || sha256.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')))

@@ -17,11 +17,13 @@ namespace Maieutics.Agent;
 /// </remarks>
 public interface IAgentTranscriptStore
 {
-    /// <summary>Appends one complete committed turn and advances the session's stored head.</summary>
+    /// <summary>Appends one complete committed turn, its object references, and advances the
+    /// session's stored head. References feed reachability tracking for object garbage collection.</summary>
     /// <param name="sessionId">The session that committed the turn. The first append creates the session.</param>
     /// <param name="turn">The complete committed turn, from the submitted user message to the final assistant message.</param>
+    /// <param name="objectReferences">The distinct object addresses referenced by the turn's content.</param>
     /// <exception cref="InvalidOperationException">The turn could not be committed durably.</exception>
-    void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn);
+    void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences);
 
     /// <summary>Loads the committed transcript of one stored session.</summary>
     /// <param name="sessionId">The session to load.</param>

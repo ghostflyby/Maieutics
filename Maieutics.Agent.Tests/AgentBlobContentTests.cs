@@ -119,6 +119,33 @@ public sealed class AgentBlobContentTests
         descriptor.MediaType.Should().Be("application/json");
     }
 
+    [Fact]
+    public void CollectObjectReferencesFindsBlobContentAndTruncatedEnvelopes()
+    {
+        var store = new InMemoryObjectStore();
+        var reference = AgentContentTriage.Ingest(
+            store, new MemoryStream(Encoding.UTF8.GetBytes(new string('y', 70_000))), "text/plain");
+        AgentBlobContent.TryParse(reference, out var descriptor).Should().BeTrue();
+
+        var envelopeSha = new string('b', 64);
+        var truncated = JsonSerializer.SerializeToElement(new
+        {
+            status = "ok",
+            value = "<truncated>",
+            truncated = true,
+            @object = new { sha256 = envelopeSha, size = 9_000, mediaType = "application/json" }
+        });
+        var messages = new[]
+        {
+            new ChatMessage(ChatRole.User, [new TextContent("question"), reference]),
+            new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", truncated)]),
+        };
+
+        var references = AgentTranscriptCodec.CollectObjectReferences(messages);
+
+        references.Should().BeEquivalentTo([descriptor.Sha256, envelopeSha]);
+    }
+
     private static async Task<List<AgentEvent>> ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)

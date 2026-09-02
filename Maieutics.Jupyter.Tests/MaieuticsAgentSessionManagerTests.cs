@@ -50,8 +50,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         var sessionId = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(sessionId)))
         {
-            store.AppendTurn(sessionId, Turn(sessionId, "a", "Question one", "Answer one"));
-            store.AppendTurn(sessionId, Turn(sessionId, "b", "Question two", "Answer two"));
+            store.AppendTurn(sessionId, Turn(sessionId, "a", "Question one", "Answer one"), []);;
+            store.AppendTurn(sessionId, Turn(sessionId, "b", "Question two", "Answer two"), []);;
         }
 
         using var manager = CreateManager();
@@ -87,12 +87,12 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         var newer = AgentSessionId.Create();
         using (var first = new SqliteTranscriptStore(FamilyPath(older)))
         {
-            first.AppendTurn(older, Turn(older, "a", "old question", "old answer"));
+            first.AppendTurn(older, Turn(older, "a", "old question", "old answer"), []);;
         }
 
         using (var second = new SqliteTranscriptStore(FamilyPath(newer)))
         {
-            second.AppendTurn(newer, Turn(newer, "b", "new question", "new answer"));
+            second.AppendTurn(newer, Turn(newer, "b", "new question", "new answer"), []);;
         }
 
         using var manager = CreateManager();

@@ -31,6 +31,57 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
     }
 
     [Fact]
+    public void AppendedObjectReferencesFeedGarbageCollection()
+    {
+        var sessionId = AgentSessionId.Create();
+        var turn = Turn(sessionId, "a", identity: null, truncated: false,
+            ("user", "Question"), ("assistant", "Answer"));
+        var referenced = new string('b', 64);
+        var alsoReferenced = new string('c', 64);
+
+        using (var store = new SqliteTranscriptStore(databasePath))
+        {
+            store.AppendTurn(sessionId, turn, [referenced, alsoReferenced, referenced]);
+            store.AppendTurn(sessionId, turn, []);
+        }
+
+        using var reopened = new SqliteTranscriptStore(databasePath);
+        var references = reopened.GetReferencedObjectIds();
+        references.Should().BeEquivalentTo([referenced, alsoReferenced]);
+    }
+
+    [Fact]
+    public void MigratesVersionOneDatabasesToTheCurrentSchema()
+    {
+        Directory.CreateDirectory(databaseDirectory);
+        using (var legacy = new SqliteConnection($"Data Source={databasePath}"))
+        {
+            legacy.Open();
+            using var script = legacy.CreateCommand();
+            script.CommandText = """
+                CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+                    last_activity_at TEXT NOT NULL, turn_count INTEGER NOT NULL);
+                CREATE TABLE turns (session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL,
+                    run_id TEXT NOT NULL, truncated INTEGER NOT NULL, profile_id TEXT, model_provider TEXT,
+                    model_name TEXT, messages BLOB NOT NULL, byte_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL, PRIMARY KEY (session_id, seq));
+                INSERT INTO sessions VALUES('00000000000000000000000000000001', '2026-01-01T00:00:00.0000000+00:00',
+                    '2026-01-01T00:00:00.0000000+00:00', 0);
+                PRAGMA user_version=1;
+                """;
+            script.ExecuteNonQuery();
+        }
+
+        using var store = new SqliteTranscriptStore(databasePath);
+        store.ListSessions().Should().ContainSingle();
+        using var check = new SqliteConnection($"Data Source={databasePath}");
+        check.Open();
+        using var version = check.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        Convert.ToInt32(version.ExecuteScalar()).Should().Be(2);
+    }
+
+    [Fact]
     public void FamilyDatabasePathJoinsTheFamilyDirectory()
     {
         var familyId = AgentSessionId.Create();
@@ -60,8 +111,8 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         using (var store = new SqliteTranscriptStore(databasePath))
         {
-            store.AppendTurn(sessionId, first);
-            store.AppendTurn(sessionId, second);
+            store.AppendTurn(sessionId, first, []);
+            store.AppendTurn(sessionId, second, []);
         }
 
         using var reopened = new SqliteTranscriptStore(databasePath);
@@ -100,7 +151,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
             modelIdentity: null);
 
         using var store = new SqliteTranscriptStore(databasePath);
-        store.AppendTurn(sessionId, turn);
+        store.AppendTurn(sessionId, turn, []);
         var loaded = store.LoadTranscript(sessionId);
 
         loaded.Should().NotBeNull();

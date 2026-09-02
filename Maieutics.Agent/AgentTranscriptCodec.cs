@@ -253,6 +253,37 @@ internal static class AgentTranscriptCodec
         }
     }
 
+    /// <summary>Collects the distinct object addresses referenced by one turn: blob reference
+    /// content and truncated tool envelopes that name a stored object. The transcript store uses
+    /// this to track reachability for garbage collection.</summary>
+    internal static IReadOnlyList<string> CollectObjectReferences(IReadOnlyList<ChatMessage> messages)
+    {
+        var references = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var message in messages)
+        {
+            foreach (var content in message.Contents)
+            {
+                if (AgentBlobContent.TryParse(content, out var descriptor))
+                    references.Add(descriptor.Sha256);
+
+                if (content is FunctionResultContent result &&
+                    result.Result is JsonElement envelope &&
+                    envelope.ValueKind == JsonValueKind.Object &&
+                    envelope.TryGetProperty("object", out var objectProperty) &&
+                    objectProperty.ValueKind == JsonValueKind.Object &&
+                    objectProperty.TryGetProperty("sha256", out var shaProperty) &&
+                    shaProperty.ValueKind == JsonValueKind.String)
+                {
+                    var sha256 = shaProperty.GetString();
+                    if (sha256 is { Length: 64 } && sha256.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f')))
+                        references.Add(sha256);
+                }
+            }
+        }
+
+        return references.ToArray();
+    }
+
     private static void ValidateDataContent(DataContent data)
     {
         // A blob reference is small structured JSON naming large stored bytes; it never inlines

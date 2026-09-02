@@ -262,7 +262,8 @@ public sealed class AgentSession : IAgentSession
             if (transcriptStore is not null)
                 transcriptStore.AppendTurn(
                     Id,
-                    new AgentTranscriptTurn(runId, detachedTurn.Messages, modelIdentity, truncated));
+                    new AgentTranscriptTurn(runId, detachedTurn.Messages, modelIdentity, truncated),
+                    AgentTranscriptCodec.CollectObjectReferences(detachedTurn.Messages));
 
             var builder = canonicalState.Turns.ToBuilder();
             builder.Add(detachedTurn);

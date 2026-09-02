@@ -117,14 +117,17 @@ public sealed class AgentTranscriptStoreTests
 
         public List<AgentSessionId> SessionIds { get; } = [];
 
+        public List<IReadOnlyList<string>> References { get; } = [];
+
         public bool FailOnAppend { get; set; }
 
-        public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn)
+        public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
         {
             lock (gate)
             {
                 if (FailOnAppend) throw new InvalidOperationException("The transcript store is unavailable.");
                 SessionIds.Add(sessionId);
+                References.Add(objectReferences);
                 Turns.Add(new AgentTranscriptTurn(
                     turn.RunId,
                     turn.Messages.Select(message => message.Clone()).ToArray(),

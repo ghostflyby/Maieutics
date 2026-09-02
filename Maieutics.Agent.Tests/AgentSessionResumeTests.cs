@@ -34,8 +34,13 @@ public sealed class AgentSessionResumeTests
         await ReadEventsAsync(next, deadline.Token);
         (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("second");
 
-        store.LoadTranscript(sessionId)!.Turns.Should().HaveCount(2);
-        store.LoadTranscript(sessionId)!.Turns[1].Messages[0].Text.Should().Be("two");
+        if (store.LoadTranscript(sessionId) is not { } persisted)
+        {
+            throw new InvalidOperationException("The resumed session's turns were not persisted.");
+        }
+
+        persisted.Turns.Should().HaveCount(2);
+        persisted.Turns[1].Messages[0].Text.Should().Be("two");
     }
 
     [Fact]
@@ -52,7 +57,8 @@ public sealed class AgentSessionResumeTests
     {
         public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(new AgentRunProfile(client, new AgentSessionOptions())));
+            return Task.FromResult<IAgentRunProfileLease>(
+                new Lease(new AgentRunProfile(client, new AgentSessionOptions())));
         }
 
         private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease

@@ -120,6 +120,7 @@ public static class MaieuticsHost
             builder.Services.AddSingleton(applicationPaths);
             builder.Services.AddSingleton<IAgentObjectStore>(static services => new ObjectStore(
                 services.GetRequiredService<ApplicationPaths>().AgentObjectsRoot));
+            builder.Services.AddSingleton<AgentObjectFunctions>();
         }
 
         builder.Services.AddSingleton(configurationFile);
@@ -229,7 +230,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
-            .. services.GetRequiredService<DenoReplFunctions>().Functions
+            .. services.GetRequiredService<DenoReplFunctions>().Functions,
+            .. (services.GetService<AgentObjectFunctions>()?.Functions ?? [])
         ]);
         builder.Services.AddSingleton(CreateAgentSessionManager);
         builder.Services.AddSingleton<IAgentSession>(static services =>

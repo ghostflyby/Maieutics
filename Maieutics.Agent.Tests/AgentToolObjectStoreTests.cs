@@ -33,7 +33,8 @@ public sealed class AgentToolObjectStoreTests
         store.Objects.Should().HaveCount(1);
         var finished = events.OfType<AgentToolFinished>().Single();
         finished.Result.GetProperty("truncated").GetBoolean().Should().BeTrue();
-        var sha = finished.Result.GetProperty("object").GetProperty("sha256").GetString()!;
+        var sha = finished.Result.GetProperty("object").GetProperty("sha256").GetString();
+        sha.Should().NotBeNull();
         store.Objects.Should().ContainKey(sha);
         store.Objects[sha].Should().HaveCountGreaterThan(512);
         Encoding.UTF8.GetString(store.Objects[sha]).Should().Contain(new string('x', 4_096));
@@ -173,6 +174,17 @@ public sealed class AgentToolObjectStoreTests
             var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             lock (gate) Objects[sha256] = bytes;
             return new AgentObjectDescriptor(sha256, bytes.Length);
+        }
+
+        public Stream Open(string sha256)
+        {
+            lock (gate)
+            {
+                if (!Objects.TryGetValue(sha256, out var bytes))
+                    throw new FileNotFoundException($"Object '{sha256}' is not present.", sha256);
+
+                return new MemoryStream(bytes, writable: false);
+            }
         }
     }
 }

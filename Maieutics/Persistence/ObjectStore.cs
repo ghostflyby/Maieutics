@@ -152,7 +152,7 @@ internal sealed class ObjectStore : IAgentObjectStore
         return removed;
     }
 
-    private static void ValidateId(string sha256)
+    internal static void ValidateId(string sha256)
     {
         if (sha256.Length != 64 || sha256.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')))
             throw new ArgumentException(

@@ -14,6 +14,13 @@ public interface IAgentObjectStore
     /// <returns>The descriptor of the published object.</returns>
     /// <exception cref="InvalidOperationException">The bytes could not be published durably.</exception>
     AgentObjectDescriptor Ingest(Stream content);
+
+    /// <summary>Opens a published object for reading.</summary>
+    /// <param name="sha256">The lowercase SHA-256 content address.</param>
+    /// <returns>A read-only stream over the object bytes.</returns>
+    /// <exception cref="ArgumentException">The id is not a valid content address.</exception>
+    /// <exception cref="FileNotFoundException">The object is not present in the store.</exception>
+    Stream Open(string sha256);
 }
 
 /// <summary>Describes one published object: its content address and byte size.</summary>

@@ -54,7 +54,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
     public void MigratesVersionOneDatabasesToTheCurrentSchema()
     {
         Directory.CreateDirectory(databaseDirectory);
-        using (var legacy = new SqliteConnection($"Data Source={databasePath}"))
+        using (var legacy = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
         {
             legacy.Open();
             using var script = legacy.CreateCommand();
@@ -74,7 +74,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         using var store = new SqliteTranscriptStore(databasePath);
         store.ListSessions().Should().ContainSingle();
-        using var check = new SqliteConnection($"Data Source={databasePath}");
+        using var check = new SqliteConnection($"Data Source={databasePath};Pooling=False");
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
@@ -172,7 +172,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
     public void RefusesDatabasesWrittenByANewerSchema()
     {
         Directory.CreateDirectory(databaseDirectory);
-        using (var newer = new SqliteConnection($"Data Source={databasePath}"))
+        using (var newer = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
         {
             newer.Open();
             using var bump = newer.CreateCommand();

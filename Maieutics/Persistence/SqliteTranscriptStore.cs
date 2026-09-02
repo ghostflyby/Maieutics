@@ -34,7 +34,9 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         var directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        connection = new SqliteConnection($"Data Source={databasePath}");
+        // Pooling disabled: each family store holds exactly one connection for its lifetime, and
+        // pooled handles would keep deleted family directories locked on Windows.
+        connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
         connection.Open();
         using var pragmas = connection.CreateCommand();
         // Journal mode is queried back to fail loudly on filesystems (network shares) that

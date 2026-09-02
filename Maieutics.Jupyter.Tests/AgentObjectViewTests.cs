@@ -43,6 +43,14 @@ public sealed class AgentObjectViewTests : IDisposable
 
         var ensured = AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]);
 
+        // The view degrades on platforms without symlink privileges (Windows CI); the
+        // degradation contract is an empty view, never a failed repair.
+        if (!SymlinksSupported(agentRoot))
+        {
+            ensured.Should().Be(0);
+            return;
+        }
+
         ensured.Should().Be(1);
         var linkPath = Path.Combine(viewSessionsRoot, sessionId.Value.ToString("N"), "objects", ingested.Sha256);
         File.Exists(linkPath).Should().BeTrue();
@@ -67,6 +75,24 @@ public sealed class AgentObjectViewTests : IDisposable
         AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]).Should().Be(0);
         Directory.Exists(Path.Combine(viewSessionsRoot, sessionId.Value.ToString("N"), "objects"))
             .Should().BeFalse();
+    }
+
+    /// <summary>Probes whether this environment may create symlinks at all (Windows needs
+    /// Developer Mode or elevation; the CI runner has neither).</summary>
+    private static bool SymlinksSupported(string root)
+    {
+        var probe = Path.Combine(root, ".symlink-probe");
+        try
+        {
+            File.CreateSymbolicLink(probe, "probe-target");
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static AgentTranscriptTurn Turn(AgentSessionId sessionId, string sha256)

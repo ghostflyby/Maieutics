@@ -37,17 +37,27 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         // Pooling disabled: each family store holds exactly one connection for its lifetime, and
         // pooled handles would keep deleted family directories locked on Windows.
         connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
-        connection.Open();
-        using var pragmas = connection.CreateCommand();
-        // Journal mode is queried back to fail loudly on filesystems (network shares) that
-        // cannot provide WAL, instead of silently degrading to rollback-journal locking.
-        pragmas.CommandText = """
-            PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
-            PRAGMA foreign_keys=ON;
-            """;
-        pragmas.ExecuteNonQuery();
-        Migrate();
+        try
+        {
+            connection.Open();
+            using var pragmas = connection.CreateCommand();
+            // Journal mode is queried back to fail loudly on filesystems (network shares) that
+            // cannot provide WAL, instead of silently degrading to rollback-journal locking.
+            pragmas.CommandText = """
+                PRAGMA journal_mode=WAL;
+                PRAGMA synchronous=NORMAL;
+                PRAGMA foreign_keys=ON;
+                """;
+            pragmas.ExecuteNonQuery();
+            Migrate();
+        }
+        catch
+        {
+            // A rejected store must not leak its open handle: on Windows it would keep the
+            // database file locked after the constructor failed.
+            connection.Dispose();
+            throw;
+        }
     }
 
     public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)

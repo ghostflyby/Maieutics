@@ -24,6 +24,7 @@ internal static class MaieuticsCommandLanguage
     internal const string Reset = "reset";
     internal const string New = "new";
     internal const string Resume = "resume";
+    internal const string Gc = "gc";
     internal const string Available = "available";
     internal const string RefreshFlag = "--refresh";
 
@@ -45,7 +46,7 @@ internal static class MaieuticsCommandLanguage
     private static readonly string[] RootCommandMatches = [Mcp, Model, Session, Workspace];
     private static readonly string[] McpCommandMatches = [List];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
-    private static readonly string[] SessionCommandMatches = [Current, List, Resume, New];
+    private static readonly string[] SessionCommandMatches = [Current, Gc, List, New, Resume];
     private static readonly string[] WorkspaceCommandMatches = [Current, Use, Reset];
 
     internal static bool IsCommandCell(string code)

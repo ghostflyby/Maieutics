@@ -111,12 +111,12 @@ public sealed class ObjectStoreTests : IDisposable
         var keep = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("keep")));
         var drop = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("drop")));
 
-        var removed = store.DeleteExcept([keep.Sha256]);
+        var removed = store.DeleteExcept([keep.Sha256], DateTimeOffset.UtcNow);
 
         removed.Should().Be(1);
         store.Exists(keep.Sha256).Should().BeTrue();
         store.Exists(drop.Sha256).Should().BeFalse();
-        store.DeleteExcept([keep.Sha256]).Should().Be(0);
+        store.DeleteExcept([keep.Sha256], DateTimeOffset.UtcNow).Should().Be(0);
     }
 
     [Fact]

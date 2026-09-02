@@ -19,22 +19,25 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 {
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly string? familiesRoot;
-    private readonly Func<AgentSessionId, IAgentTranscriptStore>? storeFactory;
+    private readonly Func<AgentSessionId, SqliteTranscriptStore>? storeFactory;
     private readonly IAgentObjectStore? objectStore;
+    private readonly IObjectReclaimer? reclaimer;
     private readonly Lock gate = new();
-    private readonly Dictionary<string, IAgentTranscriptStore> stores = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
     private IAgentSession current;
 
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
         string? familiesRoot,
-        Func<AgentSessionId, IAgentTranscriptStore>? storeFactory,
-        IAgentObjectStore? objectStore = null)
+        Func<AgentSessionId, SqliteTranscriptStore>? storeFactory,
+        IAgentObjectStore? objectStore = null,
+        IObjectReclaimer? reclaimer = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.familiesRoot = familiesRoot;
         this.storeFactory = storeFactory;
         this.objectStore = objectStore;
+        this.reclaimer = reclaimer;
         current = new AgentSession(
             profileProvider,
             transcriptStore: OpenStore(AgentSessionId.Create()),
@@ -126,7 +129,30 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
     }
 
-    private IAgentTranscriptStore? OpenStore(AgentSessionId familyId)
+    /// <summary>Maintenance pass: deletes stored objects that no committed turn references and
+    /// that were last written before the grace cutoff. Returns the number removed.</summary>
+    /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>
+    public int PruneObjects(TimeSpan gracePeriod)
+    {
+        if (reclaimer is null || storeFactory is null)
+            throw new ArgumentException(
+                "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to reclaim objects.");
+
+        var live = new HashSet<string>(StringComparer.Ordinal);
+        if (familiesRoot is not null && Directory.Exists(familiesRoot))
+        {
+            foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+            {
+                if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
+
+                live.UnionWith(RequiredStore(new AgentSessionId(familyId)).GetReferencedObjectIds());
+            }
+        }
+
+        return reclaimer.DeleteExcept(live, DateTimeOffset.UtcNow - gracePeriod);
+    }
+
+    private SqliteTranscriptStore? OpenStore(AgentSessionId familyId)
     {
         if (storeFactory is null) return null;
 
@@ -140,7 +166,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
     }
 
-    private IAgentTranscriptStore RequiredStore(AgentSessionId familyId)
+    private SqliteTranscriptStore RequiredStore(AgentSessionId familyId)
     {
         var store = OpenStore(familyId);
         return store ?? throw new InvalidOperationException("The transcript store factory is not configured.");

@@ -18,7 +18,7 @@ namespace Maieutics.Persistence;
 ///     The write path never rewrites or deletes published objects; a crash may leave staging
 ///     temporaries, which <see cref="SweepStaging" /> reclaims.
 /// </summary>
-internal sealed class ObjectStore : IAgentObjectStore
+internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
 {
     private readonly string objectsRoot;
     private readonly string stagingRoot;
@@ -153,10 +153,12 @@ internal sealed class ObjectStore : IAgentObjectStore
     }
 
     /// <summary>Reclamation for garbage collection: deletes every published object whose
-    /// address is not in the live set. Absent objects are ignored and individual failures (a
-    /// scanner holding a lock) are skipped; both surface on the next pass.</summary>
+    /// address is not in the live set and whose file was last written before the grace cutoff —
+    /// an unreferenced object written moments ago may belong to a turn that has not committed
+    /// yet. Absent objects are ignored and individual failures (a scanner holding a lock) are
+    /// skipped; both surface on the next pass.</summary>
     /// <returns>The number of objects removed.</returns>
-    internal int DeleteExcept(IReadOnlyCollection<string> liveSha256)
+    public int DeleteExcept(IReadOnlyCollection<string> liveSha256, DateTimeOffset olderThan)
     {
         if (!Directory.Exists(objectsRoot)) return 0;
 
@@ -170,6 +172,7 @@ internal sealed class ObjectStore : IAgentObjectStore
             foreach (var file in Directory.EnumerateFiles(directory))
             {
                 if (keep.Contains(Path.GetFileName(file))) continue;
+                if (File.GetLastWriteTimeUtc(file) >= olderThan) continue;
 
                 try
                 {
@@ -209,4 +212,13 @@ internal sealed class ObjectStore : IAgentObjectStore
         var ingested = Ingest(content);
         return new AgentObjectDescriptor(ingested.Sha256, ingested.Size);
     }
+}
+
+/// <summary>Maintenance-only reclamation for the object store; deliberately absent from the
+/// commit-path <see cref="IAgentObjectStore"/> so garbage collection can never masquerade as a
+/// write-path operation.</summary>
+internal interface IObjectReclaimer
+{
+    /// <summary>Deletes unreferenced objects last written before the grace cutoff.</summary>
+    int DeleteExcept(IReadOnlyCollection<string> liveSha256, DateTimeOffset olderThan);
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Jupyter;
@@ -6,11 +7,12 @@ using Microsoft.Extensions.AI;
 
 namespace Maieutics.Jupyter.Tests;
 
-/// <summary>Manual recovery through the session manager: list, resume, start new, and the
-/// disabled-persistence guard. No automatic restore exists by design.</summary>
+/// <summary>Manual recovery through the session manager: list, resume, start new, the
+/// disabled-persistence guard, and object pruning. No automatic restore exists by design.</summary>
 public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 {
     private readonly string databaseDirectory;
+    private readonly string objectsRoot;
 
     public MaieuticsAgentSessionManagerTests()
     {
@@ -18,6 +20,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             Path.GetTempPath(),
             "maieutics-session-manager-tests",
             Guid.NewGuid().ToString("N"));
+        objectsRoot = Path.Combine(databaseDirectory, "objects");
     }
 
     public void Dispose()
@@ -26,6 +29,39 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         {
             Directory.Delete(databaseDirectory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void PruneObjectsRemovesOnlyUnreferencedObjectsPastTheGrace()
+    {
+        var sessionId = AgentSessionId.Create();
+        var objectStore = new ObjectStore(objectsRoot);
+        var keep = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("keep")));
+        var freshOrphan = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("fresh")));
+        var staleOrphan = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("stale")));
+        File.SetLastWriteTimeUtc(
+            Path.Combine(objectsRoot, staleOrphan.Sha256[..2], staleOrphan.Sha256),
+            DateTime.UtcNow - TimeSpan.FromHours(2));
+
+        using (var store = new SqliteTranscriptStore(FamilyPath(sessionId)))
+        {
+            store.AppendTurn(sessionId, Turn(sessionId, "a", "Question", "Answer"), [keep.Sha256]);
+        }
+
+        using var manager = new MaieuticsAgentSessionManager(
+            new FixedProfileProvider(),
+            databaseDirectory,
+            familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
+            reclaimer: objectStore);
+
+        manager.PruneObjects(TimeSpan.FromMinutes(30)).Should().Be(1);
+        objectStore.Exists(keep.Sha256).Should().BeTrue();
+        objectStore.Exists(freshOrphan.Sha256).Should().BeTrue();
+        objectStore.Exists(staleOrphan.Sha256).Should().BeFalse();
+
+        // A zero grace period sweeps everything unreferenced.
+        manager.PruneObjects(TimeSpan.Zero).Should().Be(1);
+        objectStore.Exists(freshOrphan.Sha256).Should().BeFalse();
     }
 
     [Fact]

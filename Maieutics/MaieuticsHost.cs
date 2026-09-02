@@ -118,8 +118,12 @@ public static class MaieuticsHost
             var applicationPaths = ApplicationPaths.Resolve();
             applicationPaths.EnsureAgentRoot();
             builder.Services.AddSingleton(applicationPaths);
-            builder.Services.AddSingleton<IAgentObjectStore>(static services => new ObjectStore(
+            builder.Services.AddSingleton(static services => new ObjectStore(
                 services.GetRequiredService<ApplicationPaths>().AgentObjectsRoot));
+            builder.Services.AddSingleton<IAgentObjectStore>(static services =>
+                services.GetRequiredService<ObjectStore>());
+            builder.Services.AddSingleton<IObjectReclaimer>(static services =>
+                services.GetRequiredService<ObjectStore>());
             builder.Services.AddSingleton<AgentObjectFunctions>();
         }
 
@@ -293,7 +297,8 @@ public static class MaieuticsHost
             paths.AgentFamiliesRoot,
             familyId => new SqliteTranscriptStore(
                 SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)),
-            services.GetService<IAgentObjectStore>());
+            services.GetService<IAgentObjectStore>(),
+            services.GetService<IObjectReclaimer>());
     }
 
     [SupportedOSPlatform("windows")]

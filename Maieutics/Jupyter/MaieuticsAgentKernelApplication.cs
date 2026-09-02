@@ -369,7 +369,24 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
             return RenderSession(sessionManager);
         }
 
+        if (arguments.Length is 3 or 4 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Gc, StringComparison.OrdinalIgnoreCase))
+        {
+            var graceHours = 24;
+            if (arguments.Length == 4 &&
+                (!int.TryParse(arguments[3], out graceHours) || graceHours < 0))
+                throw new ArgumentException("The GC grace period must be a non-negative number of hours.");
+
+            return RenderGc(sessionManager, graceHours);
+        }
+
         throw new ArgumentException("Unknown session command or invalid arguments.");
+    }
+
+    private static string RenderGc(MaieuticsAgentSessionManager manager, int graceHours)
+    {
+        var removed = manager.PruneObjects(TimeSpan.FromHours(graceHours));
+        return $"**GC** removed {removed} unreferenced object(s) (grace {graceHours} h).";
     }
 
     private static AgentSessionId ResolveStoredSessionId(MaieuticsAgentSessionManager manager, string input)

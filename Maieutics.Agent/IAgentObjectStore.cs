@@ -23,5 +23,6 @@ public interface IAgentObjectStore
     Stream Open(string sha256);
 }
 
-/// <summary>Describes one published object: its content address and byte size.</summary>
-public sealed record AgentObjectDescriptor(string Sha256, long Size);
+/// <summary>Describes one published object: its content address and byte size, with optional
+/// media type and display name carried by blob references.</summary>
+public sealed record AgentObjectDescriptor(string Sha256, long Size, string? MediaType = null, string? Name = null);

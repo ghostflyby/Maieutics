@@ -255,6 +255,14 @@ internal static class AgentTranscriptCodec
 
     private static void ValidateDataContent(DataContent data)
     {
+        // A blob reference is small structured JSON naming large stored bytes; it never inlines
+        // binary and is validated so a broken descriptor cannot enter the canonical transcript.
+        if (string.Equals(data.MediaType, AgentBlobContent.MediaType, StringComparison.OrdinalIgnoreCase))
+        {
+            AgentBlobContent.Validate(data);
+            return;
+        }
+
         if (!string.Equals(data.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
             throw CreateInlineBinaryException(data.MediaType);
 

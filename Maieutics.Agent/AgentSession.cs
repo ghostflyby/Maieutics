@@ -354,11 +354,22 @@ public sealed class AgentSession : IAgentSession
             if (content is null)
                 throw new ArgumentException("Agent input contents cannot contain null items.", nameof(turn));
 
-            if (content is not TextContent text)
-                throw new AgentUnsupportedResponseException(
-                    $"Agent input content of type '{content.GetType().Name}' is not supported.");
-
-            characters = checked(characters + text.Text.Length);
+            switch (content)
+            {
+                case TextContent text:
+                    characters = checked(characters + text.Text.Length);
+                    break;
+                case DataContent data when
+                    string.Equals(data.MediaType, AgentBlobContent.MediaType, StringComparison.OrdinalIgnoreCase):
+                    // A reference payload is small structured JSON; the represented bytes were
+                    // already bounded when they were ingested into the object store.
+                    AgentBlobContent.Validate(data);
+                    characters = checked(characters + data.Data.Length);
+                    break;
+                default:
+                    throw new AgentUnsupportedResponseException(
+                        $"Agent input content of type '{content.GetType().Name}' is not supported.");
+            }
         }
 
         if (characters > options.MaxInputCharacters)

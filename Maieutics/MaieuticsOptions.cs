@@ -103,6 +103,8 @@ public sealed class MaieuticsAgentOptions
 
     public int EventBufferCapacity { get; set; } = 128;
 
+    public MaieuticsAgentPersistenceOptions Persistence { get; set; } = new();
+
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
@@ -117,6 +119,13 @@ public sealed class MaieuticsAgentOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
     }
+}
+
+// Persisted transcript storage is opt in while its recovery semantics stabilize; the flag is a
+// startup-only setting and is not hot reloaded.
+public sealed class MaieuticsAgentPersistenceOptions
+{
+    public bool Enabled { get; set; }
 }
 
 public sealed class MaieuticsJupyterOptions

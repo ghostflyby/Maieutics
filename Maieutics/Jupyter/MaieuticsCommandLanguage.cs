@@ -9,32 +9,45 @@ internal static class MaieuticsCommandLanguage
     internal const string LegacyRoot = "%maieutics";
     private const string CanonicalMcpCommand = "%mcp";
     private const string CanonicalModelCommand = "%model";
+    private const string CanonicalSessionCommand = "%session";
     private const string CanonicalStatusCommand = "%status";
     private const string CanonicalWorkspaceCommand = "%workspace";
     private const string SlashLeader = "/";
     internal const string Mcp = "mcp";
     internal const string Model = "model";
+    internal const string Session = "session";
     internal const string Status = "status";
     internal const string Workspace = "workspace";
     internal const string Current = "current";
     internal const string List = "list";
     internal const string Use = "use";
     internal const string Reset = "reset";
+    internal const string New = "new";
+    internal const string Repair = "repair";
+    internal const string Resume = "resume";
+    internal const string Gc = "gc";
     internal const string Available = "available";
     internal const string RefreshFlag = "--refresh";
 
     private static readonly string[] CommandPrefixes =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand, LegacyRoot];
+    [
+        CanonicalMcpCommand, CanonicalModelCommand, CanonicalSessionCommand, CanonicalStatusCommand,
+        CanonicalWorkspaceCommand, LegacyRoot
+    ];
 
     private static readonly string[] RootCompletionMatches =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand, LegacyRoot];
+    [
+        CanonicalMcpCommand, CanonicalModelCommand, CanonicalSessionCommand, CanonicalStatusCommand,
+        CanonicalWorkspaceCommand, LegacyRoot
+    ];
 
     private static readonly string[] SlashCompletionMatches =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalSessionCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand];
 
-    private static readonly string[] RootCommandMatches = [Mcp, Model, Workspace];
+    private static readonly string[] RootCommandMatches = [Mcp, Model, Session, Workspace];
     private static readonly string[] McpCommandMatches = [List];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
+    private static readonly string[] SessionCommandMatches = [Current, Gc, List, New, Repair, Resume];
     private static readonly string[] WorkspaceCommandMatches = [Current, Use, Reset];
 
     internal static bool IsCommandCell(string code)
@@ -70,6 +83,9 @@ internal static class MaieuticsCommandLanguage
         if (arguments[0].Equals(CanonicalStatusCommand, StringComparison.OrdinalIgnoreCase))
             return [LegacyRoot, Status, .. arguments[1..]];
 
+        if (arguments[0].Equals(CanonicalSessionCommand, StringComparison.OrdinalIgnoreCase))
+            return [LegacyRoot, Session, .. arguments[1..]];
+
         if (arguments[0].Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase))
             return [LegacyRoot, Workspace, .. arguments[1..]];
 
@@ -77,6 +93,7 @@ internal static class MaieuticsCommandLanguage
             if (arguments.Length >= 2 &&
                 (arguments[1].Equals(Mcp, StringComparison.OrdinalIgnoreCase) ||
                  arguments[1].Equals(Model, StringComparison.OrdinalIgnoreCase) ||
+                 arguments[1].Equals(Session, StringComparison.OrdinalIgnoreCase) ||
                  arguments[1].Equals(Workspace, StringComparison.OrdinalIgnoreCase)))
                 return [.. arguments];
 
@@ -159,6 +176,8 @@ internal static class MaieuticsCommandLanguage
                 McpCommandMatches,
             [var command] when command.Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase) =>
                 ModelCommandMatches,
+            [var command] when command.Equals(CanonicalSessionCommand, StringComparison.OrdinalIgnoreCase) =>
+                SessionCommandMatches,
             [var command] when command.Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase) =>
                 WorkspaceCommandMatches,
             [var command, var subcommand]
@@ -179,6 +198,10 @@ internal static class MaieuticsCommandLanguage
                 when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
                      family.Equals(Model, StringComparison.OrdinalIgnoreCase) =>
                 ModelCommandMatches,
+            [var command, var family]
+                when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                     family.Equals(Session, StringComparison.OrdinalIgnoreCase) =>
+                SessionCommandMatches,
             [var command, var family]
                 when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
                      family.Equals(Workspace, StringComparison.OrdinalIgnoreCase) =>

@@ -17,7 +17,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionExpandsAnExactCommandAndHandlesPrefixes()
     {
         var exact = Complete("%maieutics");
-        exact.Matches.Should().Equal("%maieutics mcp", "%maieutics model", "%maieutics workspace");
+        exact.Matches.Should().Equal("%maieutics mcp", "%maieutics model", "%maieutics session", "%maieutics workspace");
         exact.CursorStart.Should().Be(0);
         exact.CursorEnd.Should().Be(10);
 
@@ -27,9 +27,26 @@ public sealed class MaieuticsCompletionTests
         prefix.CursorEnd.Should().Be(4);
 
         var afterRoot = Complete("%maieutics ");
-        afterRoot.Matches.Should().Equal("mcp", "model", "workspace");
+        afterRoot.Matches.Should().Equal("mcp", "model", "session", "workspace");
         afterRoot.CursorStart.Should().Be(11);
         afterRoot.CursorEnd.Should().Be(11);
+    }
+
+    [Fact]
+    public void SessionSubcommandsCompleteAtBoundariesAndIgnoreCase()
+    {
+        var canonical = Complete("%session ");
+        canonical.Matches.Should().Equal("current", "gc", "list", "new", "repair", "resume");
+        canonical.CursorStart.Should().Be(9);
+        canonical.CursorEnd.Should().Be(9);
+
+        var legacy = Complete("%maieutics session ");
+        legacy.Matches.Should().Equal("current", "gc", "list", "new", "repair", "resume");
+
+        var partial = Complete("%SESSION RES");
+        partial.Matches.Should().Equal("resume");
+        partial.CursorStart.Should().Be(9);
+        partial.CursorEnd.Should().Be(12);
     }
 
     [Fact]
@@ -218,7 +235,7 @@ public sealed class MaieuticsCompletionTests
     public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
     {
         var all = Complete("/");
-        all.Matches.Should().Equal("%mcp", "%model", "%status", "%workspace");
+        all.Matches.Should().Equal("%mcp", "%model", "%session", "%status", "%workspace");
         all.CursorStart.Should().Be(0);
         all.CursorEnd.Should().Be(1);
 
@@ -250,7 +267,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
     {
         var all = Complete("%");
-        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%status", "%workspace");
+        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%session", "%status", "%workspace");
 
         var sharedPrefix = Complete("%m");
         sharedPrefix.Matches.Should().Equal("%maieutics", "%mcp", "%model");

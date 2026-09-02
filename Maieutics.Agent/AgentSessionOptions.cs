@@ -30,7 +30,9 @@ public sealed record AgentSessionOptions
     /// <summary>Gets the maximum UTF-8 encoded argument size for one tool call.</summary>
     public int MaxToolArgumentsBytes { get; init; } = 65_536;
 
-    /// <summary>Gets the maximum UTF-8 encoded result envelope size for one tool call.</summary>
+    /// <summary>Gets the maximum UTF-8 encoded result envelope size for one tool call. Larger
+    /// successful results are stored in the object store and replaced by a truncated preview
+    /// envelope; when no object store is configured, exceeding this limit fails the tool.</summary>
     public int MaxToolResultBytes { get; init; } = 262_144;
 
     /// <summary>Gets the maximum number of progress events emitted by one tool call.</summary>

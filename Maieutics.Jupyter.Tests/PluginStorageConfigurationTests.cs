@@ -7,20 +7,20 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class PluginStorageConfigurationTests
 {
-    // —— ApplicationPaths (ADR 0022 directory selection) ——
+    // —— ApplicationPaths (ADR 0022 directory selection; the data root also hosts the Agent store) ——
 
     [Theory]
     [InlineData(true, false, @"C:\Users\u\AppData\Local", @"C:\Users\u\AppData\Roaming", null, "/Users/u",
-        "C:/Users/u/AppData/Local/Maieutics/plugin-data")]
+        "C:/Users/u/AppData/Local/Maieutics")]
     [InlineData(false, true, "", "/Users/u/Library/Application Support", null, "/Users/u",
-        "/Users/u/Library/Application Support/Maieutics/plugin-data")]
+        "/Users/u/Library/Application Support/Maieutics")]
     [InlineData(false, false, "", "/home/u/.config", "/xdg/data", "/home/u",
-        "/xdg/data/Maieutics/plugin-data")]
+        "/xdg/data/Maieutics")]
     [InlineData(false, false, "", "/home/u/.config", "relative/path", "/home/u",
-        "/home/u/.local/share/Maieutics/plugin-data")]
+        "/home/u/.local/share/Maieutics")]
     [InlineData(false, false, "", "/home/u/.config", null, "/home/u",
-        "/home/u/.local/share/Maieutics/plugin-data")]
-    public void ResolvesThePlatformPluginDataRoot(
+        "/home/u/.local/share/Maieutics")]
+    public void ResolvesThePlatformDataRoot(
         bool isWindows,
         bool isMacOS,
         string localApplicationData,
@@ -29,7 +29,7 @@ public sealed class PluginStorageConfigurationTests
         string userProfile,
         string expected)
     {
-        var root = ApplicationPaths.ResolvePluginDataRoot(
+        var root = ApplicationPaths.ResolveDataRoot(
             isWindows,
             isMacOS,
             localApplicationData,
@@ -37,6 +37,76 @@ public sealed class PluginStorageConfigurationTests
             xdgDataHome,
             userProfile);
         BeSamePath(root, expected);
+    }
+
+    [Fact]
+    public void DerivesLegacyAndAgentPathsFromTheDataRoot()
+    {
+        // The resolved data root already carries the product segment (<base>/Maieutics).
+        var paths = new ApplicationPaths("/base/Maieutics", "/base/Maieutics", null, "/tmp/Maieutics");
+        BeSamePath(paths.PluginDataRoot, "/base/Maieutics/plugin-data");
+        BeSamePath(paths.AgentRoot, "/base/Maieutics/agent");
+        BeSamePath(paths.AgentFamiliesRoot, "/base/Maieutics/agent/families");
+        BeSamePath(paths.AgentObjectsRoot, "/base/Maieutics/agent/objects");
+        BeSamePath(paths.AgentStagingRoot, "/base/Maieutics/agent/objects/.staging");
+    }
+
+    [Theory]
+    [InlineData(true, false, @"C:\Users\u\AppData\Local", null, "/Users/u",
+        "C:/Users/u/AppData/Local/Maieutics")]
+    [InlineData(false, true, "", null, "/Users/u",
+        "/Users/u/Library/Caches/Maieutics")]
+    [InlineData(false, false, "", "/xdg/cache", "/home/u",
+        "/xdg/cache/Maieutics")]
+    [InlineData(false, false, "", "relative/cache", "/home/u",
+        "/home/u/.cache/Maieutics")]
+    [InlineData(false, false, "", null, "/home/u",
+        "/home/u/.cache/Maieutics")]
+    public void ResolvesThePlatformCacheRoot(
+        bool isWindows,
+        bool isMacOS,
+        string localApplicationData,
+        string? xdgCacheHome,
+        string userProfile,
+        string expected)
+    {
+        var root = ApplicationPaths.ResolveCacheRoot(
+            isWindows,
+            isMacOS,
+            localApplicationData,
+            xdgCacheHome,
+            userProfile);
+        BeSamePath(root, expected);
+    }
+
+    [Theory]
+    [InlineData(true, null, "/tmp", "u",
+        null)]
+    [InlineData(false, "/run/user/1000", "/tmp", "u",
+        "/run/user/1000/Maieutics")]
+    [InlineData(false, "relative/run", "/tmp", "u",
+        "/tmp/Maieutics-runtime-u")]
+    [InlineData(false, null, "/tmp", "u",
+        "/tmp/Maieutics-runtime-u")]
+    public void ResolvesThePlatformRuntimeRoot(
+        bool isWindows,
+        string? xdgRuntimeDir,
+        string tempPath,
+        string userName,
+        string? expected)
+    {
+        var root = ApplicationPaths.ResolveRuntimeRoot(
+            isWindows,
+            xdgRuntimeDir,
+            tempPath,
+            userName);
+        if (expected is null)
+        {
+            root.Should().BeNull();
+            return;
+        }
+
+        BeSamePath(root!, expected);
     }
 
     private static string Normalize(string path) => path.Replace('\\', '/');

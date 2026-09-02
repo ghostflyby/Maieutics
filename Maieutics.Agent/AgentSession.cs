@@ -14,6 +14,8 @@ public sealed class AgentSession : IAgentSession
 {
     private readonly ImmutableArray<AIFunction> fixedTools;
     private readonly IAgentRunProfileProvider profileProvider;
+    private readonly IAgentTranscriptStore? transcriptStore;
+    private readonly IAgentObjectStore? objectStore;
     private readonly Lock transcriptGate = new();
     private AgentTranscriptState canonicalState;
     private int runInProgress;
@@ -22,28 +24,94 @@ public sealed class AgentSession : IAgentSession
     public AgentSession(
         IChatClient chatClient,
         AgentSessionOptions? options = null,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        IAgentTranscriptStore? transcriptStore = null,
+        IAgentObjectStore? objectStore = null,
+        AgentSessionId? sessionId = null)
         : this(
             new FixedAgentRunProfileProvider(
                 new AgentRunProfile(
                     chatClient ?? throw new ArgumentNullException(nameof(chatClient)),
                     options ?? new AgentSessionOptions(),
-                    tools: CreateToolRegistry(tools).Values)))
+                    tools: CreateToolRegistry(tools).Values)),
+            transcriptStore: transcriptStore,
+            objectStore: objectStore,
+            sessionId: sessionId)
     {
     }
 
     /// <summary>Initializes an Agent session whose profile is captured independently for each run.</summary>
     /// <param name="profileProvider">The provider used to acquire each run's model client and options.</param>
     /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <param name="transcriptStore">
+    ///     The optional durable store that receives every committed turn. When omitted, the canonical
+    ///     transcript stays in memory only and process exit loses the session.
+    /// </param>
+    /// <param name="objectStore">
+    ///     The optional store that receives tool results exceeding the inline envelope limit. When
+    ///     omitted, oversized results fail the tool.
+    /// </param>
+    /// <param name="sessionId">
+    ///     The session identity to reuse when reopening a stored session; a new identity is created when omitted.
+    /// </param>
     public AgentSession(
         IAgentRunProfileProvider profileProvider,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        IAgentTranscriptStore? transcriptStore = null,
+        IAgentObjectStore? objectStore = null,
+        AgentSessionId? sessionId = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        this.transcriptStore = transcriptStore;
+        this.objectStore = objectStore;
         fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
 
-        Id = AgentSessionId.Create();
+        Id = sessionId ?? AgentSessionId.Create();
         canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
+    }
+
+    /// <summary>Creates a session whose canonical history is restored from a stored transcript.</summary>
+    /// <param name="profileProvider">The provider used to acquire each run's model client and options.</param>
+    /// <param name="transcriptStore">The store the session was persisted in; new turns are appended to it.</param>
+    /// <param name="sessionId">The stored session identity to restore.</param>
+    /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <returns>A session whose committed history contains every stored turn of the session.</returns>
+    /// <exception cref="AgentSessionNotFoundException">The store holds no session with this identity.</exception>
+    /// <exception cref="AgentContentCompatibilityException">A stored turn cannot be represented canonically.</exception>
+    public static AgentSession Resume(
+        IAgentRunProfileProvider profileProvider,
+        IAgentTranscriptStore transcriptStore,
+        AgentSessionId sessionId,
+        IEnumerable<AIFunction>? tools = null,
+        IAgentObjectStore? objectStore = null)
+    {
+        ArgumentNullException.ThrowIfNull(profileProvider);
+        ArgumentNullException.ThrowIfNull(transcriptStore);
+
+        var transcript = transcriptStore.LoadTranscript(sessionId) ??
+                         throw new AgentSessionNotFoundException(sessionId);
+
+        var restored = new AgentSession(
+            profileProvider,
+            tools: tools,
+            transcriptStore: transcriptStore,
+            objectStore: objectStore,
+            sessionId);
+        var turns = ImmutableArray.CreateBuilder<AgentTranscriptStateTurn>(transcript.Turns.Length);
+        foreach (var turn in transcript.Turns)
+            turns.Add(AgentTranscriptCodec.DetachPrivateTurn(turn.RunId, turn.ModelIdentity, turn.Messages, turn.Truncated));
+
+        restored.InitializeRestoredState(new AgentTranscriptState(sessionId, turns.Count, turns.ToImmutable()));
+        return restored;
+    }
+
+    /// <summary>Installs a restored canonical state; called once by <see cref="Resume" /> before the session is visible.</summary>
+    private void InitializeRestoredState(AgentTranscriptState restoredState)
+    {
+        lock (transcriptGate)
+        {
+            canonicalState = restoredState;
+        }
     }
 
     /// <inheritdoc />
@@ -111,7 +179,7 @@ public sealed class AgentSession : IAgentSession
         var options = profile.Options;
         ValidateModelCapabilities(profile, run.Tools.Count);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
-        var toolState = new RunToolState(this, run, recordingClient, options);
+        var toolState = new RunToolState(this, run, recordingClient, options, objectStore);
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
         using var functionClient = new FunctionInvokingChatClient(recordingClient)
         {
@@ -189,6 +257,14 @@ public sealed class AgentSession : IAgentSession
         AgentTranscriptState committed;
         lock (transcriptGate)
         {
+            // The durable store commits before the in-memory state changes, so a store failure
+            // rolls the turn back instead of leaving memory ahead of persisted history.
+            if (transcriptStore is not null)
+                transcriptStore.AppendTurn(
+                    Id,
+                    new AgentTranscriptTurn(runId, detachedTurn.Messages, modelIdentity, truncated),
+                    AgentTranscriptCodec.CollectObjectReferences(detachedTurn.Messages));
+
             var builder = canonicalState.Turns.ToBuilder();
             builder.Add(detachedTurn);
 
@@ -279,11 +355,22 @@ public sealed class AgentSession : IAgentSession
             if (content is null)
                 throw new ArgumentException("Agent input contents cannot contain null items.", nameof(turn));
 
-            if (content is not TextContent text)
-                throw new AgentUnsupportedResponseException(
-                    $"Agent input content of type '{content.GetType().Name}' is not supported.");
-
-            characters = checked(characters + text.Text.Length);
+            switch (content)
+            {
+                case TextContent text:
+                    characters = checked(characters + text.Text.Length);
+                    break;
+                case DataContent data when
+                    string.Equals(data.MediaType, AgentBlobContent.MediaType, StringComparison.OrdinalIgnoreCase):
+                    // A reference payload is small structured JSON; the represented bytes were
+                    // already bounded when they were ingested into the object store.
+                    AgentBlobContent.Validate(data);
+                    characters = checked(characters + data.Data.Length);
+                    break;
+                default:
+                    throw new AgentUnsupportedResponseException(
+                        $"Agent input content of type '{content.GetType().Name}' is not supported.");
+            }
         }
 
         if (characters > options.MaxInputCharacters)
@@ -376,7 +463,8 @@ public sealed class AgentSession : IAgentSession
         AgentSession owner,
         AgentRun run,
         RecordingChatClient recordingClient,
-        AgentSessionOptions options)
+        AgentSessionOptions options,
+        IAgentObjectStore? objectStore)
     {
         private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
         private readonly List<ChatMessage> intermediateMessages = [];
@@ -445,6 +533,7 @@ public sealed class AgentSession : IAgentSession
             invocation.Arguments.Context[typeof(AgentToolContext)] = context;
 
             JsonElement envelope;
+            var successResult = true;
             try
             {
                 var result = await function.InvokeAsync(invocation.Arguments, cancellationToken).ConfigureAwait(false);
@@ -458,6 +547,7 @@ public sealed class AgentSession : IAgentSession
             }
             catch (AgentToolException exception)
             {
+                successResult = false;
                 envelope = ToolJson.CreateFailureEnvelope(exception.Code, exception.Message);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -477,10 +567,23 @@ public sealed class AgentSession : IAgentSession
 
             if (Encoding.UTF8.GetByteCount(envelope.GetRawText()) > options.MaxToolResultBytes)
             {
-                await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
-                throw new AgentToolLimitExceededException(
-                    nameof(AgentSessionOptions.MaxToolResultBytes),
-                    options.MaxToolResultBytes);
+                // An oversized success result is preserved whole in the object store and replaced
+                // by a truncated preview envelope; failures and stores-less configurations keep
+                // the original typed limit failure.
+                if (objectStore is null || !successResult)
+                {
+                    await PublishTerminalFailureAsync(record.CallId, cancellationToken).ConfigureAwait(false);
+                    throw new AgentToolLimitExceededException(
+                        nameof(AgentSessionOptions.MaxToolResultBytes),
+                        options.MaxToolResultBytes);
+                }
+
+                var descriptor = objectStore.Ingest(
+                    new MemoryStream(Encoding.UTF8.GetBytes(envelope.GetRawText()), writable: false));
+                envelope = ToolJson.CreateTruncatedSuccessEnvelope(
+                    descriptor.Sha256,
+                    descriptor.Size,
+                    "application/json");
             }
 
             intermediateMessages.Add(new ChatMessage(
@@ -950,6 +1053,23 @@ internal static class ToolJson
         return JsonSerializer.SerializeToElement(
             new ToolSuccessEnvelope("ok", value?.Clone()),
             AgentToolJsonSerializerContext.Default.ToolSuccessEnvelope);
+    }
+
+    internal static JsonElement CreateTruncatedSuccessEnvelope(string sha256, long size, string mediaType)
+    {
+        var node = new JsonObject
+        {
+            ["status"] = "ok",
+            ["value"] = $"<result truncated: the full {size} byte JSON result is available as object {sha256}>",
+            ["truncated"] = true,
+            ["object"] = new JsonObject
+            {
+                ["sha256"] = sha256,
+                ["size"] = size,
+                ["mediaType"] = mediaType,
+            },
+        };
+        return ParseElement(node);
     }
 
     internal static JsonElement CreateFailureEnvelope(string code, string message)

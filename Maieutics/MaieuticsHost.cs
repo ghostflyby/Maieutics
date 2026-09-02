@@ -12,6 +12,7 @@ using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
+using Maieutics.Persistence;
 using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
@@ -107,6 +108,25 @@ public static class MaieuticsHost
         var terminalOptions = new TerminalOptions();
         builder.Configuration.GetSection(TerminalOptions.SectionName).Bind(terminalOptions);
         terminalOptions.Validate();
+        // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
+        var agentPersistenceOptions = new MaieuticsAgentPersistenceOptions();
+        builder.Configuration
+            .GetSection($"{MaieuticsOptions.SectionName}:Agent:Persistence")
+            .Bind(agentPersistenceOptions);
+        if (agentPersistenceOptions.Enabled)
+        {
+            var applicationPaths = ApplicationPaths.Resolve();
+            applicationPaths.EnsureAgentRoot();
+            builder.Services.AddSingleton(applicationPaths);
+            builder.Services.AddSingleton(static services => new ObjectStore(
+                services.GetRequiredService<ApplicationPaths>().AgentObjectsRoot));
+            builder.Services.AddSingleton<IAgentObjectStore>(static services =>
+                services.GetRequiredService<ObjectStore>());
+            builder.Services.AddSingleton<IObjectReclaimer>(static services =>
+                services.GetRequiredService<ObjectStore>());
+            builder.Services.AddSingleton<AgentObjectFunctions>();
+        }
+
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
@@ -158,7 +178,7 @@ public static class MaieuticsHost
             );
 
         builder.Services.AddSingleton<PluginHostModule>();
-        builder.Services.AddSingleton(ApplicationPaths.Resolve());
+        builder.Services.TryAddSingleton(ApplicationPaths.Resolve());
         builder.Services.AddSingleton(services => new PluginHostManager(
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -214,9 +234,12 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
-            .. services.GetRequiredService<DenoReplFunctions>().Functions
+            .. services.GetRequiredService<DenoReplFunctions>().Functions,
+            .. (services.GetService<AgentObjectFunctions>()?.Functions ?? [])
         ]);
-        builder.Services.AddSingleton(CreateAgentSession);
+        builder.Services.AddSingleton(CreateAgentSessionManager);
+        builder.Services.AddSingleton<IAgentSession>(static services =>
+            services.GetRequiredService<MaieuticsAgentSessionManager>());
         builder.Services.AddSingleton<MaieuticsStatusProvider>();
         builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
@@ -260,9 +283,24 @@ public static class MaieuticsHost
         return application;
     }
 
-    private static IAgentSession CreateAgentSession(IServiceProvider services)
+    private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)
     {
-        return new AgentSession(services.GetRequiredService<IAgentRunProfileProvider>());
+        var profileProvider = services.GetRequiredService<IAgentRunProfileProvider>();
+        var paths = services.GetService<ApplicationPaths>();
+        if (paths is null)
+        {
+            return new MaieuticsAgentSessionManager(profileProvider, familiesRoot: null, storeFactory: null);
+        }
+
+        return new MaieuticsAgentSessionManager(
+            profileProvider,
+            paths.AgentFamiliesRoot,
+            familyId => new SqliteTranscriptStore(
+                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)),
+            services.GetService<IAgentObjectStore>(),
+            services.GetService<IObjectReclaimer>(),
+            paths.AgentViewSessionsRoot,
+            paths.AgentObjectsRoot);
     }
 
     [SupportedOSPlatform("windows")]
@@ -278,8 +316,9 @@ public static class MaieuticsHost
     private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
     {
         var runtimeConfiguration = services.GetRequiredService<IMaieuticsRuntimeConfiguration>();
+        var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
         return new MaieuticsAgentKernelApplication(
-            services.GetRequiredService<IAgentSession>(),
+            sessionManager,
             runtimeConfiguration.GetKernelOptions,
             runtimeConfiguration,
             services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
@@ -288,7 +327,8 @@ public static class MaieuticsHost
             mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
             statusProvider: services.GetRequiredService<MaieuticsStatusProvider>(),
             replControlHost: services.GetRequiredService<ReplControlHost>(),
-            replRegistry: services.GetRequiredService<DenoReplRegistry>());
+            replRegistry: services.GetRequiredService<DenoReplRegistry>(),
+            sessionManager: sessionManager);
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

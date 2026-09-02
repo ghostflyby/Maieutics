@@ -4,7 +4,8 @@ namespace Maieutics.Plugins;
 internal enum PluginExclusionReason
 {
     MissingDependency,
-    DependencyCycle
+    DependencyCycle,
+    ImportMapping
 }
 
 /// <summary>A plugin excluded from the enabled set, with the reason recorded for diagnostics.</summary>

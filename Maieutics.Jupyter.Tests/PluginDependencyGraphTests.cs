@@ -22,7 +22,8 @@ public sealed class PluginDependencyGraphTests
                 PluginPermissionGrant.None,
                 PluginPermissionGrant.None),
             "auto",
-            dependencies);
+            dependencies,
+            []);
     }
 
     [Fact]

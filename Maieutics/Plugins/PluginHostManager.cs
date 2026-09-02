@@ -362,6 +362,7 @@ internal sealed class PluginHostManager(
     {
         EnsurePluginsRoot();
         PluginGraphResult graph;
+        PluginImportMergeResult importMerge;
         lock (gate)
         {
             descriptors.Clear();
@@ -375,13 +376,28 @@ internal sealed class PluginHostManager(
                     exclusion.Reason,
                     exclusion.Detail);
             }
-            descriptors.AddRange(graph.Enabled);
+
+            importMerge = PluginImportMerger.Merge(graph.Enabled, PluginHostModule.ReservedImportKeys);
+            foreach (var warning in importMerge.Warnings)
+            {
+                logger.LogWarning("Plugin import merge: {Warning}.", warning);
+            }
+            foreach (var exclusion in importMerge.Exclusions)
+            {
+                logger.LogWarning(
+                    "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
+                    exclusion.PluginId,
+                    exclusion.Reason,
+                    exclusion.Detail);
+            }
+            descriptors.AddRange(graph.Enabled.Where(
+                plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
         }
 
-        // The plugin root always exists (an empty deno project skeleton) and the
-        // host always starts, even with zero plugins: built-in functionality is
-        // planned to ship as plugins, so the host is resident and a plugin added
-        // later takes effect without a kernel restart.
+        // The root deno.json must exist before the host process starts: it carries the
+        // process import map (host machinery plus the merged plugin entries) that the
+        // host and every plugin worker resolve against.
+        modules.WriteRootConfig(importMerge.Imports);
         configPath = WriteConfigFile(descriptors);
         process = PluginHostProcess.Start(
             new PluginHostProcessOptions(
@@ -559,6 +575,15 @@ internal sealed class PluginHostManager(
         PluginHostConfigPlugin? replacement = null;
         if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out _))
         {
+            if (!PluginImportMerger.SameMapping(owner.Imports, reloaded.Imports))
+            {
+                // The process import map is baked into the root deno.json at host
+                // start; an in-process worker reload cannot add or change entries.
+                logger.LogWarning(
+                    "Plugin '{PluginId}' import map changed; the host process import map is fixed at startup. " +
+                    "Restart the host process to apply it — the worker still reloads with the previous map.",
+                    owner.Id);
+            }
             if (RequiresProcessIsolation(reloaded))
             {
                 // A plugin that newly declares run/ffi (or switches to process

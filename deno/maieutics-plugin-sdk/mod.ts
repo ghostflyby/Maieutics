@@ -451,6 +451,21 @@ export function depActor<T>(
   return (surface as unknown as Record<string, RemoteActor<T>>)[exportName];
 }
 
+/**
+ * Resolves a runtime-computed specifier through the same pipeline as static
+ * imports: plugin actor specifiers load the synthesized acquire stub (the load
+ * hook's canonical match), bare aliases resolve via the process import map
+ * (the kernel materializes the merged plugin entries), and self-contained
+ * jsr:/npm: specifiers resolve via the registry. The
+ * unanalyzable-dynamic-import warning at publish is expected and benign — the
+ * specifier is provided at runtime and is not rewritten by JSR. For actor
+ * targets prefer {@link defineDependency} / {@link depActor}, which skip
+ * module loading entirely and share the stub cache with static imports.
+ */
+export function dynamicImport<T = Record<string, unknown>>(specifier: string): Promise<T> {
+  return import(specifier) as Promise<T>;
+}
+
 // —— Worker-side initialization (initPluginWorker) ——
 
 /** Host config the kernel writes into the worker's environment. */
@@ -1238,6 +1253,17 @@ function createRefProxyForStub(
  *     `@version` segment after the package name) equals a registry specifier;
  *   - resolved: `nextResolve` (which applies the import map) yields a URL that
  *     equals a registry entry URL (import-map aliases, relative paths, ...).
+ *
+ * Two invariants this hook's shape depends on:
+ *   - The unconditional `load` handler is load-bearing: static import edges of
+ *     runtime-loaded modules reach the `resolve` hook only while a `load` hook
+ *     is installed. Removing the pass-through `load` handler silently breaks
+ *     the stub redirect for static imports.
+ *   - The `resolve` fallback must stay a pass-through to `nextResolve`. Never
+ *     rewrite bare aliases to `jsr:`/`npm:` specifiers here: the hooks
+ *     pipeline cannot decline URLs it cannot load and its `jsr:` concretization
+ *     is unreliable (bare aliases belong to the process import map, which the
+ *     kernel materializes — see docs/plugin-import-resolution.md).
  */
 function installDependencyLoadHook(
   actorEntries: readonly {

@@ -43,6 +43,14 @@ jobs:
       - name: Test
         run: deno task --config deno/deno.json test
 
+      - name: JSR publish dry-run (plugin SDK)
+        working-directory: deno/maieutics-plugin-sdk
+        # Reports slow types and license problems as they are fixed off; the
+        # missing-license error is completed by the project license decision
+        # (docs/plugin-import-resolution.md §7).
+        run: deno publish --dry-run --allow-dirty --no-provenance
+        continue-on-error: true
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

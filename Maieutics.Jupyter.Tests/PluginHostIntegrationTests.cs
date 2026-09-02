@@ -215,6 +215,64 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
+    // Open blocker (docs/plugin-import-resolution.md §5.1): the merged entry reaches the
+    // process config, but the plugin worker's alias import never completes inside the real
+    // host topology (no ready frame, no error output; minimal worker replicas pass). Kept
+    // as the verification instrument for the follow-up investigation.
+    [Fact(Timeout = 120_000, Skip = "Open blocker: plugin worker alias import hangs in the real host topology — see docs/plugin-import-resolution.md §5.1")]
+    public async Task ResolvesPluginDenoJsonAliasesThroughTheMergedProcessImportMap()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var pluginsRoot = CreateAliasedPluginsRoot();
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            // The plugin's deno.json alias reached the process import map (§4 merge).
+            File.ReadAllText(modules.ConfigFile).Should().Contain("\"@std/bytes\"");
+
+            var registrations = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token);
+            registrations.Should().NotBeEmpty();
+
+            // The discovery result is the runtime output of the aliased import:
+            // concat(Uint8Array [1,2], [3,4]) renders as "1,2,3,4" — the alias
+            // resolved and executed inside the plugin worker.
+            var outcome = await manager.InvokeExtensionPointAsync(
+                registrations[0].PluginId,
+                registrations[0].ExportName,
+                ReplExtensionPointName.McpDiscover,
+                null,
+                timeout.Token);
+            outcome.IsError.Should().BeFalse(outcome.Message);
+            outcome.Value!.Value.GetRawText().Should().Contain("1,2,3,4");
+        }
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task RejectsToolCallsThroughThePreInvokeHookChain()
     {
@@ -385,7 +443,7 @@ public sealed class PluginHostIntegrationTests
                     handler: () => ({ action: "reject", error: { code: "denied_by_hook", message: "the hook denied this call" } }),
                   });
                   """
-                : """
+                  : """
                   import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
                   export const discover = defineExtensionPoint("McpDiscover", {
                     handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
@@ -393,6 +451,46 @@ public sealed class PluginHostIntegrationTests
                   """);
         return root;
     }
+
+    /// <summary>Same layout as CreatePluginsRoot plus a deno.json alias import
+    /// whose runtime resolution the merged process import map must provide
+    /// (docs/plugin-import-resolution.md §8).</summary>
+    private static string CreateAliasedPluginsRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/aliased",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } },
+              "imports": { "@std/bytes": "jsr:@std/bytes@1" }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mod.ts"),
+            """
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+            import { concat } from "@std/bytes/concat";
+            export const discover = defineExtensionPoint("McpDiscover", {
+              handler: () => [{ module: String(concat(new Uint8Array([1, 2]), new Uint8Array([3, 4]))) }],
+            });
+            """);
+        return root;
+    }
+
+
 
     private sealed record McpDiscoveryTestShape(string Module, object Transport);
 }

@@ -62,22 +62,47 @@ internal sealed class PluginHostModule
             Path.Combine(ModuleDirectory, "maieutics-plugin-host/worker_entry.ts")).AbsoluteUri;
         var sdkDirectory = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-sdk")).AbsoluteUri;
         ConfigFile = Path.Combine(ModuleDirectory, "deno.json");
-        // The materialized host imports @ghostflyby/worker-actor and the SDK
-        // imports @preact/signals-core; the root config must map them (and the
-        // sdk subpath) so the host process and its workers resolve without a
-        // registry round trip.
-        File.WriteAllText(
-            ConfigFile,
-            $$"""
-              {
-                "imports": {
-                  "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
-                  "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
-                },
-                "links": ["{{sdkDirectory}}"],
-                "minimumDependencyAge": 0
-              }
-              """);
+        SdkDirectory = sdkDirectory;
+    }
+
+    /// <summary>Import-map keys owned by the host materialization itself. Plugin
+    /// imports colliding with these are skipped: overriding them would redirect the
+    /// host or the SDK away from the pinned copies.</summary>
+    public static readonly IReadOnlySet<string> ReservedImportKeys =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "@ghostflyby/worker-actor",
+            "@preact/signals-core",
+            "@maieutics/plugin-sdk"
+        };
+
+    /// <summary>Writes the root <c>deno.json</c> once the plugin set is known: the
+    /// host machinery mappings, the merged plugin import entries (see
+    /// PluginImportMerger), and the <c>links</c> override that keeps the SDK resolving
+    /// to the local copy instead of the registry. Called from
+    /// <see cref="PluginHostManager.Start"/> after the plugin scan; the file does not
+    /// exist before this point.</summary>
+    public void WriteRootConfig(IReadOnlyList<KeyValuePair<string, string>> mergedImports)
+    {
+        ArgumentNullException.ThrowIfNull(mergedImports);
+        using var stream = File.Open(ConfigFile, FileMode.Create, FileAccess.Write);
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartObject("imports");
+            writer.WriteString("@ghostflyby/worker-actor", "jsr:@ghostflyby/worker-actor@0.6.0");
+            writer.WriteString("@preact/signals-core", "npm:@preact/signals-core@1.14.4");
+            foreach (var (key, value) in mergedImports)
+            {
+                writer.WriteString(key, value);
+            }
+            writer.WriteEndObject();
+            writer.WriteStartArray("links");
+            writer.WriteStringValue(SdkDirectory);
+            writer.WriteEndArray();
+            writer.WriteNumber("minimumDependencyAge", 0);
+            writer.WriteEndObject();
+        }
     }
 
     public string SdkUrl { get; }
@@ -91,6 +116,8 @@ internal sealed class PluginHostModule
 
     /// <summary>Root deno.json whose `links` override the JSR-resolved SDK with the local copy.</summary>
     public string ConfigFile { get; }
+
+    private string SdkDirectory { get; }
 
     private static void WriteEmbedded(string resourceName, string path)
     {

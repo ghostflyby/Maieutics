@@ -20,7 +20,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Ghostflyby.Pty" Version="0.2.2" />
+        <PackageReference Include="Ghostflyby.Pty" Version="0.5.0" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
         <!-- Direct reference overrides the vulnerable 2.1.11 transitive (GHSA-2m69-gcr7-jv3q). -->
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />

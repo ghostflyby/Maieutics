@@ -148,6 +148,20 @@ internal sealed class PluginHostManager(
     private FileSystemWatcher? pluginWatcher;
     private CancellationTokenSource? watcherDebounce;
 
+    /// <summary>Paths of watched changes awaiting an explicit reload apply
+    /// (the automatic-reload option is off).</summary>
+    private readonly HashSet<string> pendingReloadPaths = new(StringComparer.Ordinal);
+
+    /// <summary>Whether watcher-detected plugin changes reload automatically.
+    /// Default off (docs/plugin-import-resolution.md §4.3): changes are recorded
+    /// as pending and applied by <see cref="ApplyPendingReloadsAsync"/>. Opting in
+    /// restores automatic in-process reloads for local edits; import-map changes
+    /// still only warn (the process map is fixed at host start).</summary>
+    public bool AutomaticReload { get; set; }
+
+    /// <summary>Number of watched changes awaiting an explicit apply.</summary>
+    public int PendingReloadCount { get { lock (gate) return pendingReloadPaths.Count; } }
+
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
     ///     registration without polling. Completed when the manager is disposed. Bounded and
@@ -189,6 +203,22 @@ internal sealed class PluginHostManager(
     public ValueTask DisposeAsync()
     {
         return new ValueTask(EnsureStoppedAsync());
+    }
+
+    /// <summary>Applies the watched changes recorded while the automatic-reload
+    /// option was off (docs/plugin-import-resolution.md §4.3).</summary>
+    public async Task ApplyPendingReloadsAsync(CancellationToken cancellationToken)
+    {
+        string[] paths;
+        lock (gate)
+        {
+            paths = [.. pendingReloadPaths];
+            pendingReloadPaths.Clear();
+        }
+        foreach (var path in paths)
+        {
+            await ReloadChangedPluginAsync(path).ConfigureAwait(false);
+        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -524,7 +554,14 @@ internal sealed class PluginHostManager(
 
             try
             {
-                await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                if (AutomaticReload)
+                {
+                    await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                }
+                else
+                {
+                    lock (gate) pendingReloadPaths.Add(args.FullPath);
+                }
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException or OperationCanceledException

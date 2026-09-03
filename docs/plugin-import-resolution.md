@@ -146,11 +146,19 @@ project's own SDK alias merges harmlessly.
 - The config is rewritten on every host start; the plugin set equals the host-process
   lifecycle (a new plugin directory is not picked up by the watcher today either —
   `ReloadChangedPluginAsync` returns when no known descriptor owns the path).
-- `ReloadChangedPluginAsync` already re-resolves the descriptor; extend it to compare
-  the old and new `imports` sets. On change, log a Warning in the shape of the
-  existing isolation-change warning: import-map entries are baked into the process
-  config at host start and cannot mutate in-process; restart the host process to apply.
-  The worker rebuild still proceeds for permission/source changes.
+- **Reload policy (§4.3 decision): reloads are not automatic by default.** Watched
+  changes are recorded as pending (`AutomaticReload = false`, the default); an explicit
+  apply (`ApplyPendingReloadsAsync`, exposed through the control surface) runs them.
+  Opting in (`AutomaticReload = true`, a dynamic option — command/config hot-update)
+  restores automatic in-process reloads for local edits.
+- **Install-level changes are never automatic**, opted in or not: import-map changes
+  warn "Restart the host process" (the process map is baked at host start) and registry
+  version changes require the explicit apply to re-query the toolchain and rebuild —
+  no background version detection.
+- `ReloadChangedPluginAsync` re-resolves the descriptor and compares the old and new
+  `imports` sets (`PluginImportMerger.SameMapping`); on change it logs the
+  restart-required Warning while the worker rebuild proceeds for permission/source
+  changes.
 
 ## 5. Runtime resolution paths after this change
 

@@ -484,6 +484,7 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
+            manager.AutomaticReload = true; // this test exercises the opt-in path
             await manager.StartAsync(timeout.Token);
             await manager.WaitUntilReadyAsync(timeout.Token);
 
@@ -503,6 +504,53 @@ public sealed class PluginHostIntegrationTests
                 deadline -= TimeSpan.FromMilliseconds(250);
             }
             warned.Should().BeTrue("the reload must warn that the host process restart is required");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task WatchedChangesStayPendingUntilExplicitlyAppliedByDefault()
+    {
+        var logger = new CollectingLogger<PluginHostManager>();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(55));
+        var pluginsRoot = CreateAliasedPluginsRoot("sdk-alias");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = "deno" },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            logger,
+            logger,
+            TimeProvider.System);
+
+        try
+        {
+            await manager.StartAsync(timeout.Token);
+            await manager.WaitUntilReadyAsync(timeout.Token);
+
+            var denoJsonPath = Path.Combine(pluginsRoot, "deno.json");
+            var updated = File.ReadAllText(denoJsonPath).Replace(
+                "\"imports\":",
+                "\"imports\": { \"@std/bytes\": \"jsr:@std/bytes@1\", \"@std/path\": \"jsr:@std/path@^1\" },\n    \"imports-old\":");
+            File.WriteAllText(denoJsonPath, updated);
+
+            // No automatic reload: the change is recorded as pending, and no
+            // restart-required warning is emitted.
+            await Task.Delay(1500, timeout.Token);
+            manager.PendingReloadCount.Should().BeGreaterThan(0);
+            logger.Lines.Should().NotContain(line => line.Contains("Restart the host process"));
+
+            // The explicit apply runs the reload path (which emits the warning).
+            await manager.ApplyPendingReloadsAsync(timeout.Token);
+            logger.Lines.Should().Contain(line => line.Contains("Restart the host process"));
+            manager.PendingReloadCount.Should().Be(0);
         }
         finally
         {

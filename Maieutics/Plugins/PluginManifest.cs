@@ -160,7 +160,7 @@ internal static class PluginManifest
 
     /// <summary>Reads the plugin's declared <c>deno.json</c> <c>imports</c> for the
     /// runtime import-map merge. Malformed or missing declarations yield no entries.</summary>
-    private static IReadOnlyList<PluginImportEntry> ReadImports(string directory)
+    internal static IReadOnlyList<PluginImportEntry> ReadImports(string directory)
     {
         var denoJson = Path.Combine(directory, "deno.json");
         if (!File.Exists(denoJson)) return [];
@@ -273,7 +273,7 @@ internal static class PluginManifest
         }
     }
 
-    private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
+    internal static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
     {
         return new PluginPermissionGrants(
             set?.Env ?? PluginPermissionGrant.None,

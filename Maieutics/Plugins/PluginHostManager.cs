@@ -876,7 +876,8 @@ internal sealed class PluginHostManager(
         // toolchain at install time, not by the kernel.
         var result = new List<PluginDescriptor>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var descriptor in ScanProject(pluginsRoot))
+
+        void AddDescriptor(PluginDescriptor descriptor)
         {
             if (seen.Add(descriptor.Id))
             {
@@ -886,6 +887,31 @@ internal sealed class PluginHostManager(
                     descriptor.Name,
                     descriptor.Workers.Count);
             }
+        }
+
+        foreach (var descriptor in ScanProject(pluginsRoot))
+        {
+            AddDescriptor(descriptor);
+        }
+
+        // Registry-installed plugins: exact-version jsr: dependencies of the root
+        // project are resolved through the Deno toolchain and loaded with the same
+        // sibling manifest contract (docs/plugin-import-resolution.md §9).
+        var diagnostics = new List<string>();
+        foreach (var import in PluginManifest.ReadImports(pluginsRoot))
+        {
+            if (!import.Value.StartsWith("jsr:", StringComparison.Ordinal)) continue;
+            var descriptor = PluginRegistryDiscovery.TryLoadJsr(
+                import.Key,
+                import.Value,
+                denoOptions.Executable,
+                url => PluginRegistryDiscovery.DenoInfoLocalPath(denoOptions.Executable, url),
+                diagnostics);
+            if (descriptor is not null) AddDescriptor(descriptor);
+        }
+        foreach (var diagnostic in diagnostics)
+        {
+            logger.LogWarning("{Diagnostic}.", diagnostic);
         }
         return result;
     }

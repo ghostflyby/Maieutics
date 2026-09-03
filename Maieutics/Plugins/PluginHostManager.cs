@@ -148,6 +148,20 @@ internal sealed class PluginHostManager(
     private FileSystemWatcher? pluginWatcher;
     private CancellationTokenSource? watcherDebounce;
 
+    /// <summary>Paths of watched changes awaiting an explicit reload apply
+    /// (the automatic-reload option is off).</summary>
+    private readonly HashSet<string> pendingReloadPaths = new(StringComparer.Ordinal);
+
+    /// <summary>Whether watcher-detected plugin changes reload automatically.
+    /// Default off (docs/plugin-import-resolution.md §4.3): changes are recorded
+    /// as pending and applied by <see cref="ApplyPendingReloadsAsync"/>. Opting in
+    /// restores automatic in-process reloads for local edits; import-map changes
+    /// still only warn (the process map is fixed at host start).</summary>
+    public bool AutomaticReload { get; set; }
+
+    /// <summary>Number of watched changes awaiting an explicit apply.</summary>
+    public int PendingReloadCount { get { lock (gate) return pendingReloadPaths.Count; } }
+
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
     ///     registration without polling. Completed when the manager is disposed. Bounded and
@@ -189,6 +203,22 @@ internal sealed class PluginHostManager(
     public ValueTask DisposeAsync()
     {
         return new ValueTask(EnsureStoppedAsync());
+    }
+
+    /// <summary>Applies the watched changes recorded while the automatic-reload
+    /// option was off (docs/plugin-import-resolution.md §4.3).</summary>
+    public async Task ApplyPendingReloadsAsync(CancellationToken cancellationToken)
+    {
+        string[] paths;
+        lock (gate)
+        {
+            paths = [.. pendingReloadPaths];
+            pendingReloadPaths.Clear();
+        }
+        foreach (var path in paths)
+        {
+            await ReloadChangedPluginAsync(path).ConfigureAwait(false);
+        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -362,6 +392,7 @@ internal sealed class PluginHostManager(
     {
         EnsurePluginsRoot();
         PluginGraphResult graph;
+        PluginImportMergeResult importMerge;
         lock (gate)
         {
             descriptors.Clear();
@@ -375,13 +406,28 @@ internal sealed class PluginHostManager(
                     exclusion.Reason,
                     exclusion.Detail);
             }
-            descriptors.AddRange(graph.Enabled);
+
+            importMerge = PluginImportMerger.Merge(graph.Enabled, PluginHostModule.ReservedImportKeys);
+            foreach (var warning in importMerge.Warnings)
+            {
+                logger.LogWarning("Plugin import merge: {Warning}.", warning);
+            }
+            foreach (var exclusion in importMerge.Exclusions)
+            {
+                logger.LogWarning(
+                    "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
+                    exclusion.PluginId,
+                    exclusion.Reason,
+                    exclusion.Detail);
+            }
+            descriptors.AddRange(graph.Enabled.Where(
+                plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
         }
 
-        // The plugin root always exists (an empty deno project skeleton) and the
-        // host always starts, even with zero plugins: built-in functionality is
-        // planned to ship as plugins, so the host is resident and a plugin added
-        // later takes effect without a kernel restart.
+        // The root deno.json must exist before the host process starts: it carries the
+        // process import map (host machinery plus the merged plugin entries) that the
+        // host and every plugin worker resolve against.
+        modules.WriteRootConfig(importMerge.Imports);
         configPath = WriteConfigFile(descriptors);
         process = PluginHostProcess.Start(
             new PluginHostProcessOptions(
@@ -508,7 +554,14 @@ internal sealed class PluginHostManager(
 
             try
             {
-                await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                if (AutomaticReload)
+                {
+                    await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                }
+                else
+                {
+                    lock (gate) pendingReloadPaths.Add(args.FullPath);
+                }
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException or OperationCanceledException
@@ -559,6 +612,15 @@ internal sealed class PluginHostManager(
         PluginHostConfigPlugin? replacement = null;
         if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out _))
         {
+            if (!PluginImportMerger.SameMapping(owner.Imports, reloaded.Imports))
+            {
+                // The process import map is baked into the root deno.json at host
+                // start; an in-process worker reload cannot add or change entries.
+                logger.LogWarning(
+                    "Plugin '{PluginId}' import map changed; the host process import map is fixed at startup. " +
+                    "Restart the host process to apply it — the worker still reloads with the previous map.",
+                    owner.Id);
+            }
             if (RequiresProcessIsolation(reloaded))
             {
                 // A plugin that newly declares run/ffi (or switches to process
@@ -851,7 +913,8 @@ internal sealed class PluginHostManager(
         // toolchain at install time, not by the kernel.
         var result = new List<PluginDescriptor>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var descriptor in ScanProject(pluginsRoot))
+
+        void AddDescriptor(PluginDescriptor descriptor)
         {
             if (seen.Add(descriptor.Id))
             {
@@ -861,6 +924,39 @@ internal sealed class PluginHostManager(
                     descriptor.Name,
                     descriptor.Workers.Count);
             }
+        }
+
+        foreach (var descriptor in ScanProject(pluginsRoot))
+        {
+            AddDescriptor(descriptor);
+        }
+
+        // Registry-installed plugins: exact-version jsr: dependencies of the root
+        // project are resolved through the Deno toolchain and loaded with the same
+        // sibling manifest contract (docs/plugin-import-resolution.md §9).
+        var diagnostics = new List<string>();
+        foreach (var import in PluginManifest.ReadImports(pluginsRoot))
+        {
+            if (import.Value.StartsWith("jsr:", StringComparison.Ordinal))
+            {
+                var jsrDescriptor = PluginRegistryDiscovery.TryLoadJsr(
+                    import.Key,
+                    import.Value,
+                    denoOptions.Executable,
+                    url => PluginRegistryDiscovery.DenoInfoLocalPath(denoOptions.Executable, url),
+                    diagnostics);
+                if (jsrDescriptor is not null) AddDescriptor(jsrDescriptor);
+            }
+            else if (import.Value.StartsWith("npm:", StringComparison.Ordinal))
+            {
+                var npmDescriptor = PluginRegistryDiscovery.TryLoadNpm(
+                    import.Key, import.Value, denoOptions.Executable, diagnostics);
+                if (npmDescriptor is not null) AddDescriptor(npmDescriptor);
+            }
+        }
+        foreach (var diagnostic in diagnostics)
+        {
+            logger.LogWarning("{Diagnostic}.", diagnostic);
         }
         return result;
     }

@@ -11,7 +11,8 @@ internal sealed record PluginDescriptor(
     IReadOnlyList<PluginWorkerDescriptor> Workers,
     PluginPermissionGrants Permissions,
     string? Isolation,
-    IReadOnlyList<string> Dependencies);
+    IReadOnlyList<string> Dependencies,
+    IReadOnlyList<PluginImportEntry> Imports);
 
 internal sealed record PluginWorkerDescriptor(string ExportName, string EntryUrl);
 
@@ -114,7 +115,8 @@ internal static class PluginManifest
         var permissions = ReadPermissions(ReadPackagePermissions(directory));
         var isolation = pluginManifest.Isolation;
         var dependencies = pluginManifest.Dependencies ?? [];
-        descriptor = new PluginDescriptor(id, name, directory, workers, permissions, isolation, dependencies);
+        var imports = ReadImports(directory);
+        descriptor = new PluginDescriptor(id, name, directory, workers, permissions, isolation, dependencies, imports);
         error = string.Empty;
         return true;
     }
@@ -153,6 +155,25 @@ internal static class PluginManifest
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    /// <summary>Reads the plugin's declared <c>deno.json</c> <c>imports</c> for the
+    /// runtime import-map merge. Malformed or missing declarations yield no entries.</summary>
+    internal static IReadOnlyList<PluginImportEntry> ReadImports(string directory)
+    {
+        var denoJson = Path.Combine(directory, "deno.json");
+        if (!File.Exists(denoJson)) return [];
+        try
+        {
+            var manifest = JsonSerializer.Deserialize(
+                               File.ReadAllText(denoJson),
+                               PluginManifestJsonContext.Default.PluginManifestFile);
+            return PluginImportReader.Read(manifest?.Imports);
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 
@@ -252,7 +273,7 @@ internal static class PluginManifest
         }
     }
 
-    private static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
+    internal static PluginPermissionGrants ReadPermissions(PluginManifestPermissionSet? set)
     {
         return new PluginPermissionGrants(
             set?.Env ?? PluginPermissionGrant.None,
@@ -289,7 +310,8 @@ internal sealed record PluginManifestFile(
     string? Name = null,
     JsonElement? Exports = null,
     PluginManifestPermissions? Permissions = null,
-    PluginManifestMaieutics? Maieutics = null);
+    PluginManifestMaieutics? Maieutics = null,
+    JsonElement? Imports = null);
 
 internal sealed record PluginManifestPermissions(PluginManifestPermissionSet? Default = null);
 

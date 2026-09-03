@@ -195,6 +195,58 @@ Deno.test("a static default import of an actor entry is redirected to the acquir
   }
 });
 
+Deno.test("a dynamic import of an actor entry through dynamicImport is redirected to the acquire surface", async () => {
+  const root = Deno.makeTempDirSync();
+
+  const dep = writePlugin(
+    root,
+    "dep",
+    `${sdkImport()}
+    export const math = defineActor({
+      double(n: number): number { return n * 2; },
+    });
+    `,
+  );
+
+  // dynamicImport is a pass-through wrapper: the load hook's canonical match
+  // rewrites the actor specifier to the stub, so the captured namespace's
+  // default export is the lazy acquire surface — the same machinery the
+  // static import path produces.
+  const consumer = writePlugin(
+    root,
+    "consumer",
+    `${sdkImport()}
+    import { dynamicImport } from ${JSON.stringify(SDK_URL)};
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const dep = await dynamicImport("@maieutics/dep/main");
+        const doubled = await dep.default.math.double(21);
+        return { action: "continue" as const, note: String(doubled) };
+      },
+    });
+    `,
+    ["dep"],
+  );
+
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(dep), pluginConfig(consumer)],
+  });
+  try {
+    await host.startAll();
+    const value = await host.invoke("consumer", "./main", "ToolPreInvoke", {
+      tool: "read_text",
+      arguments: {},
+      callId: "c2d",
+    }) as { action?: string; note?: string };
+    assertEquals(value.action, "continue");
+    assertEquals(value.note, "42");
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("a jsr:-prefixed specifier with a version segment is normalized and redirected", async () => {
   const root = Deno.makeTempDirSync();
 

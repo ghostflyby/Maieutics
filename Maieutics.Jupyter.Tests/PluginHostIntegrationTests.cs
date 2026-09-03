@@ -215,6 +215,68 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
+    // Regression gate (docs/plugin-import-resolution.md §5.1): every import form a
+    // plugin can declare — the SDK via links only, a bare alias through the merged
+    // process import map, and a direct registry specifier — must reach a ready
+    // worker whose aliased dependency executes. The blocker that once skipped this
+    // suite was the worker's denied import grant, not the merge.
+    [Theory(Timeout = 45_000)]
+    [InlineData("sdk-only")]
+    [InlineData("sdk-alias")]
+    [InlineData("sdk-direct-jsr")]
+    public async Task WorkerReadinessAcrossImportForms(string variant)
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(40));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var pluginsRoot = CreateAliasedPluginsRoot(variant);
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            new DebugConsoleLogger<PluginHostManager>(),
+            new DebugConsoleLoggerFactory(),
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            // The merged entry is present in every variant: only the worker's import
+            // form differs, so the variants isolate the failing resolution path.
+            File.ReadAllText(modules.ConfigFile).Should().Contain("\"@std/bytes\"");
+
+            var registrations = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token);
+            registrations.Should().NotBeEmpty();
+
+            var outcome = await manager.InvokeExtensionPointAsync(
+                registrations[0].PluginId,
+                registrations[0].ExportName,
+                ReplExtensionPointName.McpDiscover,
+                null,
+                timeout.Token);
+            outcome.IsError.Should().BeFalse(outcome.Message);
+            if (variant != "sdk-only")
+                outcome.Value!.Value.GetRawText().Should().Contain("1,2,3,4");
+        }
+        Console.WriteLine($"[readiness] {variant}: READY");
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task RejectsToolCallsThroughThePreInvokeHookChain()
     {
@@ -352,6 +414,151 @@ public sealed class PluginHostIntegrationTests
         return [];
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task CrossPluginActorCallsResolveThroughDeclaredDependencies()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var pluginsRoot = CreateTwoPluginRoot();
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            var registrations = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token);
+            registrations.Should().NotBeEmpty();
+
+            // The consumer's handler crosses workers: dep.math.double(21) executes
+            // in the sub plugin's worker through the load-hook stub redirect.
+            var outcome = await manager.InvokeExtensionPointAsync(
+                registrations[0].PluginId,
+                registrations[0].ExportName,
+                ReplExtensionPointName.McpDiscover,
+                null,
+                timeout.Token);
+            outcome.IsError.Should().BeFalse(outcome.Message);
+            outcome.Value!.Value.GetRawText().Should().Contain("42");
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ReloadWarnsWhenThePluginImportMapChanges()
+    {
+        var logger = new CollectingLogger<PluginHostManager>();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(55));
+        var pluginsRoot = CreateAliasedPluginsRoot("sdk-alias");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = "deno" },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            logger,
+            logger,
+            TimeProvider.System);
+
+        try
+        {
+            manager.AutomaticReload = true; // this test exercises the opt-in path
+            await manager.StartAsync(timeout.Token);
+            await manager.WaitUntilReadyAsync(timeout.Token);
+
+            // Change the plugin's import map; the process map is fixed at host start.
+            var denoJsonPath = Path.Combine(pluginsRoot, "deno.json");
+            var updated = File.ReadAllText(denoJsonPath).Replace(
+                "\"imports\":",
+                "\"imports\": { \"@std/bytes\": \"jsr:@std/bytes@1\", \"@std/path\": \"jsr:@std/path@^1\" },\n    \"imports-old\":");
+            File.WriteAllText(denoJsonPath, updated);
+
+            var deadline = TimeSpan.FromSeconds(20);
+            var warned = false;
+            while (deadline > TimeSpan.Zero)
+            {
+                if (logger.Lines.Any(line => line.Contains("Restart the host process"))) { warned = true; break; }
+                await Task.Delay(250, timeout.Token);
+                deadline -= TimeSpan.FromMilliseconds(250);
+            }
+            warned.Should().BeTrue("the reload must warn that the host process restart is required");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task WatchedChangesStayPendingUntilExplicitlyAppliedByDefault()
+    {
+        var logger = new CollectingLogger<PluginHostManager>();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(55));
+        var pluginsRoot = CreateAliasedPluginsRoot("sdk-alias");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = "deno" },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            logger,
+            logger,
+            TimeProvider.System);
+
+        try
+        {
+            await manager.StartAsync(timeout.Token);
+            await manager.WaitUntilReadyAsync(timeout.Token);
+
+            var denoJsonPath = Path.Combine(pluginsRoot, "deno.json");
+            var updated = File.ReadAllText(denoJsonPath).Replace(
+                "\"imports\":",
+                "\"imports\": { \"@std/bytes\": \"jsr:@std/bytes@1\", \"@std/path\": \"jsr:@std/path@^1\" },\n    \"imports-old\":");
+            File.WriteAllText(denoJsonPath, updated);
+
+            // No automatic reload: the change is recorded as pending, and no
+            // restart-required warning is emitted.
+            await Task.Delay(1500, timeout.Token);
+            manager.PendingReloadCount.Should().BeGreaterThan(0);
+            logger.Lines.Should().NotContain(line => line.Contains("Restart the host process"));
+
+            // The explicit apply runs the reload path (which emits the warning).
+            await manager.ApplyPendingReloadsAsync(timeout.Token);
+            logger.Lines.Should().Contain(line => line.Contains("Restart the host process"));
+            manager.PendingReloadCount.Should().Be(0);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        }
+    }
+
     private static string CreatePluginsRoot(string pluginName)
     {
         // The plugins root IS the plugin project: deno.json + maieutics.json +
@@ -385,7 +592,7 @@ public sealed class PluginHostIntegrationTests
                     handler: () => ({ action: "reject", error: { code: "denied_by_hook", message: "the hook denied this call" } }),
                   });
                   """
-                : """
+                  : """
                   import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
                   export const discover = defineExtensionPoint("McpDiscover", {
                     handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
@@ -393,6 +600,157 @@ public sealed class PluginHostIntegrationTests
                   """);
         return root;
     }
+
+    /// <summary>Same layout as CreatePluginsRoot plus a deno.json alias import
+    /// whose runtime resolution the merged process import map must provide
+    /// (docs/plugin-import-resolution.md §8). The <paramref name="variant"/> selects
+    /// the worker's dependency import form; the declared deno.json imports (and thus
+    /// the merged process map) are identical in every variant. concat takes a single
+    /// iterable: current @std/bytes@1 dropped the variadic overload.</summary>
+    private static string CreateAliasedPluginsRoot(string variant)
+    {
+        // deno.json imports are identical in every variant: the process import map is
+        // constant, and only the worker's import FORM differs (§5.1 variants).
+        var importLine = variant switch
+        {
+            "sdk-alias" => "import { concat } from \"@std/bytes/concat\";",
+            "sdk-direct-jsr" => "import { concat } from \"jsr:@std/bytes@1/concat\";",
+            _ => "",
+        };
+        var sdkImport = "import { defineExtensionPoint } from \"jsr:@maieutics/plugin-sdk@^0.1\";";
+        var moduleBody = variant == "sdk-only"
+            ? $"{sdkImport}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\" }} }}],\n}});"
+            : $"{sdkImport}\n{importLine}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\", args: [String(concat([new Uint8Array([1, 2]), new Uint8Array([3, 4])]))] }} }}],\n}});";
+
+        var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/aliased",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } },
+              "imports": { "@std/bytes": "jsr:@std/bytes@1" }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(Path.Combine(root, "mod.ts"), moduleBody + "\n");
+        return root;
+    }
+
+    /// <summary>Two-package layout: the root project consumes a sub-package plugin
+    /// through a declared dependency and a bare-alias actor import.</summary>
+    private static string CreateTwoPluginRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "sub"));
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/composite",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } },
+              "imports": { "@acme/sub/main": "./sub/mod.ts" }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "dependencies": ["sub"],
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mod.ts"),
+            """
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+            import dep from "@acme/sub/main";
+            export const discover = defineExtensionPoint("McpDiscover", {
+              handler: async () => {
+                const doubled = await dep.math.double(21);
+                return [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno", args: [String(doubled)] } }];
+              },
+            });
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "sub", "deno.json"),
+            """
+            {
+              "name": "@acme/sub",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "sub", "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "sub", "mod.ts"),
+            """
+            import { defineActor } from "jsr:@maieutics/plugin-sdk@^0.1";
+            export const math = defineActor({ double(n: number): number { return n * 2; } });
+            """);
+        return root;
+    }
+
+    private sealed class CollectingLogger<T> : ILogger<T>, ILoggerFactory
+    {
+        private readonly object gate = new();
+        private readonly List<string> lines = [];
+        public IReadOnlyList<string> Lines { get { lock (gate) return [.. lines]; } }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public void AddProvider(ILoggerProvider provider) { }
+        public ILogger CreateLogger(string categoryName) => (ILogger)this;
+        public void Dispose() { }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            var line = formatter(state, exception);
+            lock (gate) lines.Add($"{logLevel}: {line}");
+        }
+    }
+
+    private sealed class DebugConsoleLogger<T> : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            var line = formatter(state, exception);
+            if (!string.IsNullOrWhiteSpace(line)) Console.WriteLine($"[host:{logLevel}] {line}");
+            if (exception is not null) Console.WriteLine(exception);
+        }
+    }
+
+    private sealed class DebugConsoleLoggerFactory : ILoggerFactory
+    {
+        public void AddProvider(ILoggerProvider provider) { }
+        public ILogger CreateLogger(string categoryName) => new DebugConsoleLogger<object>();
+        public void Dispose() { }
+    }
+
+
 
     private sealed record McpDiscoveryTestShape(string Module, object Transport);
 }

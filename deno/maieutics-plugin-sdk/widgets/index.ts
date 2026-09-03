@@ -102,30 +102,30 @@ export function createWidget<State extends Record<string, unknown>>(
 }
 
 /** The control factories exposed to TSX cells. */
-export const IntSlider = controlFactory("IntSlider");
-export const FloatSlider = controlFactory("FloatSlider");
-export const Button = controlFactory("Button");
-export const Text = controlFactory("Text");
-export const ToggleButton = controlFactory("ToggleButton");
-export const IntRangeSlider = controlFactory("IntRangeSlider");
-export const Box = controlFactory("Box");
-export const VBox = controlFactory("VBox");
-export const HBox = controlFactory("HBox");
-export const Checkbox = controlFactory("Checkbox");
-export const Label = controlFactory("Label");
-export const HTML = controlFactory("HTML");
-export const Textarea = controlFactory("Textarea");
-export const Password = controlFactory("Password");
-export const IntText = controlFactory("IntText");
-export const FloatText = controlFactory("FloatText");
-export const BoundedIntText = controlFactory("BoundedIntText");
-export const IntProgress = controlFactory("IntProgress");
-export const FloatProgress = controlFactory("FloatProgress");
-export const DatePicker = controlFactory("DatePicker");
-export const Dropdown = controlFactory("Dropdown");
-export const Select = controlFactory("Select");
-export const ToggleButtons = controlFactory("ToggleButtons");
-export const RadioButtons = controlFactory("RadioButtons");
+export const IntSlider: ControlFactory = controlFactory("IntSlider");
+export const FloatSlider: ControlFactory = controlFactory("FloatSlider");
+export const Button: ControlFactory = controlFactory("Button");
+export const Text: ControlFactory = controlFactory("Text");
+export const ToggleButton: ControlFactory = controlFactory("ToggleButton");
+export const IntRangeSlider: ControlFactory = controlFactory("IntRangeSlider");
+export const Box: ControlFactory = controlFactory("Box");
+export const VBox: ControlFactory = controlFactory("VBox");
+export const HBox: ControlFactory = controlFactory("HBox");
+export const Checkbox: ControlFactory = controlFactory("Checkbox");
+export const Label: ControlFactory = controlFactory("Label");
+export const HTML: ControlFactory = controlFactory("HTML");
+export const Textarea: ControlFactory = controlFactory("Textarea");
+export const Password: ControlFactory = controlFactory("Password");
+export const IntText: ControlFactory = controlFactory("IntText");
+export const FloatText: ControlFactory = controlFactory("FloatText");
+export const BoundedIntText: ControlFactory = controlFactory("BoundedIntText");
+export const IntProgress: ControlFactory = controlFactory("IntProgress");
+export const FloatProgress: ControlFactory = controlFactory("FloatProgress");
+export const DatePicker: ControlFactory = controlFactory("DatePicker");
+export const Dropdown: ControlFactory = controlFactory("Dropdown");
+export const Select: ControlFactory = controlFactory("Select");
+export const ToggleButtons: ControlFactory = controlFactory("ToggleButtons");
+export const RadioButtons: ControlFactory = controlFactory("RadioButtons");
 
 /** A widget model factory: props (initial state + optional onChange) -> model. */
 export type ControlFactoryProps = Record<string, unknown> & {

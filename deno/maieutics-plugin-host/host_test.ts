@@ -10,6 +10,12 @@ import {
 import type { ReplEnvelope } from "../shared/protocol.ts";
 import type { HostReplReport } from "./host_repl_protocol.ts";
 
+// Run with an import-granted parent (the deno.json test task passes
+// --allow-import): these suites exercise the host exactly as production launches
+// it, and a worker's default registry import grant may not exceed its parent —
+// spawning the host without the flag fails fast with a permission-escalation
+// error instead.
+
 const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
 const REPL_ENTRY_PATH = new URL("../maieutics-deno-repl/process_main.ts", import.meta.url).pathname;

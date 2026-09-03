@@ -43,6 +43,10 @@ jobs:
       - name: Test
         run: deno task --config deno/deno.json test
 
+      - name: JSR publish dry-run (plugin SDK)
+        working-directory: deno/maieutics-plugin-sdk
+        run: deno publish --dry-run --allow-dirty --no-provenance
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

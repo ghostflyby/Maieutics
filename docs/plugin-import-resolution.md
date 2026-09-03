@@ -301,6 +301,13 @@ Deno toolchain at install time.
 Phase 2 therefore adds no declaration surface and no manifest changes: it wires
 registry-valued targets into the same contract by asking the Deno toolchain to resolve
 the specifier to the package directory, after which discovery proceeds identically.
+Discovery stays **one level** — the installed set is exactly the root's direct
+`jsr:`/`npm:` dependencies — because transitive plugin-to-plugin references need no
+kernel-side walking: the worker's loader hook judges actor imports at runtime,
+redirects them to acquire stubs, and the host routes acquires to the (already
+started) owner worker. `maieutics.json` `dependencies` remains the contract for start
+ordering, cascade, and the missing-dependency exclusion when a referenced plugin is
+not installed.
 Design questions for that follow-up: the toolchain query used at scan time, the
 worker read-grant scope for toolchain-managed locations, and reload semantics when an
 installed version changes.

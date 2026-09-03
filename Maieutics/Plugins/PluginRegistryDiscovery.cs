@@ -188,7 +188,7 @@ internal static class PluginRegistryDiscovery
                 name, name, packageDir,
                 workers, permissions, pluginManifest.Isolation,
                 pluginManifest.Dependencies ?? [],
-                PluginImportReader.Read(packageManifest.Imports));
+                PluginImportReader.Read(packageManifest?.Imports));
         }
         catch (Exception exception) when (exception is JsonException or IOException)
         {

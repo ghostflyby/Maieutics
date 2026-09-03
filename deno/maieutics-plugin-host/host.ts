@@ -146,6 +146,18 @@ function buildWorkerPermissions(
     // env access the broker does not grant.
     return [...entries];
   })();
+  // An undeclared import grant (the kernel config serializes it as an empty
+  // array) must not deny registry module resolution: Deno's jsr:/npm:
+  // concretizer fetches version metadata from these hosts, and a denied fetch
+  // inside the hooked worker neither falls back to the cache nor fails fast —
+  // it hangs or raises mid-initialization. The default allowlist is the same
+  // registry set the host's own bare --allow-import permits, so the worker
+  // never exceeds its parent; a declared grant narrows or denies it.
+  const declaredImport = plugin.permissions.import;
+  const importGrant: PermissionGrant = declaredImport === undefined ||
+      (Array.isArray(declaredImport) && declaredImport.length === 0)
+    ? ["jsr.io", "npm.jsr.io", "registry.npmjs.org"]
+    : declaredImport;
   return {
     env: normalize(plugin.permissions.env),
     net: normalize(plugin.permissions.net),
@@ -154,7 +166,7 @@ function buildWorkerPermissions(
     run: normalize(plugin.permissions.run),
     ffi: normalize(plugin.permissions.ffi),
     sys: normalize(plugin.permissions.sys),
-    import: normalize(plugin.permissions.import),
+    import: normalize(importGrant),
   };
 }
 

@@ -135,6 +135,42 @@ public sealed class PluginImportMergerTests
     }
 
     [Fact]
+    public void DedupedKeyKeepsItsFirstOwnerWhenTheLaterPluginConflicts()
+    {
+        var (imports, exclusions, _) = Merge(
+            Plugin("a", imports: [
+                Entry("@std/bytes", "jsr:@std/bytes@1"),
+                Entry("@std/path", "jsr:@std/path@^1"),
+            ]),
+            Plugin("b", imports: [
+                Entry("@std/bytes", "jsr:@std/bytes@1"),
+                Entry("@std/path", "jsr:@std/path@2"),
+            ]));
+
+        // b conflicts on @std/path and is excluded; the deduped @std/bytes entry
+        // belongs to a and must survive b's exclusion untouched.
+        imports.Should().HaveCount(2).And.Contain(
+            pair => pair.Key == "@std/bytes" && pair.Value == "jsr:@std/bytes@1");
+        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("b");
+    }
+
+    [Fact]
+    public void ExcludedPluginCommitsNoEntries()
+    {
+        var (imports, exclusions, _) = Merge(
+            Plugin("a", imports: [
+                Entry("@std/bytes", "jsr:@std/bytes@1"),
+                Entry("@std/other", "@std/bytes"),
+            ]),
+            Plugin("b", imports: [Entry("@std/bytes", "jsr:@std/bytes@2")]));
+
+        // a is excluded for the bare-chain value; its earlier entry must not occupy
+        // @std/bytes, so b's healthy mapping stands and b is not dragged into exclusion.
+        imports.Should().ContainSingle().Which.Value.Should().Be("jsr:@std/bytes@2");
+        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("a");
+    }
+
+    [Fact]
     public void NormalizeSpecifierStripsJsrPrefixAndVersionSegment()
     {
         PluginImportMerger.NormalizeSpecifier("jsr:@acme/widget@1.0/main").Should().Be("@acme/widget/main");

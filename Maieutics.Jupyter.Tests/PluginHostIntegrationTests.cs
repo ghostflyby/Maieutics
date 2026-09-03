@@ -215,12 +215,16 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
-    // Bisection (docs/plugin-import-resolution.md §5.1): which import form leaves the
-    // plugin worker without a ready frame in the real host topology?
+    // Regression gate (docs/plugin-import-resolution.md §5.1): every import form a
+    // plugin can declare — the SDK via links only, a bare alias through the merged
+    // process import map, and a direct registry specifier — must reach a ready
+    // worker whose aliased dependency executes. The blocker that once skipped this
+    // suite was the worker's denied import grant, not the merge.
     [Theory(Timeout = 45_000)]
     [InlineData("sdk-only")]
     [InlineData("sdk-alias")]
-    public async Task WorkerReadinessBisection(string variant)
+    [InlineData("sdk-direct-jsr")]
+    public async Task WorkerReadinessAcrossImportForms(string variant)
     {
         if (OperatingSystem.IsWindows()) return;
 
@@ -270,7 +274,7 @@ public sealed class PluginHostIntegrationTests
             if (variant != "sdk-only")
                 outcome.Value!.Value.GetRawText().Should().Contain("1,2,3,4");
         }
-        Console.WriteLine($"[bisection] {variant}: READY");
+        Console.WriteLine($"[readiness] {variant}: READY");
     }
 
     [Fact(Timeout = 120_000)]
@@ -454,11 +458,14 @@ public sealed class PluginHostIntegrationTests
 
     /// <summary>Same layout as CreatePluginsRoot plus a deno.json alias import
     /// whose runtime resolution the merged process import map must provide
-    /// (docs/plugin-import-resolution.md §8).</summary>
+    /// (docs/plugin-import-resolution.md §8). The <paramref name="variant"/> selects
+    /// the worker's dependency import form; the declared deno.json imports (and thus
+    /// the merged process map) are identical in every variant. concat takes a single
+    /// iterable: current @std/bytes@1 dropped the variadic overload.</summary>
     private static string CreateAliasedPluginsRoot(string variant)
     {
         // deno.json imports are identical in every variant: the process import map is
-        // constant, and only the worker's import FORM differs (§5.1 bisection).
+        // constant, and only the worker's import FORM differs (§5.1 variants).
         var importLine = variant switch
         {
             "sdk-alias" => "import { concat } from \"@std/bytes/concat\";",
@@ -468,7 +475,7 @@ public sealed class PluginHostIntegrationTests
         var sdkImport = "import { defineExtensionPoint } from \"jsr:@maieutics/plugin-sdk@^0.1\";";
         var moduleBody = variant == "sdk-only"
             ? $"{sdkImport}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\" }} }}],\n}});"
-            : $"{sdkImport}\n{importLine}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\", args: [String(concat(new Uint8Array([1, 2]), new Uint8Array([3, 4])))] }} }}],\n}});";
+            : $"{sdkImport}\n{importLine}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\", args: [String(concat([new Uint8Array([1, 2]), new Uint8Array([3, 4])]))] }} }}],\n}});";
 
         var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);

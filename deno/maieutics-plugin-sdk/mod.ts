@@ -1261,9 +1261,10 @@ function createRefProxyForStub(
  *     the stub redirect for static imports.
  *   - The `resolve` fallback must stay a pass-through to `nextResolve`. Never
  *     rewrite bare aliases to `jsr:`/`npm:` specifiers here: the hooks
- *     pipeline cannot decline URLs it cannot load and its `jsr:` concretization
- *     is unreliable (bare aliases belong to the process import map, which the
- *     kernel materializes — see docs/plugin-import-resolution.md).
+ *     pipeline cannot decline URLs it cannot load, and its registry
+ *     concretization is permission-gated and un-declinable (bare aliases
+ *     belong to the process import map, which the kernel materializes — see
+ *     docs/plugin-import-resolution.md §5.1).
  */
 function installDependencyLoadHook(
   actorEntries: readonly {

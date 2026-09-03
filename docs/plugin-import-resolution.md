@@ -7,7 +7,9 @@ implement it. Every design constraint below is backed by an experiment against
 Deno 2.9.5/2.9.6; the experiment record is summarized in §2 and the full repro
 descriptions in §11.
 
-Status: Draft — pending review. No code is written yet; §12 is the implementation order.
+Status: Implemented on `feat/plugin-import-resolution`. §5.1 records the runtime
+blocker the integration test exposed and its resolution (the worker's denied
+`import` grant, not the hooks pipeline).
 
 ## 1. Problem
 
@@ -42,10 +44,13 @@ Three clarifications that scope the problem precisely (all verified):
    The hook is also the sole mechanism that makes actor imports work (canonical match →
    `maieutics-stub:` short-circuit); it must not grow alias-rewriting responsibilities
    (§10.2).
-3. **Imports need no permissions.** Remote module loading is not gated by worker
-   `deno.permissions` on Deno 2.9 (a zero-permission worker cold-downloaded from
-   jsr.io); the host process carries `--allow-import` and workers cannot exceed the
-   parent.
+3. **Imports need a worker `import` grant.** The native loader serves cached
+   modules without a worker permission check, but the hooks pipeline's
+   `jsr:`/`npm:` concretizer fetches registry version metadata and checks the
+   worker's own `import` grant; a denied fetch neither falls back to the cache
+   nor fails fast (§5.1). The host process carries `--allow-import` and workers
+   cannot exceed the parent, so an undeclared grant defaults to the registry
+   allowlist that the parent's bare flag already permits.
 
 ## 2. Verified environment facts
 
@@ -58,7 +63,7 @@ Each row is load-bearing for a decision below. Repro sketches in §11.
 | F3 | Workspace members' `deno.json` `imports` apply to modules under the member directory (static, dynamic, cross-scope graphs, worker graphs); member wins over root on conflict | The platform-native scoping mechanism — blocked structurally, see §10.1 |
 | F4 | Workspace members must be nested under the workspace root; members without a config file are hard errors | A kernel-temp workspace cannot declare plugins; a pluginsRoot workspace needs kernel-written files in the config directory — rejected |
 | F5 | `registerHooks` load hooks must shortCircuit or call nextLoad; declining (`undefined`/`null`/`{shortCircuit:false}`) is a contract error; `nextLoad("jsr:…")` hard-fails `Unsupported scheme "jsr"` | The hook pipeline cannot delegate foreign schemes to the native loader |
-| F6 | `nextResolve` concretization of `jsr:` inputs is non-deterministic (same string succeeds/fails across processes; package asymmetry at exact versions); bare-specifier inputs resolve robustly via the native import map | Never hand a rewritten `jsr:`/`npm:` specifier to `nextResolve`; bare aliases through the process map are robust (validated matrix, repeat runs) |
+| F6 | `nextResolve` concretization of `jsr:` inputs is **permission-gated**: without a worker `import` grant it hangs on cold caches and raises `Requires import access to "jsr.io:443"` in some warm states (earlier recorded as "non-deterministic"; the §5.1 diagnosis replaced that reading). With the grant present it is deterministic across cold/warm caches and `@1`/`@^1`/exact/`npm:` forms | Never hand a rewritten `jsr:`/`npm:` specifier to `nextResolve`; workers need an import grant for registry resolution (§5.1). Bare aliases through the process map plus the §5.1 default grant are the supported form |
 | F7 | Static import edges of runtime-loaded modules reach `resolve` hooks **only when a `load` hook is installed**; `node:module` `register()` exists but is a no-op | The SDK's unconditional load hook is load-bearing infrastructure |
 | F8 | `links` overrides `imports` for the same alias key (tested with an imports entry pointing at a nonexistent jsr package) | Merging the root project's SDK alias into `imports` is safe; `links` keeps pinning the materialized copy |
 | F9 | Trailing-slash import-map keys with `jsr:`/`npm:` values fail URL parsing natively; package-style keys with subpath extension are the supported form | Merge validation must reject that key/value combination |
@@ -167,43 +172,38 @@ runtime-computed specifier
 Declared-dependency aliases are stubbed even when a merged map entry exists, because
 the canonical match runs before the fallback — actor semantics win by construction.
 
-### 5.1 Open blocker (found by the §8 integration test)
+### 5.1 Resolved blocker (found by the §8 integration test)
 
-The merge and its write are verified (the root config contains the merged entries),
-but the end-to-end test
-(`PluginHostIntegrationTests.ResolvesPluginDenoJsonAliasesThroughTheMergedProcessImportMap`,
-currently `Skip`-marked with these findings) exposed a runtime blocker: inside the
-real host topology the plugin worker's bare-alias import **never completes** — the
-worker produces no ready frame and no error output within 90s, while:
+The merge and its write are verified (the root config contains the merged
+entries), but the end-to-end test initially showed the plugin worker's alias
+import **never completing** inside the real host topology — no ready frame and
+no visible error within the timeout, while minimal replicas of the same shapes
+passed. Bisection over the worker's import form plus a manual host replica
+(same materialized modules, flags, and environment) localized it:
 
-- the merged entries are present in the process config the host and workers resolve
-  against, and
-- minimal replicas of the same shape (SDK-shaped pass-through hooks + aliases +
-  direct `jsr:` specifiers, in main modules and in spawned workers, with
-  `import: false`/`true`/omitted) all pass.
+- **Root cause — the worker's denied `import` grant.** `buildWorkerPermissions`
+  denied `import` unless the manifest declared it, and the kernel config
+  serializes an undeclared grant as an empty array (deny-all). Deno's
+  `jsr:`/`npm:` concretizer fetches version metadata (e.g. `jsr.io`) while
+  concretizing a constraint form; with that fetch denied, the hooked worker
+  neither falls back to the cache nor fails fast — cold caches hang, and some
+  warm-cache states raise `Requires import access to "jsr.io:443"`. The cache
+  dependence made the failure look non-deterministic (F6's earlier reading).
+  The native loader (no hooks) serves cached modules regardless of the worker
+  grant, which is why the SDK-via-`links` probe always passed.
+- **Fix** — `buildWorkerPermissions` defaults an undeclared (or empty) import
+  grant to the registry-domain allowlist `jsr.io`, `npm.jsr.io`,
+  `registry.npmjs.org` — exactly the set the host's bare `--allow-import`
+  already permits, so the worker never exceeds its parent. A declared grant
+  narrows or denies it. With the grant, alias-through-map, direct `jsr:@…@1`,
+  and exact-version imports all resolve deterministically in the real topology,
+  cold cache included.
+- **Test fixture note** — current `@std/bytes@1` changed `concat` to accept a
+  single iterable; the variadic call silently produced an empty `Uint8Array`
+  and a bogus expected value in the discovery assertion.
 
-The delta is specific to the full host topology (real SDK worker bootstrap, materialized
-`links`, plugin-root entry import). Bisection over the worker's import form
-(`WorkerReadinessBisection`, kept in the integration suite) refined the finding:
-
-- **sdk-only** (SDK import only; merged entries present but unused): reliably ready —
-  merged entries in the process config do not harm the worker.
-- **sdk-alias** (bare alias through the process import map): **non-deterministic** —
-  one run resolved the alias, executed the aliased import and completed registration
-  (the kernel's dynamic discovery logged an invalid-definition warning, proving the
-  handler ran); another run of identical code never became ready.
-- **sdk-direct-jsr** (self-contained `jsr:@std/bytes@1/concat` written directly):
-  reliably hangs/fails — registry `jsr:` specifiers inside the hooked worker do not
-  resolve in the host topology.
-
-This is the F6 non-determinism manifesting in the real topology: registry resolution
-of `jsr:` inputs inside the worker's hooks pipeline is unreliable. Impact: alias
-imports through the merged map work only intermittently (worse than not working),
-and jsr-installed plugins' own self-contained imports are exposed to the same
-instability. Path forward: file the upstream issue with this repro; until the hooks
-pipeline reliably concretizes `jsr:` inputs in workers, bare-alias support stays
-behind this test, and a toolchain-mediated concretization of merged entries (deno.lock
-at scan time) is the fallback candidate.
+The readiness gate is the `WorkerReadinessAcrossImportForms` theory
+(sdk-only / sdk-alias / sdk-direct-jsr) in `PluginHostIntegrationTests`.
 
 ## 6. SDK changes
 
@@ -268,7 +268,10 @@ are the exported control factories in `widgets/index.ts:105-128`
   bare-chain values rejected; array value tolerance; deterministic sorted output.
 - Relocation integration: `PluginHostManager.Start` writes the merged config; a local
   plugin whose extension point handler computes a value through a `@std/bytes` alias
-  resolves at runtime (end-to-end proof of §5).
+  resolves at runtime (end-to-end proof of §5). Ships as the
+  `WorkerReadinessAcrossImportForms` theory gating worker readiness for every
+  import form (sdk-only / sdk-alias / sdk-direct-jsr), with the §5.1 import-grant
+  default in place.
 - Reload: changing a plugin's `imports` triggers the restart-required warning and the
   worker still rebuilds.
 
@@ -346,11 +349,13 @@ Minimal repros, Deno 2.9.6, to file against `deno` (node-compat `module` hooks):
    `jsr:`/`npm:` URL raises `Unsupported scheme "jsr" … Supported schemes: blob, data,
    file`. There is no way to delegate an unresolvable URL to the native loader, so a
    resolve hook that rewrites a bare specifier to a registry scheme fails at load.
-2. **`nextResolve` concretization of `jsr:` inputs is non-deterministic.** The same
-   specifier string succeeds as a direct static/dynamic import (native path) but
-   succeeds/fails as a `nextResolve` input across processes; exact versions of one
-   package concretize while another's do not; a constraint that failed in one process
-   succeeds in the next. Suspected cache-state race inside the hooks concretizer.
+2. **(Superseded by §5.1)** `nextResolve` concretization of `jsr:` inputs
+   appeared non-deterministic — the same specifier string succeeded as a direct
+   static/dynamic import (native path) but succeeded/failed as a `nextResolve`
+   input across processes. The variance was the denied worker `import` grant
+   interacting with cache state, not a concretizer race: with the §5.1 default
+   grant, the same inputs concretize deterministically. Do not file this as an
+   upstream issue.
 3. **`node:module` `register()` is a no-op.** The API exists but registered hooks are
    never invoked (no resolve/load logs; bare specifiers fail natively).
 4. **(Documented behavior question)** Static import edges of dynamically imported

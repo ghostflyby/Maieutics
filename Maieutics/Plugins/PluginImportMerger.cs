@@ -60,7 +60,10 @@ internal static class PluginImportMerger
         {
             if (excluded.Contains(plugin.Id)) continue;
 
-            var committed = new List<KeyValuePair<string, string>>();
+            // Entries are staged per plugin and land only if the plugin survives
+            // validation and conflict checks: an excluded plugin must leave nothing
+            // in the map, or its leftovers would shadow healthy plugins' keys (§4 R5/R7/R8).
+            var staged = new List<KeyValuePair<string, string>>();
             PluginExclusion? exclusion = null;
             foreach (var entry in plugin.Imports)
             {
@@ -119,7 +122,7 @@ internal static class PluginImportMerger
                     warnings.Add(
                         $"Plugin '{plugin.Id}' import '{entry.Key}' is an array; only the first value ('{value}') survives the merge.");
                 }
-                committed.Add(new KeyValuePair<string, string>(entry.Key, value));
+                staged.Add(new KeyValuePair<string, string>(entry.Key, value));
             }
 
             if (exclusion is not null)
@@ -129,27 +132,36 @@ internal static class PluginImportMerger
                 continue;
             }
 
-            foreach (var (key, value) in committed)
+            // Iteration is in ascending plugin-id order, so the current plugin is the
+            // lexicographically later one and loses the conflict (§4 R8).
+            string? conflictKey = null;
+            foreach (var pair in staged)
             {
-                if (merged.TryGetValue(key, out var existing) && existing != value)
+                if (merged.TryGetValue(pair.Key, out var existing) && existing != pair.Value)
                 {
-                    // Iteration is in ascending plugin-id order, so the current plugin
-                    // is the lexicographically later one and loses the conflict (§4 R8).
-                    exclusions.Add(new PluginExclusion(
-                        plugin.Id,
-                        PluginExclusionReason.ImportMapping,
-                        $"Import '{key}' is mapped to '{existing}' by plugin '{ownerByKey[key]}' and to '{value}' by plugin '{plugin.Id}'; " +
-                        "the later plugin id is excluded."));
-                    foreach (var committedKey in committed.TakeWhile(pair => pair.Key != key))
-                    {
-                        merged.Remove(committedKey.Key);
-                        ownerByKey.Remove(committedKey.Key);
-                    }
-                    excluded.Add(plugin.Id);
+                    conflictKey = pair.Key;
                     break;
                 }
+            }
+
+            if (conflictKey is not null)
+            {
+                exclusions.Add(new PluginExclusion(
+                    plugin.Id,
+                    PluginExclusionReason.ImportMapping,
+                    $"Import '{conflictKey}' is mapped to '{merged[conflictKey]}' by plugin '{ownerByKey[conflictKey]}' and to " +
+                    $"'{staged.First(pair => pair.Key == conflictKey).Value}' by plugin '{plugin.Id}'; " +
+                    "the later plugin id is excluded."));
+                excluded.Add(plugin.Id);
+                continue;
+            }
+
+            foreach (var (key, value) in staged)
+            {
                 merged[key] = value;
-                ownerByKey[key] = plugin.Id;
+                // A key an earlier plugin already mapped (identical value) keeps its
+                // first owner: the owner names the plugin a future conflict must not evict.
+                if (!ownerByKey.ContainsKey(key)) ownerByKey[key] = plugin.Id;
             }
         }
 

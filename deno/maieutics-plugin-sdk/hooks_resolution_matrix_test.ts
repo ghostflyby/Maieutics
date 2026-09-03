@@ -7,9 +7,12 @@
  *
  * The probe runs in a subprocess because workers inherit the process config:
  * the fixture aliases must come from a `--config` this test controls, matching
- * how the kernel materializes the host's root deno.json. A failure here maps
- * to the hooks-pipeline quirks documented in §11 of the design doc, not to
- * plugin code — check the Deno version first.
+ * how the kernel materializes the host's root deno.json. The subprocess runs
+ * with full permissions, so a failure here maps to the resolution paths in
+ * §2/§11 of the design doc, not to plugin code — check the Deno version first.
+ * (The real host topology additionally gates registry concretization on the
+ * worker's `import` grant — §5.1 — which this probe deliberately does not
+ * exercise; that gate is covered by the .NET readiness theory.)
  */
 
 import Path from "node:path";

@@ -48,6 +48,40 @@ public sealed class PluginRegistryDiscoveryTests
     }
 
     [Fact]
+    public void BuildsDescriptorFromExtractedNpmPackageDirectory()
+    {
+        var packageDir = Path.Combine(Path.GetTempPath(), $"mc-npm-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(packageDir);
+        File.WriteAllText(Path.Combine(packageDir, "deno.json"), DenoJson);
+        File.WriteAllText(Path.Combine(packageDir, "maieutics.json"), MaieuticsJson);
+        File.WriteAllText(Path.Combine(packageDir, "mod.ts"), "export const x = 1;\n");
+
+        var descriptor = PluginRegistryDiscovery.TryLoadFromPackageDir(
+            "@acme/widget", "npm:@acme/widget@1.0.0", packageDir, []);
+
+        descriptor.Should().NotBeNull();
+        descriptor!.Id.Should().Be("@acme/widget");
+        descriptor.RootDirectory.Should().Be(packageDir);
+        descriptor.Workers[0].EntryUrl.Should().StartWith("file://");
+        descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");
+    }
+
+    [Fact]
+    public async Task TryLoadNpmResolvesTheExtractedPackageAndReportsMissingManifests()
+    {
+        var diagnostics = new List<string>();
+        // chalk is a real npm package without a maieutics.json: the toolchain
+        // mediation must resolve and extract it, then the loader reports the
+        // missing plugin declaration rather than a resolution failure.
+        var descriptor = PluginRegistryDiscovery.TryLoadNpm(
+            "chalk", "npm:chalk@5", "deno", diagnostics);
+
+        descriptor.Should().BeNull();
+        diagnostics.Should().ContainSingle().Which.Should().Contain("maieutics.json");
+        await Task.CompletedTask;
+    }
+
+    [Fact]
     public void RejectsVersionRangesWithADiagnostic()
     {
         var diagnostics = new List<string>();

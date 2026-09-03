@@ -900,14 +900,22 @@ internal sealed class PluginHostManager(
         var diagnostics = new List<string>();
         foreach (var import in PluginManifest.ReadImports(pluginsRoot))
         {
-            if (!import.Value.StartsWith("jsr:", StringComparison.Ordinal)) continue;
-            var descriptor = PluginRegistryDiscovery.TryLoadJsr(
-                import.Key,
-                import.Value,
-                denoOptions.Executable,
-                url => PluginRegistryDiscovery.DenoInfoLocalPath(denoOptions.Executable, url),
-                diagnostics);
-            if (descriptor is not null) AddDescriptor(descriptor);
+            if (import.Value.StartsWith("jsr:", StringComparison.Ordinal))
+            {
+                var jsrDescriptor = PluginRegistryDiscovery.TryLoadJsr(
+                    import.Key,
+                    import.Value,
+                    denoOptions.Executable,
+                    url => PluginRegistryDiscovery.DenoInfoLocalPath(denoOptions.Executable, url),
+                    diagnostics);
+                if (jsrDescriptor is not null) AddDescriptor(jsrDescriptor);
+            }
+            else if (import.Value.StartsWith("npm:", StringComparison.Ordinal))
+            {
+                var npmDescriptor = PluginRegistryDiscovery.TryLoadNpm(
+                    import.Key, import.Value, denoOptions.Executable, diagnostics);
+                if (npmDescriptor is not null) AddDescriptor(npmDescriptor);
+            }
         }
         foreach (var diagnostic in diagnostics)
         {

@@ -1,6 +1,7 @@
 {
   "name": "@maieutics/deno-repl",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "imports": {
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",

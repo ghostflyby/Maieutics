@@ -25,6 +25,7 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
         imports: {
           "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
           bytes10: "jsr:@std/bytes@1.0",
+          stralias: "npm:chalk@^5",
           btilde: "jsr:@std/bytes@~1.0",
           pathcare: "jsr:@std/path@^1",
         },
@@ -58,6 +59,7 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
         `  ["dynamic direct jsr:@std/bytes@^1/concat", () => import("jsr:@std/bytes@^1/concat")],`,
         `  ["static-in-module direct jsr:@std/bytes@1.0.6/concat", () => import("./probe_direct.ts")],`,
         `  ["dynamic npm:chalk@^5", () => import("npm:chalk@^5")],`,
+        `  ["dynamic npm alias", () => import("stralias")],`,
         `] as const;`,
         `for (const [label, load] of probes) {`,
         `  try { await load(); console.log(label + ": OK"); }`,
@@ -86,6 +88,7 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
       "dynamic direct jsr:@std/bytes@^1/concat",
       "static-in-module direct jsr:@std/bytes@1.0.6/concat",
       "dynamic npm:chalk@^5",
+      "dynamic npm alias",
     ];
     const failures = labels.filter((label) => !stdout.includes(`${label}: OK`));
     if (failures.length > 0 || !output.success) {

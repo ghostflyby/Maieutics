@@ -414,6 +414,103 @@ public sealed class PluginHostIntegrationTests
         return [];
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task CrossPluginActorCallsResolveThroughDeclaredDependencies()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var pluginsRoot = CreateTwoPluginRoot();
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            var registrations = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token);
+            registrations.Should().NotBeEmpty();
+
+            // The consumer's handler crosses workers: dep.math.double(21) executes
+            // in the sub plugin's worker through the load-hook stub redirect.
+            var outcome = await manager.InvokeExtensionPointAsync(
+                registrations[0].PluginId,
+                registrations[0].ExportName,
+                ReplExtensionPointName.McpDiscover,
+                null,
+                timeout.Token);
+            outcome.IsError.Should().BeFalse(outcome.Message);
+            outcome.Value!.Value.GetRawText().Should().Contain("42");
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ReloadWarnsWhenThePluginImportMapChanges()
+    {
+        var logger = new CollectingLogger<PluginHostManager>();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(55));
+        var pluginsRoot = CreateAliasedPluginsRoot("sdk-alias");
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = "deno" },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            logger,
+            logger,
+            TimeProvider.System);
+
+        try
+        {
+            await manager.StartAsync(timeout.Token);
+            await manager.WaitUntilReadyAsync(timeout.Token);
+
+            // Change the plugin's import map; the process map is fixed at host start.
+            var denoJsonPath = Path.Combine(pluginsRoot, "deno.json");
+            var updated = File.ReadAllText(denoJsonPath).Replace(
+                "\"imports\":",
+                "\"imports\": { \"@std/bytes\": \"jsr:@std/bytes@1\", \"@std/path\": \"jsr:@std/path@^1\" },\n    \"imports-old\":");
+            File.WriteAllText(denoJsonPath, updated);
+
+            var deadline = TimeSpan.FromSeconds(20);
+            var warned = false;
+            while (deadline > TimeSpan.Zero)
+            {
+                if (logger.Lines.Any(line => line.Contains("Restart the host process"))) { warned = true; break; }
+                await Task.Delay(250, timeout.Token);
+                deadline -= TimeSpan.FromMilliseconds(250);
+            }
+            warned.Should().BeTrue("the reload must warn that the host process restart is required");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        }
+    }
+
     private static string CreatePluginsRoot(string pluginName)
     {
         // The plugins root IS the plugin project: deno.json + maieutics.json +
@@ -500,6 +597,90 @@ public sealed class PluginHostIntegrationTests
             """);
         File.WriteAllText(Path.Combine(root, "mod.ts"), moduleBody + "\n");
         return root;
+    }
+
+    /// <summary>Two-package layout: the root project consumes a sub-package plugin
+    /// through a declared dependency and a bare-alias actor import.</summary>
+    private static string CreateTwoPluginRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "sub"));
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/composite",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } },
+              "imports": { "@acme/sub/main": "./sub/mod.ts" }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "dependencies": ["sub"],
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mod.ts"),
+            """
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+            import dep from "@acme/sub/main";
+            export const discover = defineExtensionPoint("McpDiscover", {
+              handler: async () => {
+                const doubled = await dep.math.double(21);
+                return [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno", args: [String(doubled)] } }];
+              },
+            });
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "sub", "deno.json"),
+            """
+            {
+              "name": "@acme/sub",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "sub", "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "sub", "mod.ts"),
+            """
+            import { defineActor } from "jsr:@maieutics/plugin-sdk@^0.1";
+            export const math = defineActor({ double(n: number): number { return n * 2; } });
+            """);
+        return root;
+    }
+
+    private sealed class CollectingLogger<T> : ILogger<T>, ILoggerFactory
+    {
+        private readonly object gate = new();
+        private readonly List<string> lines = [];
+        public IReadOnlyList<string> Lines { get { lock (gate) return [.. lines]; } }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public void AddProvider(ILoggerProvider provider) { }
+        public ILogger CreateLogger(string categoryName) => (ILogger)this;
+        public void Dispose() { }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            var line = formatter(state, exception);
+            lock (gate) lines.Add($"{logLevel}: {line}");
+        }
     }
 
     private sealed class DebugConsoleLogger<T> : ILogger<T>

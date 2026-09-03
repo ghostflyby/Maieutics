@@ -178,6 +178,25 @@ public sealed class PluginImportMergerTests
         PluginImportMerger.NormalizeSpecifier("@acme/widget").Should().Be("@acme/widget");
     }
 
+    [Fact]
+    public void SameMappingDetectsKeyAndValueChanges()
+    {
+        var baseMap = new[] { Entry("@std/bytes", "jsr:@std/bytes@1") };
+        PluginImportMerger.SameMapping(baseMap, baseMap).Should().BeTrue();
+        PluginImportMerger.SameMapping(
+            baseMap,
+            new[] { Entry("@std/bytes", "jsr:@std/bytes@1.0.6") }).Should().BeFalse();
+        PluginImportMerger.SameMapping(
+            baseMap,
+            new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") })
+            .Should().BeFalse();
+        // Order and array-vs-string shape are not runtime-visible.
+        PluginImportMerger.SameMapping(
+            new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") },
+            new[] { Entry("@std/path", "jsr:@std/path@^1"), Entry("@std/bytes", "jsr:@std/bytes@1", wasArray: true) })
+            .Should().BeTrue();
+    }
+
     private static PluginImportEntry Entry(string key, string value, bool wasArray = false) =>
         new(key, value, wasArray);
 

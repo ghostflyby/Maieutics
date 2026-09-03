@@ -164,8 +164,12 @@ internal static class PluginRegistryDiscovery
                 return null;
             }
 
-            var name = packageManifest?.Name ?? key;
-            var permissions = PluginManifest.ReadPermissions(packageManifest.Permissions?.Default);
+            // Identity fallback for npm packages without deno.json: package.json
+            // (the sibling identity file) carries the canonical package name.
+            var name = packageManifest?.Name
+                ?? ReadPackageJsonName(packageDir)
+                ?? key;
+            var permissions = PluginManifest.ReadPermissions(packageManifest?.Permissions?.Default);
             var workers = new List<PluginWorkerDescriptor>();
             foreach (var (entrypoint, scripts) in pluginManifest.Entrypoints ?? new Dictionary<string, string[]>())
             {
@@ -208,6 +212,26 @@ internal static class PluginRegistryDiscovery
             $"Registry plugin '{pluginName}' relative permission paths were discarded (a registry package has no root directory); " +
             "declare absolute paths or ${var.*} patterns instead.");
         return set;
+    }
+
+
+    /// <summary>Reads the npm identity file's package name, when present.</summary>
+    private static string? ReadPackageJsonName(string packageDir)
+    {
+        var packageJsonPath = Path.Combine(packageDir, "package.json");
+        if (!File.Exists(packageJsonPath)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(packageJsonPath));
+            return document.RootElement.TryGetProperty("name", out var name) &&
+                   name.ValueKind == JsonValueKind.String
+                ? name.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Toolchain mediation: `deno info --json <url>` fetches the URL into the

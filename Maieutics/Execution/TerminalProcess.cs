@@ -4,21 +4,28 @@ namespace Maieutics.Execution;
 
 /// <summary>The PTY child surface the terminal session needs. Product code owns this boundary so tests
 /// can substitute an in-memory process and the concrete PtyProcess wrapper stays small. The surface is
-/// exactly what the session consumes: the byte stream, the reaper exit signal and code, and disposal
-/// (which runs the graceful-close ladder inside the PTY library).</summary>
+/// exactly what the session consumes: the byte stream, the reaper exit signal with its terminal result
+/// (exit code or Unix termination signal), and disposal (which runs the graceful-close ladder inside the
+/// PTY library).</summary>
 internal interface ITerminalProcess : IAsyncDisposable
 {
     /// <summary>The master side of the pseudo-terminal: reads yield child output, writes deliver input.</summary>
     Stream BaseStream { get; }
 
-    /// <summary>The child's exit code once reaped; null while it is still running.</summary>
+    /// <summary>The child's exit code after a normal exit; null while it is running or when a Unix signal
+    /// terminated it (see <see cref="TerminationSignal"/>).</summary>
     int? ExitCode { get; }
+
+    /// <summary>The Unix signal that terminated the child; null while it is running, after a normal exit,
+    /// and on Windows. Exactly one of this and <see cref="ExitCode"/> is non-null once reaped.</summary>
+    int? TerminationSignal { get; }
 
     /// <summary>The grace window between a graceful close request and a force kill during disposal.</summary>
     TimeSpan GracefulExitTimeout { get; set; }
 
-    /// <summary>Raised on the reaper thread when the child is reaped; handlers must not block.</summary>
-    event Action<int, ITerminalProcess>? Exited;
+    /// <summary>Raised on the reaper thread when the child is reaped; the terminal result is already
+    /// published on the argument. Handlers must not block.</summary>
+    event Action<ITerminalProcess>? Exited;
 }
 
 internal sealed class LocalTerminalProcess : ITerminalProcess
@@ -28,12 +35,14 @@ internal sealed class LocalTerminalProcess : ITerminalProcess
     internal LocalTerminalProcess(PtyProcess process)
     {
         this.process = process;
-        process.Exited += (code, _) => Exited?.Invoke(code, this);
+        process.Exited += _ => Exited?.Invoke(this);
     }
 
     public Stream BaseStream => process.BaseStream;
 
     public int? ExitCode => process.ExitCode;
+
+    public int? TerminationSignal => process.TerminationSignal;
 
     public TimeSpan GracefulExitTimeout
     {
@@ -41,7 +50,7 @@ internal sealed class LocalTerminalProcess : ITerminalProcess
         set => process.GracefulExitTimeout = value;
     }
 
-    public event Action<int, ITerminalProcess>? Exited;
+    public event Action<ITerminalProcess>? Exited;
 
     public ValueTask DisposeAsync()
     {

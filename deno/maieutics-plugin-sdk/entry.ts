@@ -31,7 +31,7 @@ export {
 
 // —— Actor surfaces and dependency interop ——
 
-export { defineActor, defineDependency, depActor, dynamicImport } from "./mod.ts";
+export { defineActor, defineDependency, depActor } from "./mod.ts";
 
 // —— Reactive collections: provide / consume / subscribe ——
 

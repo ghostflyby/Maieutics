@@ -215,27 +215,16 @@ The readiness gate is the `WorkerReadinessAcrossImportForms` theory
 
 ## 6. SDK changes
 
-### 6.1 `dynamicImport`
+### 6.1 Dynamic imports — no wrapper
 
-```ts
-/**
- * Resolves a runtime-computed specifier through the same pipeline as static
- * imports: plugin actor specifiers load the synthesized acquire stub, bare
- * aliases resolve via the process import map, and self-contained jsr:/npm:
- * specifiers resolve via the registry. The unanalyzable-dynamic-import
- * warning at publish is expected and benign: the specifier is provided at
- * runtime and is not rewritten by JSR.
- */
-export function dynamicImport<T = Record<string, unknown>>(
-  specifier: string,
-): Promise<T> {
-  return import(specifier) as Promise<T>;
-}
-```
-
-Exported from `mod.ts`. For actor targets prefer `defineDependency(specifier)` /
-`depActor<T>(…)`, which skip module loading entirely and share the stub cache with
-static imports.
+Plain `await import(specifier)` is the supported dynamic form and needs no SDK
+wrapper: actor specifiers hit the load hook's canonical match (stub redirect),
+bare aliases resolve via the process import map, and self-contained
+`jsr:`/`npm:` specifiers resolve via the registry — the same pipeline as static
+imports. The `unanalyzable-dynamic-import` warning at publish is expected and
+benign (the specifier is provided at runtime and not rewritten by JSR). An
+earlier `dynamicImport<T>` wrapper was removed: it was a pass-through with no
+behavior the runtime does not already apply to every `import()` call.
 
 ### 6.2 Hook documentation (no behavior change)
 

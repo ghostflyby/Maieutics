@@ -1,14 +1,5 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { defineExtensionPoint, dynamicImport, ExtensionPoint } from "./entry.ts";
-
-Deno.test("dynamicImport resolves bare aliases via the process import map", async () => {
-  const viaDynamic = await dynamicImport<typeof import("@std/assert")>("@std/assert");
-  const viaStatic = await import("@std/assert");
-  assertEquals(typeof viaDynamic.assertEquals, "function");
-  // Same module instance as the static graph: the wrapper only forwards the
-  // specifier, resolution belongs to the process import map.
-  assertEquals(viaDynamic, viaStatic);
-});
+import { defineExtensionPoint, ExtensionPoint } from "./entry.ts";
 
 Deno.test("global symbols are shared across any module instance", () => {
   assertEquals(

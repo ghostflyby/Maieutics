@@ -195,7 +195,7 @@ Deno.test("a static default import of an actor entry is redirected to the acquir
   }
 });
 
-Deno.test("a dynamic import of an actor entry through dynamicImport is redirected to the acquire surface", async () => {
+Deno.test("a dynamic import of an actor entry is redirected to the acquire surface to the acquire surface", async () => {
   const root = Deno.makeTempDirSync();
 
   const dep = writePlugin(
@@ -216,10 +216,9 @@ Deno.test("a dynamic import of an actor entry through dynamicImport is redirecte
     root,
     "consumer",
     `${sdkImport()}
-    import { dynamicImport } from ${JSON.stringify(SDK_URL)};
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: async () => {
-        const dep = await dynamicImport("@maieutics/dep/main");
+        const dep = await import("@maieutics/dep/main");
         const doubled = await dep.default.math.double(21);
         return { action: "continue" as const, note: String(doubled) };
       },

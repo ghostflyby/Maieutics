@@ -451,21 +451,6 @@ export function depActor<T>(
   return (surface as unknown as Record<string, RemoteActor<T>>)[exportName];
 }
 
-/**
- * Resolves a runtime-computed specifier through the same pipeline as static
- * imports: plugin actor specifiers load the synthesized acquire stub (the load
- * hook's canonical match), bare aliases resolve via the process import map
- * (the kernel materializes the merged plugin entries), and self-contained
- * jsr:/npm: specifiers resolve via the registry. The
- * unanalyzable-dynamic-import warning at publish is expected and benign — the
- * specifier is provided at runtime and is not rewritten by JSR. For actor
- * targets prefer {@link defineDependency} / {@link depActor}, which skip
- * module loading entirely and share the stub cache with static imports.
- */
-export function dynamicImport<T = Record<string, unknown>>(specifier: string): Promise<T> {
-  return import(specifier) as Promise<T>;
-}
-
 // —— Worker-side initialization (initPluginWorker) ——
 
 /** Host config the kernel writes into the worker's environment. */

@@ -2,7 +2,6 @@ using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Configuration;
-using Maieutics.Jupyter;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -30,7 +29,6 @@ internal sealed class FrontendSessionService
     private readonly FrontendRunRegistry registry = new();
     private readonly MaieuticsAgentSessionManager sessionManager;
     private readonly MaieuticsStatusProvider? statusProvider;
-    private readonly Func<MaieuticsAgentKernelOptions>? kernelOptions;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly ILogger logger;
     private readonly Lock gate = new();
@@ -48,7 +46,6 @@ internal sealed class FrontendSessionService
         FrontendDenoReplPresentationRouter presentationRouter,
         ILogger<FrontendSessionService> logger,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
-        Func<MaieuticsAgentKernelOptions>? kernelOptions = null,
         MaieuticsStatusProvider? statusProvider = null)
     {
         this.sessionManager = sessionManager;
@@ -56,7 +53,6 @@ internal sealed class FrontendSessionService
         this.presentationRouter = presentationRouter;
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.runtimeConfiguration = runtimeConfiguration;
-        this.kernelOptions = kernelOptions;
         this.statusProvider = statusProvider;
     }
 
@@ -298,8 +294,6 @@ internal sealed class FrontendSessionService
 
     private void ValidateTurnConfiguration()
     {
-        if (kernelOptions is not null) kernelOptions().Validate();
-
         if (runtimeConfiguration is not null &&
             runtimeConfiguration.GetModelProfileSelection().Profiles.Count == 0)
             throw new FrontendFailureException(

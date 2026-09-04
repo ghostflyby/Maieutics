@@ -6,10 +6,14 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using Maieutics.Jupyter.Client;
-using Microsoft.Extensions.Hosting;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -218,6 +222,53 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ToolLoopStreamsToolActivityFramesAndFinalAnswer()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            toolFlow: true,
+            toolName: "echo",
+            toolArgumentsJson: "{\"text\":\"hello\"}");
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: builder =>
+            {
+                builder.Services.RemoveAll<IReadOnlyList<AIFunction>>();
+                builder.Services.AddSingleton<IReadOnlyList<AIFunction>>([FrontendTestFunctions.CreateEchoFunction()]);
+            });
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+            await events.ReceiveFrameAsync(deadline.Token);
+            var runId = await harness.SubmitTurnAsync(sessionId, "use echo", deadline.Token);
+
+            var frames = await events.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.status" &&
+                         frame.GetProperty("state").GetString() == "idle",
+                deadline.Token);
+
+            var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
+            types.Should().Contain("tool.started").And.Contain("tool.finished");
+            var started = frames.Single(frame => frame.GetProperty("type").GetString() == "tool.started");
+            started.GetProperty("tool").GetString().Should().Be("echo");
+            started.GetProperty("runId").GetString().Should().Be(runId);
+            frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
+                .GetProperty("text").GetString().Should().Be("tool-backed answer");
+
+            var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                deadline.Token);
+            transcript.GetProperty("turns").GetArrayLength().Should().Be(1);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task CommandCellsAnswerInlineOnTheTurnEndpoint()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
@@ -307,7 +358,7 @@ public sealed class FrontendApiIntegrationTests
     {
         return await FrontendHarness.StartAsync(
             cancellationToken,
-            new MaieuticsHostIntegrationTests.FakeOpenAiServer(
+            new FakeOpenAiServer(
                 OpenAiApiFlavor.ChatCompletions,
                 answer: Answer),
             hanging: false);
@@ -329,14 +380,12 @@ public sealed class FrontendApiIntegrationTests
         private readonly IHost host;
         private readonly IAsyncDisposable provider;
         private readonly string configurationFile;
-        private readonly string connectionFile;
         private readonly HangingOpenAiServer? hangingProvider;
 
         private FrontendHarness(
             IHost host,
             IAsyncDisposable provider,
             string configurationFile,
-            string connectionFile,
             string discoveryPath,
             JsonElement discovery,
             bool hanging)
@@ -344,7 +393,6 @@ public sealed class FrontendApiIntegrationTests
             this.host = host;
             this.provider = provider;
             this.configurationFile = configurationFile;
-            this.connectionFile = connectionFile;
             hangingProvider = hanging ? (HangingOpenAiServer)provider : null;
             DiscoveryPath = discoveryPath;
             Discovery = discovery;
@@ -364,15 +412,13 @@ public sealed class FrontendApiIntegrationTests
         public static async Task<FrontendHarness> StartAsync(
             CancellationToken cancellationToken,
             IAsyncDisposable provider,
-            bool hanging)
+            bool hanging,
+            Action<WebApplicationBuilder>? configureBuilder = null)
         {
-            var connection = JupyterConnectionInfo.CreateLocalTcp();
-            var connectionFile = Path.Combine(Path.GetTempPath(), $"maieutics-frontend-conn-{Guid.NewGuid():N}.json");
             var configurationFile = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-frontend-config-{Guid.NewGuid():N}.json");
             File.WriteAllText(configurationFile, "{}");
-            await connection.WriteFileAsync(connectionFile, cancellationToken);
             var discoveryPath = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-frontend-discovery-{Guid.NewGuid():N}.json");
@@ -380,17 +426,17 @@ public sealed class FrontendApiIntegrationTests
             var host = MaieuticsHost.CreateApplication(
             [
                 "--config", configurationFile,
-                "--connection-file", connectionFile,
                 "--frontend-discovery", discoveryPath,
                 "--model", "test-model"
             ], builder =>
             {
                 builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
                 builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] =
-                    (provider as MaieuticsHostIntegrationTests.FakeOpenAiServer)?.Endpoint.ToString()
+                    (provider as FakeOpenAiServer)?.Endpoint.ToString()
                     ?? ((HangingOpenAiServer)provider).Endpoint.ToString();
                 builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] =
                     OpenAiApiFlavor.ChatCompletions.ToString();
+                configureBuilder?.Invoke(builder);
             });
             await host.StartAsync(cancellationToken);
 
@@ -418,7 +464,6 @@ public sealed class FrontendApiIntegrationTests
                 host,
                 provider,
                 configurationFile,
-                connectionFile,
                 discoveryPath,
                 discoveryElement,
                 hanging);
@@ -500,7 +545,6 @@ public sealed class FrontendApiIntegrationTests
             await ((IAsyncDisposable)host).DisposeAsync().ConfigureAwait(false);
             await provider.DisposeAsync().ConfigureAwait(false);
             File.Delete(configurationFile);
-            File.Delete(connectionFile);
         }
     }
 

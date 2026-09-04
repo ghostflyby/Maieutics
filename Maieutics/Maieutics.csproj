@@ -14,9 +14,6 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj" />
-        <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj" />
-        <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj" />
-        <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj" />
     </ItemGroup>
 
     <ItemGroup>
@@ -88,10 +85,6 @@
         <EmbeddedResource Include="..\deno\shared\bus.ts" LogicalName="Maieutics.Deno.Shared.Bus.ts" />
         <EmbeddedResource Include="..\deno\shared\ipc_websocket.ts" LogicalName="Maieutics.Deno.Shared.IpcWebSocket.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Maieutics.Deno.PluginSdkConfig.json" />
-    </ItemGroup>
-
-    <ItemGroup>
-        <None Include="kernelspec\kernel.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

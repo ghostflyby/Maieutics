@@ -1,7 +1,7 @@
 using System.Text;
 using FluentAssertions;
 using Maieutics.Agent;
-using Maieutics.Jupyter;
+using Maieutics.Commands;
 using Maieutics.Persistence;
 using Microsoft.Extensions.AI;
 

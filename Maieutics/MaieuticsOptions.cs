@@ -18,12 +18,10 @@ public sealed class MaieuticsOptions
 
     public MaieuticsAgentOptions Agent { get; set; } = new();
 
-    public MaieuticsJupyterOptions Jupyter { get; set; } = new();
 
     internal void ValidateCommon()
     {
         Agent.Validate();
-        Jupyter.Validate();
     }
 }
 
@@ -126,25 +124,4 @@ public sealed class MaieuticsAgentOptions
 public sealed class MaieuticsAgentPersistenceOptions
 {
     public bool Enabled { get; set; }
-}
-
-public sealed class MaieuticsJupyterOptions
-{
-    public string ConnectionFile { get; set; } = string.Empty;
-
-    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromMilliseconds(50);
-
-    public int FlushCharacters { get; set; } = 1024;
-
-    internal void Validate()
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(ConnectionFile);
-        if (!File.Exists(ConnectionFile))
-            throw new FileNotFoundException("The configured Jupyter connection file does not exist.", ConnectionFile);
-
-        if (FlushInterval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(FlushInterval), "Flush interval must be positive.");
-
-        ArgumentOutOfRangeException.ThrowIfLessThan(FlushCharacters, 1);
-    }
 }

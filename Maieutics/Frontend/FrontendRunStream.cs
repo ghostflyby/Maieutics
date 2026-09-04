@@ -330,9 +330,11 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private static bool IsReplayable(FrontendEventFrame frame, long sinceSequence)
     {
-        // Sequenced frames replay by sequence; run lifecycle announcements (started/busy) do
-        // not — a reconnecting client already implies the run is in flight. Terminal frames
-        // carry no sequence and must always reach the client.
+        // A fresh subscriber (since 0) receives the full buffer including lifecycle
+        // announcements; a resuming subscriber only needs sequenced frames past its last
+        // observed sequence plus the terminal frames, which carry no sequence and must always
+        // reach the client.
+        if (sinceSequence <= 0) return true;
         if (frame.Sequence is { } sequence) return sequence > sinceSequence;
 
         return frame.Type is "run.completed" or "run.failed" or "run.missing";

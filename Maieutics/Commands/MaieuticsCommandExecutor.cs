@@ -2,7 +2,6 @@ using System.Globalization;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Execution;
-using Maieutics.Jupyter;
 using Maieutics.Mcp;
 
 namespace Maieutics.Commands;

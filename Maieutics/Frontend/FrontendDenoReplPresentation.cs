@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
-using Maieutics.Jupyter;
 
 namespace Maieutics.Frontend;
 
@@ -301,34 +300,5 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
                mime.StartsWith("video/", StringComparison.Ordinal) ||
                mime.StartsWith("audio/", StringComparison.Ordinal) ||
                string.Equals(mime, "application/pdf", StringComparison.Ordinal);
-    }
-}
-
-/// <summary>
-///     Picks the presentation router of whichever frontend currently owns the session's run,
-///     so the REPL tool resolves one sink during the Jupyter-to-frontend transition.
-/// </summary>
-internal sealed class CompositeDenoReplPresentationRouter(
-    JupyterDenoReplPresentationRouter jupyter,
-    FrontendDenoReplPresentationRouter frontend) : IDenoReplPresentationRouter
-{
-    public async ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
-        AgentSessionId sessionId,
-        AgentToolCallId callId,
-        CancellationToken cancellationToken)
-    {
-        if (jupyter.IsAttached(sessionId))
-            return await jupyter.WaitForCallAsync(sessionId, callId, cancellationToken).ConfigureAwait(false);
-
-        return await frontend.WaitForCallAsync(sessionId, callId, cancellationToken).ConfigureAwait(false);
-    }
-
-    public bool TryGetCurrentSink(
-        AgentSessionId sessionId,
-        [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
-    {
-        if (jupyter.TryGetCurrentSink(sessionId, out sink)) return true;
-
-        return frontend.TryGetCurrentSink(sessionId, out sink);
     }
 }

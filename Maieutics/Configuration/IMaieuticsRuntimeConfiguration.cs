@@ -1,17 +1,12 @@
 using Maieutics.Agent;
-using Maieutics.Jupyter;
 
 namespace Maieutics.Configuration;
 
 internal interface IMaieuticsRuntimeConfiguration : IAgentRunProfileProvider, IMaieuticsModelProfileController
 {
-    string ConnectionFile { get; }
-
     long Version { get; }
 
     MaieuticsRuntimeStatus GetStatus();
-
-    MaieuticsAgentKernelOptions GetKernelOptions();
 
     /// <summary>Returns models discovered from each model source's API endpoint.</summary>
     /// <param name="sourceId">Optional source identifier to filter by.</param>

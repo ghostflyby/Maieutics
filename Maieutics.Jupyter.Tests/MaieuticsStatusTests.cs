@@ -4,7 +4,6 @@ using Maieutics.Commands;
 using Maieutics.Configuration;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
-using Maieutics.Jupyter;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
 

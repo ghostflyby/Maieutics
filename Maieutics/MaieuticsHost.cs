@@ -10,8 +10,6 @@ using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Frontend;
-using Maieutics.Jupyter;
-using Maieutics.Jupyter.Kernel;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
 using Maieutics.Persistence;
@@ -93,7 +91,6 @@ public static class MaieuticsHost
             .AddCommandLine(args, new Dictionary<string, string>
             {
                 ["--config"] = "Maieutics:ConfigurationFile",
-                ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
                 ["--frontend-discovery"] = "Maieutics:Frontend:DiscoveryFile",
                 ["--workspace"] = "Maieutics:Workspace:Root",
                 ["--profile"] = "Maieutics:DefaultProfile",
@@ -154,14 +151,9 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(EffectivePolicy.Default);
         builder.Services.AddSingleton<TerminalRegistry>();
         builder.Services.AddSingleton<TerminalFunctions>();
-        builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();
         builder.Services.AddSingleton<FrontendDenoReplPresentationRouter>();
-        // The REPL tool resolves one presentation router; whichever frontend owns the active
-        // run answers (ADR 0023 decision 4 keeps both frontends working during the transition).
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
-            new CompositeDenoReplPresentationRouter(
-                services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
-                services.GetRequiredService<FrontendDenoReplPresentationRouter>()));
+            services.GetRequiredService<FrontendDenoReplPresentationRouter>());
         builder.Services.AddSingleton<MaieuticsCommandExecutor>(static services => new MaieuticsCommandExecutor(
             services.GetRequiredService<MaieuticsAgentSessionManager>(),
             services.GetService<IMaieuticsRuntimeConfiguration>(),
@@ -184,7 +176,6 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
         builder.Services.AddSingleton<ReplEvalWebSocketHost>();
         builder.Services.AddSingleton<ReplOutputWebSocketHost>();
-        builder.Services.AddSingleton<CommFrontendSink>();
         var frontendOptions = FrontendOptions.Create(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]);
         builder.Services.AddSingleton(frontendOptions);
         if (frontendOptions.Enabled)
@@ -232,8 +223,7 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
-                : null,
-            services.GetRequiredService<CommFrontendSink>().ForwardAsync));
+                : null));
         builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
             DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
@@ -266,15 +256,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IAgentSession>(static services =>
             services.GetRequiredService<MaieuticsAgentSessionManager>());
         builder.Services.AddSingleton<MaieuticsStatusProvider>();
-        builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
-        builder.Services.AddHostedService<JupyterKernelHostedService>();
-        builder.Services.AddSingleton<KernelInterruptCoordinator>();
-        builder.Services.AddSingleton<IKernelInterruptCoordinator>(static services =>
-            services.GetRequiredService<KernelInterruptCoordinator>());
-        // SIGINT interrupts the current kernel execution; SIGQUIT/SIGTERM keep graceful shutdown.
-        builder.Services.RemoveAll<IHostLifetime>();
-        builder.Services.AddSingleton<IHostLifetime, JupyterKernelLifetime>();
         return builder;
     }
 
@@ -325,7 +307,6 @@ public static class MaieuticsHost
             services.GetRequiredService<FrontendDenoReplPresentationRouter>(),
             services.GetRequiredService<ILogger<FrontendSessionService>>(),
             runtimeConfiguration,
-            runtimeConfiguration is null ? null : () => runtimeConfiguration.GetKernelOptions(),
             services.GetRequiredService<MaieuticsStatusProvider>());
     }
 
@@ -357,24 +338,6 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
-    }
-
-    private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
-    {
-        var runtimeConfiguration = services.GetRequiredService<IMaieuticsRuntimeConfiguration>();
-        var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
-        return new MaieuticsAgentKernelApplication(
-            sessionManager,
-            runtimeConfiguration.GetKernelOptions,
-            runtimeConfiguration,
-            services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
-            workspace: services.GetRequiredService<Workspace>(),
-            replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
-            mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
-            statusProvider: services.GetRequiredService<MaieuticsStatusProvider>(),
-            replControlHost: services.GetRequiredService<ReplControlHost>(),
-            replRegistry: services.GetRequiredService<DenoReplRegistry>(),
-            sessionManager: sessionManager);
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

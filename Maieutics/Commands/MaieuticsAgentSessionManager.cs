@@ -1,10 +1,10 @@
 using Maieutics.Agent;
 using Maieutics.Persistence;
 
-namespace Maieutics.Jupyter;
+namespace Maieutics.Commands;
 
 /// <summary>
-///     Owns the kernel's active <see cref="IAgentSession" /> and implements the interface by
+///     Owns the executable's active <see cref="IAgentSession" /> and implements the interface by
 ///     delegation, so notebook control cells can replace the session without re-resolving the
 ///     kernel application. Runs already started keep executing against the session they began
 ///     on; a swap only affects later turns.

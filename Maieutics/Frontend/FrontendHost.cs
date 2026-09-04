@@ -6,7 +6,6 @@ using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Commands;
-using Maieutics.Jupyter;
 using Maieutics.Persistence;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;

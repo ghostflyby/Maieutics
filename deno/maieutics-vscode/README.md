@@ -8,8 +8,13 @@ Jupyter kernel involved (ADR 0023).
 
 - `.maieuticsnb` notebooks: one ordinary cell is one submitted Agent turn.
 - Streaming assistant markdown, tool activity, and typed turn failures.
+- REPL rich displays: `Deno.jupyter.display` inside a REPL tool call renders into the same cell
+  output and updates in place, tracked by display id.
 - Command cells (`%status`, `%session`, `%model`, `%workspace`) answer inline.
 - Session commands: new session, resume a stored session, show status.
+- Turn timeline renderer: outputs carrying the structured turn snapshot offer a "Maieutics Turn
+  Timeline" view (tools, truncation, errors) via the output's mimetype picker; markdown remains the
+  default view.
 
 ## Connection
 

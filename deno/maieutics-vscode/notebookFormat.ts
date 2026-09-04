@@ -19,6 +19,14 @@ export interface OutputSnapshot {
   error?: { code: string; message: string };
   /** Tool activity summaries in call order. */
   tools?: ToolSnapshot[];
+  /** REPL rich displays in first-appearance order. */
+  repl?: ReplDisplaySnapshot[];
+}
+
+export interface ReplDisplaySnapshot {
+  displayId: string;
+  /** Mime bundle: mime -> payload (string or structured value). */
+  data: Record<string, unknown>;
 }
 
 export interface ToolSnapshot {
@@ -109,6 +117,12 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
       status: tool.status === "error" ? "error" as const : "ok" as const,
     }))
     : undefined;
+  const repl = Array.isArray(value.repl)
+    ? value.repl.filter(isRecord).map((display) => ({
+      displayId: typeof display.displayId === "string" ? display.displayId : "",
+      data: isRecord(display.data) ? display.data : {},
+    }))
+    : undefined;
   return {
     text: typeof value.text === "string" ? value.text : undefined,
     truncated: typeof value.truncated === "boolean" ? value.truncated : undefined,
@@ -119,6 +133,7 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
       }
       : undefined,
     tools,
+    repl,
   };
 }
 

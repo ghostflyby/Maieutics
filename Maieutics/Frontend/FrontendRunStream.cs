@@ -14,7 +14,7 @@ namespace Maieutics.Frontend;
 ///     <c>run.missing</c> frame). The pump disposes the run exactly once when the terminal
 ///     frame is published.
 /// </summary>
-internal sealed class FrontendRunStream : IAsyncDisposable
+internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentationTarget
 {
     private const int ReplayRetention = 4096;
     internal const int SubscriberQueueCapacity = 1024;
@@ -141,7 +141,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable
     }
 
     /// <summary>Publishes a REPL presentation frame that carries no run-local sequence.</summary>
-    internal void PublishPresentation(
+    public void PublishPresentation(
         string type,
         string? displayId,
         System.Text.Json.JsonElement data,

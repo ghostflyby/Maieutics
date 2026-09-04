@@ -78,3 +78,42 @@ Deno.test("run.missing terminates the view", () => {
   view.apply({ type: "run.missing", runId: "run-9" });
   assertEquals(view.terminalState, { kind: "missing" });
 });
+
+Deno.test("repl displays fold by display id and update in place", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "repl.display", displayId: "d1", data: { "text/html": "<b>t</b>" } });
+  view.apply({ type: "repl.display", data: { "text/plain": "untracked" } });
+  view.apply({
+    type: "repl.updateDisplay",
+    displayId: "d1",
+    data: { "text/markdown": "**updated**" },
+  });
+
+  const list = view.replList();
+  assertEquals(list.length, 2);
+  assertEquals(list[0].displayId, "d1");
+  assertEquals(list[0].data, { "text/markdown": "**updated**" });
+  assertEquals(list[1].data, { "text/plain": "untracked" });
+});
+
+Deno.test("repl clear empties the display list and errors append displays", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "repl.display", displayId: "d1", data: { "text/plain": "x" } });
+  view.apply({ type: "repl.clear" });
+  assertEquals(view.replList().length, 0);
+
+  view.apply({ type: "repl.error", data: { "text/plain": "Boom: broken" } });
+  const final = view.finalOutput();
+  assertEquals(final.repl.length, 1);
+  assertEquals(final.repl[0].data, { "text/plain": "Boom: broken" });
+});
+
+Deno.test("repl frames after the terminal are ignored", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "run.completed", runId: "run-1", truncated: false });
+  assertEquals(
+    view.apply({ type: "repl.display", displayId: "d1", data: { "text/plain": "late" } }),
+    false,
+  );
+  assertEquals(view.replList().length, 0);
+});

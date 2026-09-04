@@ -15,8 +15,13 @@ import * as vscode from "vscode";
 import type { FrontendClient, SubmitAnswer } from "./client.ts";
 import type { EventFrame, SessionInfo } from "./protocol.ts";
 import { FrontendError } from "./protocol.ts";
-import { NotebookType } from "./serializer.ts";
-import { type ToolSnapshotView, TurnOutputMime, TurnView } from "./turnView.ts";
+import { bundleItems, NotebookType } from "./serializer.ts";
+import {
+  type ReplDisplayEntry,
+  type ToolSnapshotView,
+  TurnOutputMime,
+  TurnView,
+} from "./turnView.ts";
 
 const PaintIntervalMs = 60;
 /** Bridges the protocol onto one notebook's outputs. Connections start lazily
@@ -167,7 +172,17 @@ class NotebookStream {
   }
 
   private route(frame: EventFrame): void {
-    if (frame.runId === undefined) return;
+    if (frame.runId === undefined) {
+      // REPL presentation frames carry no runId; the session gate keeps at
+      // most one run in flight, so they belong to it.
+      for (const run of this.runs.values()) {
+        run.apply(frame);
+        return;
+      }
+
+      return;
+    }
+
     this.runs.get(frame.runId)?.apply(frame);
   }
 }
@@ -247,6 +262,7 @@ class RunExecution {
     if (text.length > 0) sections.push(text);
     if (sections.length === 0) sections.push("…");
     this.execution.replaceOutput([
+      ...this.view.replList().map(replOutput),
       new vscode.NotebookCellOutput([
         vscode.NotebookCellOutputItem.text(sections.join("\n\n"), "text/markdown"),
       ]),
@@ -256,15 +272,17 @@ class RunExecution {
   private paintFinal(): void {
     const terminal = this.view.terminalState;
     const final = this.view.finalOutput();
+    const replOutputs = final.repl.map(replOutput);
     if (terminal?.kind === "failed") {
       this.execution.replaceOutput([
+        ...replOutputs,
         errorOutput(new FrontendError(terminal.code, 0, terminal.message)),
       ]);
       this.execution.end(false, Date.now());
       return;
     }
 
-    this.execution.replaceOutput([finalOutput(final)]);
+    this.execution.replaceOutput([finalOutput(final), ...replOutputs]);
     this.execution.end(true, Date.now());
   }
 }
@@ -277,9 +295,15 @@ export function finalOutput(final: {
   text: string;
   tools: ToolSnapshotView[];
   truncated: boolean;
+  repl?: ReplDisplayEntry[];
   error?: { code: string; message: string };
 }): vscode.NotebookCellOutput {
   return structuredOutput(final);
+}
+
+/** One cell output per REPL display: mime bundle items in bundle order. */
+export function replOutput(entry: ReplDisplayEntry): vscode.NotebookCellOutput {
+  return new vscode.NotebookCellOutput(bundleItems(entry.data));
 }
 
 function errorOutput(error: unknown): vscode.NotebookCellOutput {
@@ -298,6 +322,7 @@ function structuredOutput(snapshot: {
   text: string;
   tools: ToolSnapshotView[];
   truncated: boolean;
+  repl?: ReplDisplayEntry[];
   error?: { code: string; message: string };
 }): vscode.NotebookCellOutput {
   const markdown = renderLiveSnapshot(snapshot);

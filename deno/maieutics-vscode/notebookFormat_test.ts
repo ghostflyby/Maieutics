@@ -26,6 +26,7 @@ Deno.test("structured outputs survive the round trip", () => {
       text: "here they are",
       truncated: true,
       tools: [{ tool: "workspace_list", status: "ok" }],
+      repl: [{ displayId: "d1", data: { "text/html": "<b>t</b>" } }],
     },
   });
   notebook.cells.push({ kind: "markdown", text: "# notes" });
@@ -34,6 +35,7 @@ Deno.test("structured outputs survive the round trip", () => {
   assertEquals(parsed.cells[1].output?.text, "here they are");
   assertEquals(parsed.cells[1].output?.truncated, true);
   assertEquals(parsed.cells[1].output?.tools?.[0].tool, "workspace_list");
+  assertEquals(parsed.cells[1].output?.repl?.[0].data, { "text/html": "<b>t</b>" });
   assertEquals(parsed.cells[2].kind, "markdown");
 });
 

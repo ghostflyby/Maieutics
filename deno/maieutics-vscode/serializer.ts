@@ -51,7 +51,7 @@ export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
         NotebookLanguage,
       );
       if (snapshot.kind === "agent" && snapshot.output) {
-        cell.outputs = [renderSnapshotOutput(snapshot.output)];
+        cell.outputs = renderSnapshotOutputs(snapshot.output);
       }
       return cell;
     });
@@ -107,12 +107,40 @@ function snapshotFromMarkdownOutputs(cell: vscode.NotebookCellData): OutputSnaps
   return { text: "" };
 }
 
-export function renderSnapshotOutput(output: OutputSnapshot): vscode.NotebookCellOutput {
+export function renderSnapshotOutputs(output: OutputSnapshot): vscode.NotebookCellOutput[] {
+  const outputs = (output.repl ?? []).map((display) =>
+    new vscode.NotebookCellOutput(bundleItems(display.data))
+  );
   const markdown = renderSnapshotMarkdown(output);
   const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
   // The structured item is what the serializer round-trips.
   items.push(vscode.NotebookCellOutputItem.json(output, TurnOutputMime));
-  return new vscode.NotebookCellOutput(items);
+  outputs.push(new vscode.NotebookCellOutput(items));
+  return outputs;
+}
+
+/** Renderable mimes in a REPL display bundle; anything else is skipped. */
+const DisplayMimes = new Set([
+  "text/markdown",
+  "text/html",
+  "text/plain",
+  "application/json",
+]);
+
+/** Maps a mime bundle onto notebook output items in bundle order. */
+export function bundleItems(data: Record<string, unknown>): vscode.NotebookCellOutputItem[] {
+  const items: vscode.NotebookCellOutputItem[] = [];
+  for (const [mime, value] of Object.entries(data)) {
+    if (!DisplayMimes.has(mime)) continue;
+
+    if (mime === "application/json" || typeof value !== "string") {
+      items.push(vscode.NotebookCellOutputItem.json(value, mime));
+    } else {
+      items.push(vscode.NotebookCellOutputItem.text(value, mime));
+    }
+  }
+
+  return items;
 }
 
 export function renderSnapshotMarkdown(output: OutputSnapshot): string {

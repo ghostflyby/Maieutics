@@ -21,11 +21,20 @@ export type TerminalState =
   | { kind: "failed"; code: string; message: string }
   | { kind: "missing" };
 
+/** One REPL rich display routed into the run, keyed by display id. */
+export interface ReplDisplayEntry {
+  displayId: string;
+  /** Mime bundle: mime -> payload (string or structured value). */
+  data: Record<string, unknown>;
+}
+
 export class TurnView {
   readonly runId: string;
   private text = "";
   private readonly tools = new Map<string, ToolEntry>();
   private readonly toolOrder: string[] = [];
+  private readonly replDisplays = new Map<string, ReplDisplayEntry>();
+  private anonymousDisplays = 0;
   private truncated = false;
   private terminal: TerminalState | null = null;
 
@@ -41,11 +50,40 @@ export class TurnView {
     return this.terminal;
   }
 
+  /** REPL rich displays in first-appearance order. */
+  replList(): ReplDisplayEntry[] {
+    return [...this.replDisplays.values()];
+  }
+
   /** Applies one frame. Frames of other runs, unknown types, and anything
    * after a terminal frame are ignored — terminal frames may repeat across
-   * reconnects and must stay idempotent. */
+   * reconnects and must stay idempotent. REPL presentation frames carry no
+   * runId (the session routes them to its single in-flight run). */
   apply(frame: EventFrame): boolean {
     if (this.terminal !== null) return false;
+    if (frame.runId !== undefined && frame.runId !== this.runId) return false;
+    switch (frame.type) {
+      case "repl.display":
+      case "repl.updateDisplay": {
+        if (typeof frame.data !== "object" || frame.data === null) return false;
+        const displayId = typeof frame.displayId === "string" ? frame.displayId : "";
+        const key = displayId || `anon:${this.anonymousDisplays++}`;
+        this.replDisplays.set(key, { displayId, data: frame.data });
+        return true;
+      }
+      case "repl.clear": {
+        this.replDisplays.clear();
+        return true;
+      }
+      case "repl.error": {
+        if (typeof frame.data !== "object" || frame.data === null) return false;
+        const key = `anon:${this.anonymousDisplays++}`;
+        this.replDisplays.set(key, { displayId: "", data: frame.data });
+        return true;
+      }
+      default:
+        break;
+    }
     if (frame.runId !== this.runId && frame.type !== "run.missing") return false;
     switch (frame.type) {
       case "text.delta": {
@@ -123,10 +161,12 @@ export class TurnView {
     text: string;
     tools: ToolSnapshotView[];
     truncated: boolean;
+    repl: ReplDisplayEntry[];
     error?: { code: string; message: string };
   } {
     return {
       text: this.text,
+      repl: this.replList(),
       tools: this.toolOrder
         .map((callId) => this.tools.get(callId))
         .filter((entry) => entry !== undefined)

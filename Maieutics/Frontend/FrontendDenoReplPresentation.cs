@@ -68,9 +68,9 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
         }
     }
 
-    internal FrontendPresentationScope Attach(AgentSessionId sessionId, FrontendRunStream stream)
+    internal FrontendPresentationScope Attach(AgentSessionId sessionId, IFrontendPresentationTarget target)
     {
-        var state = new RunState(new FrontendDenoReplPresentationSink(stream));
+        var state = new RunState(new FrontendDenoReplPresentationSink(target));
         lock (gate)
         {
             if (!runs.TryAdd(sessionId, state))
@@ -149,8 +149,14 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
     }
 }
 
+/// <summary>A target that accepts REPL presentation frames.</summary>
+internal interface IFrontendPresentationTarget
+{
+    void PublishPresentation(string type, string? displayId, JsonElement data, CancellationToken cancellationToken);
+}
+
 /// <summary>Writes REPL presentation calls into the owning run's event stream.</summary>
-internal sealed class FrontendDenoReplPresentationSink(FrontendRunStream stream) : IDenoReplPresentationSink
+internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarget target) : IDenoReplPresentationSink
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private int active = 1;
@@ -244,7 +250,7 @@ internal sealed class FrontendDenoReplPresentationSink(FrontendRunStream stream)
         {
             if (!IsActive) throw new OperationCanceledException("The frontend presentation sink is no longer active.");
 
-            stream.PublishPresentation(
+            target.PublishPresentation(
                 type,
                 displayId?.Value,
                 JsonSerializer.SerializeToElement(data.Data, FrontendJsonContext.Default

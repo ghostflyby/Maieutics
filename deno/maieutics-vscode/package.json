@@ -19,7 +19,8 @@
     "onCommand:maieutics.newSession",
     "onCommand:maieutics.showStatus",
     "onCommand:maieutics.listSessions",
-    "onCommand:maieutics.restartServer"
+    "onCommand:maieutics.restartServer",
+    "onRenderer:maieutics-turn-renderer"
   ],
   "contributes": {
     "notebooks": [
@@ -30,6 +31,16 @@
           {
             "filenamePattern": "*.maieuticsnb"
           }
+        ]
+      }
+    ],
+    "notebookRenderer": [
+      {
+        "id": "maieutics-turn-renderer",
+        "displayName": "Maieutics Turn Timeline",
+        "entrypoint": "./media/turnRenderer.js",
+        "mimeTypes": [
+          "application/vnd.maieutics.turn+json"
         ]
       }
     ],

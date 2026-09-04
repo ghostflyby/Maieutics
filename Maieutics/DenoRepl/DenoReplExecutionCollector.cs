@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.DenoRepl;
 
@@ -16,7 +15,7 @@ internal sealed class DenoReplExecutionCollector
     internal static readonly TimeSpan OutputTailDrainWindow = TimeSpan.FromMilliseconds(100);
     private readonly Dictionary<string, int> digestIndexByDisplayId = new(StringComparer.Ordinal);
     private readonly List<DenoReplDisplayDigest> digests = [];
-    private readonly Dictionary<string, JupyterDisplayId> displayIds;
+    private readonly Dictionary<string, ReplDisplayId> displayIds;
     private readonly string executionId;
     private readonly int generation;
     private readonly DenoReplOptions options;
@@ -44,7 +43,7 @@ internal sealed class DenoReplExecutionCollector
         int generation,
         DenoReplOptions options,
         IDenoReplPresentationSink presentation,
-        Dictionary<string, JupyterDisplayId> displayIds,
+        Dictionary<string, ReplDisplayId> displayIds,
         string executionId,
         ReplOutputRateLimiter? rateLimiter = null)
     {
@@ -270,7 +269,7 @@ internal sealed class DenoReplExecutionCollector
         ReplOutputDisplayFrame display,
         CancellationToken cancellationToken)
     {
-        var bundle = new MimeBundle(display.Data);
+        var bundle = new ReplDisplayBundle(display.Data);
         var metadata = display.Metadata;
 
         // An update that cannot target a previous display is skipped from presentation and has no
@@ -291,10 +290,9 @@ internal sealed class DenoReplExecutionCollector
         }
 
         // Rebuild the binary MIME placeholders (`{"$buffer": index}`) into their native byte
-        // arrays, then base64 into the Jupyter MimeBundle (the only encoding the wire accepts;
-        // AGENTS.md invariant 26 keeps the output endpoint itself native). The output endpoint
-        // carries binary values as trailing buffers; the JSON bundle only ever holds the
-        // placeholder, so no base64 was produced on the wire.
+        // arrays and base64 them into the bundle. The output endpoint itself stays native
+        // (invariant 26); base64 is the presentation encoding the current sink targets accept.
+        // The frontend sink strips binary mimes back out before its own wire (invariant 26).
         var reconstructed = display.Buffers.Count > 0
             ? new Dictionary<string, JsonElement>(StringComparer.Ordinal)
             : null;
@@ -316,7 +314,7 @@ internal sealed class DenoReplExecutionCollector
                 reconstructed[mime] = element;
             }
 
-            bundle = new MimeBundle(reconstructed);
+            bundle = new ReplDisplayBundle(reconstructed);
         }
 
         await PresentDisplayAsync(display.IsUpdate, display.DisplayId, bundle, metadata, cancellationToken)
@@ -327,7 +325,7 @@ internal sealed class DenoReplExecutionCollector
     private async ValueTask PresentDisplayAsync(
         bool isUpdate,
         string? innerDisplayId,
-        MimeBundle bundle,
+        ReplDisplayBundle bundle,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
@@ -348,7 +346,7 @@ internal sealed class DenoReplExecutionCollector
         {
             if (!displayIds.TryGetValue(tracked, out var outerDisplayId))
             {
-                outerDisplayId = new JupyterDisplayId(Guid.NewGuid().ToString("N"));
+                outerDisplayId = new ReplDisplayId(Guid.NewGuid().ToString("N"));
                 displayIds.Add(tracked, outerDisplayId);
             }
 
@@ -370,7 +368,7 @@ internal sealed class DenoReplExecutionCollector
     /// entry of their display id instead of creating a new one; displays without an id are not
     /// deduplicated. When the digest budget is exhausted, <see cref="digestTruncated" /> is set and
     /// later displays are counted (they still present) but not digested.</summary>
-    private void AddDisplayDigest(ReplOutputDisplayFrame display, MimeBundle bundle)
+    private void AddDisplayDigest(ReplOutputDisplayFrame display, ReplDisplayBundle bundle)
     {
         var displayId = display.DisplayId;
         if (display.IsUpdate && (displayId is null || !digestIndexByDisplayId.ContainsKey(displayId)))
@@ -420,7 +418,7 @@ internal sealed class DenoReplExecutionCollector
     /// <summary>Picks the digest preview: text/plain first, then the first string <c>text/*</c> or
     /// <c>*+json</c> mime. Binary mimes (image/*, application/pdf, video/*, audio/*) are listed in
     /// <see cref="DenoReplDisplayDigest.MediaTypes" /> but never produce a preview.</summary>
-    private string? SelectPreview(MimeBundle bundle)
+    private string? SelectPreview(ReplDisplayBundle bundle)
     {
         if (bundle.Data.TryGetValue("text/plain", out var plain) && plain.ValueKind == JsonValueKind.String)
             return TruncatePreview(plain.GetString());
@@ -502,7 +500,7 @@ internal sealed class DenoReplExecutionCollector
         await presentation.PublishErrorAsync(name, selected, traceback, cancellationToken).ConfigureAwait(false);
     }
 
-    private bool CanPresentBundle(MimeBundle bundle, IReadOnlyDictionary<string, JsonElement> metadata)
+    private bool CanPresentBundle(ReplDisplayBundle bundle, IReadOnlyDictionary<string, JsonElement> metadata)
     {
         if (!TryReservePresentationEvent()) return false;
         var bytes = CountJsonBytes(bundle.Data) + CountJsonBytes(metadata);

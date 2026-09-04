@@ -132,8 +132,18 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
 
         var session = await replRegistry.EnsureDefaultAsync(this.session.Id, cancellationToken)
             .ConfigureAwait(false);
+        // The control channel is protocol-neutral: drop the Jupyter wire identity here.
         await replControlHost
-            .PushCommMessageAsync(session.SessionId, message, cancellationToken)
+            .PushCommMessageAsync(
+                session.SessionId,
+                new ReplCommMessage(
+                    (ReplCommKind)message.Kind,
+                    message.CommId,
+                    message.TargetName,
+                    message.Data,
+                    message.Metadata,
+                    message.Buffers),
+                cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -239,11 +249,14 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                                     displayId,
                                     cancellationToken: cancellationToken).ConfigureAwait(false);
                             else
+                            {
+                                var trackedId = new ReplDisplayId(displayId.Value.Value);
                                 await presentationSink.DisplayTrackedAsync(
-                                    MimeBundle.FromMarkdown(response.ToString()),
-                                    displayId.Value,
+                                    ReplDisplayBundle.FromMarkdown(response.ToString()),
+                                    trackedId,
                                     EmptyMetadata,
                                     cancellationToken).ConfigureAwait(false);
+                            }
 
                             flushedLength = response.Length;
                             flushTimestamp = timeProvider.GetTimestamp();
@@ -301,11 +314,14 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
                             displayId,
                             cancellationToken: cancellationToken).ConfigureAwait(false);
                     else
+                    {
+                        var trackedId = new ReplDisplayId(displayId.Value.Value);
                         await presentationSink.DisplayTrackedAsync(
-                            MimeBundle.FromMarkdown(response.ToString()),
-                            displayId.Value,
+                            ReplDisplayBundle.FromMarkdown(response.ToString()),
+                            trackedId,
                             EmptyMetadata,
                             cancellationToken).ConfigureAwait(false);
+                    }
 
                     flushedLength = response.Length;
                     timeProvider.GetTimestamp();
@@ -375,8 +391,8 @@ public sealed class MaieuticsAgentKernelApplication : IJupyterKernelApplication,
         CancellationToken cancellationToken)
     {
         return presentationSink?.UpdateDisplayAsync(
-            displayId,
-            MimeBundle.FromMarkdown(response.ToString()),
+            new ReplDisplayId(displayId.Value),
+            ReplDisplayBundle.FromMarkdown(response.ToString()),
             EmptyMetadata,
             cancellationToken) ?? context.UpdateDisplayAsync(
             displayId,

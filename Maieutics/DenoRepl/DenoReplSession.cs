@@ -7,7 +7,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
 {
     private readonly TaskCompletionSource disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly Dictionary<string, Maieutics.Jupyter.Shared.JupyterDisplayId> displayIds =
+    private readonly Dictionary<string, ReplDisplayId> displayIds =
         new(StringComparer.Ordinal);
     private readonly SemaphoreSlim executionGate = new(1, 1);
     private readonly IDenoReplSessionFactory factory;

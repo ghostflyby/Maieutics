@@ -153,31 +153,42 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
     internal bool IsActive => Volatile.Read(ref active) != 0;
 
     public ValueTask DisplayAsync(
-        MimeBundle data,
+        ReplDisplayBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
-        return SerializeAsync(token => context.DisplayAsync(data, metadata, token), cancellationToken);
+        return SerializeAsync(token => context.DisplayAsync(ToJupyterBundle(data), metadata, token), cancellationToken);
     }
 
-    public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-        MimeBundle data,
-        JupyterDisplayId displayId,
+    public async ValueTask<ReplDisplayId> DisplayTrackedAsync(
+        ReplDisplayBundle data,
+        ReplDisplayId displayId,
+        IReadOnlyDictionary<string, JsonElement> metadata,
+        CancellationToken cancellationToken)
+    {
+        await SerializeAsync(
+            token => context.DisplayTrackedAsync(
+                ToJupyterBundle(data),
+                new JupyterDisplayId(displayId.Value),
+                metadata,
+                token),
+            cancellationToken).ConfigureAwait(false);
+        return displayId;
+    }
+
+    public ValueTask UpdateDisplayAsync(
+        ReplDisplayId displayId,
+        ReplDisplayBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
         return SerializeAsync(
-            token => context.DisplayTrackedAsync(data, displayId, metadata, token),
+            token => context.UpdateDisplayAsync(
+                new JupyterDisplayId(displayId.Value),
+                ToJupyterBundle(data),
+                metadata,
+                token),
             cancellationToken);
-    }
-
-    public ValueTask UpdateDisplayAsync(
-        JupyterDisplayId displayId,
-        MimeBundle data,
-        IReadOnlyDictionary<string, JsonElement> metadata,
-        CancellationToken cancellationToken)
-    {
-        return SerializeAsync(token => context.UpdateDisplayAsync(displayId, data, metadata, token), cancellationToken);
     }
 
     public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
@@ -213,6 +224,13 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
 
         await gate.WaitAsync().ConfigureAwait(false);
         gate.Release();
+    }
+
+    /// <summary>Adapts the neutral display bundle onto the Jupyter wire shape. Transitional:
+    /// this conversion leaves the executable together with the Jupyter adapter.</summary>
+    private static MimeBundle ToJupyterBundle(ReplDisplayBundle data)
+    {
+        return new MimeBundle(data.Data);
     }
 
     private async ValueTask SerializeAsync(

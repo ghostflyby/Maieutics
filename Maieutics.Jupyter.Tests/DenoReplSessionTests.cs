@@ -507,19 +507,19 @@ public sealed class DenoReplSessionTests
     private sealed class NoopPresentationSink : IDenoReplPresentationSink
     {
         public ValueTask DisplayAsync(
-            MimeBundle data,
+            ReplDisplayBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-        public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-            MimeBundle data,
-            JupyterDisplayId displayId,
+        public ValueTask<ReplDisplayId> DisplayTrackedAsync(
+            ReplDisplayBundle data,
+            ReplDisplayId displayId,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken) => ValueTask.FromResult(displayId);
 
         public ValueTask UpdateDisplayAsync(
-            JupyterDisplayId displayId,
-            MimeBundle data,
+            ReplDisplayId displayId,
+            ReplDisplayBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken) => ValueTask.CompletedTask;
 

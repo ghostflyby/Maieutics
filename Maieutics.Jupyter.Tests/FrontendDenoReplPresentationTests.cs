@@ -28,16 +28,16 @@ public sealed class FrontendDenoReplPresentationTests
     {
         var target = new FakeTarget();
         var sink = new FrontendDenoReplPresentationSink(target);
-        var displayId = JupyterDisplayId.Create();
+        var displayId = ReplDisplayId.Create();
 
         await sink.DisplayTrackedAsync(
-            MimeBundle.FromMarkdown("# hello"),
+            ReplDisplayBundle.FromMarkdown("# hello"),
             displayId,
             EmptyMetadata(),
             CancellationToken.None);
         await sink.UpdateDisplayAsync(
             displayId,
-            MimeBundle.FromText("updated"),
+            ReplDisplayBundle.FromText("updated"),
             EmptyMetadata(),
             CancellationToken.None);
 
@@ -55,7 +55,7 @@ public sealed class FrontendDenoReplPresentationTests
         var target = new FakeTarget();
         var sink = new FrontendDenoReplPresentationSink(target);
 
-        await sink.DisplayAsync(MimeBundle.FromText("hi"), EmptyMetadata(), CancellationToken.None);
+        await sink.DisplayAsync(ReplDisplayBundle.FromText("hi"), EmptyMetadata(), CancellationToken.None);
         await sink.PublishErrorAsync("Boom", "broken", [], CancellationToken.None);
 
         target.Published[0].Type.Should().Be("repl.display");
@@ -94,7 +94,7 @@ public sealed class FrontendDenoReplPresentationTests
 
         // After detach the sink is inert and late waiters get the typed failure.
         var act = async () => await sink.DisplayAsync(
-            MimeBundle.FromText("late"),
+            ReplDisplayBundle.FromText("late"),
             EmptyMetadata(),
             CancellationToken.None);
         await act.Should().ThrowAsync<OperationCanceledException>();

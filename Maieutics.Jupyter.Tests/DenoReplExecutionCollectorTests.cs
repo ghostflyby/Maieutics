@@ -739,7 +739,7 @@ public sealed class DenoReplExecutionCollectorTests
 
         internal List<string> Displays { get; } = [];
 
-        internal List<(JupyterDisplayId Id, string Text)> Updates { get; } = [];
+        internal List<(ReplDisplayId Id, string Text)> Updates { get; } = [];
 
         internal List<bool> Clears { get; } = [];
 
@@ -747,10 +747,10 @@ public sealed class DenoReplExecutionCollectorTests
 
         internal List<(string Name, string Value)> Errors { get; } = [];
 
-        internal List<MimeBundle> BinaryDisplays { get; } = [];
+        internal List<ReplDisplayBundle> BinaryDisplays { get; } = [];
 
         public ValueTask DisplayAsync(
-            MimeBundle data,
+            ReplDisplayBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
@@ -760,9 +760,9 @@ public sealed class DenoReplExecutionCollectorTests
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-            MimeBundle data,
-            JupyterDisplayId displayId,
+        public ValueTask<ReplDisplayId> DisplayTrackedAsync(
+            ReplDisplayBundle data,
+            ReplDisplayId displayId,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
@@ -773,8 +773,8 @@ public sealed class DenoReplExecutionCollectorTests
         }
 
         public ValueTask UpdateDisplayAsync(
-            JupyterDisplayId displayId,
-            MimeBundle data,
+            ReplDisplayId displayId,
+            ReplDisplayBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken)
         {
@@ -818,7 +818,7 @@ public sealed class DenoReplExecutionCollectorTests
             return Task.FromResult(InputReply);
         }
 
-        private static string PlainTextOf(MimeBundle data)
+        private static string PlainTextOf(ReplDisplayBundle data)
         {
             return data.Data.TryGetValue("text/plain", out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString() ?? string.Empty

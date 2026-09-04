@@ -1,26 +1,25 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Agent;
-using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.DenoRepl;
 
 internal interface IDenoReplPresentationSink
 {
     ValueTask DisplayAsync(
-        MimeBundle data,
+        ReplDisplayBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken);
 
-    ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-        MimeBundle data,
-        JupyterDisplayId displayId,
+    ValueTask<ReplDisplayId> DisplayTrackedAsync(
+        ReplDisplayBundle data,
+        ReplDisplayId displayId,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken);
 
     ValueTask UpdateDisplayAsync(
-        JupyterDisplayId displayId,
-        MimeBundle data,
+        ReplDisplayId displayId,
+        ReplDisplayBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken);
 

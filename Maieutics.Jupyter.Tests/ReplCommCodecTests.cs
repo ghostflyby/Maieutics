@@ -1,9 +1,8 @@
+using Maieutics.DenoRepl;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Control;
-using Maieutics.Jupyter.Kernel;
-using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Jupyter.Tests;
 
@@ -18,24 +17,18 @@ public sealed class ReplCommCodecTests
             new byte[] { 0x00, 0x01, 0x02 },
             "binary".Select(static c => (byte)c).ToArray()
         };
-        var message = new JupyterCommMessage(
-            JupyterCommKind.Open,
+        var message = new ReplCommMessage(
+            ReplCommKind.Open,
             "comm-42",
             "widget-test",
             data,
             null,
-            buffers,
-            JupyterWireMessage.Create(
-                JupyterMessage.Create(
-                    "comm_open",
-                    new JupyterCommOpenContent("comm-42", "widget-test", data),
-                    JupyterJsonContext.Default.JupyterCommOpenContent,
-                    JupyterSessionIdentity.Create("test"))));
+            buffers);
 
         var encoded = ReplControlHost.CommCodec.Encode(message);
         var decoded = ReplControlHost.CommCodec.Decode(encoded);
 
-        decoded.Kind.Should().Be(JupyterCommKind.Open);
+        decoded.Kind.Should().Be(ReplCommKind.Open);
         decoded.CommId.Should().Be("comm-42");
         decoded.TargetName.Should().Be("widget-test");
         decoded.Data.Should().NotBeNull();
@@ -55,25 +48,19 @@ public sealed class ReplCommCodecTests
         var data = JsonSerializer.SerializeToElement(new { marker = "media" });
         var buffer = new byte[2 * 1024 * 1024];
         new Random(42).NextBytes(buffer);
-        var message = new JupyterCommMessage(
-            JupyterCommKind.Message,
+        var message = new ReplCommMessage(
+            ReplCommKind.Message,
             "comm-media",
             null,
             data,
             null,
-            [buffer],
-            JupyterWireMessage.Create(
-                JupyterMessage.Create(
-                    "comm_msg",
-                    new JupyterCommMsgContent("comm-media", data),
-                    JupyterJsonContext.Default.JupyterCommMsgContent,
-                    JupyterSessionIdentity.Create("test"))));
+            [buffer]);
 
         var encoded = ReplControlHost.CommCodec.Encode(message);
         encoded.Length.Should().BeLessThan(ReplControlLimits.MaximumCommMessageBytes);
         var decoded = ReplControlHost.CommCodec.Decode(encoded);
 
-        decoded.Kind.Should().Be(JupyterCommKind.Message);
+        decoded.Kind.Should().Be(ReplCommKind.Message);
         decoded.CommId.Should().Be("comm-media");
         decoded.Buffers.Should().ContainSingle().Which.Should().Equal(buffer);
     }
@@ -81,24 +68,18 @@ public sealed class ReplCommCodecTests
     [Fact]
     public void EncodeDecodeRoundTripsCommMessageWithoutDataOrBuffers()
     {
-        var message = new JupyterCommMessage(
-            JupyterCommKind.Close,
+        var message = new ReplCommMessage(
+            ReplCommKind.Close,
             "comm-7",
             null,
             null,
             null,
-            [],
-            JupyterWireMessage.Create(
-                JupyterMessage.Create(
-                    "comm_close",
-                    new JupyterCommCloseContent("comm-7"),
-                    JupyterJsonContext.Default.JupyterCommCloseContent,
-                    JupyterSessionIdentity.Create("test"))));
+            []);
 
         var encoded = ReplControlHost.CommCodec.Encode(message);
         var decoded = ReplControlHost.CommCodec.Decode(encoded);
 
-        decoded.Kind.Should().Be(JupyterCommKind.Close);
+        decoded.Kind.Should().Be(ReplCommKind.Close);
         decoded.CommId.Should().Be("comm-7");
         decoded.TargetName.Should().BeNull();
         decoded.Data.Should().BeNull();

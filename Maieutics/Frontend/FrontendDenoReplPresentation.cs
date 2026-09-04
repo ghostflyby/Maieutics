@@ -3,7 +3,6 @@ using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using Maieutics.Jupyter;
-using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Frontend;
 
@@ -164,16 +163,16 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     internal bool IsActive => Volatile.Read(ref active) != 0;
 
     public ValueTask DisplayAsync(
-        MimeBundle data,
+        ReplDisplayBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
         return PublishAsync("repl.display", null, data, cancellationToken);
     }
 
-    public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-        MimeBundle data,
-        JupyterDisplayId displayId,
+    public ValueTask<ReplDisplayId> DisplayTrackedAsync(
+        ReplDisplayBundle data,
+        ReplDisplayId displayId,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
@@ -181,8 +180,8 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     }
 
     public async ValueTask UpdateDisplayAsync(
-        JupyterDisplayId displayId,
-        MimeBundle data,
+        ReplDisplayId displayId,
+        ReplDisplayBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
@@ -191,7 +190,7 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
 
     public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
     {
-        return PublishAsync("repl.clear", null, MimeBundle.Empty, cancellationToken);
+        return PublishAsync("repl.clear", null, ReplDisplayBundle.Empty, cancellationToken);
     }
 
     public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
@@ -199,7 +198,7 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         return PublishAsync(
             "repl.display",
             null,
-            MimeBundle.FromText(text),
+            ReplDisplayBundle.FromText(text),
             cancellationToken);
     }
 
@@ -212,11 +211,11 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         return PublishAsync(
             "repl.error",
             null,
-            new MimeBundle(new Dictionary<string, JsonElement>
+            new ReplDisplayBundle(new Dictionary<string, JsonElement>
             {
                 ["text/plain"] = JsonSerializer.SerializeToElement(
                     $"{name}: {value}",
-                    JupyterJsonContext.Default.String)
+                    ReplJsonContext.Default.String)
             }),
             cancellationToken);
     }
@@ -241,8 +240,8 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
 
     private async ValueTask PublishAsync(
         string type,
-        JupyterDisplayId? displayId,
-        MimeBundle data,
+        ReplDisplayId? displayId,
+        ReplDisplayBundle data,
         CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -253,8 +252,9 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
             target.PublishPresentation(
                 type,
                 displayId?.Value,
-                JsonSerializer.SerializeToElement(data.Data, FrontendJsonContext.Default
-                    .IReadOnlyDictionaryStringJsonElement),
+                JsonSerializer.SerializeToElement(
+                    StripBinaryMimes(data.Data),
+                    FrontendJsonContext.Default.IReadOnlyDictionaryStringJsonElement),
                 cancellationToken);
         }
         finally
@@ -263,14 +263,44 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         }
     }
 
-    private async ValueTask<JupyterDisplayId> PublishTrackedAsync(
+    private async ValueTask<ReplDisplayId> PublishTrackedAsync(
         string type,
-        JupyterDisplayId displayId,
-        MimeBundle data,
+        ReplDisplayId displayId,
+        ReplDisplayBundle data,
         CancellationToken cancellationToken)
     {
         await PublishAsync(type, displayId, data, cancellationToken).ConfigureAwait(false);
         return displayId;
+    }
+
+    /// <summary>Replaces binary mime payloads (base64 strings the collector resolved for the
+    /// Jupyter wire) with textual placeholders: the frontend wire never carries binary as
+    /// base64 text (invariant 26). Native binary delivery is a planned follow-up.</summary>
+    private static IReadOnlyDictionary<string, JsonElement> StripBinaryMimes(
+        IReadOnlyDictionary<string, JsonElement> data)
+    {
+        var hasBinary = data.Any(static entry => IsBinaryMime(entry.Key));
+        if (!hasBinary) return data;
+
+        var filtered = new Dictionary<string, JsonElement>(data.Count, StringComparer.Ordinal);
+        foreach (var (mime, value) in data)
+        {
+            filtered[mime] = IsBinaryMime(mime)
+                ? JsonSerializer.SerializeToElement(
+                    $"[binary {mime} display omitted]",
+                    ReplJsonContext.Default.String)
+                : value.Clone();
+        }
+
+        return filtered;
+    }
+
+    private static bool IsBinaryMime(string mime)
+    {
+        return mime.StartsWith("image/", StringComparison.Ordinal) ||
+               mime.StartsWith("video/", StringComparison.Ordinal) ||
+               mime.StartsWith("audio/", StringComparison.Ordinal) ||
+               string.Equals(mime, "application/pdf", StringComparison.Ordinal);
     }
 }
 

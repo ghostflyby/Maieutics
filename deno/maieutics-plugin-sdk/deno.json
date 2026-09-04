@@ -18,7 +18,7 @@
     "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
   },
   "tasks": {
-    "check": "deno check entry.ts mod.ts mod_test.ts actor_ref.ts collection_stream.ts runtime.ts interop.ts reactive.ts admission.ts http.ts http_codec.ts http_codec_test.ts admission_test.ts lint-plugin.ts lint-plugin_test.ts widgets/index.ts widgets/runtime.ts widgets/controls.ts widgets/vnode.ts widgets/transform.ts widgets/style.ts widgets/jsx-runtime.ts",
+    "check": "deno check .",
     "test": "deno test --allow-read --allow-write --allow-env --allow-net --unstable-worker-options"
   }
 }

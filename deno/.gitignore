@@ -1,0 +1,3 @@
+maieutics-vscode/dist/
+maieutics-vscode/*.vsix
+maieutics-vscode/node_modules/

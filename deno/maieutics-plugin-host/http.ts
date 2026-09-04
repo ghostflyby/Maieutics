@@ -32,7 +32,7 @@ import {
   answerAdmission,
 } from "../maieutics-plugin-sdk/admission.ts";
 import { evaluateAdmissionHook, setAdmissionHook } from "../maieutics-plugin-sdk/reactive.ts";
-import { http, HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
+import { http } from "../maieutics-plugin-sdk/http.ts";
 import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
 import {
@@ -214,7 +214,7 @@ export class HttpGateway {
   }
 
   #collectionApi(): Record<string, (...args: unknown[]) => unknown> {
-    const add = async (...args: unknown[]): Promise<void> => {
+    const add = (...args: unknown[]): Promise<void> => {
       const initial = args[0];
       const changes = args[1] as AsyncIterable<unknown>;
       const providerKey = args[2];
@@ -222,10 +222,14 @@ export class HttpGateway {
         this.#mount(providerKey, initial);
         void this.#pullChanges(providerKey, changes);
       }
+
+      return Promise.resolve();
     };
-    const remove = async (...args: unknown[]): Promise<void> => {
+    const remove = (...args: unknown[]): Promise<void> => {
       const providerKey = args[0];
       if (typeof providerKey === "string") this.#unmount(providerKey);
+
+      return Promise.resolve();
     };
     return {
       [`${CONTRACT_NAME}.add`]: add,
@@ -276,13 +280,13 @@ export class HttpGateway {
    * Starts the loopback listener. The token gates every request; the URL
    * shape is `/<token>/plugins/<pluginId>/<path>`.
    */
-  async startRouter(options: {
+  startRouter(options: {
     hostname?: string;
     port?: number;
     token: string;
     onListening?: (address: Deno.NetAddr) => void;
   }): Promise<Deno.NetAddr> {
-    if (this.#router !== undefined) return this.#router.addr;
+    if (this.#router !== undefined) return Promise.resolve(this.#router.addr);
     const hostname = options.hostname ?? "127.0.0.1";
     const token = options.token;
     const controller = new AbortController();
@@ -299,7 +303,7 @@ export class HttpGateway {
       },
     };
     options.onListening?.(addr);
-    return addr;
+    return Promise.resolve(addr);
   }
 
   async stopRouter(): Promise<void> {

@@ -1,0 +1,11 @@
+.vscode/**
+node_modules/**
+**/*_test.ts
+**/*.test.ts
+**/*.ts
+deno.json
+deno.extension.json
+package-lock.json
+pnpm-lock.yaml
+*.vsix
+dist/extension.js.map

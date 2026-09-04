@@ -1,0 +1,78 @@
+{
+  "name": "maieutics-vscode",
+  "displayName": "Maieutics",
+  "description": "Notebook-native frontend for the Maieutics agent over the custom web protocol",
+  "version": "0.1.0",
+  "publisher": "ghostflyby",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "private": true,
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Notebooks",
+    "AI"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onNotebook:maieutics-notebook",
+    "onCommand:maieutics.newSession",
+    "onCommand:maieutics.showStatus",
+    "onCommand:maieutics.listSessions",
+    "onCommand:maieutics.restartServer"
+  ],
+  "contributes": {
+    "notebooks": [
+      {
+        "type": "maieutics-notebook",
+        "displayName": "Maieutics Notebook",
+        "selector": [
+          {
+            "filenamePattern": "*.maieuticsnb"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "maieutics.newSession",
+        "title": "New Session",
+        "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.showStatus",
+        "title": "Show Status",
+        "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.listSessions",
+        "title": "Resume Stored Session",
+        "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.restartServer",
+        "title": "Restart Server",
+        "category": "Maieutics"
+      }
+    ],
+    "configuration": {
+      "title": "Maieutics",
+      "properties": {
+        "maieutics.executablePath": {
+          "type": "string",
+          "default": "maieutics",
+          "description": "Path to the maieutics executable the extension launches per workspace."
+        },
+        "maieutics.discoveryFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Attach to an externally launched executable through this discovery file instead of launching one. Leave empty to let the extension own the process."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ghostflyby/Maieutics"
+  }
+}

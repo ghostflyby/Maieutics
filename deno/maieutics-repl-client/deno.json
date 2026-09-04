@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "exports": "./mod.ts",
   "tasks": {
-    "check": "deno check mod.ts mod_test.ts",
+    "check": "deno check .",
     "test": "deno test --allow-env --allow-net --allow-read --allow-write"
   }
 }

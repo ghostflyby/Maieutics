@@ -21,8 +21,10 @@ interface OpenCall {
 Deno.test("tsx cell renders a control to a displayable widget model", async () => {
   const opens: OpenCall[] = [];
   bindWidgetHost({
-    broadcast: async (messageType: string, content: Record<string, unknown>) => {
+    broadcast: (messageType: string, content: Record<string, unknown>) => {
       if (messageType === "comm_open") opens.push(content as unknown as OpenCall);
+
+      return Promise.resolve();
     },
     onComm: () => {},
   });

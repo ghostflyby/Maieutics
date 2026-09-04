@@ -17,6 +17,12 @@
   plugin export subpath, scans workers for extension points, and bridges `extension.*` bus messages
   between the kernel and the workers. Domains: worker lifecycle, permission grant mapping (positive
   grants only), postMessage invoke protocol, crash/restart policy.
+- `maieutics-vscode/` — VS Code notebook frontend over the custom web protocol (ADR 0023,
+  `docs/web-frontend-protocol.md`). Owns the `.maieuticsnb` snapshot, launches or attaches to the
+  kernel through the discovery file, and executes cells as Agent turns. Self-contained: it must not
+  import other workspace modules, because it ships through `deno bundle` to the extension host (Node
+  runtime), not into the kernel. `package.json` is the extension manifest only; dependencies live in
+  `deno.json`.
 - `shared/` — Control channel wire contract used by `maieutics-repl-client` and
   `maieutics-plugin-host` only. `protocol.ts` carries the versioned envelope and version constant;
   `bus.ts` opens the `/ws` connection, sends the hello handshake, and dispatches envelopes. The

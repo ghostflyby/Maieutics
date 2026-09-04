@@ -1568,7 +1568,7 @@ public sealed class MaieuticsHostIntegrationTests
         }
     }
 
-    private sealed class FakeOpenAiServer : IAsyncDisposable
+    internal sealed class FakeOpenAiServer : IAsyncDisposable
     {
         private readonly string answer;
         private readonly OpenAiApiFlavor apiFlavor;

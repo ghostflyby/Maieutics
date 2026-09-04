@@ -3,11 +3,13 @@ using System.Net;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Commands;
 using Maieutics.Configuration;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
+using Maieutics.Frontend;
 using Maieutics.Jupyter;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Mcp;
@@ -92,6 +94,7 @@ public static class MaieuticsHost
             {
                 ["--config"] = "Maieutics:ConfigurationFile",
                 ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
+                ["--frontend-discovery"] = "Maieutics:Frontend:DiscoveryFile",
                 ["--workspace"] = "Maieutics:Workspace:Root",
                 ["--profile"] = "Maieutics:DefaultProfile",
                 ["--provider"] = "Maieutics:Model:Provider",
@@ -133,8 +136,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(new McpStartupDirectory(startupCurrentDirectory));
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
-        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();
-        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
@@ -153,8 +155,19 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<TerminalRegistry>();
         builder.Services.AddSingleton<TerminalFunctions>();
         builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();
+        builder.Services.AddSingleton<FrontendDenoReplPresentationRouter>();
+        // The REPL tool resolves one presentation router; whichever frontend owns the active
+        // run answers (ADR 0023 decision 4 keeps both frontends working during the transition).
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
-            services.GetRequiredService<JupyterDenoReplPresentationRouter>());
+            new CompositeDenoReplPresentationRouter(
+                services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
+                services.GetRequiredService<FrontendDenoReplPresentationRouter>()));
+        builder.Services.AddSingleton<MaieuticsCommandExecutor>(static services => new MaieuticsCommandExecutor(
+            services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            services.GetService<IMaieuticsRuntimeConfiguration>(),
+            services.GetRequiredService<Workspace>(),
+            services.GetRequiredService<MaieuticsStatusProvider>(),
+            services.GetService<IMaieuticsMcpController>()));
         builder.Services.AddSingleton<ReplControlSessionRegistry>();
         var controlSocketPath = ReplControlHost.CreateSocketPath();
         builder.WebHost.ConfigureKestrel(options =>
@@ -172,6 +185,18 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<ReplEvalWebSocketHost>();
         builder.Services.AddSingleton<ReplOutputWebSocketHost>();
         builder.Services.AddSingleton<CommFrontendSink>();
+        var frontendOptions = FrontendOptions.Create(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]);
+        builder.Services.AddSingleton(frontendOptions);
+        if (frontendOptions.Enabled)
+            // Registered after the control listener so the Windows control-address probe keeps
+            // observing the control listener first when two TCP addresses exist.
+            builder.WebHost.ConfigureKestrel(options => options.Listen(
+                IPAddress.Loopback,
+                frontendOptions.Port,
+                listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; }));
+        builder.Services.AddSingleton<FrontendSessionService>(CreateFrontendSessionService);
+        builder.Services.AddSingleton<FrontendHost>();
+        builder.Services.AddHostedService<FrontendHostedService>();
         if (OperatingSystem.IsWindows())
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
                 OperatingSystem.IsWindows() ? CreateWindowsBootstrap(services) : throw new UnreachableException()
@@ -267,6 +292,14 @@ public static class MaieuticsHost
         // upgraded WebSocket requests finish immediately instead of blocking the shutdown timeout.
         application.Lifetime.ApplicationStopping.Register(evalHost.BeginShutdown);
         application.Lifetime.ApplicationStopping.Register(outputHost.BeginShutdown);
+        var frontendOptions = application.Services.GetRequiredService<FrontendOptions>();
+        if (frontendOptions.Enabled)
+        {
+            // Map the frontend first: its bearer middleware then runs ahead of the control
+            // bus's peer-identity middleware, which only guards its own paths.
+            application.Services.GetRequiredService<FrontendHost>().MapEndpoints(application);
+        }
+
         if (OperatingSystem.IsWindows())
             application.Lifetime.ApplicationStarted.Register(() =>
             {
@@ -281,6 +314,19 @@ public static class MaieuticsHost
         application.Services.GetRequiredService<ReplOutputWebSocketHost>().MapEndpoint(application);
         controlHost.MapEndpoints(application);
         return application;
+    }
+
+    private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)
+    {
+        var runtimeConfiguration = services.GetService<IMaieuticsRuntimeConfiguration>();
+        return new FrontendSessionService(
+            services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            services.GetRequiredService<MaieuticsCommandExecutor>(),
+            services.GetRequiredService<FrontendDenoReplPresentationRouter>(),
+            services.GetRequiredService<ILogger<FrontendSessionService>>(),
+            runtimeConfiguration,
+            runtimeConfiguration is null ? null : () => runtimeConfiguration.GetKernelOptions(),
+            services.GetRequiredService<MaieuticsStatusProvider>());
     }
 
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)

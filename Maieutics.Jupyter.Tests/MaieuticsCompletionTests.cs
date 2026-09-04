@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Maieutics.Commands;
 using Maieutics.Configuration;
 using Maieutics.Jupyter.Kernel;
 using Maieutics.Jupyter.Shared;
@@ -186,7 +187,7 @@ public sealed class MaieuticsCompletionTests
             code,
             JupyterCursorPosition.FromUtf16Index(code, cursorUtf16Index));
 
-        var result = MaieuticsCommandLanguage.Complete(request, Profiles, [], []);
+        var result = CompleteJupyter(request, Profiles);
 
         result.Matches.Should().Equal("claude", "claude-test");
         result.CursorStart.Should().Be(21);
@@ -356,11 +357,27 @@ public sealed class MaieuticsCompletionTests
             code,
             JupyterCursorPosition.FromUtf16Index(code, cursorUtf16Index));
 
-        var result = MaieuticsCommandLanguage.Complete(request, Profiles, [], []);
+        var result = CompleteJupyter(request, Profiles);
 
         result.Matches.Should().Equal("claude", "claude-test");
         result.CursorStart.Should().Be(11);
         result.CursorEnd.Should().Be(18);
+    }
+
+    private static JupyterCompletionResult CompleteJupyter(
+        JupyterCompleteRequest request,
+        IReadOnlyList<MaieuticsModelProfileInfo> profiles)
+    {
+        var completion = MaieuticsCommandLanguage.Complete(
+            request.Code,
+            JupyterCursorPosition.ToUtf16Index(request.Code, request.CursorPosition),
+            profiles,
+            [],
+            []);
+        return new JupyterCompletionResult(
+            completion.Matches,
+            JupyterCursorPosition.FromUtf16Index(request.Code, completion.TokenStart),
+            JupyterCursorPosition.FromUtf16Index(request.Code, completion.TokenEnd));
     }
 
     private static JupyterCompletionResult Complete(
@@ -369,12 +386,15 @@ public sealed class MaieuticsCompletionTests
         IReadOnlyList<MaieuticsModelProfileInfo>? automaticProfiles = null,
         IReadOnlyList<string>? sourceIds = null)
     {
-        return MaieuticsCommandLanguage.Complete(
-            new JupyterCompleteRequest(
-                code,
-                JupyterCursorPosition.FromUtf16Index(code, code.Length)),
+        var completion = MaieuticsCommandLanguage.Complete(
+            code,
+            code.Length,
             profiles ?? Profiles,
             automaticProfiles ?? [],
             sourceIds ?? []);
+        return new JupyterCompletionResult(
+            completion.Matches,
+            JupyterCursorPosition.FromUtf16Index(code, completion.TokenStart),
+            JupyterCursorPosition.FromUtf16Index(code, completion.TokenEnd));
     }
 }

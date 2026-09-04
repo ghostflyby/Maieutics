@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Maieutics.Jupyter;
+namespace Maieutics.Commands;
 
 internal static class MarkdownText
 {

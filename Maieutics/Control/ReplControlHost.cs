@@ -109,6 +109,14 @@ internal sealed partial class ReplControlHost : IDisposable
     {
         application.Use(async (context, next) =>
         {
+            // The middleware is path-scoped to the control bus: other planes on the shared
+            // host (the frontend API) carry their own authorization.
+            if (!IsControlPath(context.Request.Path))
+            {
+                await next(context).ConfigureAwait(false);
+                return;
+            }
+
             if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
                 bodySize.MaxRequestBodySize = ReplControlLimits.MaximumInboundMessageBytes;
 
@@ -128,6 +136,14 @@ internal sealed partial class ReplControlHost : IDisposable
         application.Map("/ws", HandleWebSocketAsync);
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
         MapCommEndpoint(application);
+    }
+
+    private static bool IsControlPath(PathString path)
+    {
+        return path.StartsWithSegments("/health") ||
+               path.StartsWithSegments("/ws") ||
+               path.StartsWithSegments("/v1/tool.invoke") ||
+               path.StartsWithSegments("/comm");
     }
 
     private async Task<string?> AuthorizeAsync(HttpContext context)

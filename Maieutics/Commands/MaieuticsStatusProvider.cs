@@ -5,7 +5,7 @@ using Maieutics.Execution;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
 
-namespace Maieutics.Jupyter;
+namespace Maieutics.Commands;
 
 internal sealed class MaieuticsStatusProvider(
     IAgentSession session,

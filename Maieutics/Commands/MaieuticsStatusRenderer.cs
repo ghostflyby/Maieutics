@@ -2,7 +2,7 @@ using System.Text;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 
-namespace Maieutics.Jupyter;
+namespace Maieutics.Commands;
 
 internal static class MaieuticsStatusRenderer
 {

@@ -2,12 +2,18 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
-using Maieutics.Jupyter.Kernel;
+using Maieutics.Jupyter;
 using Maieutics.Jupyter.Shared;
 
-namespace Maieutics.Jupyter;
+namespace Maieutics.Frontend;
 
-internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationRouter
+/// <summary>
+///     Routes Deno REPL rich output into a frontend run's event stream while that run is
+///     live. Mirrors <c>JupyterDenoReplPresentationRouter</c> so the REPL tool finds exactly
+///     one active sink per session regardless of which frontend owns the run; REPL display
+///     frames use the same display-id tracking the Jupyter path renders onto iopub.
+/// </summary>
+internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentationRouter
 {
     private readonly Lock gate = new();
     private readonly Dictionary<AgentSessionId, RunState> runs = [];
@@ -62,19 +68,17 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
         }
     }
 
-    internal JupyterDenoReplPresentationScope Attach(
-        AgentSessionId sessionId,
-        JupyterExecutionContext context)
+    internal FrontendPresentationScope Attach(AgentSessionId sessionId, FrontendRunStream stream)
     {
-        var state = new RunState(new JupyterDenoReplPresentationSink(context));
+        var state = new RunState(new FrontendDenoReplPresentationSink(stream));
         lock (gate)
         {
             if (!runs.TryAdd(sessionId, state))
                 throw new InvalidOperationException(
-                    "A Notebook presentation sink is already attached to this Agent session.");
+                    "A frontend presentation sink is already attached to this Agent session.");
         }
 
-        return new JupyterDenoReplPresentationScope(this, sessionId, state);
+        return new FrontendPresentationScope(this, sessionId, state);
     }
 
     internal void OpenCall(AgentSessionId sessionId, AgentToolCallId callId)
@@ -115,20 +119,20 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
     {
         return new AgentToolException(
             "repl_presentation_unavailable",
-            "The active Agent run does not have a Notebook presentation sink.");
+            "The active Agent run does not have a frontend presentation sink.");
     }
 
-    internal sealed class RunState(JupyterDenoReplPresentationSink sink)
+    internal sealed class RunState(FrontendDenoReplPresentationSink sink)
     {
-        internal JupyterDenoReplPresentationSink Sink { get; } = sink;
+        internal FrontendDenoReplPresentationSink Sink { get; } = sink;
 
         internal HashSet<AgentToolCallId> OpenedCalls { get; } = [];
 
         internal Dictionary<AgentToolCallId, TaskCompletionSource<IDenoReplPresentationSink>> Waiters { get; } = [];
     }
 
-    internal sealed class JupyterDenoReplPresentationScope(
-        JupyterDenoReplPresentationRouter owner,
+    internal sealed class FrontendPresentationScope(
+        FrontendDenoReplPresentationRouter owner,
         AgentSessionId sessionId,
         RunState state) : IAsyncDisposable
     {
@@ -145,7 +149,8 @@ internal sealed class JupyterDenoReplPresentationRouter : IDenoReplPresentationR
     }
 }
 
-internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext context) : IDenoReplPresentationSink
+/// <summary>Writes REPL presentation calls into the owning run's event stream.</summary>
+internal sealed class FrontendDenoReplPresentationSink(FrontendRunStream stream) : IDenoReplPresentationSink
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private int active = 1;
@@ -157,7 +162,7 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
-        return SerializeAsync(token => context.DisplayAsync(data, metadata, token), cancellationToken);
+        return PublishAsync("repl.display", null, data, cancellationToken);
     }
 
     public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
@@ -166,28 +171,30 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
-        return SerializeAsync(
-            token => context.DisplayTrackedAsync(data, displayId, metadata, token),
-            cancellationToken);
+        return PublishTrackedAsync("repl.display", displayId, data, cancellationToken);
     }
 
-    public ValueTask UpdateDisplayAsync(
+    public async ValueTask UpdateDisplayAsync(
         JupyterDisplayId displayId,
         MimeBundle data,
         IReadOnlyDictionary<string, JsonElement> metadata,
         CancellationToken cancellationToken)
     {
-        return SerializeAsync(token => context.UpdateDisplayAsync(displayId, data, metadata, token), cancellationToken);
+        await PublishTrackedAsync("repl.updateDisplay", displayId, data, cancellationToken).ConfigureAwait(false);
     }
 
     public ValueTask ClearOutputAsync(bool wait, CancellationToken cancellationToken)
     {
-        return SerializeAsync(token => context.ClearOutputAsync(wait, token), cancellationToken);
+        return PublishAsync("repl.clear", null, MimeBundle.Empty, cancellationToken);
     }
 
     public ValueTask WriteStderrAsync(string text, CancellationToken cancellationToken)
     {
-        return SerializeAsync(token => context.WriteStderrAsync(text, token), cancellationToken);
+        return PublishAsync(
+            "repl.display",
+            null,
+            MimeBundle.FromText(text),
+            cancellationToken);
     }
 
     public ValueTask PublishErrorAsync(
@@ -196,7 +203,16 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         IReadOnlyList<string> traceback,
         CancellationToken cancellationToken)
     {
-        return SerializeAsync(token => context.PublishErrorAsync(name, value, traceback, token), cancellationToken);
+        return PublishAsync(
+            "repl.error",
+            null,
+            new MimeBundle(new Dictionary<string, JsonElement>
+            {
+                ["text/plain"] = JsonSerializer.SerializeToElement(
+                    $"{name}: {value}",
+                    JupyterJsonContext.Default.String)
+            }),
+            cancellationToken);
     }
 
     public Task<string> RequestInputAsync(
@@ -204,7 +220,9 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         bool password,
         CancellationToken cancellationToken)
     {
-        return SerializeTaskAsync(token => context.RequestInputAsync(prompt, password, token), cancellationToken);
+        throw new AgentToolException(
+            "repl_input_unsupported",
+            "The frontend presentation path does not support REPL input requests.");
     }
 
     internal async ValueTask DeactivateAsync()
@@ -215,14 +233,23 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         gate.Release();
     }
 
-    private async ValueTask SerializeAsync(
-        Func<CancellationToken, ValueTask> operation,
+    private async ValueTask PublishAsync(
+        string type,
+        JupyterDisplayId? displayId,
+        MimeBundle data,
         CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (IsActive) await operation(cancellationToken).ConfigureAwait(false);
+            if (!IsActive) throw new OperationCanceledException("The frontend presentation sink is no longer active.");
+
+            stream.PublishPresentation(
+                type,
+                displayId?.Value,
+                JsonSerializer.SerializeToElement(data.Data, FrontendJsonContext.Default
+                    .IReadOnlyDictionaryStringJsonElement),
+                cancellationToken);
         }
         finally
         {
@@ -230,37 +257,42 @@ internal sealed class JupyterDenoReplPresentationSink(JupyterExecutionContext co
         }
     }
 
-    private async ValueTask<T> SerializeAsync<T>(
-        Func<CancellationToken, ValueTask<T>> operation,
+    private async ValueTask<JupyterDisplayId> PublishTrackedAsync(
+        string type,
+        JupyterDisplayId displayId,
+        MimeBundle data,
         CancellationToken cancellationToken)
     {
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!IsActive) throw new OperationCanceledException("The Notebook presentation sink is no longer active.");
+        await PublishAsync(type, displayId, data, cancellationToken).ConfigureAwait(false);
+        return displayId;
+    }
+}
 
-            return await operation(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-        }
+/// <summary>
+///     Picks the presentation router of whichever frontend currently owns the session's run,
+///     so the REPL tool resolves one sink during the Jupyter-to-frontend transition.
+/// </summary>
+internal sealed class CompositeDenoReplPresentationRouter(
+    JupyterDenoReplPresentationRouter jupyter,
+    FrontendDenoReplPresentationRouter frontend) : IDenoReplPresentationRouter
+{
+    public async ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
+        AgentSessionId sessionId,
+        AgentToolCallId callId,
+        CancellationToken cancellationToken)
+    {
+        if (jupyter.IsAttached(sessionId))
+            return await jupyter.WaitForCallAsync(sessionId, callId, cancellationToken).ConfigureAwait(false);
+
+        return await frontend.WaitForCallAsync(sessionId, callId, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<T> SerializeTaskAsync<T>(
-        Func<CancellationToken, Task<T>> operation,
-        CancellationToken cancellationToken)
+    public bool TryGetCurrentSink(
+        AgentSessionId sessionId,
+        [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
     {
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!IsActive) throw new OperationCanceledException("The Notebook presentation sink is no longer active.");
+        if (jupyter.TryGetCurrentSink(sessionId, out sink)) return true;
 
-            return await operation(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-        }
+        return frontend.TryGetCurrentSink(sessionId, out sink);
     }
 }

@@ -1,9 +1,12 @@
 using Maieutics.Configuration;
-using Maieutics.Jupyter.Kernel;
-using Maieutics.Jupyter.Shared;
 
-namespace Maieutics.Jupyter;
+namespace Maieutics.Commands;
 
+/// <summary>
+///     The protocol-neutral Maieutics command language: cell detection, argument
+///     normalization, and completion. Shared by every frontend adapter (Jupyter
+///     kernel, web frontend); adapters translate their own cursor and result shapes.
+/// </summary>
 internal static class MaieuticsCommandLanguage
 {
     internal const string LegacyRoot = "%maieutics";
@@ -100,37 +103,40 @@ internal static class MaieuticsCommandLanguage
         return null;
     }
 
-    internal static JupyterCompletionResult Complete(
-        JupyterCompleteRequest request,
+    /// <summary>Computes command completions. The cursor is a UTF-16 code-unit offset and the
+    /// returned token range uses the same units, so frontends without a code-point cursor
+    /// contract need no conversion.</summary>
+    internal static MaieuticsCommandCompletion Complete(
+        string code,
+        int utf16Cursor,
         IReadOnlyList<MaieuticsModelProfileInfo> profiles,
         IReadOnlyList<MaieuticsModelProfileInfo> automaticProfiles,
         IReadOnlyList<string> sourceIds)
     {
-        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(code);
+        ArgumentOutOfRangeException.ThrowIfNegative(utf16Cursor);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(utf16Cursor, code.Length);
         ArgumentNullException.ThrowIfNull(profiles);
         ArgumentNullException.ThrowIfNull(automaticProfiles);
         ArgumentNullException.ThrowIfNull(sourceIds);
 
-        var cursorIndex = JupyterCursorPosition.ToUtf16Index(request.Code, request.CursorPosition);
+        var cursorIndex = utf16Cursor;
         var tokenStart = cursorIndex;
-        while (tokenStart > 0 && !char.IsWhiteSpace(request.Code[tokenStart - 1])) tokenStart--;
+        while (tokenStart > 0 && !char.IsWhiteSpace(code[tokenStart - 1])) tokenStart--;
 
         var tokenEnd = cursorIndex;
-        while (tokenEnd < request.Code.Length && !char.IsWhiteSpace(request.Code[tokenEnd])) tokenEnd++;
+        while (tokenEnd < code.Length && !char.IsWhiteSpace(code[tokenEnd])) tokenEnd++;
 
-        var prefix = request.Code[tokenStart..cursorIndex];
-        var token = request.Code[tokenStart..tokenEnd];
-        var precedingTokens = request.Code[..tokenStart]
+        var prefix = code[tokenStart..cursorIndex];
+        var token = code[tokenStart..tokenEnd];
+        var precedingTokens = code[..tokenStart]
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var matches = precedingTokens.Length == 0 && token.StartsWith(SlashLeader, StringComparison.Ordinal)
             ? CompleteSlashDiscovery(token)
             : CompletePrefixed(precedingTokens, prefix, token, profiles, automaticProfiles, sourceIds);
 
-        return new JupyterCompletionResult(
-            matches,
-            JupyterCursorPosition.FromUtf16Index(request.Code, tokenStart),
-            JupyterCursorPosition.FromUtf16Index(request.Code, tokenEnd));
+        return new MaieuticsCommandCompletion(matches, tokenStart, tokenEnd);
     }
 
     private static string[] CompleteSlashDiscovery(string token)
@@ -237,3 +243,6 @@ internal static class MaieuticsCommandLanguage
                 .Select(static group => group.Key));
     }
 }
+
+/// <summary>Represents one completion answer in UTF-16 code-unit offsets.</summary>
+internal sealed record MaieuticsCommandCompletion(string[] Matches, int TokenStart, int TokenEnd);

@@ -435,6 +435,25 @@ public sealed class TerminalSessionTests
         snapshot.ExitCode.Should().Be(7);
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotSignalTerminationCompletesWithoutAnExitCode()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "sleep", ["60"]);
+        var run = session.RunOnceAsync(
+            TimeSpan.FromSeconds(5),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+
+        fake.EndOfOutput();
+        fake.RaiseSignaled(9);
+
+        var completed = await run;
+        completed.State.Should().Be("completed");
+        completed.ExitCode.Should().BeNull();
+        session.GetSnapshot().ExitCode.Should().BeNull();
+    }
+
     private static async Task WaitForStateAsync(
         TerminalSession session,
         string expected,
@@ -489,9 +508,11 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public int? ExitCode { get; private set; }
 
+    public int? TerminationSignal { get; private set; }
+
     public TimeSpan GracefulExitTimeout { get; set; }
 
-    public event Action<int, ITerminalProcess>? Exited;
+    public event Action<ITerminalProcess>? Exited;
 
     public IReadOnlyList<string> HexWrites => stream.Writes.Select(Convert.ToHexString).ToArray();
 
@@ -500,7 +521,13 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
     public void RaiseExited(int exitCode)
     {
         ExitCode = exitCode;
-        Exited?.Invoke(exitCode, this);
+        Exited?.Invoke(this);
+    }
+
+    public void RaiseSignaled(int signal)
+    {
+        TerminationSignal = signal;
+        Exited?.Invoke(this);
     }
 
     public void Emit(params string[] texts)

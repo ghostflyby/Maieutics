@@ -480,10 +480,12 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
     }
 
-    private void OnProcessExited(int exitCode, ITerminalProcess exited)
+    private void OnProcessExited(ITerminalProcess exited)
     {
         // Fired on the pty reaper thread; must not block. A persistent session faults because its
         // completion is undefined and the shell is gone; a one-shot command completes by definition.
+        // A Unix signal termination has no exit code; the signal is logged and the snapshot reports
+        // completion with a null exit code rather than a synthetic one.
         lock (stateGate)
         {
             if (state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
@@ -492,7 +494,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                 if (state != TerminalSessionState.Completed)
                 {
                     state = TerminalSessionState.Completed;
-                    this.exitCode = exited.ExitCode ?? exitCode;
+                    exitCode = exited.ExitCode;
                 }
             }
             else
@@ -500,6 +502,12 @@ internal sealed class TerminalSession : IAsyncDisposable
                 state = TerminalSessionState.Faulted;
             }
         }
+
+        if (exited.TerminationSignal is { } signal)
+            logger.LogWarning(
+                "Terminal session {SessionId} child was terminated by signal {Signal}.",
+                SessionId,
+                signal);
 
         if (kind == TerminalSessionKind.OneShot)
             exitCompletion.TrySetResult();

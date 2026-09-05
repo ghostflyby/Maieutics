@@ -13,11 +13,38 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Primitives;
 
+using System.Threading;
+
 namespace Maieutics.Jupyter.Tests;
+
 
 [Collection(JupyterSocketIntegrationCollection.Name)]
 public sealed class MaieuticsConfigurationTests
 {
+
+/// <summary>Deletes a temporary directory, retrying briefly: on Windows a config-file
+/// watcher or an exiting MCP stdio child can hold a file for a short while after the
+/// test body completes.</summary>
+internal static void DeleteDirectoryWithRetry(string path)
+{
+    for (var attempt = 0; ; attempt++)
+    {
+        try
+        {
+            Directory.Delete(path, true);
+            return;
+        }
+        catch (IOException) when (attempt < 10)
+        {
+            Thread.Sleep(200 * (attempt + 1));
+        }
+        catch (UnauthorizedAccessException) when (attempt < 10)
+        {
+            Thread.Sleep(200 * (attempt + 1));
+        }
+    }
+}
+
     [Fact]
     public void ConfigurationPathResolutionUsesExplicitEnvironmentPortableThenUserPath()
     {
@@ -85,7 +112,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -109,7 +136,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -159,7 +186,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -196,7 +223,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -235,7 +262,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -274,7 +301,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -332,7 +359,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -376,7 +403,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -425,7 +452,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -489,7 +516,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -540,7 +567,7 @@ public sealed class MaieuticsConfigurationTests
             factory.ReleaseAutomaticCreate.TrySetResult();
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -582,7 +609,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.Disposed.Should().BeTrue();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -639,7 +666,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -687,7 +714,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -730,7 +757,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -783,7 +810,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -840,7 +867,7 @@ public sealed class MaieuticsConfigurationTests
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -878,7 +905,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -928,7 +955,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1013,7 +1040,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1048,7 +1075,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1079,7 +1106,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1122,7 +1149,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1215,7 +1242,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1312,7 +1339,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1411,7 +1438,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1449,7 +1476,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1523,7 +1550,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
 
         void AssertRejected(JsonObject servers, string expectedMessage)
@@ -1586,7 +1613,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.StopAsync(deadline.Token);
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2084,7 +2111,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2134,7 +2161,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2337,7 +2364,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2382,7 +2409,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2417,7 +2444,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2455,7 +2482,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 

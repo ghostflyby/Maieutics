@@ -1,0 +1,21 @@
+{
+  "imports": {
+    "vscode": "npm:@types/vscode@1.99.1"
+  },
+  "publish": false,
+  "compilerOptions": {
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "npm:@types/node@22.17.0"
+    ]
+  },
+  "tasks": {
+    "check": "deno check .",
+    "test": "deno test --allow-net --allow-read --allow-env --allow-run .",
+    "build": "deno bundle --format cjs --external vscode --minify -o dist/extension.js extension.ts",
+    "watch": "deno bundle --format cjs --external vscode -o dist/extension.js extension.ts --watch",
+    "package": "deno run -A --no-lock npm:@vscode/vsce@3.9.2 package --no-dependencies"
+  }
+}

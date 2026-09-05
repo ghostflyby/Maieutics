@@ -1,3 +1,4 @@
+using Maieutics.DenoRepl;
 using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text;
@@ -29,24 +30,18 @@ public sealed class ReplCommChannelTests
             await ReceiveCommReadyAsync(socket, timeout.Token);
 
             var data = JsonSerializer.SerializeToElement(new { marker = "relay" });
-            var message = new JupyterCommMessage(
-                JupyterCommKind.Message,
+            var message = new ReplCommMessage(
+                ReplCommKind.Message,
                 "comm-9",
                 null,
                 data,
                 null,
-                [new byte[] { 0xAB, 0xCD }],
-                JupyterWireMessage.Create(
-                    JupyterMessage.Create(
-                        "comm_msg",
-                        new JupyterCommMsgContent("comm-9", data),
-                        JupyterJsonContext.Default.JupyterCommMsgContent,
-                        JupyterSessionIdentity.Create("test"))));
+                [new byte[] { 0xAB, 0xCD }]);
             await host.PushCommMessageAsync("test-session", message, timeout.Token);
 
             var payload = await ReceiveCommBinaryAsync(socket, timeout.Token);
             var decoded = ReplControlHost.CommCodec.Decode(payload);
-            decoded.Kind.Should().Be(JupyterCommKind.Message);
+            decoded.Kind.Should().Be(ReplCommKind.Message);
             decoded.CommId.Should().Be("comm-9");
             decoded.Data.Should().NotBeNull();
             decoded.Data!.Value.GetProperty("marker").GetString().Should().Be("relay");

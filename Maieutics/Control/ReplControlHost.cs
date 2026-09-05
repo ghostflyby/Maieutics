@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Maieutics.Agent;
-using Maieutics.Jupyter.Kernel;
+using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Connections.Features;
@@ -29,7 +29,7 @@ internal sealed partial class ReplControlHost : IDisposable
         new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, SessionBusConnection> connections = new(StringComparer.Ordinal);
-    private readonly Func<JupyterCommMessage, CancellationToken, ValueTask>? commFrontendSink;
+    private readonly Func<ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink;
     private readonly ILogger<ReplControlHost> logger;
     private readonly ReplControlCredentialRegistry? credentialRegistry;
     private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
@@ -48,7 +48,7 @@ internal sealed partial class ReplControlHost : IDisposable
         PluginHostManager? pluginHosts = null,
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsPipeBootstrap = null,
-        Func<JupyterCommMessage, CancellationToken, ValueTask>? commFrontendSink = null)
+        Func<ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
@@ -109,6 +109,14 @@ internal sealed partial class ReplControlHost : IDisposable
     {
         application.Use(async (context, next) =>
         {
+            // The middleware is path-scoped to the control bus: other planes on the shared
+            // host (the frontend API) carry their own authorization.
+            if (!IsControlPath(context.Request.Path))
+            {
+                await next(context).ConfigureAwait(false);
+                return;
+            }
+
             if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
                 bodySize.MaxRequestBodySize = ReplControlLimits.MaximumInboundMessageBytes;
 
@@ -128,6 +136,14 @@ internal sealed partial class ReplControlHost : IDisposable
         application.Map("/ws", HandleWebSocketAsync);
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
         MapCommEndpoint(application);
+    }
+
+    private static bool IsControlPath(PathString path)
+    {
+        return path.StartsWithSegments("/health") ||
+               path.StartsWithSegments("/ws") ||
+               path.StartsWithSegments("/v1/tool.invoke") ||
+               path.StartsWithSegments("/comm");
     }
 
     private async Task<string?> AuthorizeAsync(HttpContext context)

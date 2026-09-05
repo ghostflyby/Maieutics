@@ -18,3 +18,5 @@
 - [ADR 0009: Volatile transcript and durable storage shape](architecture/decisions/0009-volatile-transcript-and-durable-storage-shape.md)
 - [ADR 0010: Direct Microsoft.Extensions.AI function runtime](architecture/decisions/0010-direct-microsoft-extensions-ai-function-runtime.md)
 - [ADR 0011: Deno REPL tools, lifecycle, and output routing](architecture/decisions/0011-deno-repl-tools-lifecycle-and-output-routing.md)
+
+- `frontend-migration-gaps.md` — remaining migration gaps from the Jupyter frontend (ADR 0023), with priorities and acceptance criteria.

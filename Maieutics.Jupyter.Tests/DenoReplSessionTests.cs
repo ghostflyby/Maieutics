@@ -507,19 +507,19 @@ public sealed class DenoReplSessionTests
     private sealed class NoopPresentationSink : IDenoReplPresentationSink
     {
         public ValueTask DisplayAsync(
-            MimeBundle data,
+            ReplDisplayBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-        public ValueTask<JupyterDisplayId> DisplayTrackedAsync(
-            MimeBundle data,
-            JupyterDisplayId displayId,
+        public ValueTask<ReplDisplayId> DisplayTrackedAsync(
+            ReplDisplayBundle data,
+            ReplDisplayId displayId,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken) => ValueTask.FromResult(displayId);
 
         public ValueTask UpdateDisplayAsync(
-            JupyterDisplayId displayId,
-            MimeBundle data,
+            ReplDisplayId displayId,
+            ReplDisplayBundle data,
             IReadOnlyDictionary<string, JsonElement> metadata,
             CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
@@ -537,7 +537,10 @@ public sealed class DenoReplSessionTests
             string prompt,
             bool password,
             CancellationToken cancellationToken) => Task.FromResult(string.Empty);
+
+        public bool TryCompleteInput(string requestId, string value) => false;
     }
+    public bool TryCompleteInput(string requestId, string value) => false;
 
     /// <summary>A bounded output frame channel the collector drains. Frames must be published for
     /// an execution, then <see cref="End" /> closes the stream so the collector's terminal wait
@@ -550,6 +553,8 @@ public sealed class DenoReplSessionTests
         {
             frames.Writer.TryWrite(frame);
         }
+
+        public bool TryCompleteInput(string requestId, string value) => false;
 
         internal void End()
         {

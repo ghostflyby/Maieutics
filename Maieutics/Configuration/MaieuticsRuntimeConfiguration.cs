@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Execution;
-using Maieutics.Jupyter;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
 using Maieutics.Providers;
@@ -94,7 +93,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
 
         var candidate = CreateCandidate();
-        ConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
 
         logger.LogInformation(
             "Using Maieutics configuration file {ConfigurationPath} selected from {ConfigurationSource}.",
@@ -174,7 +172,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
     }
 
-    public string ConnectionFile { get; }
 
     public long Version
     {
@@ -412,19 +409,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
 
         ObserveCompletedRetirements();
-    }
-
-    public MaieuticsAgentKernelOptions GetKernelOptions()
-    {
-        lock (gate)
-        {
-            var jupyter = GetCurrent().Options.Jupyter;
-            return new MaieuticsAgentKernelOptions
-            {
-                FlushInterval = jupyter.FlushInterval,
-                FlushCharacters = jupyter.FlushCharacters
-            };
-        }
     }
 
     public async ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
@@ -823,10 +807,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
         ValidateConfigurationFileSyntax();
         var candidate = CreateCandidate();
-        var configuredConnectionFile = Path.GetFullPath(candidate.Options.Jupyter.ConnectionFile);
-        if (!string.Equals(configuredConnectionFile, ConnectionFile, StringComparison.Ordinal))
-            logger.LogWarning(
-                "The Jupyter connection file changed in configuration. Restart Maieutics to apply this setting.");
 
         RuntimeSnapshot previous;
         lock (gate)
@@ -1188,10 +1168,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             options.Agent.MaxToolArgumentsBytes,
             options.Agent.MaxToolResultBytes,
             options.Agent.MaxToolProgressEventsPerCall,
-            options.Agent.EventBufferCapacity,
-            Path.GetFullPath(options.Jupyter.ConnectionFile),
-            options.Jupyter.FlushInterval,
-            options.Jupyter.FlushCharacters);
+            options.Agent.EventBufferCapacity);
         return new Candidate(
             options,
             defaultProfileId,
@@ -1682,10 +1659,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         int MaxToolArgumentsBytes,
         int MaxToolResultBytes,
         int MaxToolProgressEventsPerCall,
-        int EventBufferCapacity,
-        string ConnectionFile,
-        TimeSpan FlushInterval,
-        int FlushCharacters);
+        int EventBufferCapacity);
 
     private sealed record RuntimeSnapshot(
         long Version,

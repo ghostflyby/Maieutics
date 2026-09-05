@@ -8,22 +8,43 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
+        <!-- SQLite provider mode: 'System' P/Invokes the OS sqlite3 (true single-file AOT,
+             runtime dlopen resolves the OS library; load-extension APIs are absent from the
+             Apple build but Microsoft.Data.Sqlite never calls them), 'Bundled' ships
+             e_sqlite3 as a side-by-side native file. Platform defaults: macOS/Windows =
+             System (both OSes ship a usable sqlite3); Linux = Bundled (distributions vary).
+             Override with -p:SqliteProviderMode=Bundled|System. -->
+        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">System</SqliteProviderMode>
+        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">System</SqliteProviderMode>
+        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == ''">Bundled</SqliteProviderMode>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLITE_PROVIDER_SQLITE3</DefineConstants>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);SQLITE_PROVIDER_WINSQLITE3</DefineConstants>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'Bundled'">$(DefineConstants);SQLite_PROVIDER_BUNDLED</DefineConstants>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     </PropertyGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj" />
-        <ProjectReference Include="..\Maieutics.Jupyter.Client\Maieutics.Jupyter.Client.csproj" />
-        <ProjectReference Include="..\Maieutics.Jupyter.Kernel\Maieutics.Jupyter.Kernel.csproj" />
-        <ProjectReference Include="..\Maieutics.Jupyter.Shared\Maieutics.Jupyter.Shared.csproj" />
     </ItemGroup>
 
     <ItemGroup>
         <PackageReference Include="Ghostflyby.Pty" Version="0.5.0" />
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+        <!-- Core variant: no default SQLite engine dependency. The engine comes from the
+             SqliteProviderMode-selected SQLitePCLRaw provider below (see the mode notes at
+             the top of this file). -->
+        <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.11" />
         <!-- Direct reference overrides the vulnerable 2.1.11 transitive (GHSA-2m69-gcr7-jv3q). -->
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+        <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5" />
+        <PackageReference Include="SQLitePCLRaw.provider.sqlite3"
+                          Version="3.0.5"
+                          Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))" />
+        <PackageReference Include="SQLitePCLRaw.provider.winsqlite3"
+                          Version="3.0.5"
+                          Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                          Version="3.0.5"
+                          Condition="'$(SqliteProviderMode)' == 'Bundled'" />
         <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
         <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
         <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
@@ -33,6 +54,7 @@
     <ItemGroup>
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>
+
 
     <ItemGroup>
         <EmbeddedResource Include="..\deno\maieutics-repl-client\mod.ts" LogicalName="Maieutics.Deno.ReplClient.ts" />
@@ -88,10 +110,6 @@
         <EmbeddedResource Include="..\deno\shared\bus.ts" LogicalName="Maieutics.Deno.Shared.Bus.ts" />
         <EmbeddedResource Include="..\deno\shared\ipc_websocket.ts" LogicalName="Maieutics.Deno.Shared.IpcWebSocket.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Maieutics.Deno.PluginSdkConfig.json" />
-    </ItemGroup>
-
-    <ItemGroup>
-        <None Include="kernelspec\kernel.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

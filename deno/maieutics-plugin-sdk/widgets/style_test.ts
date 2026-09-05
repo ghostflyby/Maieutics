@@ -12,8 +12,10 @@ import { WidgetRuntime } from "./runtime.ts";
 
 function fakeRuntime(): { runtime: WidgetRuntime; opens: Array<Record<string, unknown>> } {
   const opens: Array<Record<string, unknown>> = [];
-  const runtime = new WidgetRuntime(async (messageType, content) => {
+  const runtime = new WidgetRuntime((messageType, content) => {
     if (messageType === "comm_open") opens.push(content);
+
+    return Promise.resolve();
   });
   return { runtime, opens };
 }

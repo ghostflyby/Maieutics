@@ -3,13 +3,13 @@ using System.Net;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Commands;
 using Maieutics.Configuration;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
-using Maieutics.Jupyter;
-using Maieutics.Jupyter.Kernel;
+using Maieutics.Frontend;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
 using Maieutics.Persistence;
@@ -91,7 +91,7 @@ public static class MaieuticsHost
             .AddCommandLine(args, new Dictionary<string, string>
             {
                 ["--config"] = "Maieutics:ConfigurationFile",
-                ["--connection-file"] = "Maieutics:Jupyter:ConnectionFile",
+                ["--frontend-discovery"] = "Maieutics:Frontend:DiscoveryFile",
                 ["--workspace"] = "Maieutics:Workspace:Root",
                 ["--profile"] = "Maieutics:DefaultProfile",
                 ["--provider"] = "Maieutics:Model:Provider",
@@ -133,8 +133,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(new McpStartupDirectory(startupCurrentDirectory));
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
-        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();
-        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
@@ -152,9 +151,15 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(EffectivePolicy.Default);
         builder.Services.AddSingleton<TerminalRegistry>();
         builder.Services.AddSingleton<TerminalFunctions>();
-        builder.Services.AddSingleton<JupyterDenoReplPresentationRouter>();
+        builder.Services.AddSingleton<FrontendDenoReplPresentationRouter>();
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
-            services.GetRequiredService<JupyterDenoReplPresentationRouter>());
+            services.GetRequiredService<FrontendDenoReplPresentationRouter>());
+        builder.Services.AddSingleton<MaieuticsCommandExecutor>(static services => new MaieuticsCommandExecutor(
+            services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            services.GetService<IMaieuticsRuntimeConfiguration>(),
+            services.GetRequiredService<Workspace>(),
+            services.GetRequiredService<MaieuticsStatusProvider>(),
+            services.GetService<IMaieuticsMcpController>()));
         builder.Services.AddSingleton<ReplControlSessionRegistry>();
         var controlSocketPath = ReplControlHost.CreateSocketPath();
         builder.WebHost.ConfigureKestrel(options =>
@@ -171,7 +176,18 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<ReplControlCredentialRegistry>();
         builder.Services.AddSingleton<ReplEvalWebSocketHost>();
         builder.Services.AddSingleton<ReplOutputWebSocketHost>();
-        builder.Services.AddSingleton<CommFrontendSink>();
+        var frontendOptions = FrontendOptions.Create(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]);
+        builder.Services.AddSingleton(frontendOptions);
+        if (frontendOptions.Enabled)
+            // Registered after the control listener so the Windows control-address probe keeps
+            // observing the control listener first when two TCP addresses exist.
+            builder.WebHost.ConfigureKestrel(options => options.Listen(
+                IPAddress.Loopback,
+                frontendOptions.Port,
+                listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; }));
+        builder.Services.AddSingleton<FrontendSessionService>(CreateFrontendSessionService);
+        builder.Services.AddSingleton<FrontendHost>();
+        builder.Services.AddHostedService<FrontendHostedService>();
         if (OperatingSystem.IsWindows())
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>
                 OperatingSystem.IsWindows() ? CreateWindowsBootstrap(services) : throw new UnreachableException()
@@ -207,8 +223,7 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
-                : null,
-            services.GetRequiredService<CommFrontendSink>().ForwardAsync));
+                : null));
         builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
             DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
@@ -227,6 +242,10 @@ public static class MaieuticsHost
                 services.GetService<PluginHostManager>()));
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
+        // Large binary REPL display payloads are stored content-addressed and referenced
+        // by a stable relative URL the frontend fetches natively (frontend-migration-gaps.md #2).
+        builder.Services.AddSingleton<IReplDisplayObjectStore>(static services =>
+            new ReplDisplayObjectStore(services.GetRequiredService<ObjectStore>()));
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();
         builder.Services.AddHostedService<DenoModuleGraphWarmer>();
         builder.Services.AddSingleton(static services =>
@@ -241,15 +260,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IAgentSession>(static services =>
             services.GetRequiredService<MaieuticsAgentSessionManager>());
         builder.Services.AddSingleton<MaieuticsStatusProvider>();
-        builder.Services.AddSingleton(CreateKernelApplication);
         builder.Services.AddHostedService<MaieuticsRuntimeReadinessHostedService>();
-        builder.Services.AddHostedService<JupyterKernelHostedService>();
-        builder.Services.AddSingleton<KernelInterruptCoordinator>();
-        builder.Services.AddSingleton<IKernelInterruptCoordinator>(static services =>
-            services.GetRequiredService<KernelInterruptCoordinator>());
-        // SIGINT interrupts the current kernel execution; SIGQUIT/SIGTERM keep graceful shutdown.
-        builder.Services.RemoveAll<IHostLifetime>();
-        builder.Services.AddSingleton<IHostLifetime, JupyterKernelLifetime>();
         return builder;
     }
 
@@ -267,6 +278,14 @@ public static class MaieuticsHost
         // upgraded WebSocket requests finish immediately instead of blocking the shutdown timeout.
         application.Lifetime.ApplicationStopping.Register(evalHost.BeginShutdown);
         application.Lifetime.ApplicationStopping.Register(outputHost.BeginShutdown);
+        var frontendOptions = application.Services.GetRequiredService<FrontendOptions>();
+        if (frontendOptions.Enabled)
+        {
+            // Map the frontend first: its bearer middleware then runs ahead of the control
+            // bus's peer-identity middleware, which only guards its own paths.
+            application.Services.GetRequiredService<FrontendHost>().MapEndpoints(application);
+        }
+
         if (OperatingSystem.IsWindows())
             application.Lifetime.ApplicationStarted.Register(() =>
             {
@@ -281,6 +300,18 @@ public static class MaieuticsHost
         application.Services.GetRequiredService<ReplOutputWebSocketHost>().MapEndpoint(application);
         controlHost.MapEndpoints(application);
         return application;
+    }
+
+    private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)
+    {
+        var runtimeConfiguration = services.GetService<IMaieuticsRuntimeConfiguration>();
+        return new FrontendSessionService(
+            services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            services.GetRequiredService<MaieuticsCommandExecutor>(),
+            services.GetRequiredService<FrontendDenoReplPresentationRouter>(),
+            services.GetRequiredService<ILogger<FrontendSessionService>>(),
+            runtimeConfiguration,
+            services.GetRequiredService<MaieuticsStatusProvider>());
     }
 
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)
@@ -311,24 +342,6 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
-    }
-
-    private static IJupyterKernelApplication CreateKernelApplication(IServiceProvider services)
-    {
-        var runtimeConfiguration = services.GetRequiredService<IMaieuticsRuntimeConfiguration>();
-        var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
-        return new MaieuticsAgentKernelApplication(
-            sessionManager,
-            runtimeConfiguration.GetKernelOptions,
-            runtimeConfiguration,
-            services.GetRequiredService<ILogger<MaieuticsAgentKernelApplication>>(),
-            workspace: services.GetRequiredService<Workspace>(),
-            replPresentationRouter: services.GetRequiredService<JupyterDenoReplPresentationRouter>(),
-            mcpController: services.GetRequiredService<IMaieuticsMcpController>(),
-            statusProvider: services.GetRequiredService<MaieuticsStatusProvider>(),
-            replControlHost: services.GetRequiredService<ReplControlHost>(),
-            replRegistry: services.GetRequiredService<DenoReplRegistry>(),
-            sessionManager: sessionManager);
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

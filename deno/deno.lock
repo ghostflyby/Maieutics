@@ -6,6 +6,8 @@
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.13",
     "npm:@preact/signals-core@1.14.4": "1.14.4",
+    "npm:@types/node@22.17.0": "22.17.0",
+    "npm:@types/vscode@1.99.1": "1.99.1",
     "npm:acorn@8": "8.18.0",
     "npm:astring@1": "1.9.0",
     "npm:esbuild-wasm@0.25.12": "0.25.12"
@@ -36,6 +38,15 @@
     "@preact/signals-core@1.14.4": {
       "integrity": "sha512-HNB6HYeYKhQbJ1aKl+YRjrS4+QWHLKX6qKoUsfS/m0vqzsVaEBiZiaKbG/e+NKk2ch5ALQr/ihWaMHxiCuuWHA=="
     },
+    "@types/node@22.17.0": {
+      "integrity": "sha512-bbAKTCqX5aNVryi7qXVMi+OkB3w/OyblodicMbvE38blyAz7GxXf6XYhklokijuPwwVg9sDLKRxt0ZHXQwZVfQ==",
+      "dependencies": [
+        "undici-types"
+      ]
+    },
+    "@types/vscode@1.99.1": {
+      "integrity": "sha512-cQlqxHZ040ta6ovZXnXRxs3fJiTmlurkIWOfZVcLSZPcm9J4ikFpXuB7gihofGn5ng+kDVma5EmJIclfk0trPQ=="
+    },
     "acorn@8.18.0": {
       "integrity": "sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==",
       "bin": true
@@ -47,6 +58,9 @@
     "esbuild-wasm@0.25.12": {
       "integrity": "sha512-rZqkjL3Y6FwLpSHzLnaEy8Ps6veCNo1kZa9EOfJvmWtBq5dJH4iVjfmOO6Mlkv9B0tt9WFPFmb/VxlgJOnueNg==",
       "bin": true
+    },
+    "undici-types@6.21.0": {
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="
     }
   },
   "workspace": {
@@ -69,6 +83,12 @@
         "dependencies": [
           "jsr:@ghostflyby/worker-actor@0.6.0",
           "npm:@preact/signals-core@1.14.4"
+        ]
+      },
+      "maieutics-vscode": {
+        "dependencies": [
+          "npm:@types/node@22.17.0",
+          "npm:@types/vscode@1.99.1"
         ]
       }
     }

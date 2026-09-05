@@ -5,16 +5,15 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
-using Maieutics.Jupyter.Kernel;
-using Maieutics.Jupyter.Shared;
+using Maieutics.DenoRepl;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 
 namespace Maieutics.Control;
 
 /// <summary>
-///     Dedicated WebSocket path for Jupyter comm traffic between the kernel and a REPL child.
-///     This channel is separate from the control bus: it carries comm messages only, with binary
+///     Dedicated WebSocket path for comm traffic between the host and a REPL child. This
+///     channel is separate from the control bus: it carries comm messages only, with binary
 ///     buffers as native bytes (no base64). Messages are a fixed binary encoding:
 ///     <c>[kind:1][commIdLen:2][commId][targetNameLen:2][targetName][dataLen:4][data][bufferCount:2][bufLen:4][buf]...</c>.
 ///     The first frame after accept is a JSON hello declaring the session id, verified against the
@@ -123,7 +122,7 @@ internal sealed partial class ReplControlHost
     /// <summary>Pushes a comm message to the REPL child of a session over its comm WebSocket.</summary>
     internal async Task PushCommMessageAsync(
         string sessionId,
-        JupyterCommMessage message,
+        ReplCommMessage message,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -136,7 +135,7 @@ internal sealed partial class ReplControlHost
     }
 
     private async ValueTask RouteCommToFrontendAsync(
-        JupyterCommMessage message,
+        ReplCommMessage message,
         CancellationToken cancellationToken)
     {
         var sink = commFrontendSink;
@@ -147,16 +146,16 @@ internal sealed partial class ReplControlHost
 
     internal static class CommCodec
     {
-        internal static byte[] Encode(JupyterCommMessage message)
+        internal static byte[] Encode(ReplCommMessage message)
         {
             var kind = (byte)message.Kind;
             var commId = Encoding.UTF8.GetBytes(message.CommId);
             var targetName = message.TargetName is null ? [] : Encoding.UTF8.GetBytes(message.TargetName);
             var data = message.Data is { } dataElement
-                ? JsonSerializer.SerializeToUtf8Bytes(dataElement, JupyterJsonContext.Default.JsonElement)
+                ? JsonSerializer.SerializeToUtf8Bytes(dataElement, ReplJsonContext.Default.JsonElement)
                 : [];
             var metadata = message.Metadata is { } metadataElement
-                ? JsonSerializer.SerializeToUtf8Bytes(metadataElement, JupyterJsonContext.Default.JsonElement)
+                ? JsonSerializer.SerializeToUtf8Bytes(metadataElement, ReplJsonContext.Default.JsonElement)
                 : [];
             var buffers = message.Buffers;
 
@@ -191,10 +190,10 @@ internal sealed partial class ReplControlHost
             return result;
         }
 
-        internal static JupyterCommMessage Decode(byte[] frames)
+        internal static ReplCommMessage Decode(byte[] frames)
         {
             var offset = 0;
-            var kind = (JupyterCommKind)frames[offset++];
+            var kind = (ReplCommKind)frames[offset++];
             var commIdLength = ReadUInt16(frames, ref offset);
             var commId = Encoding.UTF8.GetString(frames, offset, commIdLength);
             offset += commIdLength;
@@ -224,19 +223,13 @@ internal sealed partial class ReplControlHost
                 buffers.Add(buffer);
             }
 
-            return new JupyterCommMessage(
+            return new ReplCommMessage(
                 kind,
                 commId,
                 targetName,
                 data,
                 metadata,
-                buffers,
-                JupyterWireMessage.Create(
-                    new JupyterMessage(
-                        JupyterMessageHeader.Create("comm_msg", JupyterSessionIdentity.Create("maieutics")),
-                        null,
-                        JupyterJson.EmptyObject,
-                        data ?? JupyterJson.EmptyObject)));
+                buffers);
         }
 
         private static void WriteUInt16(byte[] destination, ref int offset, int value)

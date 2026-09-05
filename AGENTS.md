@@ -2,15 +2,18 @@
 
 ## Repository purpose
 
-Maieutics is a notebook-native LLM agent exposed as a Jupyter kernel.
+Maieutics is a notebook-native LLM agent. Its primary frontend is the custom web protocol (HTTP + WebSocket,
+`docs/web-frontend-protocol.md`) consumed by the VSCode notebook extension (`deno/maieutics-vscode`); the reusable
+Jupyter implementation is retained as standalone libraries with no executable consumer (ADR 0023).
 
 The user model is:
 
 - one executable notebook cell submits one Agent turn;
-- the kernel owns the authoritative live conversation state;
-- assistant text, tool activity, rich values, errors, and input requests are emitted through Jupyter messages;
+- the executable owns the authoritative live conversation state;
+- assistant text, tool activity, rich values, and errors are emitted as typed frontend events (replayable by
+  sequence, resumable after disconnects);
 - notebook frontends provide editing, execution, history, and rich rendering;
-- an `.ipynb` file is a portable interaction snapshot, not the runtime database.
+- a `.maieuticsnb` file is a portable interaction snapshot, not the runtime database.
 
 The reusable Jupyter implementation must remain independent of the Agent runtime. Agent-specific behavior is composed
 above the protocol and kernel-host layers.
@@ -25,12 +28,12 @@ above the protocol and kernel-host layers.
 | `Maieutics.Jupyter.Tests` | Jupyter unit, transport, interoperability, and product integration tests |
 | `Maieutics.Agent` | Jupyter-independent Agent facade, run lifecycle, transcript, and tool runtime |
 | `Maieutics.Agent.Tests` | Agent runtime unit tests |
-| `Maieutics` | NativeAOT executable composition root, configuration, providers, permissions, process policy, Deno execution, and Agent-to-Jupyter adapter |
+| `Maieutics` | NativeAOT executable composition root, configuration, providers, permissions, process policy, Deno execution, frontend web API, and VSCode extension workspace (`deno/`) |
 
 `Maieutics.Agent` is currently an internal, non-packable product assembly rather than a supported Agent SDK. Its public
-boundary stays provider- and host-neutral so independent use can be evaluated later. Product-specific provider and
-Jupyter adapter namespaces remain in the executable until they have an independent consumer, publication target,
-deployment boundary, target framework, or dependency boundary.
+boundary stays provider- and host-neutral so independent use can be evaluated later. Product-specific provider
+namespaces remain in the executable until they have an independent consumer, publication target, deployment boundary,
+target framework, or dependency boundary.
 
 Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension, or Persistence projects already
 exist. Preserve those conceptual boundaries without creating assemblies merely to represent namespaces.
@@ -65,9 +68,12 @@ Maieutics.Agent facade
 Maieutics executable
     |-- product-specific provider wiring
     |-- permission store, process policy, and Deno execution
-    `-- Agent-to-Jupyter adapter
+    |-- frontend web API (Maieutics.Frontend)
+    |       |-- Maieutics.Agent
+    |       `-- Maieutics.Commands
+    `-- shared control surface (Maieutics.Commands)
             |-- Maieutics.Agent
-            `-- Maieutics.Jupyter.Kernel
+            `-- Configuration
 ```
 
 The Agent runtime must not depend on Jupyter. Jupyter libraries must not depend on Agent concepts.
@@ -81,20 +87,23 @@ Do not solve a boundary problem with a reverse project reference. Put a small in
 
 Every change must preserve these invariants:
 
-1. The kernel owns the authoritative live conversation history.
-2. One ordinary executable cell corresponds to one submitted Agent turn.
-3. Jupyter requests are correlated by message ID, channel, and expected reply type where applicable.
-4. Shell execution is serialized unless explicit parallel semantics are designed and tested.
-5. Control interrupt and shutdown remain responsive during shell execution.
-6. IOPub output retains causal parent IDs and wire order.
-7. Busy precedes parented output; reply precedes idle; idle is emitted from a `finally` path.
+1. The executable owns the authoritative live conversation history.
+2. One ordinary notebook cell corresponds to one submitted Agent turn.
+3. Protocol requests are correlated by their protocol's correlation identity (run and message ids on the
+    frontend wire; message ID, channel, and expected reply type inside the retained Jupyter libraries).
+4. Agent turns are serialized by the session's single-run gate unless explicit parallel semantics are designed and tested.
+5. Control interrupt and shutdown remain responsive during run execution.
+6. Frontend event frames retain wire order and carry run-local sequence numbers; the retained Jupyter libraries keep
+   causal parent IDs on IOPub.
+7. Lifecycle frames lead output (run started/busy before deltas); terminal frames precede idle.
 8. Completion follows protocol state, never fixed delays or guessed ordering.
 9. Cancellation is cooperative through all layers and may escalate to owned child-process termination.
 10. Raw ZeroMQ frames do not cross transport boundaries.
 11. Provider SDK objects do not cross provider adapters.
 12. Tool results remain structured until an output adapter renders them.
 13. Notebook snapshot creation does not mutate the active session.
-14. Binary data remains binary until its target Jupyter representation requires encoding.
+14. Binary data remains binary until its target representation requires encoding (base64 inside a Jupyter
+    MimeBundle is permitted only inside the retained Jupyter libraries).
 15. Disposal stops owned loops, closes sockets, completes streams, and fails pending operations exactly once.
 16. Backpressure never silently drops protocol messages or Agent events.
 17. Unknown protocol messages cannot crash long-running receive loops.
@@ -122,7 +131,8 @@ Every change must preserve these invariants:
     (ADR 0020). The reverse-call mechanism stays a library capability reserved for the distributed host.
 26. Internal data transfer never carries binary payloads through text, base64, or JSON: binary crosses process
     boundaries as native binary frames or byte streams, and binary transfer and processing are stream-first;
-    the only permitted encoding is the target Jupyter representation (invariant 14).
+    the only permitted encoding is a target representation that itself requires it, such as a Jupyter
+    MimeBundle inside the retained Jupyter libraries (invariant 14).
 27. Inter-process communication between the main process and its children is designed as an internal web
     application API surface, not as one or two multiplexed buses: any number of HTTP and WebSocket endpoints,
     each with an explicit direction (simplex, half-duplex, full-duplex) and any number of connections per
@@ -135,21 +145,23 @@ calls, stdin, bounded queues, transport sends, or process exit. Multi-stage shut
 
 ## Compatibility boundaries
 
-The Jupyter target is classic messaging protocol 5.5 and classic connection files. Readers tolerate unknown optional
-fields and compatible older protocol announcements; writers avoid unsupported fields. Unsupported capabilities return
-protocol-valid errors or fallback statuses. CurveZMQ and unsupported signature schemes fail explicitly.
+The frontend protocol is versioned (`docs/web-frontend-protocol.md`): the discovery file, REST payloads, and event
+frames tolerate unknown fields; the events endpoint accepts `sinceSequence` resume and rejects nothing silently. The
+retained Jupyter libraries target classic messaging protocol 5.5 and classic connection files: readers tolerate
+unknown optional fields and compatible older protocol announcements, writers avoid unsupported fields, unsupported
+capabilities return protocol-valid errors or fallback statuses, and CurveZMQ plus unsupported signature schemes fail
+explicitly.
 
 Unless explicitly requested, do not add history, comm, debug, subshell, Jupyter 5.6 registration, automatic reconnect,
-remote provisioners, or another ZeroMQ implementation.
+remote provisioners, or another ZeroMQ implementation to the retained Jupyter libraries.
 
 The canonical Agent transcript is local and provider-neutral. Provider-side conversation state must not silently replace
 it. Disable provider storage where supported. Do not introduce Agent Framework Workflows, A2A, AG-UI, Durable Task, MCP,
 shell tools, or persistence providers without a concrete requirement and architecture review.
 
-The intended TypeScript runtime is a supervised real `deno jupyter` child connected through the reusable Client.
-Independent Deno extensions use a separate versioned IPC protocol; they are not Agent tools or MCP servers and do not
-reuse the Jupyter connection merely for permissions. Treat Deno execution as privileged, allowlist its environment, and
-do not describe it as an untrusted-code sandbox.
+The TypeScript runtime is a supervised real `deno run` child (REPL) speaking the versioned eval/output/control IPC;
+independent Deno extensions use the same control plane and are not Agent tools or MCP servers. Treat Deno execution as
+privileged, allowlist its environment, and do not describe it as an untrusted-code sandbox.
 
 The live in-memory session is authoritative. Notebook snapshots and optional runtime state are separate persistence
 forms. Version persisted runtime and IPC formats, tolerate unknown fields, and document migrations for breaking changes.
@@ -170,7 +182,8 @@ domain whose files participate in one call tree; it is not a folder mirror. See 
 | `Maieutics.Plugins` | Plugin manifest, host manager, extension points, and MCP coordination |
 | `Maieutics.Control` | Control-channel host, credentials, session registry, and peer identity |
 | `Maieutics.Configuration` | Configuration discovery, binding, validation, reload, and profile catalogs |
-| `Maieutics.Jupyter` | Agent-to-Jupyter adapter, command language, and status rendering |
+| `Maieutics.Commands` | Shared kernel control surface: command language, command execution, status rendering, session management |
+| `Maieutics.Frontend` | Frontend web API: discovery, bearer auth, REST, per-session event streams, REPL presentation routing |
 
 Dependency direction between these domains:
 
@@ -181,8 +194,10 @@ DenoExecution -> Permissions, Control
 Terminal    -> Permissions, Processes, Agent
 DenoRepl    -> DenoExecution, Control, Agent
 Plugins     -> DenoExecution, Control, Mcp
-Control     -> Agent, Plugins (host attach), DenoRepl (registry)
-Configuration -> Agent, Execution, Jupyter, Mcp, Plugins, Providers, Terminal
+Control     -> Plugins (host attach), DenoRepl (registry)
+Commands    -> Agent, Configuration, Execution, Mcp
+Frontend    -> Agent, Commands, Configuration, DenoRepl, Persistence
+Configuration -> Agent, Execution, Mcp, Plugins, Providers, Terminal
 ```
 
 ## Security and errors
@@ -238,7 +253,7 @@ Rules apply cumulatively from this file down to the nearest child `AGENTS.md`.
 | Executable composition | `Maieutics/AGENTS.md` |
 | Runtime configuration | `Maieutics/Configuration/AGENTS.md` |
 | Provider adapters | `Maieutics/Providers/AGENTS.md` |
-| Agent-to-Jupyter adapter | `Maieutics/Jupyter/AGENTS.md` |
+| Frontend web API | `Maieutics/Frontend/AGENTS.md` |
 | Agent tests | `Maieutics.Agent.Tests/AGENTS.md` |
 | Jupyter and product integration tests | `Maieutics.Jupyter.Tests/AGENTS.md` |
 
@@ -249,7 +264,7 @@ When a scoped file references a skill, follow both. Do not duplicate a skill ver
 | Skill | Use for |
 |---|---|
 | `.agents/skills/maieutics-jupyter-protocol/SKILL.md` | Wire DTOs, Client/Kernel protocol behavior, ZeroMQ channels, output ordering, cursors, and Deno interoperability |
-| `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and Agent-to-Jupyter semantics |
+| `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and frontend protocol semantics |
 | `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, processes, and shutdown |
 | `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3, FluentAssertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |
 

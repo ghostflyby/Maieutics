@@ -8,6 +8,7 @@
 
 import * as vscode from "vscode";
 import { FrontendClient } from "./client.ts";
+import { registerCommandCompletion } from "./completion.ts";
 import { connect, type Connection } from "./connection.ts";
 import { MaieuticsNotebookController, type NotebookBridge } from "./controller.ts";
 import { MaieuticsNotebookSerializer } from "./serializer.ts";
@@ -34,6 +35,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
   controller = new MaieuticsNotebookController(createBridge(), output);
   context.subscriptions.push(controller);
+
+  const notebooksClosed = vscode.workspace.onDidCloseNotebookDocument((document) => {
+    if (document.uri.path.endsWith(".maieuticsnb")) controller?.handleNotebookClosed(document);
+  });
+  context.subscriptions.push(notebooksClosed);
+
+  context.subscriptions.push(
+    registerCommandCompletion(
+      () => clientOf(),
+      (message) => output?.appendLine(message),
+    ),
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("maieutics.newSession", async () => {

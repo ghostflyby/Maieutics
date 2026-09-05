@@ -209,7 +209,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     .ConfigureAwait(false);
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(
-                    new FrontendCommandResponse(markdown),
+                    new FrontendCommandResponse(markdown, service.DescribeSession().Id),
                     FrontendJsonContext.Default.FrontendCommandResponse).ConfigureAwait(false);
                 return;
             }
@@ -257,7 +257,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             var markdown = await service.ExecuteCommandAsync(request.Text, context.RequestAborted)
                 .ConfigureAwait(false);
             await context.Response.WriteAsJsonAsync(
-                new FrontendCommandResponse(markdown),
+                new FrontendCommandResponse(markdown, service.DescribeSession().Id),
                 FrontendJsonContext.Default.FrontendCommandResponse).ConfigureAwait(false);
         }
         catch (MaieuticsCommandException exception)

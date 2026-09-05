@@ -64,6 +64,17 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     this.controller.dispose();
   }
 
+  /** Cancels the notebook's in-flight runs when its document closes (best
+   * effort: attach-mode servers keep running, so the runs must be told). */
+  handleNotebookClosed(document: vscode.NotebookDocument): void {
+    const stream = this.streams.get(document.uri.toString());
+    if (stream === undefined) return;
+
+    stream.cancelAll();
+    this.streams.delete(document.uri.toString());
+    this.queues.delete(document.uri.toString());
+  }
+
   private async executeAsync(
     cells: vscode.NotebookCell[],
     document: vscode.NotebookDocument,
@@ -95,6 +106,12 @@ export class MaieuticsNotebookController implements vscode.Disposable {
       const answer: SubmitAnswer = await (await this.bridge.client())
         .submitTurn(sessionId, text);
       if (answer.kind === "command") {
+        // Session-switching commands change the active session; re-pin the
+        // notebook so the next batch does not resume the previous one back.
+        if (answer.sessionId !== undefined && answer.sessionId !== sessionId) {
+          await this.writeSessionIdForCell(cell, answer.sessionId);
+        }
+
         execution.replaceOutput([commandOutput(answer.markdown)]);
         execution.end(true, Date.now());
         return;
@@ -132,6 +149,11 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     }
 
     return decision.session.id;
+  }
+
+  /** Persists the pinned session id for the notebook owning a cell. */
+  private async writeSessionIdForCell(cell: vscode.NotebookCell, sessionId: string): Promise<void> {
+    await this.writeSessionId(cell.notebook, sessionId);
   }
 
   /** Persists the pinned session id into the notebook's metadata via a workspace edit
@@ -184,6 +206,21 @@ class NotebookStream {
   start(): void {
     this.controller = new AbortController();
     void this.pumpAsync(this.controller.signal);
+  }
+
+  /** Cancels every in-flight run (notebook closing / window unloading). */
+  cancelAll(): void {
+    for (const runId of [...this.runs.keys()]) {
+      void this.client.cancelRun(runId).catch((error) =>
+        this.log(`cancel on close failed: ${error}`)
+      );
+      this.runs.get(runId)?.fail(
+        "notebook_closed",
+        "The notebook was closed while the run was in flight.",
+      );
+    }
+
+    this.runs.clear();
   }
 
   /** Registers an execution and resolves when its run reaches a terminal frame. */

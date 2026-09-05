@@ -282,6 +282,8 @@ public sealed class FrontendApiIntegrationTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         body.GetProperty("markdown").GetString().Should().Contain("### Maieutics status");
+        // Command answers always carry the active session so frontends can re-pin.
+        body.GetProperty("sessionId").GetString().Should().Be(sessionId);
 
         (await harness.Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",

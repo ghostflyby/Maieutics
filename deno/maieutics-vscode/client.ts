@@ -26,7 +26,12 @@ export interface DiscoveryFile {
   pid: number;
 }
 
-export type CommandAnswer = { kind: "command"; markdown: string };
+export type CommandAnswer = {
+  kind: "command";
+  markdown: string;
+  /** The active session after the command (session-switching commands). */
+  sessionId?: string;
+};
 export type TurnAnswer = { kind: "turn"; runId: string };
 export type SubmitAnswer = CommandAnswer | TurnAnswer;
 
@@ -106,8 +111,12 @@ export class FrontendClient {
       signal,
     );
     if (response.status === 200) {
-      const body = await response.json() as { markdown?: string };
-      return { kind: "command", markdown: typeof body.markdown === "string" ? body.markdown : "" };
+      const body = await response.json() as { markdown?: string; sessionId?: string };
+      return {
+        kind: "command",
+        markdown: typeof body.markdown === "string" ? body.markdown : "",
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+      };
     }
     if (response.status === 202) {
       const body = await response.json() as { runId?: string };

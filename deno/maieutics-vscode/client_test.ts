@@ -33,7 +33,9 @@ function startMockServer(): Promise<{
 
       if (url.pathname === "/v1/agent/sessions/turns" || url.pathname.endsWith("/turns")) {
         const body = await request.json() as { text: string };
-        if (body.text.startsWith("%")) return json(200, { markdown: "### status" });
+        if (body.text.startsWith("%")) {
+          return json(200, { markdown: "### status", sessionId: "a".repeat(32) });
+        }
         return new Response(JSON.stringify({ runId: "b".repeat(32) }), {
           status: 202,
           headers: { "content-type": "application/json" },
@@ -112,7 +114,7 @@ Deno.test("turn submission distinguishes commands from runs", async () => {
   const client = FrontendClient.fromDiscovery(discovery);
   try {
     const command = await client.submitTurn("a".repeat(32), "%status");
-    assertEquals(command, { kind: "command", markdown: "### status" });
+    assertEquals(command, { kind: "command", markdown: "### status", sessionId: "a".repeat(32) });
     const turn = await client.submitTurn("a".repeat(32), "hello");
     assertEquals(turn, { kind: "turn", runId: "b".repeat(32) });
   } finally {

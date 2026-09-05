@@ -38,8 +38,11 @@ internal sealed record FrontendTurnAccepted([property: JsonPropertyName("runId")
 /// <summary>A command execution body.</summary>
 internal sealed record FrontendCommandRequest([property: JsonPropertyName("text")] string Text);
 
-/// <summary>A command execution answer.</summary>
-internal sealed record FrontendCommandResponse([property: JsonPropertyName("markdown")] string Markdown);
+/// <summary>A command execution answer. When the command switched the active session,
+/// <c>sessionId</c> carries the new active session so the frontend can re-pin.</summary>
+internal sealed record FrontendCommandResponse(
+    [property: JsonPropertyName("markdown")] string Markdown,
+    [property: JsonPropertyName("sessionId")] string? SessionId = null);
 
 /// <summary>A completion request body; the cursor is a UTF-16 code-unit offset.</summary>
 internal sealed record FrontendCompleteRequest(

@@ -8,12 +8,13 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
-        <!-- SQLite provider mode: 'System' P/Invokes the OS sqlite3 (true single-file AOT),
-             'Bundled' ships e_sqlite3 as a side-by-side native file. Platform defaults:
-             Windows = System (winsqlite3.dll ships with Windows). macOS and Linux default
-             to Bundled: Apple compiles its system libsqlite3 without load extension
-             (missing sqlite3_load_extension symbols break linking), and Linux
-             distributions vary. Override with -p:SqliteProviderMode=Bundled|System. -->
+        <!-- SQLite provider mode: 'System' P/Invokes the OS sqlite3 (true single-file AOT,
+             runtime dlopen resolves the OS library; load-extension APIs are absent from the
+             Apple build but Microsoft.Data.Sqlite never calls them), 'Bundled' ships
+             e_sqlite3 as a side-by-side native file. Platform defaults: macOS/Windows =
+             System (both OSes ship a usable sqlite3); Linux = Bundled (distributions vary).
+             Override with -p:SqliteProviderMode=Bundled|System. -->
+        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">System</SqliteProviderMode>
         <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">System</SqliteProviderMode>
         <SqliteProviderMode Condition="'$(SqliteProviderMode)' == ''">Bundled</SqliteProviderMode>
         <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLITE_PROVIDER_SQLITE3</DefineConstants>

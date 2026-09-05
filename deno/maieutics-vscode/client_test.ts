@@ -11,7 +11,7 @@ function startMockServer(): Promise<{
   discovery: unknown;
   shutdown(): Promise<void>;
 }> {
-  const sockets: WebSocket[] = [];
+  let sockets: WebSocket[] = [];
   let broadcast: ((frame: unknown) => void) | null = null;
   const server = Deno.serve({ port: 0, hostname: "127.0.0.1" }, async (request) => {
     const url = new URL(request.url);
@@ -46,6 +46,9 @@ function startMockServer(): Promise<{
         };
         broadcast({ type: "hello", session: { id: "a".repeat(32), turns: 0 } });
       };
+      socket.onclose = () => {
+        sockets = sockets.filter((target) => target !== socket);
+      };
       return response;
     }
 
@@ -56,7 +59,20 @@ function startMockServer(): Promise<{
   return Promise.resolve({
     url,
     discovery: { version: 1, url, token: "test-token", pid: 1234 },
-    shutdown: () => server.shutdown(),
+    shutdown: async () => {
+      // Upgraded WebSocket requests are long-lived: shutdown() waits for them on Linux, so
+      // every open socket is closed first.
+      for (const socket of sockets) {
+        try {
+          socket.close();
+        } catch {
+          // Already closed.
+        }
+      }
+
+      sockets = [];
+      await server.shutdown();
+    },
   });
 }
 

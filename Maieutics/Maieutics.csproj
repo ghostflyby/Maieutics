@@ -8,6 +8,17 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <InvariantGlobalization>true</InvariantGlobalization>
         <PublishAot>true</PublishAot>
+        <!-- SQLite provider mode: 'System' P/Invokes the OS sqlite3 (true single-file AOT),
+             'Bundled' ships e_sqlite3 as a side-by-side native file. Platform defaults:
+             Windows = System (winsqlite3.dll ships with Windows). macOS and Linux default
+             to Bundled: Apple compiles its system libsqlite3 without load extension
+             (missing sqlite3_load_extension symbols break linking), and Linux
+             distributions vary. Override with -p:SqliteProviderMode=Bundled|System. -->
+        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">System</SqliteProviderMode>
+        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == ''">Bundled</SqliteProviderMode>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLite_PROVIDER_SYSTEM;SQLITE_PROVIDER_MACOS</DefineConstants>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);SQLite_PROVIDER_SYSTEM;SQLITE_PROVIDER_WINDOWS</DefineConstants>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'Bundled'">$(DefineConstants);SQLite_PROVIDER_BUNDLED</DefineConstants>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     </PropertyGroup>
@@ -20,7 +31,15 @@
         <PackageReference Include="Ghostflyby.Pty" Version="0.5.0" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
         <!-- Direct reference overrides the vulnerable 2.1.11 transitive (GHSA-2m69-gcr7-jv3q). -->
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+        <PackageReference Include="SQLitePCLRaw.provider.sqlite3"
+                          Version="3.0.5"
+                          Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))" />
+        <PackageReference Include="SQLitePCLRaw.provider.winsqlite3"
+                          Version="3.0.5"
+                          Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                          Version="3.0.5"
+                          Condition="'$(SqliteProviderMode)' == 'Bundled' or ($([MSBuild]::IsOSPlatform('OSX')) and '$(SqliteProviderMode)' == 'System' and false)" />
         <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
         <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
         <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
@@ -29,6 +48,18 @@
 
     <ItemGroup>
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <!-- macOS System mode: DirectPInvoke generates the sqlite3_* references; the LinkerArg
+         adds -lsqlite3 (resolved from the active SDK's usr/lib). This is the official
+         NativeAOT extension point (@(LinkerArg) in Microsoft.NETCore.Native.targets). -->
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(SqliteProviderMode)' == 'System'">
+        <DirectPInvoke Include="sqlite3" />
+        <LinkerArg Include="-lsqlite3" />
+    </ItemGroup>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(SqliteProviderMode)' == 'System'">
+        <DirectPInvoke Include="winsqlite3" />
+        <LinkerArg Include="winsqlite3.lib" />
     </ItemGroup>
 
     <ItemGroup>

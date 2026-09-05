@@ -17,6 +17,7 @@ import type { EventFrame, SessionInfo } from "./protocol.ts";
 import { FrontendError } from "./protocol.ts";
 import {
   bundleItems,
+  drainPendingObjectItems,
   NotebookType,
   readStoredSessionId,
   StoredSessionMetadataKey,
@@ -36,6 +37,8 @@ export interface NotebookBridge {
   client(): Promise<FrontendClient>;
   /** Current server session for the notebook's connection. */
   session(): Promise<SessionInfo>;
+  /** Fetches a binary object by content address (object bypass dereference). */
+  fetchObject(sha256: string): Promise<Uint8Array>;
 }
 
 export class MaieuticsNotebookController implements vscode.Disposable {
@@ -378,7 +381,15 @@ class RunExecution {
     for (const entry of this.view.replList()) {
       const key = this.view.replSegmentId(entry);
       if (!dirty.has(key)) continue;
-      this.ensureSegment(key, replOutput(entry));
+      const output = replOutputSync(entry, this.client);
+      const hadObjectRefs = Object.values(entry.data).some((value) =>
+        typeof value === "object" && value !== null &&
+        "$object" in (value as Record<string, unknown>)
+      );
+      this.ensureSegment(key, output);
+      if (hadObjectRefs) {
+        void fillReplObjectItemsAsync(this.execution, output).catch(() => {});
+      }
     }
 
     if (dirty.has(`tools:${this.view.runId}`)) {
@@ -491,9 +502,27 @@ export function finalOutput(final: {
   return structuredOutput(final);
 }
 
-/** One cell output per REPL display: mime bundle items in bundle order. */
-export function replOutput(entry: ReplDisplayEntry): vscode.NotebookCellOutput {
-  return new vscode.NotebookCellOutput(bundleItems(entry.data));
+/** Builds the synchronous items for one REPL display; object-reference items
+ * fill asynchronously via drainPendingObjectItems. */
+function replOutputSync(
+  entry: ReplDisplayEntry,
+  client: FrontendClient,
+): vscode.NotebookCellOutput {
+  const items = bundleItems(entry.data, (sha) => client.fetchObject(sha));
+  return new vscode.NotebookCellOutput(items);
+}
+
+/** Awaits the async binary fills and replaces the output's items in place with
+ * the complete item list. */
+async function fillReplObjectItemsAsync(
+  execution: vscode.NotebookCellExecution,
+  output: vscode.NotebookCellOutput,
+): Promise<void> {
+  const pending = await drainPendingObjectItems();
+  if (pending.length === 0) return;
+
+  const complete = [...pending, ...output.items];
+  execution.replaceOutputItems(complete, output);
 }
 
 function errorOutput(error: unknown): vscode.NotebookCellOutput {

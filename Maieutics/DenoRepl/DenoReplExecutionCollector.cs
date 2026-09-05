@@ -3,10 +3,22 @@ using System.Text.Json;
 
 namespace Maieutics.DenoRepl;
 
+/// <summary>A gateway for large binary display payloads: implementations ingest the bytes
+/// and return a content address the frontend dereferences. Kept minimal so the collector
+/// does not depend on the persistence layer.</summary>
+internal interface IReplObjectBypass
+{
+    /// <summary>Stores the payload and returns its content address (hex sha256).</summary>
+    string Ingest(ReadOnlySpan<byte> content);
+}
+
 internal sealed class DenoReplExecutionCollector
 {
     private const int ModelItemOverheadBytes = 64;
     private const int DigestOverheadBytes = 64;
+    /// <summary>Binary mime payloads at or above this size go through the object bypass
+    /// instead of being base64-encoded into the display bundle.</summary>
+    internal const int InlineBinaryThresholdBytes = 8 * 1024;
 
     /// <summary>How long the collector keeps draining the output stream after the eval terminal
     /// arrives. The TS client sends all output frames before the terminal, but the frames travel a
@@ -45,7 +57,8 @@ internal sealed class DenoReplExecutionCollector
         IDenoReplPresentationSink presentation,
         Dictionary<string, ReplDisplayId> displayIds,
         string executionId,
-        ReplOutputRateLimiter? rateLimiter = null)
+        ReplOutputRateLimiter? rateLimiter = null,
+        IReplObjectBypass? objectBypass = null)
     {
         this.sessionId = sessionId;
         this.generation = generation;
@@ -54,7 +67,10 @@ internal sealed class DenoReplExecutionCollector
         this.displayIds = displayIds;
         this.executionId = executionId;
         this.rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
+        this.objectBypass = objectBypass;
     }
+
+    private readonly IReplObjectBypass? objectBypass;
 
     internal async Task<DenoReplExecutionResult> ConsumeAsync(
         IDenoReplConnection connection,
@@ -306,9 +322,23 @@ internal sealed class DenoReplExecutionCollector
                     placeholder.ValueKind == JsonValueKind.Number &&
                     placeholder.TryGetInt32(out var index))
                 {
-                    element = JsonSerializer.SerializeToElement(
-                        display.ResolveBuffer(index),
-                        ReplOutputJsonContext.Default.ByteArray);
+                    var bytes = display.ResolveBuffer(index);
+                    if (bytes.Length >= InlineBinaryThresholdBytes && objectBypass is { } bypass)
+                    {
+                        // Large binary payloads go to the object bypass: the bundle carries a
+                        // structured reference the frontend dereferences (invariant 26 — no
+                        // base64 on the frontend wire).
+                        var sha = bypass.Ingest(bytes);
+                        element = JsonSerializer.SerializeToElement(
+                            new ReplObjectReference(sha, bytes.Length),
+                            ReplJsonContext.Default.ReplObjectReference);
+                    }
+                    else
+                    {
+                        element = JsonSerializer.SerializeToElement(
+                            bytes,
+                            ReplOutputJsonContext.Default.ByteArray);
+                    }
                 }
 
                 reconstructed[mime] = element;

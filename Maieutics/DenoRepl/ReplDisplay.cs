@@ -92,8 +92,15 @@ internal sealed record ReplCommMessage(
     JsonElement? Metadata,
     IReadOnlyList<byte[]> Buffers);
 
+/// <summary>A reference to a large binary display payload stored in the object bypass:
+/// the frontend dereferences it via the object endpoint (invariant 26).</summary>
+internal sealed record ReplObjectReference(
+    [property: System.Text.Json.Serialization.JsonPropertyName("$object")] string Sha256,
+    [property: System.Text.Json.Serialization.JsonPropertyName("byteLength")] long ByteLength);
+
 /// <summary>Source-generated JSON binding for REPL display and comm payloads.</summary>
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(ReplObjectReference))]
 internal sealed partial class ReplJsonContext : JsonSerializerContext;

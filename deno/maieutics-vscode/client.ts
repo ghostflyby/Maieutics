@@ -128,6 +128,16 @@ export class FrontendClient {
     throw await this.errorOf(response);
   }
 
+  /** Fetches a binary object by content address (object bypass dereference). */
+  async fetchObject(sha256: string, signal?: AbortSignal): Promise<Uint8Array> {
+    const response = await fetch(`${this.baseUrl}/v1/objects/${sha256}`, {
+      headers: { "Authorization": `Bearer ${this.token}` },
+      signal,
+    });
+    if (!response.ok) throw await this.errorOf(response);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
   /** Answers a pending input request announced by an `input.request` frame. */
   async submitInput(requestId: string, value: string, signal?: AbortSignal): Promise<void> {
     const response = await this.fetchJson(

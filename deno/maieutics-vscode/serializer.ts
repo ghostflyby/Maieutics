@@ -147,11 +147,44 @@ const DisplayMimes = new Set([
   "application/json",
 ]);
 
-/** Maps a mime bundle onto notebook output items in bundle order. */
-export function bundleItems(data: Record<string, unknown>): vscode.NotebookCellOutputItem[] {
+/** A large binary payload reference from the server's object bypass. */
+export interface ObjectReference {
+  $object: string;
+  byteLength: number;
+}
+
+export function isObjectReference(value: unknown): value is ObjectReference {
+  return typeof value === "object" && value !== null &&
+    typeof (value as Record<string, unknown>).$object === "string" &&
+    typeof (value as Record<string, unknown>).byteLength === "number";
+}
+
+/** Maps a mime bundle onto notebook output items in bundle order. Object
+ * references become binary items fetched from the server (invariant 26: the
+ * wire never carries the bytes as base64 text). */
+export function bundleItems(
+  data: Record<string, unknown>,
+  fetchObject?: (sha256: string) => Promise<Uint8Array>,
+): vscode.NotebookCellOutputItem[] {
   const items: vscode.NotebookCellOutputItem[] = [];
   for (const [mime, value] of Object.entries(data)) {
     if (!DisplayMimes.has(mime)) continue;
+
+    if (isObjectReference(value)) {
+      if (fetchObject === undefined) {
+        items.push(
+          vscode.NotebookCellOutputItem.text(
+            `[binary ${mime}: ${value.byteLength} bytes]`,
+            "text/plain",
+          ),
+        );
+        continue;
+      }
+
+      // Binary items are filled asynchronously via pendingObjectItems below.
+      pendingObjectItems.push(fillObjectItem(mime, value, fetchObject));
+      continue;
+    }
 
     if (mime === "application/json" || typeof value !== "string") {
       items.push(vscode.NotebookCellOutputItem.json(value, mime));
@@ -161,6 +194,32 @@ export function bundleItems(data: Record<string, unknown>): vscode.NotebookCellO
   }
 
   return items;
+}
+
+/** Pending binary fills from the most recent bundleItems call. */
+let pendingObjectItems: Promise<vscode.NotebookCellOutputItem | null>[] = [];
+
+/** Awaits all pending binary fills from the last bundleItems call. Items whose
+ * fetch failed resolve to null and are dropped (the text placeholder already
+ * shipped with the synchronous items). */
+export async function drainPendingObjectItems(): Promise<vscode.NotebookCellOutputItem[]> {
+  const pending = pendingObjectItems;
+  pendingObjectItems = [];
+  const settled = await Promise.all(pending);
+  return settled.filter((item) => item !== null);
+}
+
+async function fillObjectItem(
+  mime: string,
+  reference: ObjectReference,
+  fetchObject: (sha256: string) => Promise<Uint8Array>,
+): Promise<vscode.NotebookCellOutputItem | null> {
+  try {
+    const bytes = await fetchObject(reference.$object);
+    return new vscode.NotebookCellOutputItem(bytes, mime);
+  } catch {
+    return null;
+  }
 }
 
 export function renderSnapshotMarkdown(output: OutputSnapshot): string {

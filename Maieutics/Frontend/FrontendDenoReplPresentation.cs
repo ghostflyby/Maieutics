@@ -331,9 +331,10 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         return displayId;
     }
 
-    /// <summary>Replaces binary mime payloads (base64 strings the collector resolved for the
-    /// Jupyter wire) with textual placeholders: the frontend wire never carries binary as
-    /// base64 text (invariant 26). Native binary delivery is a planned follow-up.</summary>
+    /// <summary>Replaces inline binary mime payloads (base64 strings for small displays)
+    /// with textual placeholders; object references ({"$object": sha}) pass through as
+    /// structured JSON. Either way the frontend wire never carries binary as base64 text
+    /// (invariant 26).</summary>
     private static IReadOnlyDictionary<string, JsonElement> StripBinaryMimes(
         IReadOnlyDictionary<string, JsonElement> data)
     {
@@ -343,11 +344,18 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         var filtered = new Dictionary<string, JsonElement>(data.Count, StringComparer.Ordinal);
         foreach (var (mime, value) in data)
         {
-            filtered[mime] = IsBinaryMime(mime)
-                ? JsonSerializer.SerializeToElement(
+            if (IsBinaryMime(mime) &&
+                value.ValueKind == JsonValueKind.String)
+            {
+                // Inline base64 (small payloads): placeholder.
+                filtered[mime] = JsonSerializer.SerializeToElement(
                     $"[binary {mime} display omitted]",
-                    ReplJsonContext.Default.String)
-                : value.Clone();
+                    ReplJsonContext.Default.String);
+                continue;
+            }
+
+            // Object references and non-binary mimes pass through verbatim.
+            filtered[mime] = value.Clone();
         }
 
         return filtered;

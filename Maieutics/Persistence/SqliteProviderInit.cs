@@ -12,10 +12,10 @@ internal static class SqliteProviderInit
     [System.Runtime.CompilerServices.ModuleInitializer]
     internal static void Initialize()
     {
-#if SQLite_PROVIDER_SYSTEM
-        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlite3());
-#elif SQLite_PROVIDER_WINDOWS
+#if SQLITE_PROVIDER_WINSQLITE3
         SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());
+#elif SQLITE_PROVIDER_SQLITE3
+        SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlite3());
 #else
         SQLitePCL.Batteries.Init();
 #endif

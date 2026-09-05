@@ -16,8 +16,8 @@
              distributions vary. Override with -p:SqliteProviderMode=Bundled|System. -->
         <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">System</SqliteProviderMode>
         <SqliteProviderMode Condition="'$(SqliteProviderMode)' == ''">Bundled</SqliteProviderMode>
-        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLite_PROVIDER_SYSTEM</DefineConstants>
-        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);SQLite_PROVIDER_SYSTEM;SQLITE_PROVIDER_WINDOWS</DefineConstants>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLITE_PROVIDER_SQLITE3</DefineConstants>
+        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);SQLITE_PROVIDER_WINSQLITE3</DefineConstants>
         <DefineConstants Condition="'$(SqliteProviderMode)' == 'Bundled'">$(DefineConstants);SQLite_PROVIDER_BUNDLED</DefineConstants>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>

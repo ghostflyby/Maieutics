@@ -15,13 +15,19 @@ import * as vscode from "vscode";
 import type { FrontendClient, SubmitAnswer } from "./client.ts";
 import type { EventFrame, SessionInfo } from "./protocol.ts";
 import { FrontendError } from "./protocol.ts";
-import { bundleItems, NotebookType } from "./serializer.ts";
+import {
+  bundleItems,
+  NotebookType,
+  readStoredSessionId,
+  StoredSessionMetadataKey,
+} from "./serializer.ts";
 import {
   type ReplDisplayEntry,
   type ToolSnapshotView,
   TurnOutputMime,
   TurnView,
 } from "./turnView.ts";
+import { resolveSessionPin } from "./sessionPin.ts";
 
 const PaintIntervalMs = 60;
 /** Bridges the protocol onto one notebook's outputs. Connections start lazily
@@ -36,6 +42,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   private readonly controller: vscode.NotebookController;
   private readonly queues = new Map<string, Promise<void>>();
   private readonly streams = new Map<string, NotebookStream>();
+  private readonly warnedPins = new Set<string>();
 
   constructor(
     private readonly bridge: NotebookBridge,
@@ -63,17 +70,19 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   ): Promise<void> {
     const queueKey = document.uri.toString();
     const previous = this.queues.get(queueKey) ?? Promise.resolve();
-    const run = previous.then(() => Promise.all(cells.map((cell) => this.executeCellAsync(cell))));
+    const run = previous.then(async () => {
+      const sessionId = await this.ensureSessionAsync(document);
+      await Promise.all(cells.map((cell) => this.executeCellAsync(cell, sessionId)));
+    });
     this.queues.set(queueKey, run.then(() => {}, () => {}));
     await run;
   }
 
-  private async executeCellAsync(cell: vscode.NotebookCell): Promise<void> {
+  private async executeCellAsync(cell: vscode.NotebookCell, sessionId: string): Promise<void> {
     const text = cell.document.getText();
     const execution = this.controller.createNotebookCellExecution(cell);
     try {
-      const session = await this.bridge.session();
-      const stream = await this.ensureStreamAsync(session.id);
+      const stream = await this.ensureStreamAsync(sessionId);
       execution.start(Date.now());
       execution.clearOutput();
 
@@ -84,7 +93,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
       }
 
       const answer: SubmitAnswer = await (await this.bridge.client())
-        .submitTurn(session.id, text);
+        .submitTurn(sessionId, text);
       if (answer.kind === "command") {
         execution.replaceOutput([commandOutput(answer.markdown)]);
         execution.end(true, Date.now());
@@ -98,6 +107,45 @@ export class MaieuticsNotebookController implements vscode.Disposable {
       execution.replaceOutput([errorOutput(error)]);
       execution.end(false, Date.now());
     }
+  }
+
+  /** Re-attaches the notebook to the server session stored in its metadata before the
+   * batch runs, so two open notebooks alternate deterministically instead of racing for
+   * the active session. The decision (and any failure warning) surfaces once per
+   * document and session. */
+  private async ensureSessionAsync(document: vscode.NotebookDocument): Promise<string> {
+    const stored = readStoredSessionId(document.metadata);
+    const decision = await resolveSessionPin(stored, await this.bridge.client());
+
+    if (decision.warning !== undefined) {
+      const warnKey = `${document.uri.toString()}:${decision.session.id}`;
+      if (!this.warnedPins.has(warnKey)) {
+        this.warnedPins.add(warnKey);
+        void vscode.window.showWarningMessage(`Maieutics: ${decision.warning}`);
+      }
+    }
+
+    if (decision.pinId !== undefined && decision.pinId !== stored) {
+      await this.writeSessionId(document, decision.pinId);
+    } else if (decision.kind === "resume") {
+      await this.writeSessionId(document, decision.session.id);
+    }
+
+    return decision.session.id;
+  }
+
+  /** Persists the pinned session id into the notebook's metadata via a workspace edit
+   * (the file records the session it last ran against once saved). */
+  private async writeSessionId(
+    document: vscode.NotebookDocument,
+    sessionId: string,
+  ): Promise<void> {
+    const edit = new vscode.WorkspaceEdit();
+    edit.set(document.uri, [vscode.NotebookEdit.updateNotebookMetadata({
+      ...document.metadata,
+      [StoredSessionMetadataKey]: sessionId,
+    })]);
+    await vscode.workspace.applyEdit(edit);
   }
 
   private async ensureStreamAsync(sessionId: string): Promise<NotebookStream> {

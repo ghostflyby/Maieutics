@@ -21,6 +21,17 @@ import { TurnOutputMime } from "./turnView.ts";
 
 export const NotebookType = "maieutics-notebook";
 
+/** Notebook metadata key carrying the server session the file last ran against. */
+export const StoredSessionMetadataKey = "maieuticsSessionId";
+
+/** Reads the pinned server session id from notebook metadata. */
+export function readStoredSessionId(
+  metadata: { [key: string]: unknown } | undefined,
+): string | undefined {
+  const value = metadata?.[StoredSessionMetadataKey];
+  return typeof value === "string" && value.length === 32 ? value : undefined;
+}
+
 export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
   deserializeNotebook(
     content: Uint8Array,
@@ -42,7 +53,11 @@ export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
       return data;
     }
 
-    const cells = notebook.cells.map((snapshot) => {
+    const data = new vscode.NotebookData([]);
+    data.metadata = notebook.session?.serverSessionId
+      ? { [StoredSessionMetadataKey]: notebook.session.serverSessionId }
+      : undefined;
+    data.cells = notebook.cells.map((snapshot) => {
       const cell = new vscode.NotebookCellData(
         snapshot.kind === "markdown"
           ? vscode.NotebookCellKind.Markup
@@ -55,7 +70,7 @@ export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
       }
       return cell;
     });
-    return new vscode.NotebookData(cells);
+    return data;
   }
 
   serializeNotebook(
@@ -63,6 +78,11 @@ export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
     _token: vscode.CancellationToken,
   ): Uint8Array {
     const notebook = emptyNotebook();
+    const storedSessionId = readStoredSessionId(data.metadata);
+    if (storedSessionId !== undefined) {
+      notebook.session = { serverSessionId: storedSessionId };
+    }
+
     notebook.cells = data.cells.map((cell): CellSnapshot => {
       if (cell.kind === vscode.NotebookCellKind.Markup) {
         return { kind: "markdown", text: cell.value };

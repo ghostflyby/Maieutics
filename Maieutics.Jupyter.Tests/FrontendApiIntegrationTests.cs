@@ -335,6 +335,126 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ReasoningContentStaysOutOfTheFrontendSurface()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            answer: "public answer",
+            reasoning: "secret chain of thought");
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+        await events.ReceiveFrameAsync(deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "think", deadline.Token);
+        var frames = await events.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.status" &&
+                     frame.GetProperty("state").GetString() == "idle",
+            deadline.Token);
+
+        var allText = string.Concat(frames
+            .Select(frame => frame.TryGetProperty("text", out var text) ? text.GetString() : null)
+            .Where(value => value is not null));
+        allText.Should().NotContain("secret chain of thought");
+        var completed = frames.Single(frame => frame.GetProperty("type").GetString() == "message.completed");
+        completed.GetProperty("agentMessage").GetRawText().Should().NotContain("secret chain of thought");
+
+        var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript",
+            deadline.Token);
+        transcript.GetRawText().Should().NotContain("secret chain of thought");
+        transcript.GetRawText().Should().Contain("public answer");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ConfigurationReloadSwitchesTheProviderForTheNextTurn()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        var firstProvider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            model: "model-one",
+            answer: "answer from model one");
+        var secondProvider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            model: "model-two",
+            answer: "answer from model two");
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token, firstProvider, hanging: false, model: "model-one");
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        await harness.SubmitTurnAsync(sessionId, "first", deadline.Token);
+        var firstTranscript = await WaitForTranscriptTurnsAsync(
+            harness, sessionId, minimumTurns: 1, deadline.Token);
+        firstTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("answer from model one");
+
+        // Rewrite the configuration file: the runtime hot reload picks the new endpoint up
+        // and the next turn runs against the second provider.
+        await File.WriteAllTextAsync(
+            harness.ConfigurationFile,
+            CreateSmokeConfiguration(secondProvider.Endpoint.ToString(), "model-two"),
+            deadline.Token);
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        wait.CancelAfter(TimeSpan.FromSeconds(30));
+        while (true)
+        {
+            var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
+            if (status.GetProperty("markdown").GetString()!.Contains("model-two")) break;
+            await Task.Delay(100, wait.Token).ConfigureAwait(false);
+        }
+
+        await harness.SubmitTurnAsync(sessionId, "second", deadline.Token);
+        var reloaded = await WaitForTranscriptTurnsAsync(
+            harness, sessionId, minimumTurns: 2, deadline.Token);
+        reloaded.GetProperty("turns").GetArrayLength().Should().Be(2);
+        reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("answer from model two");
+        reloaded.GetProperty("turns")[1].GetProperty("messages").EnumerateArray()
+            .Select(message => message.GetProperty("role").GetString())
+            .Should().Equal(["user", "assistant"]);
+    }
+
+    private static async Task<JsonElement> WaitForTranscriptTurnsAsync(
+        FrontendHarness harness,
+        string sessionId,
+        int minimumTurns,
+        CancellationToken cancellationToken)
+    {
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        wait.CancelAfter(TimeSpan.FromSeconds(30));
+        while (true)
+        {
+            var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                wait.Token).ConfigureAwait(false);
+            if (transcript.GetProperty("turns").GetArrayLength() >= minimumTurns)
+                return transcript;
+
+            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+        }
+    }
+
+    private static string CreateSmokeConfiguration(string endpoint, string model)
+    {
+        return $$"""
+            {
+              "Maieutics": {
+                "Model": { "Provider": "OpenAI", "Name": "{{model}}" },
+                "Providers": {
+                  "OpenAI": {
+                    "ApiFlavor": "ChatCompletions",
+                    "ApiKey": "test-key",
+                    "Endpoint": "{{endpoint}}"
+                  }
+                }
+              }
+            }
+            """;
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task SessionQueriesAreServedByTheActiveSessionOnly()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
@@ -401,6 +521,8 @@ public sealed class FrontendApiIntegrationTests
 
         public string DiscoveryPath { get; }
 
+        public string ConfigurationFile => configurationFile;
+
         public JsonElement Discovery { get; }
 
         public HttpClient Client { get; }
@@ -413,12 +535,31 @@ public sealed class FrontendApiIntegrationTests
             CancellationToken cancellationToken,
             IAsyncDisposable provider,
             bool hanging,
-            Action<WebApplicationBuilder>? configureBuilder = null)
+            Action<WebApplicationBuilder>? configureBuilder = null,
+            string model = "test-model")
         {
             var configurationFile = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-frontend-config-{Guid.NewGuid():N}.json");
-            File.WriteAllText(configurationFile, "{}");
+            // The model and provider endpoint live in the configuration file (not the CLI or
+            // in-memory configuration) so the hot-reload test can rewrite them.
+            var endpoint = (provider as FakeOpenAiServer)?.Endpoint.ToString()
+                ?? ((HangingOpenAiServer)provider).Endpoint.ToString();
+            var configurationFileBody = $$"""
+                {
+                  "Maieutics": {
+                    "Model": { "Provider": "OpenAI", "Name": "{{model}}" },
+                    "Providers": {
+                      "OpenAI": {
+                        "ApiFlavor": "ChatCompletions",
+                        "ApiKey": "test-key",
+                        "Endpoint": "{{endpoint}}"
+                      }
+                    }
+                  }
+                }
+                """;
+            File.WriteAllText(configurationFile, configurationFileBody);
             var discoveryPath = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-frontend-discovery-{Guid.NewGuid():N}.json");
@@ -426,16 +567,9 @@ public sealed class FrontendApiIntegrationTests
             var host = MaieuticsHost.CreateApplication(
             [
                 "--config", configurationFile,
-                "--frontend-discovery", discoveryPath,
-                "--model", "test-model"
+                "--frontend-discovery", discoveryPath
             ], builder =>
             {
-                builder.Configuration["Maieutics:Providers:OpenAI:ApiKey"] = "test-key";
-                builder.Configuration["Maieutics:Providers:OpenAI:Endpoint"] =
-                    (provider as FakeOpenAiServer)?.Endpoint.ToString()
-                    ?? ((HangingOpenAiServer)provider).Endpoint.ToString();
-                builder.Configuration["Maieutics:Providers:OpenAI:ApiFlavor"] =
-                    OpenAiApiFlavor.ChatCompletions.ToString();
                 configureBuilder?.Invoke(builder);
             });
             await host.StartAsync(cancellationToken);

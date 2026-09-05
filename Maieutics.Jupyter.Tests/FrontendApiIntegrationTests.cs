@@ -769,9 +769,26 @@ public sealed class FrontendApiIntegrationTests
 
         private async Task ServeAsync(CancellationToken cancellationToken)
         {
+            // Accept in a loop: the provider client (and any retried request) may open more
+            // than one connection; a single accept would hang the second one on slow CI.
             try
             {
-                using var client = await listener.AcceptTcpClientAsync(cancellationToken);
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    var client = await listener.AcceptTcpClientAsync(cancellationToken);
+                    _ = ServeClientAsync(client, cancellationToken);
+                }
+            }
+            catch (Exception exception) when
+                (exception is OperationCanceledException or SocketException or IOException)
+            {
+            }
+        }
+
+        private async Task ServeClientAsync(TcpClient client, CancellationToken cancellationToken)
+        {
+            try
+            {
                 await using var stream = client.GetStream();
                 _ = DrainAsync(stream, cancellationToken);
                 await release.Task;

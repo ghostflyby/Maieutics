@@ -97,6 +97,7 @@ function createBridge(): NotebookBridge {
   return {
     client: clientOf,
     session: async () => await (await clientOf()).session(),
+    fetchObject: async (sha256: string) => await (await clientOf()).fetchObject(sha256),
   };
 }
 

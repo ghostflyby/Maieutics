@@ -192,7 +192,7 @@ class NotebookStream {
     execution: vscode.NotebookCellExecution,
   ): Promise<void> {
     return new Promise<void>((resolve) => {
-      const run = new RunExecution(runId, execution, resolve);
+      const run = new RunExecution(runId, execution, this.client, resolve);
       this.runs.set(runId, run);
       run.begin();
       execution.token.onCancellationRequested(() => {
@@ -245,9 +245,29 @@ class RunExecution {
   constructor(
     runId: string,
     private readonly execution: vscode.NotebookCellExecution,
+    private readonly client: FrontendClient,
     private readonly resolve: () => void,
   ) {
     this.view = new TurnView(runId);
+  }
+
+  /** Routes one input request to a VS Code input box and posts the answer back. */
+  private answerInputRequest(frame: EventFrame): void {
+    const requestId = frame.requestId;
+    if (requestId === undefined) return;
+
+    void (async () => {
+      const value = await vscode.window.showInputBox({
+        prompt: frame.prompt ?? "REPL input",
+        password: frame.password === true,
+        ignoreFocusOut: true,
+      });
+      await this.client.submitInput(requestId, value ?? "");
+    })().catch((error: unknown) => {
+      this.execution.replaceOutput([
+        errorOutput(new FrontendError("input_failed", 0, String(error))),
+      ]);
+    });
   }
 
   /** Paints the placeholder output so the cell shows progress before frames arrive. */
@@ -257,6 +277,10 @@ class RunExecution {
 
   apply(frame: EventFrame): void {
     if (this.settled) return;
+    if (frame.type === "input.request") {
+      void this.answerInputRequest(frame);
+      return;
+    }
     if (!this.view.apply(frame)) return;
     if (this.view.isTerminal) {
       if (this.paintTimer !== null) {

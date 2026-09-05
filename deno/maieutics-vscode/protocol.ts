@@ -80,7 +80,8 @@ export type EventFrameType =
   | "repl.display"
   | "repl.updateDisplay"
   | "repl.clear"
-  | "repl.error";
+  | "repl.error"
+  | "input.request";
 
 /** One WebSocket event frame. Unknown fields are preserved for forward compatibility. */
 export interface EventFrame {
@@ -101,6 +102,9 @@ export interface EventFrame {
   code?: string;
   message?: string;
   state?: "busy" | "idle" | (string & Record<never, never>);
+  requestId?: string;
+  prompt?: string;
+  password?: boolean;
   session?: SessionInfo;
   replayed?: boolean;
 }

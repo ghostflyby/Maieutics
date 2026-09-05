@@ -157,6 +157,9 @@ internal interface IFrontendPresentationTarget
 internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarget target) : IDenoReplPresentationSink
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly Dictionary<string, TaskCompletionSource<string>> pendingInputs =
+        new(StringComparer.Ordinal);
+    private int inputSequence;
     private int active = 1;
 
     internal bool IsActive => Volatile.Read(ref active) != 0;
@@ -219,19 +222,75 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
             cancellationToken);
     }
 
-    public Task<string> RequestInputAsync(
+    /// <summary>Publishes an <c>input.request</c> frame and waits for the frontend's answer
+    /// (delivered through <see cref="TryCompleteInput" />). The wait honours the caller's
+    /// cancellation; deactivating the sink fails every outstanding request.</summary>
+    public async Task<string> RequestInputAsync(
         string prompt,
         bool password,
         CancellationToken cancellationToken)
     {
-        throw new AgentToolException(
-            "repl_input_unsupported",
-            "The frontend presentation path does not support REPL input requests.");
+        string requestId;
+        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (gate)
+        {
+            if (!IsActive) throw CreateInactive();
+            requestId = $"input-{++inputSequence}";
+            pendingInputs[requestId] = completion;
+        }
+
+        target.PublishPresentation(
+            "input.request",
+            null,
+            JsonSerializer.SerializeToElement(
+                new FrontendInputRequest(requestId, prompt, password),
+                FrontendJsonContext.Default.FrontendInputRequest),
+            cancellationToken);
+
+        try
+        {
+            return await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (gate)
+            {
+                pendingInputs.Remove(requestId);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryCompleteInput(string requestId, string value)
+    {
+        TaskCompletionSource<string>? completion;
+        lock (gate)
+        {
+            pendingInputs.TryGetValue(requestId, out completion);
+            pendingInputs.Remove(requestId);
+        }
+
+        return completion is not null && completion.TrySetResult(value);
+    }
+
+    private static OperationCanceledException CreateInactive()
+    {
+        return new OperationCanceledException("The frontend presentation sink is no longer active.");
     }
 
     internal async ValueTask DeactivateAsync()
     {
         if (Interlocked.Exchange(ref active, 0) == 0) return;
+
+        List<TaskCompletionSource<string>> pending;
+        lock (gate)
+        {
+            pending = pendingInputs.Values.ToList();
+            pendingInputs.Clear();
+        }
+
+        var cancelled = new OperationCanceledException("The frontend presentation sink is no longer active.");
+        foreach (var completion in pending) completion.TrySetException(cancelled);
 
         await gate.WaitAsync().ConfigureAwait(false);
         gate.Release();

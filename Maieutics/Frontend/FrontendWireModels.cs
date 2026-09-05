@@ -55,6 +55,16 @@ internal sealed record FrontendCompleteResponse(
 /// <summary>A status answer.</summary>
 internal sealed record FrontendStatusResponse([property: JsonPropertyName("markdown")] string Markdown);
 
+/// <summary>An input request announcement (server to frontend).</summary>
+internal sealed record FrontendInputRequest(
+    [property: JsonPropertyName("requestId")] string RequestId,
+    [property: JsonPropertyName("prompt")] string Prompt,
+    [property: JsonPropertyName("password")] bool Password);
+
+/// <summary>An input answer body (frontend to server).</summary>
+internal sealed record FrontendInputAnswer(
+    [property: JsonPropertyName("value")] string Value);
+
 /// <summary>A typed protocol error body.</summary>
 internal sealed record FrontendError(
     [property: JsonPropertyName("code")] string Code,
@@ -121,6 +131,9 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("truncated")] bool? Truncated = null,
     [property: JsonPropertyName("code")] string? Code = null,
     [property: JsonPropertyName("message")] string? Message = null,
+    [property: JsonPropertyName("requestId")] string? RequestId = null,
+    [property: JsonPropertyName("prompt")] string? Prompt = null,
+    [property: JsonPropertyName("password")] bool? Password = null,
     [property: JsonPropertyName("state")] string? State = null,
     [property: JsonPropertyName("session")] FrontendSessionInfo? Session = null,
     [property: JsonPropertyName("replayed")] bool? Replayed = null);
@@ -139,7 +152,9 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendCommandResponse))]
 [JsonSerializable(typeof(FrontendCompleteRequest))]
 [JsonSerializable(typeof(FrontendCompleteResponse))]
+[JsonSerializable(typeof(FrontendInputRequest))]
 [JsonSerializable(typeof(FrontendStatusResponse))]
+[JsonSerializable(typeof(FrontendInputAnswer))]
 [JsonSerializable(typeof(FrontendError))]
 [JsonSerializable(typeof(FrontendTranscript))]
 [JsonSerializable(typeof(FrontendEventFrame))]

@@ -37,6 +37,10 @@ internal interface IDenoReplPresentationSink
         string prompt,
         bool password,
         CancellationToken cancellationToken);
+
+    /// <summary>Delivers the answer for a pending input request. Returns false when no
+    /// request with that id is outstanding (already answered or no longer waiting).</summary>
+    bool TryCompleteInput(string requestId, string value);
 }
 
 internal interface IDenoReplPresentationRouter

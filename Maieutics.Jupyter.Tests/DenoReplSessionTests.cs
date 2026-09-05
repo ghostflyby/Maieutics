@@ -537,7 +537,10 @@ public sealed class DenoReplSessionTests
             string prompt,
             bool password,
             CancellationToken cancellationToken) => Task.FromResult(string.Empty);
+
+        public bool TryCompleteInput(string requestId, string value) => false;
     }
+    public bool TryCompleteInput(string requestId, string value) => false;
 
     /// <summary>A bounded output frame channel the collector drains. Frames must be published for
     /// an execution, then <see cref="End" /> closes the stream so the collector's terminal wait
@@ -550,6 +553,8 @@ public sealed class DenoReplSessionTests
         {
             frames.Writer.TryWrite(frame);
         }
+
+        public bool TryCompleteInput(string requestId, string value) => false;
 
         internal void End()
         {

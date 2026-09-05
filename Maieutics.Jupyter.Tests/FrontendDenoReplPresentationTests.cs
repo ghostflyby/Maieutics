@@ -105,12 +105,48 @@ public sealed class FrontendDenoReplPresentationTests
     }
 
     [Fact]
-    public async Task InputRequestsAreTypedUnsupportedErrors()
+    public async Task InputRequestPublishesAFrameAndCompletesWithTheAnswer()
+    {
+        var target = new FakeTarget();
+        var sink = new FrontendDenoReplPresentationSink(target);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var wait = sink.RequestInputAsync("Name:", password: true, deadline.Token);
+        target.Published.Should().ContainSingle();
+        var frame = target.Published[0];
+        frame.Type.Should().Be("input.request");
+        frame.DisplayId.Should().BeNull();
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(frame.Data.GetRawText());
+        var requestId = payload.GetProperty("requestId").GetString()!;
+        payload.GetProperty("prompt").GetString().Should().Be("Name:");
+        payload.GetProperty("password").GetBoolean().Should().BeTrue();
+
+        sink.TryCompleteInput(requestId, "ghost").Should().BeTrue();
+        (await wait).Should().Be("ghost");
+        // 第二次应答：请求已完成
+        sink.TryCompleteInput(requestId, "again").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UnknownInputAnswerReturnsFalse()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
-        var act = () => sink.RequestInputAsync("prompt", false, CancellationToken.None);
-        (await act.Should().ThrowAsync<AgentToolException>()).Which.Code.Should()
-            .Be("repl_input_unsupported");
+        sink.TryCompleteInput("input-404", "x").Should().BeFalse();
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task InputRequestHonoursCallerCancellation()
+    {
+        var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
+        using var cancellation = new CancellationTokenSource();
+        var wait = sink.RequestInputAsync("prompt", false, cancellation.Token);
+        cancellation.Cancel();
+        var act = async () => await wait;
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     private static IReadOnlyDictionary<string, JsonElement> EmptyMetadata()

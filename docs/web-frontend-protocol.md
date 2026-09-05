@@ -54,6 +54,20 @@ user-owned state with default-restrictive permissions.
   protocol does not queue turns. Queuing semantics would be an explicit v2
   design (AGENTS.md invariant 4).
 
+## Input requests (REPL stdin)
+
+A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
+with:
+
+```
+POST /v1/agent/inputs/{requestId}   body: {"value": "..."}   → 200 {} | 404
+```
+
+The answer completes the pending request; a second answer for the same id is
+`404`. If the run ends (or the presentation scope detaches) before an answer
+arrives, the request is cancelled server-side and any late answer is `404`.
+Dismissing the input box should post an empty value.
+
 ## REST endpoints (frontend → executable)
 
 | Method | Path | Purpose |
@@ -134,6 +148,7 @@ JSON text:
 {"type": "repl.display", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "repl.updateDisplay", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "run.status", "state": "busy" | "idle"}
+{"type": "input.request", "requestId": "input-1", "prompt": "Name:", "password": false}
 ```
 
 Rules:

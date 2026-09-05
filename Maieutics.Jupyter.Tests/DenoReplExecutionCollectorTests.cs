@@ -817,6 +817,7 @@ public sealed class DenoReplExecutionCollectorTests
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(InputReply);
         }
+    public bool TryCompleteInput(string requestId, string value) => false;
 
         private static string PlainTextOf(ReplDisplayBundle data)
         {
@@ -825,6 +826,9 @@ public sealed class DenoReplExecutionCollectorTests
                 : string.Empty;
         }
     }
+
+
+    public bool TryCompleteInput(string requestId, string value) => false;
 
     /// <summary>Hand-builds output frames as the TS encoder would produce them (byte layout matches
     /// <c>output_protocol.ts</c>).</summary>

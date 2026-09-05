@@ -154,27 +154,10 @@ export class FrontendClient {
     let sinceSequence = options.sinceSequence ?? 0;
     let backoffMs = 250;
     while (!options.signal?.aborted) {
-      let socket: WebSocket;
-      try {
-        socket = await this.openSocket(sessionId, sinceSequence, options.signal);
-      } catch (error) {
-        if (options.signal?.aborted) return;
-        if (error instanceof FrontendError) throw error;
-        await sleep(backoffMs);
-        backoffMs = Math.min(backoffMs * 2, 8000);
-        continue;
-      }
-
-      backoffMs = 250;
-      const closed = new Promise<"close" | "backpressure" | "abort">((resolve) => {
-        socket.onclose = (event) => resolve(event.code === 1011 ? "backpressure" : "close");
-        socket.onerror = () => resolve("close");
-        options.signal?.addEventListener("abort", () => resolve("abort"), { once: true });
-      });
-      const messages = socketMessages(socket, options.signal);
+      const handle = this.openSocket(sessionId, sinceSequence, options.signal);
 
       try {
-        for await (const frame of messages) {
+        for await (const frame of handle.messages) {
           if (frame.sequence !== undefined && typeof frame.sequence === "number") {
             const key = `${frame.runId ?? ""}:${frame.sequence}`;
             if (seen.has(key)) continue;
@@ -184,45 +167,83 @@ export class FrontendClient {
           yield frame;
         }
       } finally {
-        const reason = await Promise.race([closed, sleepThen(50, "close")]);
-        if (reason === "backpressure") {
-          // The server disconnected us for backpressure: resume from the last
-          // observed sequence instead of surfacing a gap.
-        }
         try {
-          socket.close();
+          handle.socket.close();
         } catch {
           // Already closed.
         }
       }
 
       if (options.signal?.aborted) return;
+      await sleep(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, 8000);
     }
   }
 
-  private async openSocket(
+  private openSocket(
     sessionId: string,
     sinceSequence: number,
     signal?: AbortSignal,
-  ): Promise<WebSocket> {
+  ): {
+    socket: WebSocket;
+    opened: Promise<void>;
+    messages: AsyncGenerator<EventFrame>;
+  } {
     // The standard WebSocket API cannot set headers, so the events endpoint accepts the
     // bearer token as a query parameter (loopback-only internal API).
     const url = `${this.baseUrl}/v1/agent/sessions/${sessionId}/events` +
       `?sinceSequence=${sinceSequence}&token=${encodeURIComponent(this.token)}`;
     const socket = new WebSocket(url.replace("http://", "ws://"));
+
+    // Frames can arrive in the same network turn as the handshake response, so every
+    // handler attaches synchronously at construction — an onmessage attached after
+    // `await open` drops that first message (observed on Linux).
+    const queue: (EventFrame | "end")[] = [];
+    let wake: (() => void) | null = null;
+    const enqueue = () => {
+      queue.push("end");
+      wake?.();
+      wake = null;
+    };
+    socket.onmessage = (event) => {
+      try {
+        queue.push(JSON.parse(String(event.data)) as EventFrame);
+      } catch {
+        // A malformed frame is dropped; the server never sends one.
+      }
+      wake?.();
+      wake = null;
+    };
+    socket.onclose = () => enqueue();
+    socket.onerror = () => enqueue();
+    signal?.addEventListener("abort", () => {
+      try {
+        socket.close();
+      } catch {
+        // Already closed.
+      }
+      enqueue();
+    }, { once: true });
+
+    const messages: AsyncGenerator<EventFrame> = (async function* () {
+      while (true) {
+        while (queue.length > 0) {
+          const item = queue.shift()!;
+          if (item === "end") return;
+          yield item;
+        }
+
+        await new Promise<void>((resolve) => wake = resolve);
+      }
+    })();
+
     const opened = new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
       socket.onerror = () => {
-        socket.close();
         reject(new FrontendError("unreachable", 0, "The events socket failed to open."));
       };
-      signal?.addEventListener("abort", () => {
-        socket.close();
-        reject(new FrontendError("aborted", 0, "The events socket open was aborted."));
-      }, { once: true });
     });
-    await opened;
-    return socket;
+    return { socket, opened, messages };
   }
 
   private async get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -267,52 +288,6 @@ export class FrontendClient {
     return new FrontendError(code, response.status, message);
   }
 }
-
-async function* socketMessages(
-  socket: WebSocket,
-  signal?: AbortSignal,
-): AsyncGenerator<EventFrame> {
-  const queue: (EventFrame | "end")[] = [];
-  let wake: (() => void) | null = null;
-  socket.onmessage = (event) => {
-    try {
-      queue.push(JSON.parse(String(event.data)) as EventFrame);
-    } catch {
-      // A malformed frame is dropped; the server never sends one.
-    }
-    wake?.();
-    wake = null;
-  };
-  socket.onclose = () => {
-    queue.push("end");
-    wake?.();
-    wake = null;
-  };
-  socket.onerror = () => {
-    queue.push("end");
-    wake?.();
-    wake = null;
-  };
-  signal?.addEventListener("abort", () => {
-    queue.push("end");
-    wake?.();
-    wake = null;
-  }, { once: true });
-
-  while (true) {
-    while (queue.length > 0) {
-      const item = queue.shift()!;
-      if (item === "end") return;
-      yield item;
-    }
-    await new Promise<void>((resolve) => wake = resolve);
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function sleepThen<T>(ms: number, value: T): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }

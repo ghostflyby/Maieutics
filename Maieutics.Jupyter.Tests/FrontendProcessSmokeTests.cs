@@ -157,12 +157,14 @@ public sealed class FrontendProcessSmokeTests
 
     private static string GetManagedHostAssemblyPath()
     {
-        // The managed fallback (local runs without MAIEUTICS_TEST_HOST_EXECUTABLE) launches the
-        // debug-built app dll through `dotnet`.
+        // The managed fallback (runs without MAIEUTICS_TEST_HOST_EXECUTABLE) launches the
+        // app dll through `dotnet`. The configuration folder matches the test assembly's own
+        // (Debug/Release), and the assembly name is the csproj's lowercase `maieutics`.
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name;
         return Path.Combine(
             AppContext.BaseDirectory,
             "..", "..", "..", "..",
-            "Maieutics", "bin", "Debug", "net10.0", "Maieutics.dll");
+            "Maieutics", "bin", configuration, "net10.0", "maieutics.dll");
     }
 
     private static Func<string> TailStderr(Process process)

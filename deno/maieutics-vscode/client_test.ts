@@ -13,55 +13,60 @@ function startMockServer(): Promise<{
 }> {
   let sockets: WebSocket[] = [];
   let broadcast: ((frame: unknown) => void) | null = null;
-  const server = Deno.serve({ port: 0, hostname: "127.0.0.1" }, async (request) => {
-    const url = new URL(request.url);
-    const authorization = request.headers.get("Authorization");
-    const tokenInQuery = url.searchParams.get("token");
-    const authorized = authorization === "Bearer test-token" || tokenInQuery === "test-token";
-    if (!authorized) return json(401, { code: "unauthorized", message: "no" });
+  const abort = new AbortController();
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", signal: abort.signal },
+    async (request) => {
+      const url = new URL(request.url);
+      const authorization = request.headers.get("Authorization");
+      const tokenInQuery = url.searchParams.get("token");
+      const authorized = authorization === "Bearer test-token" || tokenInQuery === "test-token";
+      if (!authorized) return json(401, { code: "unauthorized", message: "no" });
 
-    if (url.pathname === "/v1/agent/capabilities") {
-      return json(200, {
-        protocolVersion: ProtocolVersion,
-        serverVersion: "0.0.0-test",
-        session: { id: "a".repeat(32), turns: 0, persistenceEnabled: false },
-      });
-    }
+      if (url.pathname === "/v1/agent/capabilities") {
+        return json(200, {
+          protocolVersion: ProtocolVersion,
+          serverVersion: "0.0.0-test",
+          session: { id: "a".repeat(32), turns: 0, persistenceEnabled: false },
+        });
+      }
 
-    if (url.pathname === "/v1/agent/sessions/turns" || url.pathname.endsWith("/turns")) {
-      const body = await request.json() as { text: string };
-      if (body.text.startsWith("%")) return json(200, { markdown: "### status" });
-      return new Response(JSON.stringify({ runId: "b".repeat(32) }), {
-        status: 202,
-        headers: { "content-type": "application/json" },
-      });
-    }
+      if (url.pathname === "/v1/agent/sessions/turns" || url.pathname.endsWith("/turns")) {
+        const body = await request.json() as { text: string };
+        if (body.text.startsWith("%")) return json(200, { markdown: "### status" });
+        return new Response(JSON.stringify({ runId: "b".repeat(32) }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        });
+      }
 
-    if (url.pathname.endsWith("/events") && request.headers.get("upgrade") === "websocket") {
-      const { response, socket } = Deno.upgradeWebSocket(request);
-      socket.onopen = () => {
-        sockets.push(socket);
-        broadcast ??= (frame) => {
-          for (const target of sockets) target.send(JSON.stringify(frame));
+      if (url.pathname.endsWith("/events") && request.headers.get("upgrade") === "websocket") {
+        const { response, socket } = Deno.upgradeWebSocket(request);
+        socket.onopen = () => {
+          sockets.push(socket);
+          broadcast ??= (frame) => {
+            for (const target of sockets) target.send(JSON.stringify(frame));
+          };
+          broadcast({ type: "hello", session: { id: "a".repeat(32), turns: 0 } });
         };
-        broadcast({ type: "hello", session: { id: "a".repeat(32), turns: 0 } });
-      };
-      socket.onclose = () => {
-        sockets = sockets.filter((target) => target !== socket);
-      };
-      return response;
-    }
+        socket.onclose = () => {
+          sockets = sockets.filter((target) => target !== socket);
+        };
+        return response;
+      }
 
-    return json(404, { code: "not_found", message: url.pathname });
-  });
+      return json(404, { code: "not_found", message: url.pathname });
+    },
+  );
 
   const url = `http://127.0.0.1:${server.addr.port}`;
   return Promise.resolve({
     url,
     discovery: { version: 1, url, token: "test-token", pid: 1234 },
     shutdown: async () => {
-      // Upgraded WebSocket requests are long-lived: shutdown() waits for them on Linux, so
-      // every open socket is closed first.
+      // Upgraded WebSocket requests and keep-alive connections are long-lived: on Linux,
+      // shutdown() waits for them. Close every open socket and abort the serve signal so
+      // the shutdown is forced instead of waiting.
       for (const socket of sockets) {
         try {
           socket.close();
@@ -71,6 +76,7 @@ function startMockServer(): Promise<{
       }
 
       sockets = [];
+      abort.abort();
       await server.shutdown();
     },
   });

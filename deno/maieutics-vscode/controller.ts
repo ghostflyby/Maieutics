@@ -241,6 +241,10 @@ class RunExecution {
   private lastPaint = 0;
   private paintTimer: ReturnType<typeof setTimeout> | null = null;
   private settled = false;
+  /** Stable output handles keyed by segment id: created once, updated in place. */
+  private readonly segments = new Map<string, vscode.NotebookCellOutput>();
+  /** True once the first answer paint ran (the answer output object exists). */
+  private answerCreated = false;
 
   constructor(
     runId: string,
@@ -272,7 +276,7 @@ class RunExecution {
 
   /** Paints the placeholder output so the cell shows progress before frames arrive. */
   begin(): void {
-    this.replaceStreamingOutput();
+    this.paintAnswer();
   }
 
   apply(frame: EventFrame): void {
@@ -309,52 +313,129 @@ class RunExecution {
     this.resolve();
   }
 
-  /** Repaints the markdown output, throttled while the run streams. */
+  /** Repaints changed segments, throttled while the run streams. */
   private paint(): void {
     if (this.paintTimer !== null) return;
     const elapsed = Date.now() - this.lastPaint;
     if (elapsed >= PaintIntervalMs) {
       this.lastPaint = Date.now();
-      this.replaceStreamingOutput();
+      this.paintChanged();
       return;
     }
 
     this.paintTimer = setTimeout(() => {
       this.paintTimer = null;
       this.lastPaint = Date.now();
-      this.replaceStreamingOutput();
+      this.paintChanged();
     }, PaintIntervalMs - elapsed);
   }
 
-  private replaceStreamingOutput(): void {
-    const sections: string[] = [];
-    const tools = this.view.toolLines();
-    if (tools.length > 0) sections.push(tools.join("\n"));
-    const text = this.view.markdown();
-    if (text.length > 0) sections.push(text);
-    if (sections.length === 0) sections.push("…");
-    this.execution.replaceOutput([
-      ...this.view.replList().map(replOutput),
-      new vscode.NotebookCellOutput([
-        vscode.NotebookCellOutputItem.text(sections.join("\n\n"), "text/markdown"),
-      ]),
-    ]);
+  /** Creates or updates only the segments the view marked dirty since the last
+   * paint. Segment outputs are stable objects: a REPL display is created once
+   * and its items replaced in place on updateDisplay; the tools timeline and
+   * the answer markdown are the only other mutable segments. */
+  private paintChanged(): void {
+    const dirty = this.view.takeDirty();
+    if (dirty.size === 0) return;
+
+    for (const entry of this.view.replList()) {
+      const key = this.view.replSegmentId(entry);
+      if (!dirty.has(key)) continue;
+      this.ensureSegment(key, replOutput(entry));
+    }
+
+    if (dirty.has(`tools:${this.view.runId}`)) {
+      const lines = this.view.toolLines();
+      const markdown = lines.length > 0 ? lines.join("\n") : "";
+      this.ensureSegment(
+        `tools:${this.view.runId}`,
+        markdown
+          ? new vscode.NotebookCellOutput([
+            vscode.NotebookCellOutputItem.text(markdown, "text/markdown"),
+          ])
+          : undefined,
+      );
+    }
+
+    if (dirty.has(`answer:${this.view.runId}`)) this.paintAnswer();
   }
 
+  /** Creates the segment output when absent (appended after the existing
+   * outputs so segment order is REPL displays, tools, answer) or replaces its
+   * items in place. Passing no items removes the segment (empty tools). */
+  private ensureSegment(key: string, output: vscode.NotebookCellOutput | undefined): void {
+    const existing = this.segments.get(key);
+    if (output === undefined) {
+      if (existing) {
+        this.execution.replaceOutputItems([], existing);
+      }
+
+      return;
+    }
+
+    if (existing) {
+      this.execution.replaceOutputItems(output.items, existing);
+      return;
+    }
+
+    this.segments.set(key, output);
+    this.execution.appendOutput([output]);
+  }
+
+  /** Paints (or repaints) the answer markdown; creates its output once. */
+  private paintAnswer(): void {
+    const text = this.view.markdown();
+    const markdown = text.length > 0 ? text : "…";
+    const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
+    if (!this.answerCreated) {
+      this.answerCreated = true;
+      const output = new vscode.NotebookCellOutput(items);
+      this.segments.set(`answer:${this.view.runId}`, output);
+      this.execution.appendOutput([output]);
+      return;
+    }
+
+    const output = this.segments.get(`answer:${this.view.runId}`);
+    if (output) this.execution.replaceOutputItems(items, output);
+  }
+
+  /** Freezes the segments: final answer text, the structured turn snapshot
+   * appended to the answer output, and final tool statuses. */
   private paintFinal(): void {
     const terminal = this.view.terminalState;
     const final = this.view.finalOutput();
-    const replOutputs = final.repl.map(replOutput);
+
     if (terminal?.kind === "failed") {
       this.execution.replaceOutput([
-        ...replOutputs,
         errorOutput(new FrontendError(terminal.code, 0, terminal.message)),
       ]);
       this.execution.end(false, Date.now());
       return;
     }
 
-    this.execution.replaceOutput([finalOutput(final), ...replOutputs]);
+    // Final tool statuses (an entry can flip after the last streamed paint).
+    const toolsKey = `tools:${this.view.runId}`;
+    if (final.tools.length > 0) {
+      const markdown = final.tools
+        .map((tool) => tool.status === "error" ? `- ❌ \`${tool.tool}\`` : `- ✅ \`${tool.tool}\``)
+        .join("\n");
+      const existing = this.segments.get(toolsKey);
+      const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
+      if (existing) this.execution.replaceOutputItems(items, existing);
+      else this.ensureSegment(toolsKey, new vscode.NotebookCellOutput(items));
+    }
+
+    // Final answer text, then the structured snapshot appended to the same
+    // output: appending items never re-renders the markdown item.
+    this.paintAnswer();
+    const answerOutput = this.segments.get(`answer:${this.view.runId}`);
+    if (answerOutput) {
+      this.execution.appendOutputItems(
+        [vscode.NotebookCellOutputItem.json(final, TurnOutputMime)],
+        answerOutput,
+      );
+    }
+
     this.execution.end(true, Date.now());
   }
 }

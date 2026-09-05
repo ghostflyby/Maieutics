@@ -28,6 +28,15 @@ export interface ReplDisplayEntry {
   data: Record<string, unknown>;
 }
 
+/** Identifies one cell output segment (a stable notebook output). */
+export type SegmentId = `repl:${string}` | `tools:${string}` | `answer:${string}`;
+
+/** Which output segments a frame touched. */
+export type SegmentChange = {
+  created: SegmentId[];
+  updated: SegmentId[];
+};
+
 export class TurnView {
   readonly runId: string;
   private text = "";
@@ -37,6 +46,7 @@ export class TurnView {
   private anonymousDisplays = 0;
   private truncated = false;
   private terminal: TerminalState | null = null;
+  private readonly dirty = new Set<SegmentId>();
 
   constructor(runId: string) {
     this.runId = runId;
@@ -55,6 +65,32 @@ export class TurnView {
     return [...this.replDisplays.values()];
   }
 
+  /** The stable output-segment id of a REPL display entry (must match the
+   * dirty keys reported by {@link takeDirty}). */
+  replSegmentId(entry: ReplDisplayEntry): SegmentId {
+    const displayId = entry.displayId || `anon:${this.anonIndexOf(entry)}`;
+    return `repl:${displayId}`;
+  }
+
+  private anonIndexOf(entry: ReplDisplayEntry): number {
+    let anon = 0;
+    for (const candidate of this.replDisplays.values()) {
+      if (candidate === entry) return anon;
+      if (candidate.displayId === "") anon++;
+    }
+
+    return anon;
+  }
+
+  /** Drains the set of output segments touched since the last call. The answer
+   * segment is reported dirty while text streamed since the last drain. */
+  takeDirty(): Set<SegmentId> {
+    if (this.terminal !== null) this.dirty.add(`answer:${this.runId}`);
+    const drained = new Set(this.dirty);
+    this.dirty.clear();
+    return drained;
+  }
+
   /** Applies one frame. Frames of other runs, unknown types, and anything
    * after a terminal frame are ignored — terminal frames may repeat across
    * reconnects and must stay idempotent. REPL presentation frames carry no
@@ -69,6 +105,8 @@ export class TurnView {
         const displayId = typeof frame.displayId === "string" ? frame.displayId : "";
         const key = displayId || `anon:${this.anonymousDisplays++}`;
         this.replDisplays.set(key, { displayId, data: frame.data });
+        const segment: SegmentId = `repl:${key}`;
+        this.dirty.add(segment);
         return true;
       }
       case "repl.clear": {
@@ -79,6 +117,7 @@ export class TurnView {
         if (typeof frame.data !== "object" || frame.data === null) return false;
         const key = `anon:${this.anonymousDisplays++}`;
         this.replDisplays.set(key, { displayId: "", data: frame.data });
+        this.dirty.add(`repl:${key}`);
         return true;
       }
       default:
@@ -87,7 +126,9 @@ export class TurnView {
     if (frame.runId !== this.runId && frame.type !== "run.missing") return false;
     switch (frame.type) {
       case "text.delta": {
-        if (typeof frame.text === "string") this.text += frame.text;
+        if (typeof frame.text !== "string" || frame.text.length === 0) return false;
+        this.text += frame.text;
+        this.dirty.add(`answer:${this.runId}`);
         return true;
       }
       case "tool.started": {
@@ -98,6 +139,7 @@ export class TurnView {
             status: "running",
           });
           this.toolOrder.push(frame.callId);
+          this.dirty.add(`tools:${this.runId}`);
         }
         return true;
       }
@@ -106,6 +148,7 @@ export class TurnView {
           const entry = this.tools.get(frame.callId);
           const failed = isFailureResult(frame.result);
           if (entry) entry.status = failed ? "error" : "ok";
+          this.dirty.add(`tools:${this.runId}`);
         }
         return true;
       }

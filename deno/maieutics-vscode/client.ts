@@ -121,7 +121,12 @@ export class FrontendClient {
 
   /** Answers a pending input request announced by an `input.request` frame. */
   async submitInput(requestId: string, value: string, signal?: AbortSignal): Promise<void> {
-    const response = await this.fetchJson("POST", `/v1/agent/inputs/${requestId}`, { value }, signal);
+    const response = await this.fetchJson(
+      "POST",
+      `/v1/agent/inputs/${requestId}`,
+      { value },
+      signal,
+    );
     if (!response.ok) throw await this.errorOf(response);
     await response.body?.cancel();
   }

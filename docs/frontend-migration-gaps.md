@@ -9,6 +9,9 @@ custom web protocol + VSCode extension (ADR 0023), beyond what has already
 shipped. Each item states the current behavior, the gap, the proposed shape,
 and acceptance criteria. Ordered by recommended execution sequence.
 
+Items 1, 2, 3, and 5 are implemented (see git history; acceptance criteria
+met by the integration and unit tests noted in each section).
+
 Shipped already (for context, not re-planned here): v1 protocol (discovery,
 bearer auth, sessions/turns/cancel/transcript/commands/completion/status),
 event streams with replay and backpressure disconnect, command execution via
@@ -17,7 +20,7 @@ controller, streaming, tool activity, REPL displays, input requests, session
 pinning, turn-timeline renderer, stable output segments), process smoke
 coverage, and the four-gate Deno CI job.
 
-## 1. Command cells fight the session pin (bug)
+## 1. Command cells fight the session pin (bug) — DONE
 
 Priority: High. Type: Correctness.
 
@@ -43,7 +46,7 @@ a notebook with a pinned id and asserts the notebook metadata ends up
 pointing at the new session, and the following turn does not resume the old
 one. Extension unit test covers the metadata update path.
 
-## 2. Binary rich values (object bypass)
+## 2. Binary rich values (object bypass) — DONE
 
 Priority: High. Type: Feature (largest visible gap).
 
@@ -78,7 +81,7 @@ bytes; the digest/model path keeps seeing only media types (no size
 explosion); a second display with identical bytes reuses the same object
 (content addressing).
 
-## 3. Cell completion provider
+## 3. Cell completion provider — DONE
 
 Priority: Medium. Type: Feature (small).
 
@@ -117,7 +120,7 @@ privacy, configuration reload provider switch. Still missing:
 all three CI OSes. No new harness machinery beyond a
 `registerBuilderConfiguration`-style hook reuse.
 
-## 5. Notebook close cancels in-flight runs
+## 5. Notebook close cancels in-flight runs — DONE
 
 Priority: Medium. Type: Lifecycle correctness.
 

@@ -331,10 +331,10 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         return displayId;
     }
 
-    /// <summary>Replaces inline binary mime payloads (base64 strings for small displays)
-    /// with textual placeholders; object references ({"$object": sha}) pass through as
-    /// structured JSON. Either way the frontend wire never carries binary as base64 text
-    /// (invariant 26).</summary>
+    /// <summary>Drops binary mime values that are not object references: the frontend wire
+    /// never carries binary as base64 text (invariant 26), and binary payloads only ever
+    /// travel as immutable content-addressed object URLs. Object references and all
+    /// non-binary mimes pass through verbatim.</summary>
     private static IReadOnlyDictionary<string, JsonElement> StripBinaryMimes(
         IReadOnlyDictionary<string, JsonElement> data)
     {
@@ -344,17 +344,8 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         var filtered = new Dictionary<string, JsonElement>(data.Count, StringComparer.Ordinal);
         foreach (var (mime, value) in data)
         {
-            if (IsBinaryMime(mime) &&
-                value.ValueKind == JsonValueKind.String)
-            {
-                // Inline base64 (small payloads): placeholder.
-                filtered[mime] = JsonSerializer.SerializeToElement(
-                    $"[binary {mime} display omitted]",
-                    ReplJsonContext.Default.String);
-                continue;
-            }
+            if (IsBinaryMime(mime) && value.ValueKind != JsonValueKind.Object) continue;
 
-            // Object references and non-binary mimes pass through verbatim.
             filtered[mime] = value.Clone();
         }
 

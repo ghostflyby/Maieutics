@@ -20,12 +20,6 @@ internal sealed class DenoReplExecutionCollector
 {
     private const int ModelItemOverheadBytes = 64;
     private const int DigestOverheadBytes = 64;
-    /// <summary>Binary mime payloads at or above this size are stored as immutable objects
-    /// and referenced by URL; smaller payloads stay inline as base64 strings only because
-    /// the object-store round trip costs more than encoding a few KiB (see the bundle
-    /// comment at the rebuild site).</summary>
-    internal const int InlineBinaryThresholdBytes = 8 * 1024;
-
     /// <summary>How long the collector keeps draining the output stream after the eval terminal
     /// arrives. The TS client sends all output frames before the terminal, but the frames travel a
     /// separate WebSocket, so this window absorbs the cross-socket race between the last frame and
@@ -329,10 +323,11 @@ internal sealed class DenoReplExecutionCollector
                     placeholder.TryGetInt32(out var index))
                 {
                     var bytes = display.ResolveBuffer(index);
-                    if (bytes.Length >= InlineBinaryThresholdBytes && displayObjectStore is { } objects)
+                    if (displayObjectStore is { } objects)
                     {
-                        // Large payloads become immutable content-addressed objects: the bundle
-                        // carries a URL the frontend fetches natively over HTTP (invariant 26).
+                        // Binary payloads become immutable content-addressed objects: the
+                        // bundle carries a URL the frontend fetches natively over HTTP —
+                        // never base64 through the bundle (invariant 26).
                         var url = objects.Store(bytes, mime);
                         element = JsonSerializer.SerializeToElement(
                             new ReplDisplayObjectReference(url, bytes.Length),
@@ -340,9 +335,10 @@ internal sealed class DenoReplExecutionCollector
                     }
                     else
                     {
-                        element = JsonSerializer.SerializeToElement(
-                            bytes,
-                            ReplOutputJsonContext.Default.ByteArray);
+                        // No display object store configured (tests): the payload cannot be
+                        // represented without base64, so the mime is dropped rather than
+                        // violating invariant 26.
+                        continue;
                     }
                 }
 

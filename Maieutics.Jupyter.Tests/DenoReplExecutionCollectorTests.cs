@@ -123,19 +123,21 @@ public sealed class DenoReplExecutionCollectorTests
     }
 
     [Fact(Timeout = 15_000)]
-    public async Task DisplayFrameReconstructsBinaryBuffersFromPlaceholdersIntoBase64()
+    public async Task DisplayFrameStoresBinaryBuffersAsContentAddressedObjectReferences()
     {
         var connection = new DenoReplSessionTests.ControlledConnection();
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
         var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink();
+        var objectStore = new InMemoryDisplayObjectStore();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions(),
             sink,
             [],
-            "execution-1");
+            "execution-1",
+            displayObjectStore: objectStore);
         var data = JsonDocument.Parse(
             """{"image/png":{"$buffer":0},"text/plain":"binary display"}""").RootElement.Clone();
         var png = new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02 };
@@ -157,10 +159,15 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        sink.BinaryDisplays.Should().ContainSingle().Which.Data["image/png"]
-            .GetString().Should().NotBeNull();
-        sink.BinaryDisplays.Single().Data["image/png"].GetString()!
-            .Should().Be(Convert.ToBase64String(png));
+        // The bundle carries an object reference, never base64 (invariant 26).
+        sink.BinaryDisplays.Should().ContainSingle();
+        var reference = sink.BinaryDisplays.Single().Data["image/png"];
+        reference.ValueKind.Should().Be(JsonValueKind.Object);
+        var url = reference.GetProperty("$object").GetString()!;
+        url.Should().StartWith("/v1/objects/");
+        reference.GetProperty("byteLength").GetInt64().Should().Be(png.Length);
+        // The referenced bytes are exactly the display payload.
+        objectStore.Get(url).Should().Equal(png);
         // The binary mime lists in the digest but never produces a preview.
         result.Presentation.Digests.Should().ContainSingle().Which.Should().BeEquivalentTo(new
         {
@@ -178,13 +185,15 @@ public sealed class DenoReplExecutionCollectorTests
         var execution = new DenoReplSessionTests.ControlledEval("execution-1");
         var output = new DenoReplSessionTests.ControlledOutputConnection();
         var sink = new RecordingPresentationSink();
+        var objectStore = new InMemoryDisplayObjectStore();
         var collector = new DenoReplExecutionCollector(
             "default",
             1,
             new DenoReplOptions(),
             sink,
             [],
-            "execution-1");
+            "execution-1",
+            displayObjectStore: objectStore);
         var png = new byte[] { 0x89, 0x50, 0x4e, 0x47 };
         output.Publish(OutputFrames.Display(
             1,
@@ -211,8 +220,9 @@ public sealed class DenoReplExecutionCollectorTests
         var digest = result.Presentation.Digests.Should().ContainSingle().Which;
         digest.MediaTypes.Should().Equal("image/png");
         digest.Preview.Should().BeNull();
-        sink.BinaryDisplays.Should().ContainSingle().Which.Data["image/png"].GetString()
-            .Should().Be(Convert.ToBase64String(png));
+        var reference = sink.BinaryDisplays.Single().Data["image/png"];
+        var url = reference.GetProperty("$object").GetString()!;
+        objectStore.Get(url).Should().Equal(png);
     }
 
     [Fact(Timeout = 15_000)]

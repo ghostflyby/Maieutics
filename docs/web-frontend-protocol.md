@@ -68,10 +68,10 @@ The reference URL is relative to the discovery URL, served with
 `Cache-Control: public, max-age=31536000, immutable`, and the bytes travel
 natively in the HTTP body. Because the URL is content-addressed (same bytes
 = same URL forever), clients should cache unconditionally and may share
-cached entries across displays, runs, and notebooks. Smaller payloads may
-appear inline as base64 strings; clients treat any string value under a
-binary mime as opaque display data they cannot render and fall back to the
-bundle's other mimes.
+cached entries across displays, runs, and notebooks. Binary mime values are
+always object references — never base64, regardless of payload size
+(invariant 26); a value under a binary mime that is not a reference carries
+no renderable data and clients fall back to the bundle's other mimes.
 
 ## Input requests (REPL stdin)
 

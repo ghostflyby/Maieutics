@@ -103,7 +103,7 @@ completions), never error toasts.
 `%model use ` offers configured profiles. Unit test maps the wire response
 onto completion items (range, labels).
 
-## 4. Frontend E2E coverage for retired kernel tests
+## 4. Frontend E2E coverage for retired kernel tests — DONE
 
 Priority: Medium. Type: Test debt.
 

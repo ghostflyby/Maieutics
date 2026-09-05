@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
@@ -21,6 +22,64 @@ namespace Maieutics.Jupyter.Tests;
 public sealed class FrontendApiIntegrationTests
 {
     private const string Answer = "streamed answer";
+
+    private const string DUAL_PROVIDER_CONFIG_TEMPLATE = """
+        {
+          "Maieutics": {
+            "DefaultProfile": "openai-profile",
+            "Sources": {
+              "openai": {
+                "Provider": "OpenAI",
+                "ApiKey": "test-key",
+                "ApiFlavor": "ChatCompletions",
+                "Endpoint": "{{openaiEndpoint}}"
+              },
+              "anthropic": {
+                "Provider": "Anthropic",
+                "ApiKey": "anthropic-key",
+                "Endpoint": "{{anthropicEndpoint}}"
+              }
+            },
+            "Profiles": {
+              "openai-profile": { "Source": "openai", "Model": "test-model" },
+              "claude-profile": { "Source": "anthropic", "Model": "claude-test" }
+            }
+          }
+        }
+        """;
+
+    private const string ANTHROPIC_CONFIG_TEMPLATE = """
+        {
+          "Maieutics": {
+            "DefaultProfile": "claude",
+            "Sources": {
+              "anthropic": {
+                "Provider": "Anthropic",
+                "ApiKey": "anthropic-key",
+                "Endpoint": "{{endpoint}}"
+              }
+            },
+            "Profiles": {
+              "claude": { "Source": "anthropic", "Model": "claude-test" }
+            }
+          }
+        }
+        """;
+
+    private const string CONFIGURATION_TEMPLATE = """
+        {
+          "Maieutics": {
+            "Model": { "Provider": "OpenAI", "Name": "{{model}}" },
+            "Providers": {
+              "OpenAI": {
+                "ApiFlavor": "ChatCompletions",
+                "ApiKey": "test-key",
+                "Endpoint": "{{endpoint}}"
+              }
+            }
+          }
+        }
+        """;
 
     [Fact(Timeout = 60_000)]
     public async Task DiscoveryFileIsPublishedAndRetired()
@@ -457,6 +516,190 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task AnthropicToolLoopStreamsAndCommitsTheTranscript()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", toolFlow: true);
+        var anthropicEndpoint = provider.Endpoint.ToString();
+        var anthropicConfig = ANTHROPIC_CONFIG_TEMPLATE.Replace("{{endpoint}}", anthropicEndpoint);
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: builder =>
+            {
+                builder.Services.RemoveAll<IReadOnlyList<AIFunction>>();
+                builder.Services.AddSingleton<IReadOnlyList<AIFunction>>([FrontendTestFunctions.CreateEchoFunction()]);
+            }, transformConfiguration: _ => anthropicConfig);
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+            await events.ReceiveFrameAsync(deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "use echo", deadline.Token);
+            var frames = await events.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.status" &&
+                         frame.GetProperty("state").GetString() == "idle",
+                deadline.Token);
+
+            var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
+            types.Should().Contain("tool.started").And.Contain("tool.finished");
+            frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
+                .GetProperty("text").GetString().Should().Be("tool-backed answer");
+
+            var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                deadline.Token);
+            transcript.GetProperty("turns").GetArrayLength().Should().Be(1);
+            // The second provider request carries the tool result envelope.
+            provider.RequestBodies.Should().HaveCount(2);
+            provider.RequestBodies.Last().GetRawText().Should()
+                .Contain("tool_result").And.Contain("status").And.Contain("ok");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task NotebookSwitchesBetweenOpenAiAndAnthropicWithCanonicalHistory()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(60));
+        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
+        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var dualConfig = DUAL_PROVIDER_CONFIG_TEMPLATE
+            .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
+            .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, openAi, hanging: false, configureBuilder: null,
+            transformConfiguration: _ => dualConfig);
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
+            var transcript = await WaitForTranscriptTurnsAsync(
+                harness, sessionId, minimumTurns: 1, deadline.Token);
+            transcript.GetProperty("turns")[0].GetProperty("messages")[1]
+                .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("openai answer");
+
+            // Switch the model profile via a command cell; the next turn runs on Anthropic.
+            var switchResponse = await harness.Client.PostAsJsonAsync(
+                $"/v1/agent/sessions/{sessionId}/turns",
+                new { text = "%model use claude-profile" },
+                deadline.Token);
+            switchResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var switchBody = await switchResponse.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+            switchBody.GetProperty("markdown").GetString().Should().Contain("claude-profile");
+
+            await harness.SubmitTurnAsync(sessionId, "second turn", deadline.Token);
+            var reloaded = await WaitForTranscriptTurnsAsync(
+                harness, sessionId, minimumTurns: 2, deadline.Token);
+            reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
+                .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("anthropic answer");
+            // Canonical history: both turns committed in order with user→assistant shape.
+            reloaded.GetProperty("turns").EnumerateArray()
+                .Select(turn => turn.GetProperty("messages").EnumerateArray()
+                    .Select(message => message.GetProperty("role").GetString()).ToArray())
+                .Should().OnlyContain(roles => roles.First() == "user" && roles.Last() == "assistant");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact(Timeout = 90_000)]
+    public async Task McpToolLoopRunsThroughTheFrontendWhenTestServerIsConfigured()
+    {
+        // Requires an external stdio MCP test server; skipped otherwise (mirrors the
+        // retired kernel-driver test's opt-in semantics).
+        var mcpServer = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE");
+        if (string.IsNullOrWhiteSpace(mcpServer)) return;
+
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(80));
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            toolFlow: true,
+            toolName: "echo",
+            toolArgumentsJson: "{\"value\":\"native mcp value\"}");
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        var discoveryPath = Path.Combine(root, "discovery.json");
+        var mcpFile = Path.Combine(root, "mcp.json");
+        await File.WriteAllTextAsync(
+            mcpFile,
+            new JsonObject
+            {
+                ["mcpServers"] = new JsonObject
+                {
+                    ["test"] = new JsonObject
+                    {
+                        ["command"] = Path.GetFullPath(mcpServer),
+                        ["args"] = new JsonArray(),
+                        ["env"] = new JsonObject()
+                    }
+                }
+            }.ToJsonString(),
+            deadline.Token);
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CONFIGURATION_TEMPLATE
+                .Replace("{{model}}", "test-model")
+                .Replace("{{endpoint}}", provider.Endpoint.ToString()),
+            deadline.Token);
+
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: null);
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            var mcpList = await harness.Client.PostAsJsonAsync(
+                $"/v1/agent/sessions/{sessionId}/turns",
+                new { text = "%mcp list" },
+                deadline.Token);
+            mcpList.StatusCode.Should().Be(HttpStatusCode.OK);
+            var markdown = (await mcpList.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+                .GetProperty("markdown").GetString()!;
+            markdown.Should().Contain("`echo` → `echo`").And.Contain("Connected");
+
+            await harness.SubmitTurnAsync(sessionId, "call the MCP echo tool", deadline.Token);
+            var transcript = await WaitForTranscriptTurnsAsync(
+                harness, sessionId, minimumTurns: 1, deadline.Token);
+            transcript.GetProperty("turns")[0].GetProperty("messages")[1]
+                .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("tool-backed answer");
+            provider.RequestBodies.Last().GetRawText().Should()
+                .Contain("status").And.Contain("ok").And.Contain("native mcp value");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+            DeleteDirectoryWithRetry(root);
+        }
+    }
+
+    private static void DeleteDirectoryWithRetry(string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, true);
+                return;
+            }
+            catch (IOException) when (attempt < 10)
+            {
+                Thread.Sleep(200 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException) when (attempt < 10)
+            {
+                Thread.Sleep(200 * (attempt + 1));
+            }
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task SessionQueriesAreServedByTheActiveSessionOnly()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
@@ -538,7 +781,8 @@ public sealed class FrontendApiIntegrationTests
             IAsyncDisposable provider,
             bool hanging,
             Action<WebApplicationBuilder>? configureBuilder = null,
-            string model = "test-model")
+            string model = "test-model",
+            Func<string, string>? transformConfiguration = null)
         {
             var configurationFile = Path.Combine(
                 Path.GetTempPath(),
@@ -546,21 +790,17 @@ public sealed class FrontendApiIntegrationTests
             // The model and provider endpoint live in the configuration file (not the CLI or
             // in-memory configuration) so the hot-reload test can rewrite them.
             var endpoint = (provider as FakeOpenAiServer)?.Endpoint.ToString()
-                ?? ((HangingOpenAiServer)provider).Endpoint.ToString();
-            var configurationFileBody = $$"""
-                {
-                  "Maieutics": {
-                    "Model": { "Provider": "OpenAI", "Name": "{{model}}" },
-                    "Providers": {
-                      "OpenAI": {
-                        "ApiFlavor": "ChatCompletions",
-                        "ApiKey": "test-key",
-                        "Endpoint": "{{endpoint}}"
-                      }
-                    }
-                  }
-                }
-                """;
+                ?? (provider as HangingOpenAiServer)?.Endpoint.ToString() ?? string.Empty;
+            var configurationFileBody = CONFIGURATION_TEMPLATE
+                .Replace("{{model}}", model)
+                .Replace("{{endpoint}}", endpoint);
+            if (transformConfiguration is not null)
+            {
+                // A named Sources/Profiles configuration cannot carry the legacy Model
+                // section; the transform rewrites the file for those scenarios.
+                configurationFileBody = transformConfiguration(configurationFileBody);
+            }
+
             File.WriteAllText(configurationFile, configurationFileBody);
             var discoveryPath = Path.Combine(
                 Path.GetTempPath(),

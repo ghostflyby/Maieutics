@@ -54,6 +54,25 @@ user-owned state with default-restrictive permissions.
   protocol does not queue turns. Queuing semantics would be an explicit v2
   design (AGENTS.md invariant 4).
 
+## Display objects (binary rich values)
+
+Binary mime values in `repl.display` bundles above a server-defined size
+threshold are stored as immutable, content-addressed objects. The bundle
+carries a structured reference — never base64 (invariant 26):
+
+```json
+{"image/png": {"$object": "/v1/objects/<sha256>", "byteLength": 12345}}
+```
+
+The reference URL is relative to the discovery URL, served with
+`Cache-Control: public, max-age=31536000, immutable`, and the bytes travel
+natively in the HTTP body. Because the URL is content-addressed (same bytes
+= same URL forever), clients should cache unconditionally and may share
+cached entries across displays, runs, and notebooks. Smaller payloads may
+appear inline as base64 strings; clients treat any string value under a
+binary mime as opaque display data they cannot render and fall back to the
+bundle's other mimes.
+
 ## Input requests (REPL stdin)
 
 A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
@@ -85,7 +104,7 @@ Dismissing the input box should post an empty value.
 | POST | `/v1/agent/commands` | Execute a `%`-command cell → `{markdown}` |
 | POST | `/v1/agent/complete` | Command completion for the current cell text |
 | GET | `/v1/status` | Status snapshot as markdown |
-| GET | `/v1/objects/{id}` | Binary object stream (object store bypass) |
+| GET | `/v1/objects/{sha256}` | Immutable binary object stream (content-addressed) |
 
 Turn requests are limited to the active session; a turn addressed to another
 session id is `409` + `session_not_active`. This keeps "the kernel owns the

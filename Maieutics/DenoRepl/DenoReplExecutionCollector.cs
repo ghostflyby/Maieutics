@@ -3,21 +3,27 @@ using System.Text.Json;
 
 namespace Maieutics.DenoRepl;
 
-/// <summary>A gateway for large binary display payloads: implementations ingest the bytes
-/// and return a content address the frontend dereferences. Kept minimal so the collector
-/// does not depend on the persistence layer.</summary>
-internal interface IReplObjectBypass
+/// <summary>
+///     Stores immutable binary display payloads and returns the relative URL path under
+///     which the frontend fetches the native bytes. The path is content-addressed: one
+///     stored payload is one URL forever, so clients can cache aggressively and share the
+///     cached representation across displays, runs, and notebooks. Binary never travels as
+///     base64 through the display bundle (invariant 26).
+/// </summary>
+internal interface IReplDisplayObjectStore
 {
-    /// <summary>Stores the payload and returns its content address (hex sha256).</summary>
-    string Ingest(ReadOnlySpan<byte> content);
+    /// <summary>Stores the payload and returns its relative URL path (starting with "/").</summary>
+    string Store(ReadOnlySpan<byte> content, string mime);
 }
 
 internal sealed class DenoReplExecutionCollector
 {
     private const int ModelItemOverheadBytes = 64;
     private const int DigestOverheadBytes = 64;
-    /// <summary>Binary mime payloads at or above this size go through the object bypass
-    /// instead of being base64-encoded into the display bundle.</summary>
+    /// <summary>Binary mime payloads at or above this size are stored as immutable objects
+    /// and referenced by URL; smaller payloads stay inline as base64 strings only because
+    /// the object-store round trip costs more than encoding a few KiB (see the bundle
+    /// comment at the rebuild site).</summary>
     internal const int InlineBinaryThresholdBytes = 8 * 1024;
 
     /// <summary>How long the collector keeps draining the output stream after the eval terminal
@@ -58,7 +64,7 @@ internal sealed class DenoReplExecutionCollector
         Dictionary<string, ReplDisplayId> displayIds,
         string executionId,
         ReplOutputRateLimiter? rateLimiter = null,
-        IReplObjectBypass? objectBypass = null)
+        IReplDisplayObjectStore? displayObjectStore = null)
     {
         this.sessionId = sessionId;
         this.generation = generation;
@@ -67,10 +73,10 @@ internal sealed class DenoReplExecutionCollector
         this.displayIds = displayIds;
         this.executionId = executionId;
         this.rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
-        this.objectBypass = objectBypass;
+        this.displayObjectStore = displayObjectStore;
     }
 
-    private readonly IReplObjectBypass? objectBypass;
+    private readonly IReplDisplayObjectStore? displayObjectStore;
 
     internal async Task<DenoReplExecutionResult> ConsumeAsync(
         IDenoReplConnection connection,
@@ -323,15 +329,14 @@ internal sealed class DenoReplExecutionCollector
                     placeholder.TryGetInt32(out var index))
                 {
                     var bytes = display.ResolveBuffer(index);
-                    if (bytes.Length >= InlineBinaryThresholdBytes && objectBypass is { } bypass)
+                    if (bytes.Length >= InlineBinaryThresholdBytes && displayObjectStore is { } objects)
                     {
-                        // Large binary payloads go to the object bypass: the bundle carries a
-                        // structured reference the frontend dereferences (invariant 26 — no
-                        // base64 on the frontend wire).
-                        var sha = bypass.Ingest(bytes);
+                        // Large payloads become immutable content-addressed objects: the bundle
+                        // carries a URL the frontend fetches natively over HTTP (invariant 26).
+                        var url = objects.Store(bytes, mime);
                         element = JsonSerializer.SerializeToElement(
-                            new ReplObjectReference(sha, bytes.Length),
-                            ReplJsonContext.Default.ReplObjectReference);
+                            new ReplDisplayObjectReference(url, bytes.Length),
+                            ReplJsonContext.Default.ReplDisplayObjectReference);
                     }
                     else
                     {

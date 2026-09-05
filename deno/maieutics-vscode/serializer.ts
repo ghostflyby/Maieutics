@@ -147,16 +147,18 @@ const DisplayMimes = new Set([
   "application/json",
 ]);
 
-/** A large binary payload reference from the server's object bypass. */
+/** A reference to an immutable binary display payload, addressed by its
+ * relative URL (content-addressed: same URL = same bytes forever). */
 export interface ObjectReference {
   $object: string;
   byteLength: number;
 }
 
 export function isObjectReference(value: unknown): value is ObjectReference {
-  return typeof value === "object" && value !== null &&
-    typeof (value as Record<string, unknown>).$object === "string" &&
-    typeof (value as Record<string, unknown>).byteLength === "number";
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.$object === "string" && record.$object.startsWith("/") &&
+    typeof record.byteLength === "number";
 }
 
 /** Maps a mime bundle onto notebook output items in bundle order. Object

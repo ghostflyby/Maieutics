@@ -128,9 +128,11 @@ export class FrontendClient {
     throw await this.errorOf(response);
   }
 
-  /** Fetches a binary object by content address (object bypass dereference). */
-  async fetchObject(sha256: string, signal?: AbortSignal): Promise<Uint8Array> {
-    const response = await fetch(`${this.baseUrl}/v1/objects/${sha256}`, {
+  /** Fetches an immutable display object at its relative URL. The URL is
+   * content-addressed (same URL = same bytes forever), so callers may cache
+   * aggressively and share entries across displays, runs, and notebooks. */
+  async fetchObject(relativeUrl: string, signal?: AbortSignal): Promise<Uint8Array> {
+    const response = await fetch(`${this.baseUrl}${relativeUrl}`, {
       headers: { "Authorization": `Bearer ${this.token}` },
       signal,
     });

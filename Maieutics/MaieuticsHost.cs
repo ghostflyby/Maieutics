@@ -242,10 +242,10 @@ public static class MaieuticsHost
                 services.GetService<PluginHostManager>()));
         builder.Services.AddSingleton<DenoReplRegistry>();
         builder.Services.AddSingleton<DenoReplFunctions>();
-        // Large binary REPL display payloads are ingested into the object store and
-        // referenced by content address (frontend-migration-gaps.md #2).
-        builder.Services.AddSingleton<IReplObjectBypass>(static services =>
-            new ReplObjectBypass(services.GetRequiredService<ObjectStore>()));
+        // Large binary REPL display payloads are stored content-addressed and referenced
+        // by a stable relative URL the frontend fetches natively (frontend-migration-gaps.md #2).
+        builder.Services.AddSingleton<IReplDisplayObjectStore>(static services =>
+            new ReplDisplayObjectStore(services.GetRequiredService<ObjectStore>()));
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();
         builder.Services.AddHostedService<DenoModuleGraphWarmer>();
         builder.Services.AddSingleton(static services =>

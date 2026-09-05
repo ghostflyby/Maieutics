@@ -306,6 +306,9 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
+        // Content-addressed objects are immutable: unconditional client caching is the
+        // contract (same URL = same bytes forever).
+        context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
         await Results.Stream(objectStore.Open(objectId), "application/octet-stream")
             .ExecuteAsync(context).ConfigureAwait(false);
     }

@@ -21,7 +21,9 @@ public sealed class FrontendProcessSmokeTests
     [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableServesTheFrontendProtocol()
     {
-        using var deadline = CreateDeadline(TimeSpan.FromSeconds(90));
+        using var deadline = CreateDeadline(
+            TestContext.Current.CancellationToken,
+            TimeSpan.FromSeconds(90));
         var provider = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "smoke answer");
         await using var process = StartHostProcess(provider.Endpoint, deadline.Token);
         var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
@@ -70,9 +72,11 @@ public sealed class FrontendProcessSmokeTests
         File.Exists(process.DiscoveryPath).Should().BeFalse();
     }
 
-    private static CancellationTokenSource CreateDeadline(TimeSpan timeout)
+    private static CancellationTokenSource CreateDeadline(
+        CancellationToken cancellationToken,
+        TimeSpan timeout)
     {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
         return deadline;
     }

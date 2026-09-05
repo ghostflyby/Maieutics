@@ -402,7 +402,7 @@ public sealed class FrontendApiIntegrationTests
         {
             var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
             if (status.GetProperty("markdown").GetString()!.Contains("model-two")) break;
-            await Task.Delay(100, wait.Token).ConfigureAwait(false);
+            await Task.Delay(100, wait.Token);
         }
 
         await harness.SubmitTurnAsync(sessionId, "second", deadline.Token);
@@ -428,11 +428,11 @@ public sealed class FrontendApiIntegrationTests
         {
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
-                wait.Token).ConfigureAwait(false);
+                wait.Token);
             if (transcript.GetProperty("turns").GetArrayLength() >= minimumTurns)
                 return transcript;
 
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            await Task.Delay(50, wait.Token);
         }
     }
 
@@ -585,12 +585,12 @@ public sealed class FrontendApiIntegrationTests
                         using var stream = File.OpenRead(discoveryPath);
                         using var document = await JsonDocument.ParseAsync(
                             stream,
-                            cancellationToken: wait.Token).ConfigureAwait(false);
+                            cancellationToken: wait.Token);
                         discoveryElement = document.RootElement.Clone();
                         break;
                     }
 
-                    await Task.Delay(50, wait.Token).ConfigureAwait(false);
+                    await Task.Delay(50, wait.Token);
                 }
             }
 
@@ -614,7 +614,7 @@ public sealed class FrontendApiIntegrationTests
         public async Task<string> GetSessionIdAsync(CancellationToken cancellationToken)
         {
             var session = await Client.GetFromJsonAsync<JsonElement>("/v1/agent/session", cancellationToken)
-                .ConfigureAwait(false);
+                ;
             return session.GetProperty("id").GetString()!;
         }
 
@@ -626,10 +626,10 @@ public sealed class FrontendApiIntegrationTests
             using var response = await Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken);
             response.StatusCode.Should().Be(HttpStatusCode.Accepted);
             var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken)
-                .ConfigureAwait(false);
+                ;
             return body.GetProperty("runId").GetString()!;
         }
 
@@ -643,7 +643,7 @@ public sealed class FrontendApiIntegrationTests
             await socket.ConnectAsync(
                 new Uri(
                     $"{Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events?sinceSequence={sinceSequence}"),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken);
             return new FrontendEventsConnection(socket);
         }
 
@@ -657,10 +657,10 @@ public sealed class FrontendApiIntegrationTests
             {
                 var transcript = await Client.GetFromJsonAsync<JsonElement>(
                     $"/v1/agent/sessions/{sessionId}/transcript",
-                    wait.Token).ConfigureAwait(false);
+                    wait.Token);
                 if (transcript.GetProperty("turns").GetArrayLength() > 0) return;
 
-                await Task.Delay(50, wait.Token).ConfigureAwait(false);
+                await Task.Delay(50, wait.Token);
             }
         }
 
@@ -670,14 +670,14 @@ public sealed class FrontendApiIntegrationTests
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
-                await host.StopAsync(cleanup.Token).ConfigureAwait(false);
+                await host.StopAsync(cleanup.Token);
             }
             catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
             {
             }
 
-            await ((IAsyncDisposable)host).DisposeAsync().ConfigureAwait(false);
-            await provider.DisposeAsync().ConfigureAwait(false);
+            await ((IAsyncDisposable)host).DisposeAsync();
+            await provider.DisposeAsync();
             File.Delete(configurationFile);
         }
     }
@@ -691,7 +691,7 @@ public sealed class FrontendApiIntegrationTests
             while (true)
             {
                 var segment = new ArraySegment<byte>(buffer);
-                var result = await socket.ReceiveAsync(segment, cancellationToken).ConfigureAwait(false);
+                var result = await socket.ReceiveAsync(segment, cancellationToken);
                 if (result.MessageType == WebSocketMessageType.Close)
                     throw new InvalidOperationException("The events socket closed unexpectedly.");
 
@@ -710,7 +710,7 @@ public sealed class FrontendApiIntegrationTests
             var frames = new List<JsonElement>();
             while (true)
             {
-                var frame = await ReceiveFrameAsync(cancellationToken).ConfigureAwait(false);
+                var frame = await ReceiveFrameAsync(cancellationToken);
                 frames.Add(frame);
                 if (until(frame)) return frames;
             }
@@ -725,7 +725,7 @@ public sealed class FrontendApiIntegrationTests
                     await socket.CloseAsync(
                         WebSocketCloseStatus.NormalClosure,
                         "test done",
-                        cleanup.Token).ConfigureAwait(false);
+                        cleanup.Token);
             }
             catch (Exception exception) when (exception is WebSocketException or OperationCanceledException)
             {
@@ -759,7 +759,7 @@ public sealed class FrontendApiIntegrationTests
 
         public async ValueTask DisposeAsync()
         {
-            await cancellation.CancelAsync().ConfigureAwait(false);
+            await cancellation.CancelAsync();
             listener.Stop();
             release.TrySetResult();
             cancellation.Dispose();
@@ -769,16 +769,16 @@ public sealed class FrontendApiIntegrationTests
         {
             try
             {
-                using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                using var client = await listener.AcceptTcpClientAsync(cancellationToken);
                 await using var stream = client.GetStream();
                 _ = DrainAsync(stream, cancellationToken);
-                await release.Task.ConfigureAwait(false);
+                await release.Task;
                 var body = Encoding.UTF8.GetBytes(
                     "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\ndata: [DONE]\n\n");
                 var headers = Encoding.ASCII.GetBytes(
                     $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                await stream.WriteAsync(headers, cancellationToken);
+                await stream.WriteAsync(body, cancellationToken);
             }
             catch (Exception exception) when
                 (exception is OperationCanceledException or SocketException or IOException)
@@ -791,7 +791,7 @@ public sealed class FrontendApiIntegrationTests
             var buffer = new byte[4096];
             try
             {
-                while (await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) > 0)
+                while (await stream.ReadAsync(buffer, cancellationToken) > 0)
                 {
                 }
             }

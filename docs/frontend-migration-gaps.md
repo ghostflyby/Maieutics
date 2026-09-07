@@ -162,7 +162,7 @@ anywidget model renders its initial state but is inert.
 Either way the migration is *complete* on this axis once the decision is
 recorded in an ADR addendum; (a) is a v2 protocol feature, not a v1 gap.
 
-## 7. Extension publishing pipeline
+## 7. Extension publishing pipeline — DONE
 
 Priority: Low. Type: Release engineering.
 
@@ -177,7 +177,14 @@ of truth: the extension's `package.json`, bumped via the release PR.
 **Acceptance.** Pushing a `vscode-v*` tag produces a release artifact
 without local steps.
 
-## 8. Historical documentation sweep
+**Implementation.** `.github/workflows/extension-release.yml`: `vscode-v*`
+tags (or manual dispatch as a build-only dry run) run frozen install,
+fmt/lint/check/test, bundle, `vsce package`, verify the tag equals
+`vscode-v<package.json version>`, upload the vsix to a GitHub release, and
+publish to the Marketplace only for a matching tag when a `VSCE_PAT` secret
+exists.
+
+## 8. Historical documentation sweep — DONE
 
 Priority: Low. Type: Documentation hygiene.
 
@@ -190,6 +197,11 @@ banners with pointers; no rewriting of the originals (they are records).
 
 **Acceptance.** `docs/README.md` presents the frontend protocol as primary;
 the swept files carry the banner.
+
+**Implementation.** ADR 0003 carries a partial-supersession banner (the REPL
+remains; the IOPub bridge is historical); both compat docs carry historical
+banners; `docs/README.md` gained Frontend and Historical sections presenting
+the web protocol as primary.
 
 ## Out of scope (recorded deliberately)
 

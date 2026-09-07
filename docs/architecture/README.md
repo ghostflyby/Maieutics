@@ -4,6 +4,11 @@ Status: Accepted
 
 Date: 2026-07-16
 
+> **Historical — partially superseded by ADR 0023**
+> (`0023-custom-web-frontend-protocol-and-vscode-notebook.md`). The product frontend is the custom web protocol and
+> the VSCode notebook extension; the executable no longer hosts a user-facing Jupyter kernel. The model, REPL,
+> extension, and execution boundaries described here remain. This record is preserved as written.
+
 ## Purpose
 
 Maieutics is a notebook-native agent hosted as a Jupyter kernel. The architecture must support multiple model APIs,

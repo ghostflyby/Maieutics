@@ -14,6 +14,12 @@ Jupyter kernel involved (ADR 0023).
   to the running REPL.
 - Command cells (`%status`, `%session`, `%model`, `%workspace`) answer inline.
 - Session commands: new session, resume a stored session, show status.
+- Sessions as files: **Maieutics: Mount Sessions as Workspace Folder** (also the folder button in
+  the sessions tree title) adds `maieutics:/sessions` as a workspace folder, so every stored session
+  appears in the Explorer as an ordinary `<session-id>.maieuticsnb` notebook that can be opened,
+  searched, and diffed like any file. The mount is a snapshot view, not a live feed: the server
+  transcript stays authoritative, views refresh on mount or window reload, and deleting a file there
+  only discards the local view until the next sync re-materializes it.
 - Turn timeline renderer: outputs carrying the structured turn snapshot offer a "Maieutics Turn
   Timeline" view (tools, truncation, errors) via the output's mimetype picker; markdown remains the
   default view.

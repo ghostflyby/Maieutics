@@ -14,13 +14,19 @@
     "AI"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "virtualWorkspaces": true
+  },
   "activationEvents": [
     "onNotebook:maieutics-notebook",
     "onCommand:maieutics.newSession",
     "onCommand:maieutics.showStatus",
     "onCommand:maieutics.listSessions",
     "onCommand:maieutics.restartServer",
-    "onRenderer:maieutics-turn-renderer"
+    "onCommand:maieutics.mountSessionsFolder",
+    "onFileSystem:maieutics",
+    "onRenderer:maieutics-turn-renderer",
+    "onView:maieutics.sessions"
   ],
   "contributes": {
     "notebooks": [
@@ -64,6 +70,18 @@
         "command": "maieutics.restartServer",
         "title": "Restart Server",
         "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.refreshSessions",
+        "title": "Refresh Sessions",
+        "category": "Maieutics",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "maieutics.mountSessionsFolder",
+        "title": "Mount Sessions as Workspace Folder",
+        "category": "Maieutics",
+        "icon": "$(new-folder)"
       }
     ],
     "configuration": {
@@ -80,6 +98,38 @@
           "markdownDescription": "Attach to an externally launched executable through this discovery file instead of launching one. Leave empty to let the extension own the process."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "maieutics",
+          "title": "Maieutics",
+          "icon": "media/maieutics.svg"
+        }
+      ]
+    },
+    "views": {
+      "maieutics": [
+        {
+          "id": "maieutics.sessions",
+          "name": "Sessions",
+          "when": "true"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "maieutics.refreshSessions",
+          "group": "navigation",
+          "when": "view == maieutics.sessions"
+        },
+        {
+          "command": "maieutics.mountSessionsFolder",
+          "group": "navigation",
+          "when": "view == maieutics.sessions"
+        }
+      ]
     }
   },
   "repository": {

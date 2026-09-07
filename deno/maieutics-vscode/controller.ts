@@ -31,8 +31,8 @@ import {
 import { resolveSessionPin } from "./sessionPin.ts";
 
 const PaintIntervalMs = 60;
-/** Bridges the protocol onto one notebook's outputs. Connections start lazily
- * on the first execution, never at extension activation. */
+/** Bridges the protocol onto one notebook's outputs. Notebook execution
+ * connects lazily, but activation-time session sync may connect earlier. */
 export interface NotebookBridge {
   client(): Promise<FrontendClient>;
   /** Current server session for the notebook's connection. */
@@ -62,9 +62,15 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.resetConnections();
+    this.controller.dispose();
+  }
+
+  /** Drops live event streams after a server restart; the next execution in
+   * each notebook reconnects against the new process. */
+  resetConnections(): void {
     for (const stream of this.streams.values()) stream.dispose();
     this.streams.clear();
-    this.controller.dispose();
   }
 
   /** Cancels the notebook's in-flight runs when its document closes (best
@@ -202,6 +208,13 @@ class NotebookStream {
   ) {}
 
   dispose(): void {
+    // Settle in-flight runs BEFORE aborting: a settled run ends its cell
+    // execution and resolves the notebook's execution queue, so nothing is
+    // left spinning behind a connection that no longer exists.
+    for (const run of this.runs.values()) {
+      run.fail("events_disconnected", "The Maieutics server connection was reset.");
+    }
+    this.runs.clear();
     this.controller?.abort();
     this.controller = null;
   }

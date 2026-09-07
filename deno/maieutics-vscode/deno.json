@@ -13,7 +13,7 @@
   },
   "tasks": {
     "check": "deno check .",
-    "test": "deno test --allow-net --allow-read --allow-env --allow-run .",
+    "test": "deno test --allow-net --allow-read --allow-write --allow-env --allow-run .",
     "build": "deno bundle --format cjs --external vscode --minify -o dist/extension.js extension.ts",
     "watch": "deno bundle --format cjs --external vscode -o dist/extension.js extension.ts --watch",
     "package": "deno run -A --no-lock npm:@vscode/vsce@3.9.2 package --no-dependencies"

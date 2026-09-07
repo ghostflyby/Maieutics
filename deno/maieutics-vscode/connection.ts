@@ -21,6 +21,8 @@ const LaunchTimeoutMs = 20_000;
 const PollIntervalMs = 50;
 /** Bounded stderr tail kept for launch-failure diagnostics. */
 const StderrTailBytes = 8 * 1024;
+/** Grace budget for the SIGTERM stop before escalating to SIGKILL. */
+const StopGraceMs = 3_000;
 
 export interface ConnectionOptions {
   executablePath: string;
@@ -45,16 +47,24 @@ export async function connect(options: ConnectionOptions): Promise<Connection> {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   });
+  // Spawn failures (ENOENT etc.) surface here, not through "exit". The
+  // watcher is read through a getter because the event fires asynchronously,
+  // after this synchronous setup returns.
+  let spawnError: Error | undefined;
+  child.on("error", (error) => {
+    spawnError = error;
+  });
   const stderrTail = tailStderr(child);
   try {
-    const discovery = await waitForDiscovery(discoveryPath, child, stderrTail, options.signal);
+    const discovery = await waitForDiscovery(discoveryPath, child, () => spawnError, stderrTail, {
+      executablePath: options.executablePath,
+    }, options.signal);
     return {
       client: FrontendClient.fromDiscovery(discovery),
       dispose: () => disposeOwned(child, discoveryPath),
     };
   } catch (error) {
-    child.kill();
-    await exited(child);
+    await stopChild(child);
     throw error;
   }
 }
@@ -70,16 +80,29 @@ async function attach(discoveryPath: string, signal?: AbortSignal): Promise<Conn
 async function waitForDiscovery(
   path: string,
   child: ChildProcess,
+  spawnError: () => Error | undefined,
   stderrTail: () => string,
+  options: { executablePath: string },
   signal?: AbortSignal,
 ): Promise<unknown> {
   const deadline = Date.now() + LaunchTimeoutMs;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new Error("The launch was aborted.");
-    const exited = await exitedNow(child);
+    const spawnFailure = spawnError();
+    if (spawnFailure !== undefined) {
+      throw new Error(
+        `The Maieutics executable '${options.executablePath}' could not be started: ${spawnFailure.message}. ` +
+          "GUI-launched VS Code does not inherit a shell profile, so a bare executable name only works if its " +
+          "directory is on the system-wide PATH — set maieutics.executablePath to an absolute path if needed." +
+          (stderrTail() ? `\nstderr:\n${stderrTail()}` : ""),
+      );
+    }
+
+    const exited = exitNow(child);
     if (exited !== undefined) {
       throw new Error(
-        `The Maieutics executable exited with code ${exited} before publishing discovery.` +
+        `The Maieutics executable '${options.executablePath}' exited (${describeExit(exited)}) ` +
+          "before publishing discovery." +
           (stderrTail() ? `\nstderr:\n${stderrTail()}` : ""),
       );
     }
@@ -105,9 +128,24 @@ async function readDiscovery(path: string, signal?: AbortSignal): Promise<unknow
 }
 
 async function disposeOwned(child: ChildProcess, discoveryPath: string): Promise<void> {
-  if (child.exitCode === null && child.signalCode === null) child.kill();
-  await exited(child);
+  await stopChild(child);
   await rm(discoveryPath).catch(() => {});
+}
+
+/** Stops an owned child: SIGTERM, one grace budget, then SIGKILL escalation.
+ * A child whose spawn never succeeded has no process to stop (its "error"
+ * already fired and "exit" will never come). */
+async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.pid === undefined) return;
+  child.kill();
+  const stopped = await Promise.race([
+    exited(child).then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), StopGraceMs)),
+  ]);
+  if (!stopped && exitNow(child) === undefined) {
+    child.kill("SIGKILL");
+    await exited(child);
+  }
 }
 
 function tailStderr(child: ChildProcess): () => string {
@@ -128,15 +166,23 @@ function tailStderr(child: ChildProcess): () => string {
 function exited(child: ChildProcess): Promise<void> {
   return new Promise((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) resolve();
-    else child.once("exit", () => resolve());
+    else {
+      child.once("exit", () => resolve());
+      // A failed spawn never emits "exit"; its "error" is the end marker.
+      child.once("error", () => resolve());
+    }
   });
 }
 
-function exitedNow(child: ChildProcess): Promise<number | null> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(child.exitCode);
-  const exited = new Promise<number | null>((resolve) => {
-    child.once("exit", (code) => resolve(code));
-  });
-  // Poll-free race: whoever settles first wins.
-  return Promise.race([exited, Promise.resolve().then(() => child.exitCode)]);
+/** Synchronous liveness snapshot: undefined while the process is running,
+ * otherwise how it ended. A null code means it was killed by `signal`. */
+function exitNow(
+  child: ChildProcess,
+): { code: number | null; signal: string | null } | undefined {
+  if (child.exitCode === null && child.signalCode === null) return undefined;
+  return { code: child.exitCode, signal: child.signalCode };
+}
+
+function describeExit(exit: { code: number | null; signal: string | null }): string {
+  return exit.code !== null ? `code ${exit.code}` : `signal ${exit.signal ?? "unknown"}`;
 }

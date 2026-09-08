@@ -10,8 +10,12 @@
  * treat them idempotently.
  */
 
+import { decodeCommEnvelope, encodeCommEnvelope } from "../shared/comm_codec.ts";
 import type {
   Capabilities,
+  CommFrame,
+  CommHello,
+  CommMessage,
   EventFrame,
   SessionInfo,
   StoredSession,
@@ -34,6 +38,17 @@ export type CommandAnswer = {
 };
 export type TurnAnswer = { kind: "turn"; runId: string };
 export type SubmitAnswer = CommandAnswer | TurnAnswer;
+
+/** The session comms socket (ADR 0024). The hello carries the live-comm
+ * snapshot; `messages` yields sequenced comm frames and typed errors until
+ * the socket closes. */
+export interface CommSocket {
+  hello: CommHello;
+  /** Sends an uplink comm frame; the server assigns ordering. */
+  send(message: CommMessage): void;
+  messages: AsyncGenerator<CommFrame>;
+  close(): void;
+}
 
 export interface EventsOptions {
   sinceSequence?: number;
@@ -211,6 +226,107 @@ export class FrontendClient {
       await sleep(backoffMs);
       backoffMs = Math.min(backoffMs * 2, 8000);
     }
+  }
+
+  /**
+   * Opens the session comms socket (ADR 0024): a full-duplex channel carrying
+   * widget comm frames both ways after a JSON hello. Binary frames decode
+   * through the shared codec with the envelope sequence; the uplink sends
+   * sequence 0 because the server assigns ordering. There is no automatic
+   * reconnect — the caller resumes with `sinceSeq` after a close, mirroring
+   * the events discipline.
+   */
+  async commSocket(
+    sessionId: string,
+    options: { sinceSeq?: number; signal?: AbortSignal } = {},
+  ): Promise<CommSocket> {
+    const url = `${this.baseUrl}/v1/agent/sessions/${sessionId}/comms` +
+      `?sinceSeq=${options.sinceSeq ?? 0}&token=${encodeURIComponent(this.token)}`;
+    const socket = new WebSocket(url.replace("http://", "ws://"));
+    // The default binary type is "blob"; the codec decodes raw bytes.
+    socket.binaryType = "arraybuffer";
+
+    let hello: CommHello | undefined;
+    let helloArrived: (() => void) | undefined;
+    const helloPromise = new Promise<void>((resolve) => {
+      helloArrived = resolve;
+    });
+    const queue: CommFrame[] = [];
+    let wake: (() => void) | null = null;
+    const enqueue = (frame: CommFrame) => {
+      queue.push(frame);
+      wake?.();
+      wake = null;
+    };
+    socket.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        // The first text frame is the hello; later text frames are typed
+        // comm.error answers and stay on the socket.
+        const parsed = JSON.parse(event.data) as Partial<CommHello> & {
+          code?: string;
+          commId?: string;
+        };
+        if (hello === undefined && Array.isArray(parsed.live)) {
+          hello = parsed as CommHello;
+          helloArrived?.();
+          return;
+        }
+
+        enqueue({ kind: "error", code: parsed.code ?? "unknown", commId: parsed.commId ?? "" });
+        return;
+      }
+
+      try {
+        const { sequence, message } = decodeCommEnvelope(new Uint8Array(event.data));
+        enqueue({ kind: "comm", sequence, message });
+      } catch {
+        // A malformed binary frame is dropped; the server never sends one.
+      }
+    };
+    const closed = new Promise<void>((resolve) => {
+      socket.onclose = () => resolve();
+    });
+    options.signal?.addEventListener("abort", () => {
+      try {
+        socket.close();
+      } catch {
+        // Already closed.
+      }
+    }, { once: true });
+
+    const opened = new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve();
+      socket.onerror = () => {
+        reject(new FrontendError("unreachable", 0, "The comms socket failed to open."));
+      };
+    });
+    await opened;
+    await Promise.race([
+      helloPromise,
+      closed.then(() => {
+        throw new FrontendError("unreachable", 0, "The comms socket closed before the hello.");
+      }),
+    ]);
+    if (hello === undefined) {
+      throw new FrontendError("protocol_error", 0, "The comms hello is missing or malformed.");
+    }
+
+    // Iterating does not own the socket: a consumer that stops early keeps the
+    // connection (and its other direction) alive; close() is the only close path.
+    const messages: AsyncGenerator<CommFrame> = (async function* () {
+      while (queue.length > 0) yield queue.shift()!;
+      while (socket.readyState === WebSocket.OPEN) {
+        await new Promise<void>((resolve) => wake = resolve);
+        while (queue.length > 0) yield queue.shift()!;
+      }
+    })();
+
+    return {
+      hello,
+      send: (message) => socket.send(encodeCommEnvelope(0, message)),
+      messages,
+      close: () => socket.close(),
+    };
   }
 
   private openSocket(

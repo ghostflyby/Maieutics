@@ -96,6 +96,7 @@ export interface EventFrame {
   content?: { kind: string; text?: string; value?: unknown };
   result?: unknown;
   displayId?: string;
+  commId?: string;
   data?: Record<string, unknown>;
   agentMessage?: TranscriptMessage;
   truncated?: boolean;
@@ -108,3 +109,27 @@ export interface EventFrame {
   session?: SessionInfo;
   replayed?: boolean;
 }
+
+/** Comm types are re-exported from the shared codec so protocol consumers have
+ * one import surface (ADR 0024). */
+import type { CommMessage } from "../shared/comm_codec.ts";
+
+export { CommKind, type CommMessage } from "../shared/comm_codec.ts";
+
+/** One live comm announced in the comms hello. */
+export interface CommDescriptor {
+  commId: string;
+  targetName?: string;
+}
+
+/** The comms WebSocket hello: live identities plus replay status. */
+export interface CommHello {
+  live: CommDescriptor[];
+  replayed: boolean;
+  truncated: boolean;
+}
+
+/** One decoded comms-socket frame: a sequenced comm message or a typed error. */
+export type CommFrame =
+  | { kind: "comm"; sequence: number; message: CommMessage }
+  | { kind: "error"; code: string; commId: string };

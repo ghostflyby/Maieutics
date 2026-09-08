@@ -37,6 +37,10 @@ public sealed class FrontendCommIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task DownlinkReachesTheSocketAndUplinkReachesTheChild()
     {
+        // The child stub rides the control host's Unix socket; Windows CI
+        // covers the control channel with its own credential bootstrap instead.
+        if (OperatingSystem.IsWindows()) return;
+
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
@@ -86,6 +90,10 @@ public sealed class FrontendCommIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task HelloCarriesLiveCommsAndSinceReplay()
     {
+        // The child stub rides the control host's Unix socket; Windows CI
+        // covers the control channel with its own credential bootstrap instead.
+        if (OperatingSystem.IsWindows()) return;
+
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
@@ -173,6 +181,10 @@ public sealed class FrontendCommIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task UplinkAfterChildDetachIsReplUnavailable()
     {
+        // The child stub rides the control host's Unix socket; Windows CI
+        // covers the control channel with its own credential bootstrap instead.
+        if (OperatingSystem.IsWindows()) return;
+
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,

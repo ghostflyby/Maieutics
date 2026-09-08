@@ -151,7 +151,7 @@ exports.activate = function activate() {
   // comm_update for a nested model must reach every view rendering it.
   const models = new Map();
   const views = []; // { modelId, container }
-  window.addEventListener("message", (event) => {
+  globalThis.addEventListener("message", (event) => {
     const message = event.data;
     if (
       typeof message !== "object" || message === null ||

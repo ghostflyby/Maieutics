@@ -176,7 +176,7 @@ Deno.test("events stream yields frames and requires the bearer token", async () 
 });
 
 Deno.test("comm socket negotiates the hello and relays frames both ways", async () => {
-  const { url, discovery, shutdown, sendComm, receivedComms } = await startMockServer();
+  const { discovery, shutdown, sendComm, receivedComms } = await startMockServer();
   try {
     const client = FrontendClient.fromDiscovery(discovery);
     const comms = await client.commSocket("a".repeat(32));

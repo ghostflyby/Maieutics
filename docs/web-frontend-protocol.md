@@ -93,10 +93,9 @@ Interactive widgets (ADR 0024) pair a **display mime** that announces the
 widget with a **comm channel** that carries the model's life:
 
 - A REPL display bundle may carry
-  `application/vnd.maieutics.widget-view+json`:
-  `{"commId": "…", "version": 1, "esm"?: "<js or $object ref>",
-  "css"?: "<css or $object ref>", "state": {…}}`. Large `esm`/`css` payloads
-  are content-addressed `$object` references like any binary mime.
+  `application/vnd.jupyter.widget-view+json`:
+  `{"model_id": "…", "version_major": 2, "version_minor": 0}` — the model's
+  state travels on the comm channel, not in the bundle.
 - Everything else about a widget travels on the comm WebSocket below.
 
 ### `GET /v1/agent/sessions/{sid}/comms?sinceSeq=<n>&token=<hex>`
@@ -110,8 +109,8 @@ query parameter like the events endpoint; a non-active session is
 ```
 
 `live` is the registry of currently open comms (identities survive replay
-eviction); `replayed` reports whether retained frames were re-sent for a
-non-zero `sinceSeq`; `truncated` reports that the client's `sinceSeq` precedes
+eviction); `replayed` is true when a non-zero `sinceSeq` was requested (the
+replayed set may still be empty); `truncated` reports that the client's `sinceSeq` precedes
 the retained buffer, so state must be treated as unknown-until-refresh.
 
 After the hello, every application frame is **binary**:
@@ -136,9 +135,10 @@ native bytes, never base64 (invariant 26). Direction rules:
 
 Backpressure and resume follow the events stream: bounded per-subscriber
 queues; on overflow the server closes with `1011 backpressure` and the client
-reconnects with its last observed sequence. Sequences are dense per session
-and reset when the active session changes (widget state lives in the
-session's REPL process and does not survive switches or restarts). Frames are
+reconnects with its last observed sequence. Sequences are dense per session. Planes are retained per session (least
+recently used, a small fixed window) rather than torn down eagerly; widget
+state lives in the session's REPL process, so a plane created for a
+switched-back session reflects only comms that REPL re-announces. Frames are
 re-sent verbatim on replay; widget state merges are last-wins, so replay is
 idempotent.
 

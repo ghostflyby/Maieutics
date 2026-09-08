@@ -448,8 +448,9 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// <summary>
     ///     Serves the session-scoped full-duplex comm WebSocket (ADR 0024). The hello frame
     ///     carries the live-comm snapshot plus replay status; application frames are binary
-    ///     codec frames wrapped in the 8-byte envelope sequence. Uplink violations are typed
-    ///     comm.error frames, except a frontend-originated open, which is a policy close.
+    ///     codec frames wrapped in the 8-byte envelope sequence. All writes are serialized
+    ///     through one gate because a WebSocket allows a single outstanding send: the
+    ///     downlink loop and the uplink's error replies would otherwise race.
     /// </summary>
     private async Task HandleComms(HttpContext context, string sessionId)
     {
@@ -492,38 +493,57 @@ internal sealed class FrontendHost : IAsyncDisposable
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
             lifetime.Token);
+        using var sendGate = new System.Threading.SemaphoreSlim(1, 1);
+        async Task SendAsync(Func<Task> write)
+        {
+            await sendGate.WaitAsync(peer.Token).ConfigureAwait(false);
+            try
+            {
+                await write().ConfigureAwait(false);
+            }
+            finally
+            {
+                sendGate.Release();
+            }
+        }
+
+        async Task CloseAsyncOutput(WebSocketCloseStatus status, string description)
+        {
+            await SendAsync(() => socket.CloseOutputAsync(status, description, CancellationToken.None))
+                .ConfigureAwait(false);
+        }
+
         // Subscribe before the hello so the snapshot and the replay are one coherent view:
-        // an open published in between appears in both, which clients fold by comm id.
+        // an open published in between lands in both initial replay and live, folded by
+        // comm id.
         var (initial, channel, truncated) = plane.Subscribe(since);
-        var uplink = ServeCommUplinkAsync(socket, commRouter, activeSessionId, plane, peer.Token);
+        var uplink = ServeCommUplinkAsync(socket, commRouter, activeSessionId, plane, SendAsync, peer.Token);
         try
         {
-            await SendTextFrameAsync(
+            await SendAsync(() => SendTextFrameAsync(
                 socket,
                 JsonSerializer.Serialize(
                     new FrontendCommHello(plane.SnapshotLive(), since > 0, truncated),
                     FrontendJsonContext.Default.FrontendCommHello),
-                peer.Token).ConfigureAwait(false);
+                peer.Token)).ConfigureAwait(false);
             foreach (var record in initial)
-                await SendBinaryFrameAsync(
-                    socket,
-                    FrontendCommEnvelope.Encode(record.Sequence, record.Message),
-                    peer.Token).ConfigureAwait(false);
+            {
+                var payload = FrontendCommEnvelope.Encode(record.Sequence, record.Message);
+                await SendAsync(() => SendBinaryFrameAsync(socket, payload, peer.Token)).ConfigureAwait(false);
+            }
 
             await foreach (var record in channel.Reader.ReadAllAsync(peer.Token).ConfigureAwait(false))
-                await SendBinaryFrameAsync(
-                    socket,
-                    FrontendCommEnvelope.Encode(record.Sequence, record.Message),
-                    peer.Token).ConfigureAwait(false);
+            {
+                var framePayload = FrontendCommEnvelope.Encode(record.Sequence, record.Message);
+                await SendAsync(() => SendBinaryFrameAsync(socket, framePayload, peer.Token)).ConfigureAwait(false);
+            }
         }
         catch (ChannelClosedException exception) when
             (exception.InnerException is FrontendCommStream.FrontendCommBackpressureException)
         {
-            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await socket.CloseAsync(
-                    (WebSocketCloseStatus)1011,
-                    "backpressure",
-                    CancellationToken.None).ConfigureAwait(false);
+            // Send-only close: CloseAsync would wait on the close handshake while the
+            // uplink task may still hold the socket's single outstanding receive.
+            await CloseAsyncOutput((WebSocketCloseStatus)1011, "backpressure").ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (peer.IsCancellationRequested)
         {
@@ -538,72 +558,86 @@ internal sealed class FrontendHost : IAsyncDisposable
             plane.Unsubscribe(channel);
             await peer.CancelAsync().ConfigureAwait(false);
             await uplink.ConfigureAwait(false);
-            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await socket.CloseOutputAsync(
-                    WebSocketCloseStatus.NormalClosure,
-                    "stream ended",
-                    CancellationToken.None).ConfigureAwait(false);
+            await CloseAsyncOutput(WebSocketCloseStatus.NormalClosure, "stream ended").ConfigureAwait(false);
         }
     }
 
-    /// <summary>Reads uplink comm frames until the socket closes; rejections are typed
-    /// comm.error text frames, and a frontend-originated open is a policy close.</summary>
+    /// <summary>Reads uplink comm frames until the socket closes; the loop owns its own
+    /// transport failures so a dead socket never faults into the handler's finally.
+    /// Rejections are typed comm.error text frames, and a frontend-originated open is a
+    /// policy close.</summary>
     private async Task ServeCommUplinkAsync(
         WebSocket socket,
         FrontendCommRouter commRouter,
         string sessionId,
         FrontendCommStream plane,
+        Func<Func<Task>, Task> send,
         CancellationToken cancellationToken)
     {
-        while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        try
         {
-            var payload = await ReplCommFrameReader
-                .ReadAsync(socket, cancellationToken)
-                .ConfigureAwait(false);
-            if (payload is null) return;
+            while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+            {
+                var payload = await ReplCommFrameReader
+                    .ReadAsync(socket, cancellationToken)
+                    .ConfigureAwait(false);
+                if (payload is null) return;
 
-            long sequence;
-            ReplCommMessage message;
-            try
-            {
-                (sequence, message) = FrontendCommEnvelope.Decode(payload);
-            }
-            catch (InvalidDataException)
-            {
-                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                    await socket.CloseOutputAsync(
+                ReplCommMessage message;
+                try
+                {
+                    // The client does not assign ordering; the server does.
+                    message = FrontendCommEnvelope.Decode(payload).Message;
+                }
+                catch (Exception exception) when (exception is InvalidDataException or
+                    JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+                {
+                    // Invariant 17: a malformed frame ends this connection with a typed
+                    // close instead of crashing the receive loop.
+                    await send(() => socket.CloseOutputAsync(
                         WebSocketCloseStatus.InvalidMessageType,
                         "comm frame is malformed",
-                        CancellationToken.None).ConfigureAwait(false);
-                return;
-            }
+                        CancellationToken.None)).ConfigureAwait(false);
+                    return;
+                }
 
-            _ = sequence; // The client does not assign ordering; the server does.
-            try
-            {
-                await commRouter
-                    .PushToReplAsync(sessionId, message, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (FrontendCommRejectException reject) when
-                (reject.Code == FrontendErrors.InvalidRequest)
-            {
-                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                    await socket.CloseOutputAsync(
+                try
+                {
+                    await commRouter
+                        .PushToReplAsync(sessionId, message, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (FrontendCommRejectException reject) when
+                    (reject.Code == FrontendErrors.InvalidRequest)
+                {
+                    await send(() => socket.CloseOutputAsync(
                         WebSocketCloseStatus.PolicyViolation,
                         reject.Message,
-                        CancellationToken.None).ConfigureAwait(false);
-                return;
+                        CancellationToken.None)).ConfigureAwait(false);
+                    return;
+                }
+                catch (FrontendCommRejectException reject)
+                {
+                    await send(() => SendTextFrameAsync(
+                        socket,
+                        JsonSerializer.Serialize(
+                            new FrontendEventFrame("comm.error", Code: reject.Code, CommId: reject.CommId),
+                            FrontendJsonContext.Default.FrontendEventFrame),
+                        cancellationToken)).ConfigureAwait(false);
+                }
             }
-            catch (FrontendCommRejectException reject)
-            {
-                await SendTextFrameAsync(
-                    socket,
-                    JsonSerializer.Serialize(
-                        new FrontendEventFrame("comm.error", Code: reject.Code, CommId: reject.CommId),
-                        FrontendJsonContext.Default.FrontendEventFrame),
-                    cancellationToken).ConfigureAwait(false);
-            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (WebSocketException)
+        {
+            // The peer vanished; nothing to deliver.
+        }
+        catch (InvalidOperationException)
+        {
+            // A concurrent close won the race for the socket's single outstanding
+            // operation; the connection is ending either way.
         }
     }
 

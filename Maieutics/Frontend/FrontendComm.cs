@@ -32,11 +32,9 @@ internal sealed class FrontendCommStream
     private long nextSequence;
     private bool truncated;
 
-    /// <summary>One replayed downlink frame with its session-local sequence.</summary>
-    internal sealed record CommRecord(long Sequence, ReplCommMessage Message)
-    {
-        internal long PayloadBytes { get; } = Message.Buffers.Sum(buffer => (long)buffer.Length);
-    }
+    /// <summary>One replayed downlink frame with its session-local sequence and the
+    /// encoded frame size the retention budget is accountable for.</summary>
+    internal sealed record CommRecord(long Sequence, ReplCommMessage Message, long PayloadBytes);
 
     /// <summary>Accepts a downlink frame from the REPL, updates the registry for
     /// open/close, assigns the next sequence, and fans out to subscribers.</summary>
@@ -61,7 +59,10 @@ internal sealed class FrontendCommStream
             }
 
             nextSequence++;
-            var record = new CommRecord(nextSequence, message);
+            var record = new CommRecord(
+                nextSequence,
+                message,
+                ReplCommCodec.Encode(message).LongLength);
             replay.Add(record);
             replayBytes += record.PayloadBytes;
             while (replay.Count > ReplayRetentionFrames || replayBytes > ReplayRetentionBytes)
@@ -249,8 +250,6 @@ internal sealed class FrontendCommRouter
                 message.CommId,
                 $"No open comm matches '{message.CommId}'.");
 
-        if (message.Kind == ReplCommKind.Close) plane.CloseComm(message.CommId);
-
         try
         {
             await pushToChild(sessionId, message, cancellationToken).ConfigureAwait(false);
@@ -262,6 +261,10 @@ internal sealed class FrontendCommRouter
                 message.CommId,
                 exception.Message);
         }
+
+        // Only forget the comm once the close actually reached the child; a failed
+        // push leaves it live in the REPL and the registry must keep saying so.
+        if (message.Kind == ReplCommKind.Close) plane.CloseComm(message.CommId);
     }
 
     /// <summary>Returns the session's plane, creating it and recycling the oldest planes

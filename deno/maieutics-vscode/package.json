@@ -26,6 +26,7 @@
     "onCommand:maieutics.mountSessionsFolder",
     "onFileSystem:maieutics",
     "onRenderer:maieutics-turn-renderer",
+    "onRenderer:maieutics-widget-renderer",
     "onView:maieutics.sessions"
   ],
   "contributes": {

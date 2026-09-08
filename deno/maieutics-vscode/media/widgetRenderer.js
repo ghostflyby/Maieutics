@@ -132,6 +132,19 @@ function renderModel(container, modelId, state, models, api) {
   container.append(stateView);
 }
 
+/** Records modelId plus every nested IPY_MODEL_ child id in deps. */
+function collectDeps(deps, modelId, models) {
+  const state = models.get(modelId);
+  const children = state && Array.isArray(state.children) ? state.children : [];
+  for (const child of children) {
+    const match = typeof child === "string" ? /^IPY_MODEL_(.+)$/.exec(child) : null;
+    if (match && !deps.has(match[1])) {
+      deps.add(match[1]);
+      collectDeps(deps, match[1], models);
+    }
+  }
+}
+
 exports.activate = function activate() {
   let styled = false;
   // Model states are shared across outputs of the same renderer webview: a
@@ -148,11 +161,14 @@ exports.activate = function activate() {
     }
 
     models.set(message.modelId, message.state ?? {});
+    // A view owns a dependency set (its model plus nested IPY_MODEL_
+    // children): kernel-driven child updates must re-render the parent view.
     for (const view of views) {
-      if (view.modelId !== message.modelId) continue;
-      const state = models.get(message.modelId);
+      if (!view.deps.has(message.modelId)) continue;
+      const state = models.get(view.modelId);
       view.container.replaceChildren();
       renderModel(view.container, view.modelId, state ?? {}, models, api);
+      collectDeps(view.deps, view.modelId, models);
     }
   });
 
@@ -186,7 +202,9 @@ exports.activate = function activate() {
       }
 
       element.append(container);
-      views.push({ modelId, container });
+      const deps = new Set([modelId]);
+      collectDeps(deps, modelId, models);
+      views.push({ modelId, container, deps });
       api.postMessage({ source: "maieutics-widget", type: "mount", modelId });
     },
   };

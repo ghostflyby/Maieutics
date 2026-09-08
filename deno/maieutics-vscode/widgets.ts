@@ -27,6 +27,7 @@ export class WidgetBridge {
   readonly #states = new Map<string, Record<string, unknown>>();
   #socket: WidgetCommSocket | undefined;
   #pump: Promise<void> | undefined;
+  #connect: Promise<void> | undefined;
   #closed = false;
 
   constructor(options: WidgetBridgeOptions) {
@@ -42,7 +43,12 @@ export class WidgetBridge {
     if (modelId.length === 0) return;
 
     if (record.type === "mount") {
-      if (!this.#socket && !this.#closed) await this.#startAsync();
+      // Several outputs can mount in the same pass: one connect, ever.
+      this.#connect ??= this.#startAsync();
+      await this.#connect.catch((error: unknown) => {
+        this.#connect = undefined;
+        this.#options.log(`widget connect failed: ${error}`);
+      });
       this.#postState(modelId);
       return;
     }

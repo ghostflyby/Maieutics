@@ -69,10 +69,11 @@ port of the Jupyter comm wire.
 
 6. **Session scoping follows REPL ownership.** Each Agent session owns one
    REPL process; widget state lives in that process and does not survive
-   session switches or restarts. The comm stream (registry, replay buffer,
-   sequences) is therefore reset when the active session changes, and the
-   endpoint serves the active session only (`404 session_not_active`
-   otherwise), like the events endpoint.
+   restarts. The endpoint serves the active session only
+   (`404 session_not_active` otherwise), like the events endpoint. Planes are
+   retained per session in a small LRU window rather than torn down eagerly on
+   switch: a switched-back session within the window keeps its replay
+   continuity, and one beyond it simply starts a fresh plane.
 
 7. **Widget views are a display mime, not a comm frame.** A widget renders
    through `Deno.jupyter.display` as an

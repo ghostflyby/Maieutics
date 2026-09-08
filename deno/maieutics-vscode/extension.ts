@@ -95,12 +95,14 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (message) => output?.appendLine(message),
   });
   const rendererMessaging = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
-  rendererMessaging.onDidReceiveMessage(({ message }) => {
-    void widgetBridge.handleRendererMessage(message);
-  });
-  context.subscriptions.push({
-    dispose: () => void widgetBridge.dispose(),
-  });
+  context.subscriptions.push(
+    rendererMessaging.onDidReceiveMessage(({ message }) => {
+      void widgetBridge.handleRendererMessage(message).catch((error: unknown) =>
+        output?.appendLine(`widget bridge failed: ${error}`)
+      );
+    }),
+    { dispose: () => void widgetBridge.dispose().catch(() => {}) },
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("maieutics.newSession", async () => {

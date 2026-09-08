@@ -262,10 +262,12 @@ export class FrontendClient {
       if (typeof event.data === "string") {
         // The first text frame is the hello; later text frames are typed
         // comm.error answers and stay on the socket.
-        const parsed = JSON.parse(event.data) as Partial<CommHello> & {
-          code?: string;
-          commId?: string;
-        };
+        let parsed: Partial<CommHello> & { code?: string; commId?: string };
+        try {
+          parsed = JSON.parse(event.data);
+        } catch {
+          return; // A malformed text frame is dropped; the server never sends one.
+        }
         if (hello === undefined && Array.isArray(parsed.live)) {
           hello = parsed as CommHello;
           helloArrived?.();
@@ -284,7 +286,11 @@ export class FrontendClient {
       }
     };
     const closed = new Promise<void>((resolve) => {
-      socket.onclose = () => resolve();
+      socket.onclose = () => {
+        wake?.();
+        wake = null;
+        resolve();
+      };
     });
     options.signal?.addEventListener("abort", () => {
       try {
@@ -314,10 +320,14 @@ export class FrontendClient {
     // Iterating does not own the socket: a consumer that stops early keeps the
     // connection (and its other direction) alive; close() is the only close path.
     const messages: AsyncGenerator<CommFrame> = (async function* () {
-      while (queue.length > 0) yield queue.shift()!;
-      while (socket.readyState === WebSocket.OPEN) {
+      while (true) {
+        const item = queue.shift();
+        if (item !== undefined) {
+          yield item;
+          continue;
+        }
+        if (socket.readyState !== WebSocket.OPEN) return;
         await new Promise<void>((resolve) => wake = resolve);
-        while (queue.length > 0) yield queue.shift()!;
       }
     })();
 

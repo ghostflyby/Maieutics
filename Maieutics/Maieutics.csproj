@@ -109,6 +109,7 @@
         <EmbeddedResource Include="..\deno\shared\protocol.ts" LogicalName="Maieutics.Deno.Shared.Protocol.ts" />
         <EmbeddedResource Include="..\deno\shared\bus.ts" LogicalName="Maieutics.Deno.Shared.Bus.ts" />
         <EmbeddedResource Include="..\deno\shared\ipc_websocket.ts" LogicalName="Maieutics.Deno.Shared.IpcWebSocket.ts" />
+        <EmbeddedResource Include="..\deno\shared\comm_codec.ts" LogicalName="Maieutics.Deno.Shared.CommCodec.ts" />
         <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Maieutics.Deno.PluginSdkConfig.json" />
     </ItemGroup>
 

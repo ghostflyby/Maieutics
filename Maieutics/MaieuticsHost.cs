@@ -185,6 +185,11 @@ public static class MaieuticsHost
                 IPAddress.Loopback,
                 frontendOptions.Port,
                 listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; }));
+        builder.Services.AddSingleton(static services => new FrontendCommRouter(
+            async (sessionId, message, cancellationToken) =>
+                await services.GetRequiredService<ReplControlHost>()
+                    .PushCommMessageAsync(sessionId, message, cancellationToken)
+                    .ConfigureAwait(false)));
         builder.Services.AddSingleton<FrontendSessionService>(CreateFrontendSessionService);
         builder.Services.AddSingleton<FrontendHost>();
         builder.Services.AddHostedService<FrontendHostedService>();
@@ -223,6 +228,11 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             OperatingSystem.IsWindows()
                 ? services.GetRequiredService<IWindowsPipeBootstrap>()
+                : null,
+            frontendOptions.Enabled
+                ? (sessionId, message, cancellationToken) =>
+                    services.GetRequiredService<FrontendCommRouter>()
+                        .AcceptFromReplAsync(sessionId, message, cancellationToken)
                 : null));
         builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>

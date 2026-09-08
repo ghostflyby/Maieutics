@@ -25,8 +25,8 @@ public sealed class ReplCommCodecTests
             null,
             buffers);
 
-        var encoded = ReplControlHost.CommCodec.Encode(message);
-        var decoded = ReplControlHost.CommCodec.Decode(encoded);
+        var encoded = ReplCommCodec.Encode(message);
+        var decoded = ReplCommCodec.Decode(encoded);
 
         decoded.Kind.Should().Be(ReplCommKind.Open);
         decoded.CommId.Should().Be("comm-42");
@@ -56,9 +56,9 @@ public sealed class ReplCommCodecTests
             null,
             [buffer]);
 
-        var encoded = ReplControlHost.CommCodec.Encode(message);
+        var encoded = ReplCommCodec.Encode(message);
         encoded.Length.Should().BeLessThan(ReplControlLimits.MaximumCommMessageBytes);
-        var decoded = ReplControlHost.CommCodec.Decode(encoded);
+        var decoded = ReplCommCodec.Decode(encoded);
 
         decoded.Kind.Should().Be(ReplCommKind.Message);
         decoded.CommId.Should().Be("comm-media");
@@ -76,8 +76,8 @@ public sealed class ReplCommCodecTests
             null,
             []);
 
-        var encoded = ReplControlHost.CommCodec.Encode(message);
-        var decoded = ReplControlHost.CommCodec.Decode(encoded);
+        var encoded = ReplCommCodec.Encode(message);
+        var decoded = ReplCommCodec.Decode(encoded);
 
         decoded.Kind.Should().Be(ReplCommKind.Close);
         decoded.CommId.Should().Be("comm-7");

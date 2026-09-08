@@ -29,7 +29,7 @@ internal sealed partial class ReplControlHost : IDisposable
         new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, SessionBusConnection> connections = new(StringComparer.Ordinal);
-    private readonly Func<ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink;
+    private readonly Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink;
     private readonly ILogger<ReplControlHost> logger;
     private readonly ReplControlCredentialRegistry? credentialRegistry;
     private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
@@ -48,7 +48,7 @@ internal sealed partial class ReplControlHost : IDisposable
         PluginHostManager? pluginHosts = null,
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsPipeBootstrap = null,
-        Func<ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null)
+        Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;

@@ -87,6 +87,65 @@ The answer completes the pending request; a second answer for the same id is
 arrives, the request is cancelled server-side and any late answer is `404`.
 Dismissing the input box should post an empty value.
 
+## Comm channels (interactive widgets)
+
+Interactive widgets (ADR 0024) pair a **display mime** that announces the
+widget with a **comm channel** that carries the model's life:
+
+- A REPL display bundle may carry
+  `application/vnd.maieutics.widget-view+json`:
+  `{"commId": "…", "version": 1, "esm"?: "<js or $object ref>",
+  "css"?: "<css or $object ref>", "state": {…}}`. Large `esm`/`css` payloads
+  are content-addressed `$object` references like any binary mime.
+- Everything else about a widget travels on the comm WebSocket below.
+
+### `GET /v1/agent/sessions/{sid}/comms?sinceSeq=<n>&token=<hex>`
+
+Full-duplex WebSocket, session-scoped (ADR 0024). `token` is accepted as a
+query parameter like the events endpoint; a non-active session is
+`404 session_not_active`. The server's first frame is JSON text:
+
+```json
+{"live": [{"commId": "…", "targetName": "…"}], "replayed": false, "truncated": false}
+```
+
+`live` is the registry of currently open comms (identities survive replay
+eviction); `replayed` reports whether retained frames were re-sent for a
+non-zero `sinceSeq`; `truncated` reports that the client's `sinceSeq` precedes
+the retained buffer, so state must be treated as unknown-until-refresh.
+
+After the hello, every application frame is **binary**:
+`[sequence:8 big-endian][comm frame]` where the comm frame is the fixed binary
+comm encoding shared with the child hop —
+`[kind:1][commIdLen:2][commId][targetNameLen:2][targetName][dataLen:4][data][metadataLen:4][metadata][bufferCount:2][bufLen:4][buf]...`.
+`data` and `metadata` are UTF-8 JSON (empty length = absent); buffers are
+native bytes, never base64 (invariant 26). Direction rules:
+
+- `kind 0` (`open`) is REPL-originated only. The frontend never sends it; an
+  uplink open is a protocol violation and closes the socket.
+- `kind 1` (`message`) and `kind 2` (`close`) flow both ways. On the downlink
+  the server stamps the envelope sequence; on the uplink the client sends
+  sequence `0` (the server assigns ordering).
+- An uplink message or close for an unregistered `commId` is answered with a
+  JSON text frame `{"type": "comm.error", "code": "comm_not_found", "commId":
+  "…"}` and the socket stays open. Uplink while the session's REPL is
+  detached yields `code: "repl_unavailable"`. A text application frame is a
+  policy violation and closes the socket.
+- Per-message ceiling: 16 MiB (buffers included). Exceeding it closes the
+  socket.
+
+Backpressure and resume follow the events stream: bounded per-subscriber
+queues; on overflow the server closes with `1011 backpressure` and the client
+reconnects with its last observed sequence. Sequences are dense per session
+and reset when the active session changes (widget state lives in the
+session's REPL process and does not survive switches or restarts). Frames are
+re-sent verbatim on replay; widget state merges are last-wins, so replay is
+idempotent.
+
+`GET /v1/agent/capabilities` advertises the feature as
+`"comm": {"version": 1, "maxMessageBytes": 16777216}`; clients that do not
+implement comms ignore it and never open the endpoint.
+
 ## REST endpoints (frontend → executable)
 
 | Method | Path | Purpose |
@@ -105,6 +164,9 @@ Dismissing the input box should post an empty value.
 | POST | `/v1/agent/complete` | Command completion for the current cell text |
 | GET | `/v1/status` | Status snapshot as markdown |
 | GET | `/v1/objects/{sha256}` | Immutable binary object stream (content-addressed) |
+
+The comms channel above is the one full-duplex WebSocket; the REST table
+stays request/reply only.
 
 Turn requests are limited to the active session; a turn addressed to another
 session id is `409` + `session_not_active`. This keeps "the kernel owns the

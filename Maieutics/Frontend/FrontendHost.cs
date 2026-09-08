@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Agent;
+using System.Buffers.Binary;
 using Maieutics.Commands;
+using Maieutics.DenoRepl;
 using Maieutics.Persistence;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -35,6 +37,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly FrontendOptions options;
     private readonly FrontendSessionService service;
     private readonly ObjectStore? objectStore;
+    private readonly FrontendCommRouter? commRouter;
     private readonly ILogger<FrontendHost> logger;
     private readonly CancellationTokenSource lifetime = new();
     private readonly byte[] expectedToken;
@@ -44,12 +47,14 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendOptions options,
         FrontendSessionService service,
         ILogger<FrontendHost> logger,
-        ObjectStore? objectStore = null)
+        ObjectStore? objectStore = null,
+        FrontendCommRouter? commRouter = null)
     {
         this.options = options;
         this.service = service;
         this.logger = logger;
         this.objectStore = objectStore;
+        this.commRouter = commRouter;
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
@@ -76,6 +81,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/turns", HandleTurn);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/transcript", HandleTranscript);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents);
+        endpoints.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms);
         endpoints.MapPost("/v1/agent/runs/{runId}/cancel", HandleCancel);
         endpoints.MapPost("/v1/agent/commands", HandleCommand);
         endpoints.MapPost("/v1/agent/complete", HandleComplete);
@@ -97,11 +103,13 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        // The events WebSocket cannot carry headers (browser-standard client API), so the
-        // token may arrive as a query parameter on that endpoint only.
-        var isEventsPath = context.Request.Path.StartsWithSegments("/v1/agent/sessions", StringComparison.Ordinal) &&
-                           context.Request.Path.Value?.EndsWith("/events", StringComparison.Ordinal) == true;
-        if (!TryGetBearerToken(context, out var provided) && !(isEventsPath &&
+        // The browser-standard WebSocket client API cannot carry headers, so the token may
+        // arrive as a query parameter on the WebSocket endpoints only.
+        var path = context.Request.Path.Value ?? string.Empty;
+        var isWebSocketPath = context.Request.Path.StartsWithSegments("/v1/agent/sessions", StringComparison.Ordinal) &&
+                              (path.EndsWith("/events", StringComparison.Ordinal) ||
+                               path.EndsWith("/comms", StringComparison.Ordinal));
+        if (!TryGetBearerToken(context, out var provided) && !(isWebSocketPath &&
                 TryGetQueryToken(context, out provided)) ||
             !CryptographicOperations.FixedTimeEquals(expectedToken, provided))
         {
@@ -144,7 +152,12 @@ internal sealed class FrontendHost : IAsyncDisposable
         return Results.Json(new FrontendCapabilities(
             FrontendProtocol.Version,
             typeof(FrontendHost).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-            session), FrontendJsonContext.Default.FrontendCapabilities);
+            session,
+            commRouter is null
+                ? null
+                : new FrontendCommCapability(
+                    FrontendCommRouter.Version,
+                    ReplCommLimits.MaximumMessageBytes)), FrontendJsonContext.Default.FrontendCapabilities);
     }
 
     private IResult HandleSession()
@@ -430,6 +443,189 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             stream.Unsubscribe(channel);
         }
+    }
+
+    /// <summary>
+    ///     Serves the session-scoped full-duplex comm WebSocket (ADR 0024). The hello frame
+    ///     carries the live-comm snapshot plus replay status; application frames are binary
+    ///     codec frames wrapped in the 8-byte envelope sequence. Uplink violations are typed
+    ///     comm.error frames, except a frontend-originated open, which is a policy close.
+    /// </summary>
+    private async Task HandleComms(HttpContext context, string sessionId)
+    {
+        if (commRouter is null)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await context.Response.WriteAsJsonAsync(
+                new FrontendError(FrontendErrors.NotFound, "The comm plane is not available."),
+                FrontendJsonContext.Default.FrontendError).ConfigureAwait(false);
+            return;
+        }
+
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        long since = 0;
+        if (context.Request.Query.TryGetValue("sinceSeq", out var rawSince) &&
+            (!long.TryParse(rawSince, out since) || since < 0))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        var activeSessionId = service.DescribeSession().Id;
+        if (!string.Equals(sessionId, activeSessionId, StringComparison.Ordinal))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await context.Response.WriteAsJsonAsync(
+                new FrontendError(FrontendErrors.SessionNotActive,
+                    "Comms are served for the active session."),
+                FrontendJsonContext.Default.FrontendError).ConfigureAwait(false);
+            return;
+        }
+
+        var plane = commRouter.PlaneFor(activeSessionId);
+        using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        using var peer = CancellationTokenSource.CreateLinkedTokenSource(
+            context.RequestAborted,
+            lifetime.Token);
+        // Subscribe before the hello so the snapshot and the replay are one coherent view:
+        // an open published in between appears in both, which clients fold by comm id.
+        var (initial, channel, truncated) = plane.Subscribe(since);
+        var uplink = ServeCommUplinkAsync(socket, commRouter, activeSessionId, plane, peer.Token);
+        try
+        {
+            await SendTextFrameAsync(
+                socket,
+                JsonSerializer.Serialize(
+                    new FrontendCommHello(plane.SnapshotLive(), since > 0, truncated),
+                    FrontendJsonContext.Default.FrontendCommHello),
+                peer.Token).ConfigureAwait(false);
+            foreach (var record in initial)
+                await SendBinaryFrameAsync(
+                    socket,
+                    FrontendCommEnvelope.Encode(record.Sequence, record.Message),
+                    peer.Token).ConfigureAwait(false);
+
+            await foreach (var record in channel.Reader.ReadAllAsync(peer.Token).ConfigureAwait(false))
+                await SendBinaryFrameAsync(
+                    socket,
+                    FrontendCommEnvelope.Encode(record.Sequence, record.Message),
+                    peer.Token).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException exception) when
+            (exception.InnerException is FrontendCommStream.FrontendCommBackpressureException)
+        {
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                await socket.CloseAsync(
+                    (WebSocketCloseStatus)1011,
+                    "backpressure",
+                    CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (peer.IsCancellationRequested)
+        {
+            // Host shutdown or client disconnect; the finally block closes the socket.
+        }
+        catch (WebSocketException)
+        {
+            // The peer vanished; nothing to deliver.
+        }
+        finally
+        {
+            plane.Unsubscribe(channel);
+            await peer.CancelAsync().ConfigureAwait(false);
+            await uplink.ConfigureAwait(false);
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                await socket.CloseOutputAsync(
+                    WebSocketCloseStatus.NormalClosure,
+                    "stream ended",
+                    CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Reads uplink comm frames until the socket closes; rejections are typed
+    /// comm.error text frames, and a frontend-originated open is a policy close.</summary>
+    private async Task ServeCommUplinkAsync(
+        WebSocket socket,
+        FrontendCommRouter commRouter,
+        string sessionId,
+        FrontendCommStream plane,
+        CancellationToken cancellationToken)
+    {
+        while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        {
+            var payload = await ReplCommFrameReader
+                .ReadAsync(socket, cancellationToken)
+                .ConfigureAwait(false);
+            if (payload is null) return;
+
+            long sequence;
+            ReplCommMessage message;
+            try
+            {
+                (sequence, message) = FrontendCommEnvelope.Decode(payload);
+            }
+            catch (InvalidDataException)
+            {
+                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                    await socket.CloseOutputAsync(
+                        WebSocketCloseStatus.InvalidMessageType,
+                        "comm frame is malformed",
+                        CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
+            _ = sequence; // The client does not assign ordering; the server does.
+            try
+            {
+                await commRouter
+                    .PushToReplAsync(sessionId, message, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (FrontendCommRejectException reject) when
+                (reject.Code == FrontendErrors.InvalidRequest)
+            {
+                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                    await socket.CloseOutputAsync(
+                        WebSocketCloseStatus.PolicyViolation,
+                        reject.Message,
+                        CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+            catch (FrontendCommRejectException reject)
+            {
+                await SendTextFrameAsync(
+                    socket,
+                    JsonSerializer.Serialize(
+                        new FrontendEventFrame("comm.error", Code: reject.Code, CommId: reject.CommId),
+                        FrontendJsonContext.Default.FrontendEventFrame),
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task SendTextFrameAsync(
+        WebSocket socket,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var payload = Encoding.UTF8.GetBytes(text);
+        await socket
+            .SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task SendBinaryFrameAsync(
+        WebSocket socket,
+        byte[] payload,
+        CancellationToken cancellationToken)
+    {
+        await socket
+            .SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Binary, true, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static async Task DrainReceiveAsync(WebSocket socket, CancellationToken cancellationToken)

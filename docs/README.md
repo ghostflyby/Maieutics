@@ -37,6 +37,7 @@ Jupyter libraries are retained as standalone libraries with no executable consum
 - [ADR 0020: Deno REPL under the extension host — process ownership, permissions, and call direction](architecture/decisions/0020-repl-extension-host-actor-boundary.md)
 - [ADR 0021: Plugin HTTP UI — host-mounted zero-permission fetch handlers](architecture/decisions/0021-plugin-http-ui-host-mounted-zero-permission-handlers.md)
 - [ADR 0022: Plugin web storage and platform application directories](architecture/decisions/0022-plugin-web-storage-and-application-directories.md)
+- [ADR 0024: Frontend comm plane for interactive widgets](architecture/decisions/0024-frontend-comm-plane-and-widgets.md)
 - ADR 0023 is listed under Frontend above.
 
 ## Historical

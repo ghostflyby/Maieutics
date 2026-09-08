@@ -739,8 +739,9 @@ public sealed class FrontendApiIntegrationTests
     }
 
     /// <summary>Boots the composition root in process with the frontend API enabled and a
-    /// fake model provider, mirroring the Jupyter host integration tests.</summary>
-    private sealed class FrontendHarness : IAsyncDisposable
+    /// fake model provider, mirroring the Jupyter host integration tests. Shared with the
+    /// comm-plane integration tests.</summary>
+    internal sealed class FrontendHarness : IAsyncDisposable
     {
         private readonly IHost host;
         private readonly IAsyncDisposable provider;
@@ -845,6 +846,16 @@ public sealed class FrontendApiIntegrationTests
                 hanging);
         }
 
+        /// <summary>Registers the test process as the owning peer of a session so a raw
+        /// child socket stub can pass the /comm handshake.</summary>
+        public void RegisterControlPeer(string sessionId) =>
+            host.Services.GetRequiredService<Maieutics.Control.ReplControlSessionRegistry>()
+                .Register(Environment.ProcessId, sessionId);
+
+        /// <summary>The control host address (the Unix socket path on Unix).</summary>
+        public string ControlAddress =>
+            host.Services.GetRequiredService<Maieutics.Control.ReplControlHost>().ControlAddress;
+
         public HttpClient CreateClient(string? token = null)
         {
             var client = new HttpClient { BaseAddress = new Uri(Url) };
@@ -924,7 +935,7 @@ public sealed class FrontendApiIntegrationTests
         }
     }
 
-    private sealed class FrontendEventsConnection(ClientWebSocket socket) : IAsyncDisposable
+    internal sealed class FrontendEventsConnection(ClientWebSocket socket) : IAsyncDisposable
     {
         public async ValueTask<JsonElement> ReceiveFrameAsync(CancellationToken cancellationToken)
         {

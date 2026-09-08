@@ -137,9 +137,18 @@ settles the cell execution if the socket is still open.
 **Acceptance.** Unit/integration test: a hanging-provider run is cancelled
 when the notebook document closes.
 
-## 6. Comm / interactive widgets (product decision)
+## 6. Comm / interactive widgets (product decision) — DECIDED (ADR 0024), implementation in progress
 
 Priority: Deferred until decided. Type: Product decision + feature.
+
+**Decision (2026-09-08).** Interactive outputs are supported. ADR 0024
+(`0024-frontend-comm-plane-and-widgets.md`) designs the channel as a native
+web-API surface: a session-scoped full-duplex WebSocket reusing the child
+comm codec, hello-carried live-comm snapshot, direction discipline
+(REPL-originated opens only), and the run-stream backpressure/resume
+discipline. Option (a)'s protocol plane and option (b)'s documentation pass
+are both covered: the protocol section in `docs/web-frontend-protocol.md`
+replaces the anywidget promises with the native design.
 
 **Current.** The Jupyter path relayed bidirectional comm (anywidget clicks
 etc.) between frontend and REPL. The executable's Jupyter adapter is gone;

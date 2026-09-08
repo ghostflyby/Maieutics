@@ -14,7 +14,13 @@ internal static class FrontendProtocol
 internal sealed record FrontendCapabilities(
     [property: JsonPropertyName("protocolVersion")] int ProtocolVersion,
     [property: JsonPropertyName("serverVersion")] string ServerVersion,
-    [property: JsonPropertyName("session")] FrontendSessionInfo Session);
+    [property: JsonPropertyName("session")] FrontendSessionInfo Session,
+    [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null);
+
+/// <summary>Advertises the comm plane (ADR 0024); null means the build serves no comms.</summary>
+internal sealed record FrontendCommCapability(
+    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("maxMessageBytes")] int MaxMessageBytes);
 
 /// <summary>Describes the active session to a frontend.</summary>
 internal sealed record FrontendSessionInfo(
@@ -128,6 +134,7 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("content")] FrontendProgressContent? Content = null,
     [property: JsonPropertyName("result")] JsonElement? Result = null,
     [property: JsonPropertyName("displayId")] string? DisplayId = null,
+    [property: JsonPropertyName("commId")] string? CommId = null,
     [property: JsonPropertyName("data")] JsonElement? Data = null,
     [property: JsonPropertyName("mime")] string? Mime = null,
     [property: JsonPropertyName("agentMessage")] FrontendMessage? AgentMessage = null,
@@ -159,6 +166,9 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendStatusResponse))]
 [JsonSerializable(typeof(FrontendInputAnswer))]
 [JsonSerializable(typeof(FrontendError))]
+[JsonSerializable(typeof(FrontendCommHello))]
+[JsonSerializable(typeof(FrontendCommDescriptor[]))]
+[JsonSerializable(typeof(FrontendCommCapability))]
 [JsonSerializable(typeof(FrontendTranscript))]
 [JsonSerializable(typeof(FrontendEventFrame))]
 [JsonSerializable(typeof(FrontendDiscoveryFile))]

@@ -13,6 +13,7 @@ import { connect, type Connection } from "./connection.ts";
 import { MaieuticsNotebookController, type NotebookBridge } from "./controller.ts";
 import { MaieuticsNotebookSerializer } from "./serializer.ts";
 import { MaieuticsSessionsProvider } from "./sessionsTree.ts";
+import { WidgetBridge } from "./widgets.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
 import {
   MaieuticsFileSystemProvider,
@@ -76,6 +77,30 @@ export function activate(context: vscode.ExtensionContext): void {
       (message) => output?.appendLine(message),
     ),
   );
+
+  // The widget renderer talks to the kernel's widget models through this
+  // bridge; the comms socket opens lazily on the first widget mount so plain
+  // notebooks never pay for it (ADR 0024).
+  const widgetBridge = new WidgetBridge({
+    connect: async () => {
+      const client = await clientOf();
+      const session = await client.session();
+      return client.commSocket(session.id);
+    },
+    post: (message) => {
+      void Promise.resolve(rendererMessaging.postMessage(message)).catch(
+        (error: unknown) => output?.appendLine(`widget post failed: ${error}`),
+      );
+    },
+    log: (message) => output?.appendLine(message),
+  });
+  const rendererMessaging = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
+  rendererMessaging.onDidReceiveMessage(({ message }) => {
+    void widgetBridge.handleRendererMessage(message);
+  });
+  context.subscriptions.push({
+    dispose: () => void widgetBridge.dispose(),
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand("maieutics.newSession", async () => {

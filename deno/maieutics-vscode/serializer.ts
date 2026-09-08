@@ -145,6 +145,9 @@ const DisplayMimes = new Set([
   "text/html",
   "text/plain",
   "application/json",
+  // Widget views ride display bundles as structured JSON; the widget
+  // renderer claims them (ADR 0024).
+  "application/vnd.jupyter.widget-view+json",
 ]);
 
 /** A reference to an immutable binary display payload, addressed by its

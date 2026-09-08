@@ -48,6 +48,14 @@
         "mimeTypes": [
           "application/vnd.maieutics.turn+json"
         ]
+      },
+      {
+        "id": "maieutics-widget-renderer",
+        "displayName": "Maieutics Widget",
+        "entrypoint": "./media/widgetRenderer.js",
+        "mimeTypes": [
+          "application/vnd.jupyter.widget-view+json"
+        ]
       }
     ],
     "commands": [

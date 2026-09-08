@@ -38,7 +38,6 @@ Never solve a boundary problem by adding a Client-to-Kernel or Kernel-to-Client 
 
 ## Deno Interoperability
 
-- Keep the portable kernelspec at `Maieutics.Jupyter.Tests/TestData/kernels/deno/kernel.json`.
 - Resolve it from test output and use `deno` from `PATH`; do not introduce user-specific paths.
 - Treat real Deno coverage as interoperability testing for the reusable Client, not as a production Agent dependency.
 

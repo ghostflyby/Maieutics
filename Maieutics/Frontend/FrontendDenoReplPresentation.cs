@@ -7,9 +7,9 @@ namespace Maieutics.Frontend;
 
 /// <summary>
 ///     Routes Deno REPL rich output into a frontend run's event stream while that run is
-///     live. Mirrors <c>JupyterDenoReplPresentationRouter</c> so the REPL tool finds exactly
+///     live. Shapes the same surface the retired Jupyter router offered so the REPL tool finds exactly
 ///     one active sink per session regardless of which frontend owns the run; REPL display
-///     frames use the same display-id tracking the Jupyter path renders onto iopub.
+///     frames use display-id tracking (the retired Jupyter path rendered the same tracking onto iopub).
 /// </summary>
 internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentationRouter
 {

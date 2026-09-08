@@ -30,7 +30,5 @@
         <Using Include="Xunit" />
     </ItemGroup>
 
-    <ItemGroup>
-    </ItemGroup>
 
 </Project>

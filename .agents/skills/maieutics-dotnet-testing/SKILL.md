@@ -42,7 +42,6 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 - Client: socket ownership, five channels, correlation, reply/idle ordering, stdin parents, output order, late output, cancellation, disconnect, and backpressure.
 - Kernel: busy/reply/idle, shell serialization, control responsiveness, heartbeat, interrupt, shutdown, silent execution, stdin, language services, and display updates.
 - Agent: run reservation, event backpressure, provider-iteration recording, transcript commit, tools, limits, capabilities, provider switching, and rollback.
-- Integration: self-hosted Client/Kernel plus the portable real Deno kernelspec.
 
 ## Verification Sequence
 

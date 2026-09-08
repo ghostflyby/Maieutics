@@ -214,8 +214,8 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         try
         {
-            // A command cell executes inline and answers with markdown, mirroring the Jupyter
-            // adapter so the same cell text behaves identically on both frontends.
+            // A command cell executes inline and answers with markdown, so the same cell text keeps its historical
+            // semantics.
             if (MaieuticsCommandLanguage.IsCommandCell(request.Text))
             {
                 var markdown = await service.ExecuteCommandAsync(request.Text, context.RequestAborted)

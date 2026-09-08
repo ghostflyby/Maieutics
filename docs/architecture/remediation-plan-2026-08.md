@@ -1,5 +1,8 @@
 # Lifecycle, Protocol, and API Remediation Plan
 
+> **Historical — superseded by ADR 0023** for the frontend path; kept as a record.
+
+
 Status: Proposed
 
 Date: 2026-08-08

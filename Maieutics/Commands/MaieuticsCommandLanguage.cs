@@ -4,7 +4,7 @@ namespace Maieutics.Commands;
 
 /// <summary>
 ///     The protocol-neutral Maieutics command language: cell detection, argument
-///     normalization, and completion. Shared by every frontend adapter (Jupyter
+///     normalization, and completion. Shared by every frontend (the retired Jupyter
 ///     kernel, web frontend); adapters translate their own cursor and result shapes.
 /// </summary>
 internal static class MaieuticsCommandLanguage

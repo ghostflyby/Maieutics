@@ -10,7 +10,7 @@ namespace Maieutics.Commands;
 ///     Executes Maieutics command cells (<c>%model</c>, <c>%mcp</c>, <c>%session</c>,
 ///     <c>%status</c>, <c>%workspace</c>, legacy <c>%maieutics</c>) and renders their markdown
 ///     answer. This is the shared control surface every frontend adapter delegates to, so
-///     command semantics cannot drift between the Jupyter kernel and the web frontend.
+///     command semantics cannot drift between frontends.
 ///     Unavailable subsystems and expected failures surface as
 ///     <see cref="MaieuticsCommandException" />.
 /// </summary>

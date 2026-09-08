@@ -25,7 +25,7 @@ self-hosted kernel, real Deno, process, and NativeAOT integration behavior. Agen
 ## Interoperability and process tests
 
 - Keep self-hosted `JupyterKernelHost` plus `JupyterClient` coverage.
-- Keep real Deno interoperability through `TestData/kernels/deno/kernel.json`, resolved from test output, with `deno`
+- Keep real Deno interoperability through `unit and transport coverage (no kernelspec fixture — the executable no longer pairs with a Jupyter kernel)`, resolved from test output, with `deno`
   from `PATH`. Never depend on a user kernelspec path or absolute Deno executable.
 - Process tests use external temporary configuration and connection files and must not contact real model services.
 - Provider conformance uses deterministic fake HTTP/SSE servers for OpenAI Responses, Chat Completions, and Anthropic

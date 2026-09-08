@@ -4,6 +4,10 @@ Status: 执行计划(待实施)
 
 Date: 2026-08-24
 
+> **历史文档。** 本文是一次性的执行计划,仅作记录;兼容边界现状以
+> [deno-jupyter-compat.md](deno-jupyter-compat.md) 为准。计划写作时的输出通路为 Jupyter IOPub,
+> 现行前端为自定义 Web 前端协议(`docs/web-frontend-protocol.md`,ADR 0023)。
+
 ## 背景与现状(研究结论)
 
 REPL 的 `Deno.jupyter` 是一个兼容 shim,实现在 `deno/maieutics-deno-repl/repl_worker.ts` 的

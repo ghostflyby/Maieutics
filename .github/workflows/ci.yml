@@ -32,16 +32,28 @@ jobs:
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: 2.9.5
+          deno-version: 2.9.6
+
+      # Fails on lockfile drift: a dependency changed without deno.lock.
+      - name: Install workspace dependencies (frozen lockfile)
+        working-directory: deno
+        run: deno install --frozen
 
       - name: Check formatting
-        run: deno fmt --check deno
+        working-directory: deno
+        run: deno fmt --check
+
+      - name: Lint
+        working-directory: deno
+        run: deno lint
 
       - name: Check types
-        run: deno task --config deno/deno.json check
+        working-directory: deno
+        run: deno task check
 
       - name: Test
-        run: deno task --config deno/deno.json test
+        working-directory: deno
+        run: deno task test
 
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk
@@ -71,7 +83,7 @@ jobs:
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: 2.9.5
+          deno-version: 2.9.6
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
@@ -115,7 +127,7 @@ jobs:
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: 2.9.5
+          deno-version: 2.9.6
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts

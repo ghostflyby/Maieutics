@@ -8,8 +8,8 @@ permission model, namespace partition, and the internal Deno execution module.
 ## Ownership
 
 This project is the `maieutics` NativeAOT executable and composition root. It owns process startup and shutdown, Generic
-Host and DI registration, external configuration selection, product provider factories, the Agent-to-Jupyter adapter,
-kernelspec deployment, process-level logging, the declarative permission store, general process start policy, and the
+Host and DI registration, external configuration selection, product provider factories, the frontend web API and
+shared command surface, process-level logging, the declarative permission store, general process start policy, and the
 internal Deno execution layer (supervised `deno run` children and the Deno permission broker).
 
 Logical namespaces under this project are product modules, not independent SDK assemblies. A namespace is a semantic
@@ -24,26 +24,29 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
 - `Maieutics.Plugins` — plugin manifest, host manager, extension points, MCP coordination.
 - `Maieutics.Control` — control channel, credentials, session registry, peer identity.
 - `Maieutics.Configuration` — configuration binding, reload, catalogs, profile lifetimes.
-- `Maieutics.Jupyter` — Agent-to-Jupyter adapter, command language, status rendering.
+- `Maieutics.Commands` — shared kernel control surface: command language, command execution, status, session management.
+- `Maieutics.Frontend` — frontend web API: discovery, bearer auth, REST, per-session event streams (ADR 0023).
 
 ## Forbidden responsibilities
 
-- Do not place reusable Jupyter protocol, client, kernel-host, Agent runtime, tool, or persistence logic here.
+- Do not place reusable Jupyter protocol, client, or kernel-host logic here; the retained `Maieutics.Jupyter.*`
+  libraries are standalone and have no executable consumer.
 - Do not expose product provider or configuration implementation types as reusable public API.
-- Do not move provider SDK types into `Maieutics.Agent` or Jupyter projects.
-- Do not add HTTP hosting merely to obtain DI; use Generic Host unless an actual HTTP requirement exists.
+- Do not move provider SDK types into `Maieutics.Agent`.
+- The executable hosts the frontend web API on the shared Kestrel host; do not add another HTTP server.
 
 ## Process lifecycle
 
 - Keep `Program` and constructors side-effect free; compose services in the host setup.
-- The process requires a connection file, starts one `JupyterKernelHost`, observes its completion, and stops the Generic
-  Host after Jupyter shutdown.
+- The process starts the frontend web API when launched with `--frontend-discovery <path>`; the discovery file's
+  appearance is the readiness signal, and it is deleted on shutdown so a stopped process is never rediscovered.
 - Process-level connection information is captured at startup. Reloadable model and presentation settings apply only at
   operation boundaries.
-- Never log full configuration, API keys, provider authorization, or connection-file credentials.
+- Never log full configuration, API keys, provider authorization, or the frontend bearer token.
 - Keep the executable compatible with trimming and NativeAOT. Do not bypass new incompatibilities with broad warning
   suppression; provider and framework paths require publish and process smoke coverage.
-- The kernelspec remains a product deployment asset and uses `interrupt_mode: message`.
+- SIGINT and SIGTERM map to graceful host shutdown; run-level cancellation is a frontend-protocol operation
+  (`POST /v1/agent/runs/{id}/cancel`), never a process signal.
 
 ## Permission and process rules
 
@@ -70,4 +73,6 @@ Read the narrower instructions before changing:
 
 - `Configuration/AGENTS.md`
 - `Providers/AGENTS.md`
-- `Jupyter/AGENTS.md`
+- `Frontend/AGENTS.md`
+- `Commands` follows the same domain rules; its command language and session manager are shared by every
+  frontend adapter and must not grow protocol-specific behavior.

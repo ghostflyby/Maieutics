@@ -30,9 +30,5 @@
         <Using Include="Xunit" />
     </ItemGroup>
 
-    <ItemGroup>
-        <None Include="TestData\kernels\deno\kernel.json" CopyToOutputDirectory="PreserveNewest" />
-        <None Include="..\Maieutics\kernelspec\kernel.json" Link="TestData\kernels\maieutics\kernel.json" CopyToOutputDirectory="PreserveNewest" />
-    </ItemGroup>
 
 </Project>

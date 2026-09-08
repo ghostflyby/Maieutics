@@ -297,8 +297,7 @@ public sealed class SelfHostedJupyterIntegrationTests
             application,
             cancellationToken: cancellationToken);
         await using var client = await JupyterClient.ConnectAsync(connection, cancellationToken: cancellationToken);
-        var coordinator = new KernelInterruptCoordinator();
-        coordinator.SetHost(host);
+
 
         var waiting = await client.ExecuteAsync(
             new JupyterExecuteRequest("wait"),
@@ -306,12 +305,11 @@ public sealed class SelfHostedJupyterIntegrationTests
         var waitOutputs = ReadOutputsAsync(waiting, cancellationToken);
         await application.WaitStarted.Task.WaitAsync(cancellationToken);
 
-        coordinator.RequestInterrupt();
+        host.RequestInterrupt();
 
         (await waiting.Completion.WaitAsync(cancellationToken)).Reply.Status.Should().Be("aborted");
         await waitOutputs.WaitAsync(cancellationToken);
-        coordinator.Clear();
-        coordinator.RequestInterrupt();
+        host.RequestInterrupt();
 
         await client.ShutdownAsync(false, cancellationToken);
         await host.Completion.WaitAsync(cancellationToken);

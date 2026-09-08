@@ -1,8 +1,8 @@
 # Maieutics REPL client
 
-Deno-side client for the Maieutics REPL control channel. The kernel spawns each `deno jupyter` REPL
-with `MAIEUTICS_REPL_IPC` set to the control channel's unix domain socket and serves HTTP
-(`/health`) and WebSocket (`/ws`) endpoints on it.
+Deno-side client for the Maieutics REPL control channel. The kernel spawns each `deno run` REPL with
+`MAIEUTICS_REPL_IPC` set to the control channel's unix domain socket and serves HTTP (`/health`) and
+WebSocket (`/ws`) endpoints on it.
 
 The module is the single source of truth for the client; the kernel materializes it per process. At
 REPL session start the kernel runs a verified bootstrap cell that binds `globalThis.maieutics`, so

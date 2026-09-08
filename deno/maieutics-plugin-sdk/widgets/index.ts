@@ -49,12 +49,13 @@ interface WidgetHost {
 
 const DISPLAY = Symbol.for("Jupyter.display");
 
-let host: WidgetHost | undefined;
+// Pinned so the host transport stays reachable for the widget lifetime.
+let _host: WidgetHost | undefined;
 let runtime: WidgetRuntime | undefined;
 
 /** The REPL worker calls this once at bootstrap to bind the transport. */
 export function bindWidgetHost(widgetHost: WidgetHost): void {
-  host = widgetHost;
+  _host = widgetHost;
   runtime = new WidgetRuntime(widgetHost.broadcast);
   widgetHost.onComm("msg", (message) => {
     runtime?.handleIncoming({
@@ -97,7 +98,8 @@ export function createWidget<State extends Record<string, unknown>>(
   const model = rt.init(commId, state, onChange);
   return {
     ...model,
-    [DISPLAY]: async () => model.mimeBundle(),
+    // mimeBundle is sync; the display contract expects a thenable.
+    [DISPLAY]: () => Promise.resolve(model.mimeBundle()),
   };
 }
 

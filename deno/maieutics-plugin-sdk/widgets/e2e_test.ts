@@ -40,7 +40,7 @@ function resetTransport(): void {
 
 function fakeHost() {
   return {
-    broadcast: async (
+    broadcast: (
       messageType: string,
       content: Record<string, unknown>,
     ): Promise<void> => {
@@ -53,6 +53,8 @@ function fakeHost() {
           },
         );
       }
+
+      return Promise.resolve();
     },
     onComm: (
       event: "open" | "msg" | "close",

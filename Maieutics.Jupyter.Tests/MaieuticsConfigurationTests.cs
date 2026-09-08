@@ -3,7 +3,6 @@ using System.Text.Json.Nodes;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
-using Maieutics.Jupyter.Shared;
 using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
@@ -14,11 +13,38 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Primitives;
 
+using System.Threading;
+
 namespace Maieutics.Jupyter.Tests;
+
 
 [Collection(JupyterSocketIntegrationCollection.Name)]
 public sealed class MaieuticsConfigurationTests
 {
+
+/// <summary>Deletes a temporary directory, retrying briefly: on Windows a config-file
+/// watcher or an exiting MCP stdio child can hold a file for a short while after the
+/// test body completes.</summary>
+internal static void DeleteDirectoryWithRetry(string path)
+{
+    for (var attempt = 0; ; attempt++)
+    {
+        try
+        {
+            Directory.Delete(path, true);
+            return;
+        }
+        catch (IOException) when (attempt < 10)
+        {
+            Thread.Sleep(200 * (attempt + 1));
+        }
+        catch (UnauthorizedAccessException) when (attempt < 10)
+        {
+            Thread.Sleep(200 * (attempt + 1));
+        }
+    }
+}
+
     [Fact]
     public void ConfigurationPathResolutionUsesExplicitEnvironmentPortableThenUserPath()
     {
@@ -86,7 +112,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -110,7 +136,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -160,7 +186,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -172,8 +198,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-empty-config-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
@@ -183,7 +207,6 @@ public sealed class MaieuticsConfigurationTests
                 {
                     ["Jupyter"] = new JsonObject
                     {
-                        ["ConnectionFile"] = connectionFile
                     }
                 }
             }.ToJsonString(),
@@ -200,7 +223,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -213,12 +236,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-init-cancel-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateConfiguration(connectionFile, "Fake", "test-model"),
+            CreateConfiguration("Fake", "test-model"),
             deadline.Token);
 
         var factory = new TrackingChatClientFactory
@@ -241,7 +262,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -253,13 +274,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-init-rollback-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateNamedConfiguration(
-                connectionFile,
                 "one",
                 new NamedProfile("one", "first", "model-one", "v1"),
                 new NamedProfile("two", "second", "fail", "v1")),
@@ -283,7 +301,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -295,12 +313,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-source-only-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
@@ -343,7 +359,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -356,12 +372,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-cancel-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
@@ -389,7 +403,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -401,12 +415,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
@@ -428,7 +440,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "two")),
+                CreateSourceOnlyConfiguration(new NamedSource("vendor", "two")),
                 deadline.Token);
 
             runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
@@ -440,7 +452,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -452,8 +464,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-endpoints-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var webSearch = new JsonArray(new JsonObject
         {
@@ -463,7 +473,6 @@ public sealed class MaieuticsConfigurationTests
         await File.WriteAllTextAsync(
             configurationFile,
             CreateSourceOnlyConfiguration(
-                connectionFile,
                 webSearch,
                 new NamedSource("vendor", "one", "https://api.example.com/v1")),
             deadline.Token);
@@ -494,7 +503,6 @@ public sealed class MaieuticsConfigurationTests
                 runtime,
                 configurationFile,
                 CreateSourceOnlyConfiguration(
-                    connectionFile,
                     shell,
                     new NamedSource("vendor", "one", "https://api.example.com/v1")),
                 deadline.Token);
@@ -508,7 +516,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -520,12 +528,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-race-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
             deadline.Token);
 
         var factory = new CoordinatedAutomaticProfileChatClientFactory();
@@ -547,7 +553,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "two")),
+                CreateSourceOnlyConfiguration(new NamedSource("vendor", "two")),
                 deadline.Token);
             factory.ReleaseAutomaticCreate.TrySetResult();
 
@@ -561,7 +567,7 @@ public sealed class MaieuticsConfigurationTests
             factory.ReleaseAutomaticCreate.TrySetResult();
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -574,12 +580,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-readiness-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateConfiguration(connectionFile, "Fake", "test-model"),
+            CreateConfiguration("Fake", "test-model"),
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
@@ -605,7 +609,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().ContainSingle().Which.Disposed.Should().BeTrue();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -617,12 +621,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-stale-discovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
             deadline.Token);
 
         var factory = new CoordinatedDiscoveryChatClientFactory();
@@ -644,7 +646,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "two")),
+                CreateSourceOnlyConfiguration(new NamedSource("vendor", "two")),
                 deadline.Token);
 
             var current = await runtime.GetDiscoveredModelsAsync(
@@ -664,7 +666,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -676,12 +678,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-cancelled-discovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateSourceOnlyConfiguration(connectionFile, new NamedSource("vendor", "one")),
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
             deadline.Token);
 
         var factory = new CoordinatedDiscoveryChatClientFactory();
@@ -714,7 +714,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -726,13 +726,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-ambiguity-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateSourceOnlyConfiguration(
-                connectionFile,
                 new NamedSource("first", "one"),
                 new NamedSource("second", "one")),
             deadline.Token);
@@ -760,7 +757,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -772,12 +769,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-startup-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateConfiguration(connectionFile, "Fake", "one"),
+            CreateConfiguration("Fake", "one"),
             deadline.Token);
 
         var factory = new BlockingChatClientFactory();
@@ -800,7 +795,7 @@ public sealed class MaieuticsConfigurationTests
                 changed);
             await File.WriteAllTextAsync(
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "two"),
+                CreateConfiguration("Fake", "two"),
                 deadline.Token);
             await changed.Task.WaitAsync(deadline.Token);
 
@@ -815,7 +810,7 @@ public sealed class MaieuticsConfigurationTests
         {
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -827,12 +822,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-reload-race-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateConfiguration(connectionFile, "Fake", "one"),
+            CreateConfiguration("Fake", "one"),
             deadline.Token);
 
         var factory = new BlockingChatClientFactory("two");
@@ -850,7 +843,7 @@ public sealed class MaieuticsConfigurationTests
             await WriteAndWaitForConfigurationSignalAsync(
                 configuration,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "two"),
+                CreateConfiguration("Fake", "two"),
                 deadline.Token);
             await factory.CreateStarted.Task.WaitAsync(deadline.Token);
 
@@ -858,7 +851,7 @@ public sealed class MaieuticsConfigurationTests
             await WriteAndWaitForConfigurationSignalAsync(
                 configuration,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "three"),
+                CreateConfiguration("Fake", "three"),
                 deadline.Token);
 
             factory.ReleaseCreation.TrySetResult();
@@ -874,7 +867,7 @@ public sealed class MaieuticsConfigurationTests
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -885,7 +878,6 @@ public sealed class MaieuticsConfigurationTests
         Directory.CreateDirectory(root);
         var configurationFile = Path.Combine(root, "maieutics.json");
         File.WriteAllText(configurationFile, CreateConfiguration(
-            Path.Combine(root, "connection.json"),
             "OpenAI",
             "json-model",
             OpenAiApiFlavor.Responses));
@@ -913,7 +905,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -963,7 +955,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1012,10 +1004,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-provider-fields-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
-            connectionFile,
-            TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var source = new JsonObject
         {
@@ -1038,7 +1026,6 @@ public sealed class MaieuticsConfigurationTests
                         ["Model"] = "test-model"
                     }
                 },
-                ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
             }
         }.ToJsonString(), TestContext.Current.CancellationToken);
 
@@ -1053,7 +1040,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1063,15 +1050,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-legacy-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
-            connectionFile,
-            TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateConfiguration(
-                connectionFile,
                 "Fake",
                 "test-model",
                 maxHistoryCharacters: 123_456),
@@ -1093,7 +1075,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1103,15 +1085,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-conflict-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
-            connectionFile,
-            TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateConfiguration(
-                connectionFile,
                 "Fake",
                 "test-model",
                 maxHistoryBytes: 400_000,
@@ -1129,7 +1106,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1142,12 +1119,10 @@ public sealed class MaieuticsConfigurationTests
         Directory.CreateDirectory(root);
         try
         {
-            var connectionFile = Path.Combine(root, "connection.json");
-            await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
             var configurationFile = Path.Combine(root, "maieutics.json");
             await File.WriteAllTextAsync(
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "one", maxTurnDuration: "00:00:45"),
+                CreateConfiguration("Fake", "one", maxTurnDuration: "00:00:45"),
                 deadline.Token);
 
             var factory = new TrackingChatClientFactory();
@@ -1174,7 +1149,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1186,12 +1161,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-history-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryBytes: 1_000),
+            CreateConfiguration("Fake", "test-model", maxHistoryBytes: 1_000),
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
@@ -1215,7 +1188,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryCharacters: 600),
+                CreateConfiguration("Fake", "test-model", maxHistoryCharacters: 600),
                 deadline.Token);
             runtime.Version.Should().Be(2);
             runtime.GetStatus().LastReload.Should().Match<MaieuticsConfigurationReloadInfo>(reload =>
@@ -1233,7 +1206,6 @@ public sealed class MaieuticsConfigurationTests
                 runtime,
                 configurationFile,
                 CreateConfiguration(
-                    connectionFile,
                     "Fake",
                     "test-model",
                     maxHistoryBytes: 1_400,
@@ -1245,7 +1217,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryCharacters: int.MaxValue),
+                CreateConfiguration("Fake", "test-model", maxHistoryCharacters: int.MaxValue),
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion);
 
@@ -1258,7 +1230,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "test-model", maxHistoryBytes: 1_400),
+                CreateConfiguration("Fake", "test-model", maxHistoryBytes: 1_400),
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion + 1);
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
@@ -1270,7 +1242,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1282,14 +1254,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        var replacementConnectionFile = Path.Combine(root, "connection-2.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(replacementConnectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateConfiguration(connectionFile, "Fake", "one", systemPrompt: "first", maxInputCharacters: 100),
+            CreateConfiguration("Fake", "one", systemPrompt: "first", maxInputCharacters: 100),
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
@@ -1311,8 +1279,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "two", systemPrompt: "second", maxInputCharacters: 200,
-                    flushCharacters: 2048),
+                CreateConfiguration("Fake", "two", systemPrompt: "second", maxInputCharacters: 200),
                 deadline.Token);
             runtime.Version.Should().Be(2);
             await using (var secondLease = await runtime.AcquireAsync(deadline.Token))
@@ -1321,7 +1288,6 @@ public sealed class MaieuticsConfigurationTests
                 secondClient.Model.Should().Be("two");
                 secondLease.Profile.Options.SystemPrompt.Should().Be("second");
                 secondLease.Profile.Options.MaxInputCharacters.Should().Be(200);
-                runtime.GetKernelOptions().FlushCharacters.Should().Be(2048);
                 firstClient.Disposed.Should().BeFalse();
             }
 
@@ -1333,7 +1299,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "invalid", maxInputCharacters: 0),
+                CreateConfiguration("Fake", "invalid", maxInputCharacters: 0),
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion);
             runtime.GetStatus().LastReload.Outcome.Should().Be(MaieuticsConfigurationReloadOutcome.Rejected);
@@ -1351,7 +1317,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "three", systemPrompt: "repaired"),
+                CreateConfiguration("Fake", "three", systemPrompt: "repaired"),
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion + 1);
             runtime.GetStatus().LastReload.Outcome.Should().Be(MaieuticsConfigurationReloadOutcome.Applied);
@@ -1362,27 +1328,18 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateConfiguration(connectionFile, "Fake", "fail"),
+                CreateConfiguration("Fake", "fail"),
                 deadline.Token);
             runtime.Version.Should().Be(acceptedVersion);
             runtime.GetStatus().LastReload.Outcome.Should().Be(MaieuticsConfigurationReloadOutcome.Rejected);
             (await AcquireClientAsync(runtime)).Model.Should().Be("three");
 
-            await WriteAndWaitForReloadAsync(
-                configuration,
-                runtime,
-                configurationFile,
-                CreateConfiguration(replacementConnectionFile, "Fake", "three", flushCharacters: 4096),
-                deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion + 1);
-            runtime.ConnectionFile.Should().Be(Path.GetFullPath(connectionFile));
-            runtime.GetKernelOptions().FlushCharacters.Should().Be(4096);
         }
         finally
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1394,13 +1351,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-catalog-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateNamedConfiguration(
-                connectionFile,
                 "one",
                 new NamedProfile("one", "primary", "model-one", "primary-v1"),
                 new NamedProfile("two", "secondary", "model-two", "secondary-v1")),
@@ -1436,7 +1390,6 @@ public sealed class MaieuticsConfigurationTests
                 runtime,
                 configurationFile,
                 CreateNamedConfiguration(
-                    connectionFile,
                     "one",
                     new NamedProfile("one", "primary", "model-one-v2", "primary-v2"),
                     new NamedProfile("two", "secondary", "model-two", "secondary-v1")),
@@ -1457,7 +1410,6 @@ public sealed class MaieuticsConfigurationTests
                 runtime,
                 configurationFile,
                 CreateNamedConfiguration(
-                    connectionFile,
                     "one",
                     new NamedProfile("one", "primary", "model-one-v2", "primary-v2")),
                 deadline.Token);
@@ -1474,7 +1426,6 @@ public sealed class MaieuticsConfigurationTests
                 runtime,
                 configurationFile,
                 CreateNamedConfiguration(
-                    connectionFile,
                     "a-good",
                     new NamedProfile("a-good", "primary", "replacement", "primary-v3"),
                     new NamedProfile("z-bad", "broken", "fail", "broken-v1")),
@@ -1487,7 +1438,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1497,13 +1448,8 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-profile-conflict-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
-            connectionFile,
-            TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var configuration = JsonNode.Parse(CreateNamedConfiguration(
-            connectionFile,
             "one",
             new NamedProfile("one", "primary", "model-one", "primary-v1")))?.AsObject();
         configuration?["Maieutics"]?["Model"] = new JsonObject
@@ -1530,7 +1476,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1540,13 +1486,9 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-config-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(
-            connectionFile,
-            TestContext.Current.CancellationToken);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var mcpFile = Path.Combine(root, "mcp.json");
-        await File.WriteAllTextAsync(configurationFile, CreateMcpHostConfigurationBase(connectionFile),
+        await File.WriteAllTextAsync(configurationFile, CreateMcpHostConfigurationBase(),
             TestContext.Current.CancellationToken);
 
         try
@@ -1608,7 +1550,7 @@ public sealed class MaieuticsConfigurationTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
 
         void AssertRejected(JsonObject servers, string expectedMessage)
@@ -1633,13 +1575,11 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var mcpFile = Path.Combine(root, "mcp.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateMcpHostConfigurationBase(connectionFile),
+            CreateMcpHostConfigurationBase(),
             deadline.Token);
 
         var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
@@ -1673,7 +1613,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.StopAsync(deadline.Token);
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1752,13 +1692,11 @@ public sealed class MaieuticsConfigurationTests
     }
 
     private static string CreateConfiguration(
-        string connectionFile,
         string provider,
         string model,
         OpenAiApiFlavor apiFlavor = OpenAiApiFlavor.Responses,
         string? systemPrompt = null,
         int maxInputCharacters = 32_000,
-        int flushCharacters = 1024,
         int? maxHistoryBytes = null,
         int? maxHistoryCharacters = null,
         string? maxTurnDuration = null)
@@ -1791,12 +1729,7 @@ public sealed class MaieuticsConfigurationTests
                         ["ApiKey"] = "test-key"
                     }
                 },
-                ["Agent"] = agent,
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile,
-                    ["FlushCharacters"] = flushCharacters
-                }
+                ["Agent"] = agent
             }
         };
         return root.ToJsonString();
@@ -1810,13 +1743,12 @@ public sealed class MaieuticsConfigurationTests
         }.ToJsonString();
     }
 
-    private static string CreateMcpHostConfigurationBase(string connectionFile)
+    private static string CreateMcpHostConfigurationBase()
     {
         return new JsonObject
         {
             ["Maieutics"] = new JsonObject
             {
-                ["Jupyter"] = new JsonObject { ["ConnectionFile"] = connectionFile }
             }
         }.ToJsonString();
     }
@@ -1851,7 +1783,6 @@ public sealed class MaieuticsConfigurationTests
     }
 
     private static string CreateNamedConfiguration(
-        string connectionFile,
         string defaultProfile,
         params NamedProfile[] profiles)
     {
@@ -1878,10 +1809,6 @@ public sealed class MaieuticsConfigurationTests
                 ["DefaultProfile"] = defaultProfile,
                 ["Sources"] = sources,
                 ["Profiles"] = profileNodes,
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         }.ToJsonString();
     }
@@ -1894,8 +1821,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-endpoint-capabilities-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var document = new JsonObject
         {
@@ -1926,10 +1851,6 @@ public sealed class MaieuticsConfigurationTests
                         ["Capabilities"] = new JsonArray("WebSearch", "Responses.FileSearch")
                     }
                 },
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         };
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
@@ -1965,8 +1886,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-endpoint-baseline-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var document = new JsonObject
         {
@@ -1997,10 +1916,6 @@ public sealed class MaieuticsConfigurationTests
                         ["Capabilities"] = new JsonArray("WebSearch")
                     }
                 },
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         };
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
@@ -2036,8 +1951,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-known-vendor-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var document = new JsonObject
         {
@@ -2060,10 +1973,6 @@ public sealed class MaieuticsConfigurationTests
                         ["Model"] = "test-model"
                     }
                 },
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         };
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
@@ -2093,8 +2002,6 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-vendor-model-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var document = new JsonObject
         {
@@ -2133,10 +2040,6 @@ public sealed class MaieuticsConfigurationTests
                         }
                     }
                 },
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         };
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
@@ -2163,12 +2066,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-vendor-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateVendorCatalogConfiguration(connectionFile, "WebSearch"),
+            CreateVendorCatalogConfiguration("WebSearch"),
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
@@ -2198,7 +2099,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateVendorCatalogConfiguration(connectionFile, "Shell"),
+                CreateVendorCatalogConfiguration("Shell"),
                 deadline.Token);
 
             runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
@@ -2210,7 +2111,7 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2222,12 +2123,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-auto-profile-model-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
-            CreateVendorModelCatalogConfiguration(connectionFile, "WebSearch"),
+            CreateVendorModelCatalogConfiguration("WebSearch"),
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
@@ -2250,7 +2149,7 @@ public sealed class MaieuticsConfigurationTests
                 configuration,
                 runtime,
                 configurationFile,
-                CreateVendorModelCatalogConfiguration(connectionFile, "Shell"),
+                CreateVendorModelCatalogConfiguration("Shell"),
                 deadline.Token);
 
             runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
@@ -2262,11 +2161,11 @@ public sealed class MaieuticsConfigurationTests
         {
             await host.DisposeAsync();
             factory.Clients.Should().OnlyContain(static client => client.Disposed);
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
-    private static string CreateVendorModelCatalogConfiguration(string connectionFile, string modelCapability)
+    private static string CreateVendorModelCatalogConfiguration(string modelCapability)
     {
         return new JsonObject
         {
@@ -2296,15 +2195,11 @@ public sealed class MaieuticsConfigurationTests
                         }
                     }
                 },
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         }.ToJsonString();
     }
 
-    private static string CreateVendorCatalogConfiguration(string connectionFile, string vendorCapability)
+    private static string CreateVendorCatalogConfiguration(string vendorCapability)
     {
         return new JsonObject
         {
@@ -2328,10 +2223,6 @@ public sealed class MaieuticsConfigurationTests
                         ["Capabilities"] = new JsonArray(vendorCapability)
                     }
                 },
-                ["Jupyter"] = new JsonObject
-                {
-                    ["ConnectionFile"] = connectionFile
-                }
             }
         }.ToJsonString();
     }
@@ -2348,23 +2239,20 @@ public sealed class MaieuticsConfigurationTests
     ];
 
     private static string CreateSourceOnlyConfiguration(
-        string connectionFile,
-        JsonArray endpoints,
+                JsonArray endpoints,
         params NamedSource[] sources)
     {
-        return CreateSourceOnlyConfigurationCore(connectionFile, endpoints, sources);
+        return CreateSourceOnlyConfigurationCore(endpoints, sources);
     }
 
     private static string CreateSourceOnlyConfiguration(
-        string connectionFile,
-        params NamedSource[] sources)
+                params NamedSource[] sources)
     {
-        return CreateSourceOnlyConfigurationCore(connectionFile, null, sources);
+        return CreateSourceOnlyConfigurationCore(null, sources);
     }
 
     private static string CreateSourceOnlyConfigurationCore(
-        string connectionFile,
-        JsonArray? endpoints,
+                JsonArray? endpoints,
         NamedSource[] sources)
     {
         var sourceNodes = new JsonObject();
@@ -2382,10 +2270,6 @@ public sealed class MaieuticsConfigurationTests
         var maieutics = new JsonObject
         {
             ["Sources"] = sourceNodes,
-            ["Jupyter"] = new JsonObject
-            {
-                ["ConnectionFile"] = connectionFile
-            }
         };
         if (endpoints is not null) maieutics["Endpoints"] = endpoints;
 
@@ -2447,13 +2331,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateNamedConfiguration(
-                connectionFile,
                 "one",
                 new NamedProfile("one", "discovery-source", "test-model", "v1")),
             deadline.Token);
@@ -2483,7 +2364,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2495,13 +2376,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-cache-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateNamedConfiguration(
-                connectionFile,
                 "one",
                 new NamedProfile("one", "discovery-source", "test-model", "v1")),
             deadline.Token);
@@ -2531,7 +2409,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2543,13 +2421,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-skip-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateNamedConfiguration(
-                connectionFile,
                 "one",
                 new NamedProfile("one", "no-discovery", "test-model", "v1")),
             deadline.Token);
@@ -2569,7 +2444,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -2581,13 +2456,10 @@ public sealed class MaieuticsConfigurationTests
         using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-discovery-error-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var connectionFile = Path.Combine(root, "connection.json");
-        await JupyterConnectionInfo.CreateLocalTcp().WriteFileAsync(connectionFile, deadline.Token);
         var configurationFile = Path.Combine(root, "maieutics.json");
         await File.WriteAllTextAsync(
             configurationFile,
             CreateNamedConfiguration(
-                connectionFile,
                 "one",
                 new NamedProfile("one", "failing-source", "test-model", "v1")),
             deadline.Token);
@@ -2610,7 +2482,7 @@ public sealed class MaieuticsConfigurationTests
         finally
         {
             await host.DisposeAsync();
-            Directory.Delete(root, true);
+            DeleteDirectoryWithRetry(root);
         }
     }
 

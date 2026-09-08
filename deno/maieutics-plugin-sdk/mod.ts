@@ -46,14 +46,7 @@ import {
 } from "@ghostflyby/worker-actor/codec";
 import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
-import {
-  type AdmissionContext,
-  type AdmissionHook,
-  admissionMailboxFor,
-  type AdmissionRequestFrame,
-  answerAdmission,
-} from "./admission.ts";
-import { http, HTTP_AGGREGATOR_SPECIFIER } from "./http.ts";
+import { admissionMailboxFor, type AdmissionRequestFrame, answerAdmission } from "./admission.ts";
 import { httpCodec } from "./http_codec.ts";
 import {
   bindDefiningWorker,

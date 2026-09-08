@@ -13,6 +13,9 @@
  * the shared lock and loads lazily on the first transform.
  */
 
+// The absolute npm: specifier is deliberate: the REPL child resolves this
+// module without the config import map (see the module doc comment above).
+// deno-lint-ignore no-import-prefix
 import esbuildWasmCjs from "npm:esbuild-wasm@0.25.12/lib/browser.js";
 
 const esbuildWasm = esbuildWasmCjs as unknown as {

@@ -1,0 +1,92 @@
+name: Extension release
+
+on:
+  push:
+    tags:
+      - "vscode-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extension-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: true
+  VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+jobs:
+  package:
+    name: Package VSCode extension
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.6
+
+      - name: Resolve extension version
+        run: echo "EXTENSION_VERSION=$(jq -r .version deno/maieutics-vscode/package.json)" >> "$GITHUB_ENV"
+
+      - name: Verify tag matches extension version
+        if: startsWith(github.ref_name, 'vscode-v')
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "vscode-v${EXTENSION_VERSION}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match extension version vscode-v${EXTENSION_VERSION}."
+            echo "The extension package.json is the version source of truth; bump it in the release PR."
+            exit 1
+          fi
+
+      # Fails on lockfile drift: a dependency changed without deno.lock.
+      - name: Install workspace dependencies (frozen lockfile)
+        working-directory: deno
+        run: deno install --frozen
+
+      - name: Check formatting
+        working-directory: deno
+        run: deno fmt --check
+
+      - name: Lint
+        working-directory: deno
+        run: deno lint
+
+      - name: Check types
+        working-directory: deno
+        run: deno task check
+
+      - name: Test
+        working-directory: deno
+        run: deno task test
+
+      - name: Bundle extension
+        run: deno task --config deno/maieutics-vscode/deno.json build
+
+      - name: Package vsix
+        run: deno task --config deno/maieutics-vscode/deno.json package
+
+      # Manual dispatch is a build-only dry run: only a vscode-v* tag
+      # publishes a release.
+      - name: Create GitHub release and upload vsix
+        if: startsWith(github.ref_name, 'vscode-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vsix="deno/maieutics-vscode/maieutics-vscode-${EXTENSION_VERSION}.vsix"
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 ||
+            gh release create "${GITHUB_REF_NAME}" --title "Maieutics VSCode extension ${EXTENSION_VERSION}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" "${vsix}" --clobber
+
+      - name: Publish to the Marketplace (optional)
+        if: startsWith(github.ref_name, 'vscode-v') && env.VSCE_PAT != ''
+        run: >
+          deno run -A --no-lock npm:@vscode/vsce@3.9.2 publish
+          --no-dependencies
+        working-directory: deno/maieutics-vscode

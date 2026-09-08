@@ -6,6 +6,12 @@ Date: 2026-07-16
 
 Supersedes: The `AGENTS.md` default that the primary Deno runtime is a custom IPC child rather than a Jupyter stack.
 
+> **Historical — partially superseded by ADR 0023** (`0023-custom-web-frontend-protocol-and-vscode-notebook.md`).
+> The notebook output bridge described here no longer reaches a Jupyter notebook: the product frontend is the custom
+> web protocol and the VSCode extension, and the executable no longer hosts a user-facing Jupyter kernel. The
+> stateful Deno REPL remains (see ADR 0011, ADR 0014, ADR 0020); its rich output now flows through the REPL
+> presentation pipeline into frontend event frames instead of IOPub. This record is preserved as written.
+
 ## Context
 
 The Agent needs a stateful TypeScript REPL with access to Deno built-ins and Deno's Jupyter APIs. It must execute code,

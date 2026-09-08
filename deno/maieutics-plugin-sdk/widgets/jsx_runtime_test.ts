@@ -7,8 +7,10 @@ const DISPLAY = Symbol.for("Jupyter.display");
 function bindFakeHost(): { opens: Array<Record<string, unknown>> } {
   const opens: Array<Record<string, unknown>> = [];
   bindWidgetHost({
-    broadcast: async (messageType: string, content: Record<string, unknown>) => {
+    broadcast: (messageType: string, content: Record<string, unknown>) => {
       if (messageType === "comm_open") opens.push(content);
+
+      return Promise.resolve();
     },
     onComm: () => {},
   });

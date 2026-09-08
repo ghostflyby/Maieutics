@@ -2,35 +2,21 @@
  * Dedicated Jupyter comm client over the process-owned IPC channel.
  *
  * Comm traffic between the kernel and this REPL child travels on its own WebSocket
- * (`/comm`), separate from the control bus. Messages are a fixed binary encoding:
- *
- * ```text
- * [kind:1][commIdLen:2][commId][targetNameLen:2][targetName][dataLen:4][data][bufferCount:2][bufLen:4][buf]...
- * ```
- *
- * Buffers are native bytes (no base64). The first frame after connect is a JSON
- * hello declaring the session id, verified by the host against the peer process.
+ * (`/comm`), separate from the control bus, using the shared binary codec in
+ * `../shared/comm_codec.ts`. Buffers are native bytes (no base64). The first frame
+ * after connect is a JSON hello declaring the session id, verified by the host
+ * against the peer process.
  */
 
 import { connectIpcWebSocket } from "../shared/ipc_websocket.ts";
+import {
+  type CommMessage,
+  decodeCommMessage,
+  encodeCommMessage,
+  MAX_COMM_MESSAGE_BYTES,
+} from "../shared/comm_codec.ts";
 
-const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
-
-export enum CommKind {
-  Open = 0,
-  Message = 1,
-  Close = 2,
-}
-
-export interface CommMessage {
-  kind: CommKind;
-  commId: string;
-  targetName?: string;
-  data?: unknown;
-  buffers: Uint8Array[];
-  /** Jupyter message metadata (comm_open carries the protocol version). */
-  metadata?: Record<string, unknown>;
-}
+export { CommKind, type CommMessage } from "../shared/comm_codec.ts";
 
 export interface CommClient {
   /** Sends a comm message to the kernel (relayed to the frontend). */
@@ -56,11 +42,11 @@ export async function connectComm(
     address,
     "/comm",
     credential,
-    { maxMessageBytes: MAX_MESSAGE_BYTES },
+    { maxMessageBytes: MAX_COMM_MESSAGE_BYTES },
   );
   const client: CommClient = {
     send: (message) => {
-      socket.send(encode(message));
+      socket.send(encodeCommMessage(message));
       return Promise.resolve();
     },
     close: (code, reason) => socket.close(code, reason),
@@ -81,7 +67,7 @@ export async function connectComm(
       ready.resolve(undefined);
       return;
     }
-    client.onMessage?.(decode(data));
+    client.onMessage?.(decodeCommMessage(data));
   };
   socket.send(JSON.stringify({ sessionId }));
   await withTimeout(
@@ -112,97 +98,4 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-function encode(message: CommMessage): Uint8Array {
-  const commId = new TextEncoder().encode(message.commId);
-  const targetName = new TextEncoder().encode(message.targetName ?? "");
-  const data = message.data === undefined ? new Uint8Array() : encodeData(message.data);
-  const metadata = message.metadata === undefined ? new Uint8Array() : encodeData(message.metadata);
-  const buffers = message.buffers;
-
-  let total = 1 + 2 + commId.length + 2 + targetName.length + 4 + data.length +
-    4 + metadata.length + 2;
-  for (const buffer of buffers) total += 4 + buffer.length;
-  if (total > MAX_MESSAGE_BYTES) {
-    throw new RangeError(`The comm message exceeds ${MAX_MESSAGE_BYTES} bytes.`);
-  }
-
-  const result = new Uint8Array(total);
-  const view = new DataView(result.buffer);
-  let offset = 0;
-  result[offset++] = message.kind;
-  view.setUint16(offset, commId.length, false);
-  offset += 2;
-  result.set(commId, offset);
-  offset += commId.length;
-  view.setUint16(offset, targetName.length, false);
-  offset += 2;
-  result.set(targetName, offset);
-  offset += targetName.length;
-  view.setUint32(offset, data.length, false);
-  offset += 4;
-  result.set(data, offset);
-  offset += data.length;
-  view.setUint32(offset, metadata.length, false);
-  offset += 4;
-  result.set(metadata, offset);
-  offset += metadata.length;
-  view.setUint16(offset, buffers.length, false);
-  offset += 2;
-  for (const buffer of buffers) {
-    view.setUint32(offset, buffer.length, false);
-    offset += 4;
-    result.set(buffer, offset);
-    offset += buffer.length;
-  }
-  return result;
-}
-
-function decode(frames: Uint8Array): CommMessage {
-  const view = new DataView(frames.buffer, frames.byteOffset, frames.byteLength);
-  let offset = 0;
-  const kind = frames[offset++] as CommKind;
-  const commIdLength = view.getUint16(offset, false);
-  offset += 2;
-  const commId = new TextDecoder().decode(frames.subarray(offset, offset + commIdLength));
-  offset += commIdLength;
-  const targetNameLength = view.getUint16(offset, false);
-  offset += 2;
-  const targetName = targetNameLength === 0
-    ? undefined
-    : new TextDecoder().decode(frames.subarray(offset, offset + targetNameLength));
-  offset += targetNameLength;
-  const dataLength = view.getUint32(offset, false);
-  offset += 4;
-  let data: unknown;
-  if (dataLength > 0) {
-    data = JSON.parse(new TextDecoder().decode(frames.subarray(offset, offset + dataLength)));
-    offset += dataLength;
-  }
-  const metadataLength = view.getUint32(offset, false);
-  offset += 4;
-  let metadata: Record<string, unknown> | undefined;
-  if (metadataLength > 0) {
-    metadata = JSON.parse(
-      new TextDecoder().decode(frames.subarray(offset, offset + metadataLength)),
-    );
-    offset += metadataLength;
-  }
-  const bufferCount = view.getUint16(offset, false);
-  offset += 2;
-  const buffers: Uint8Array[] = [];
-  for (let index = 0; index < bufferCount; index++) {
-    const bufferLength = view.getUint32(offset, false);
-    offset += 4;
-    buffers.push(frames.slice(offset, offset + bufferLength));
-    offset += bufferLength;
-  }
-  return { kind, commId, targetName, data, buffers, metadata };
-}
-
-function encodeData(data: unknown): Uint8Array {
-  const text = JSON.stringify(data);
-  if (text === undefined) throw new TypeError("The comm data is not JSON serializable.");
-  return new TextEncoder().encode(text);
 }

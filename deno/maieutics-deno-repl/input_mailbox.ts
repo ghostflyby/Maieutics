@@ -1,7 +1,7 @@
 /**
  * Blocking input mailbox: lets the REPL worker's prompt/confirm/alert recover
  * their original synchronous signatures even though the actual input round trip
- * (WebSocket -> .NET -> Jupyter stdin) is asynchronous.
+ * (WebSocket -> .NET host) is asynchronous.
  *
  * Design: the worker BLOCKS its own thread with Atomics.wait on a
  * SharedArrayBuffer, while the main thread (repl_client, whose event loop is

@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { WidgetRuntime } from "./runtime.ts";
 
 /** A fake broadcast that records comm_open / comm_msg payloads. */
@@ -6,11 +6,13 @@ function fakeBroadcast() {
   const calls: Array<{ type: string; content: Record<string, unknown> }> = [];
   return {
     calls,
-    broadcast: async (
+    broadcast: (
       messageType: string,
       content: Record<string, unknown>,
     ): Promise<void> => {
       calls.push({ type: messageType, content });
+
+      return Promise.resolve();
     },
   };
 }

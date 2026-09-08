@@ -44,7 +44,8 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.Runtime.StorageChannel.ts", "maieutics-runtime/storage_channel.ts"),
         ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
         ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
-        ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts")
+        ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts"),
+        ("Maieutics.Deno.Shared.CommCodec.ts", "shared/comm_codec.ts")
     ];
 
     private readonly Lazy<MaterializedModules> modules =

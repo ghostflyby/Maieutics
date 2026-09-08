@@ -1,5 +1,9 @@
 # Deno.jupyter 兼容边界
 
+> **历史文档 — 输出通路部分已被 ADR 0023 取代。** 本文描述的 `Deno.jupyter` 兼容 API 面仍是 REPL 的现行行为;
+> 但输出不再经用户 notebook IOPub,而是经 REPL presentation 管线进入自定义 Web 前端协议的事件流
+> (`docs/web-frontend-protocol.md`,ADR 0023)。文中提到 IOPub / kernel 通路之处按历史记录保留。
+
 本页记录 Maieutics REPL 对官方 `Deno.jupyter` API 的兼容范围。REPL 不是 `deno jupyter` 内核,而是
 运行在 Aves REPL 内核(`jsr:@ghostflyby/aves/repl`)之上的兼容层(`deno/maieutics-deno-repl/repl_worker.ts`
 的 `createJupyterApi()`),输出经 `repl.eval.*` 协议 → 展示管线 → 用户 notebook IOPub。

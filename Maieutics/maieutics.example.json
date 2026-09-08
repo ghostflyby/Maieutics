@@ -70,10 +70,6 @@
       "SettleTimeout": "00:00:00.600",
       "GracefulExitTimeout": "00:00:10",
       "MaxSnapshotCharacters": 16384
-    },
-    "Jupyter": {
-      "FlushInterval": "00:00:00.050",
-      "FlushCharacters": 1024
     }
   }
 }

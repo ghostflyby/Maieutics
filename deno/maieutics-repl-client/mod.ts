@@ -485,15 +485,15 @@ function createComm(bus: ReplBus): ReplComm {
   return {
     async open(commId, targetName, data) {
       const value = await connect();
-      value.send({ kind: CommKind.Open, commId, targetName, data, buffers: [] });
+      await value.send({ kind: CommKind.Open, commId, targetName, data, buffers: [] });
     },
     async msg(commId, data, buffers) {
       const value = await connect();
-      value.send({ kind: CommKind.Message, commId, data, buffers: buffers ?? [] });
+      await value.send({ kind: CommKind.Message, commId, data, buffers: buffers ?? [] });
     },
     async close(commId, data) {
       const value = await connect();
-      value.send({ kind: CommKind.Close, commId, data, buffers: [] });
+      await value.send({ kind: CommKind.Close, commId, data, buffers: [] });
     },
     on(event, handler) {
       void connect().then((value) => {

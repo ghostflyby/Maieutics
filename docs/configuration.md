@@ -58,7 +58,7 @@ remain deferred to the artifact boundary.
 ## Deno REPL tools
 
 The executable also registers `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close`. The default
-REPL starts lazily; each explicitly created REPL starts one independent local `deno jupyter` process. A REPL captures
+REPL starts lazily; each explicitly created REPL starts one independent supervised `deno run` process. A REPL captures
 the currently selected workspace root as its working directory when the session is created. Later workspace commands do
 not move an existing process.
 

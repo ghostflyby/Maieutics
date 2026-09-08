@@ -22,7 +22,7 @@ internal sealed class DenoReplFunctions
                 (Func<string, AIFunctionArguments, string?, CancellationToken, ValueTask<DenoReplExecutionResult>>)
                 ExecuteAsync,
                 "repl_execute",
-                "Executes TypeScript in a stateful Deno Jupyter REPL. console output and the final expression are " +
+                "Executes TypeScript in a stateful Deno REPL (Jupyter-compatible display API). console output and the final expression are " +
                 "private reasoning results. Show rich output to the notebook user with " +
                 "Deno.jupyter.display({ 'text/html': html, 'text/plain': fallback }, { raw: true }). For updates, " +
                 "first display with { raw: true, display_id: id }, then display the replacement with " +
@@ -31,7 +31,7 @@ internal sealed class DenoReplFunctions
             CreateFunction(
                 (Func<AIFunctionArguments, CancellationToken, ValueTask<DenoReplSessionResult>>)CreateAsync,
                 "repl_create",
-                "Creates and starts an additional isolated stateful Deno Jupyter REPL process."),
+                "Creates and starts an additional isolated stateful Deno REPL (Jupyter-compatible display API) process."),
             CreateFunction(
                 (Func<AIFunctionArguments, CancellationToken, ValueTask<DenoReplListResult>>)ListAsync,
                 "repl_list",
@@ -61,7 +61,7 @@ internal sealed class DenoReplFunctions
             });
     }
 
-    [Description("Executes TypeScript in one stateful Deno Jupyter REPL.")]
+    [Description("Executes TypeScript in one stateful Deno REPL (Jupyter-compatible display API).")]
     private async ValueTask<DenoReplExecutionResult> ExecuteAsync(
         [Description("The TypeScript or JavaScript source to execute.")]
         string code,
@@ -80,7 +80,7 @@ internal sealed class DenoReplFunctions
             cancellationToken).ConfigureAwait(false);
     }
 
-    [Description("Creates and starts an additional Deno Jupyter REPL process.")]
+    [Description("Creates and starts an additional Deno REPL process.")]
     private async ValueTask<DenoReplSessionResult> CreateAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)

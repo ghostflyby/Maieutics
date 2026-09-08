@@ -31,7 +31,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="TestData\kernels\deno\kernel.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

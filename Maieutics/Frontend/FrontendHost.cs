@@ -311,6 +311,14 @@ internal sealed class FrontendHost : IAsyncDisposable
             .ConfigureAwait(false);
         if (request is null) return;
 
+        // The source-generated binder accepts JSON null even for the non-nullable
+        // property; an empty string is the documented dismiss answer, null is not.
+        if (request.Value is null)
+        {
+            await WriteErrorAsync(context, FrontendErrors.InvalidRequest, "The input answer must carry a value.");
+            return;
+        }
+
         if (!service.TryCompleteInput(requestId, request.Value))
         {
             await WriteErrorAsync(

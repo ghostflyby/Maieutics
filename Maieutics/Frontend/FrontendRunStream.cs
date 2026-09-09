@@ -140,7 +140,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         }
     }
 
-    /// <summary>Publishes a REPL presentation frame that carries no run-local sequence.</summary>
+    /// <summary>Publishes a REPL presentation frame that carries no run-local sequence.
+    /// The documented <c>input.request</c> frame is flat (requestId/prompt/password at the
+    /// top level), while the sink hands the typed payload through the generic presentation
+    /// seam, so the run stream lifts the fields onto the frame.</summary>
     public void PublishPresentation(
         string type,
         string? displayId,
@@ -148,6 +151,19 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (type == "input.request" &&
+            System.Text.Json.JsonSerializer.Deserialize(
+                data,
+                FrontendJsonContext.Default.FrontendInputRequest) is { } request)
+        {
+            Publish(new FrontendEventFrame(
+                type,
+                RequestId: request.RequestId,
+                Prompt: request.Prompt,
+                Password: request.Password));
+            return;
+        }
+
         Publish(new FrontendEventFrame(type, DisplayId: displayId, Data: data));
     }
 

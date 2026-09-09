@@ -320,19 +320,42 @@ public sealed class FrontendApiIntegrationTests
             new { value = "x" },
             deadline.Token);
         unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // A run ending (the presentation scope detaching) cancels pending requests
+        // server-side, so the late answer for an outstanding id is a typed 404 too.
+        // A run ending (the presentation scope detaching) cancels pending requests
+        // server-side, so the late answer for an outstanding id is a typed 404 too.
+        var lateTask = scope.Sink.RequestInputAsync("late:", password: false, waitDeadline.Token);
+        target.Published.Should().Contain(entry => entry.Type == "input.request");
+        await scope.DisposeAsync();
+        var lateAct = async () => await lateTask;
+        await lateAct.Should().ThrowAsync<OperationCanceledException>();
+        var lateId = target.Published.Last(entry => entry.Type == "input.request")
+            .Data.GetProperty("requestId").GetString()!;
+        var lateAnswer = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/inputs/{lateId}",
+            new { value = "late" },
+            deadline.Token);
+        lateAnswer.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task InputAnswersWithoutABodyAreRejected()
+    public async Task InputAnswersWithMissingOrMalformedBodiesAreRejected()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await StartHostAsync(deadline.Token);
 
-        var response = await harness.Client.PostAsync(
+        var empty = await harness.Client.PostAsync(
+            "/v1/agent/inputs/input-unknown",
+            content: null,
+            deadline.Token);
+        empty.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var malformed = await harness.Client.PostAsync(
             "/v1/agent/inputs/input-unknown",
             new StringContent("not json", Encoding.UTF8, "application/json"),
             deadline.Token);
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        malformed.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact(Timeout = 60_000)]

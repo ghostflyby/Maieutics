@@ -168,6 +168,9 @@ public sealed class AgentSession : IAgentSession
     public AgentSessionId Id { get; }
 
     /// <inheritdoc />
+    public bool IsRunInProgress => Volatile.Read(ref runInProgress) != 0;
+
+    /// <inheritdoc />
     public async Task<IAgentRun> StartTurnAsync(
         AgentTurn turn,
         CancellationToken cancellationToken = default)

@@ -101,7 +101,7 @@ Every change must preserve these invariants:
 10. Raw ZeroMQ frames do not cross transport boundaries.
 11. Provider SDK objects do not cross provider adapters.
 12. Tool results remain structured until an output adapter renders them.
-13. Notebook snapshot creation does not mutate the active session.
+13. Notebook snapshot creation does not mutate the live session it was taken from.
 14. Binary data remains binary until its target representation requires encoding (base64 inside a Jupyter
     MimeBundle is permitted only inside the retained Jupyter libraries).
 15. Disposal stops owned loops, closes sockets, completes streams, and fails pending operations exactly once.

@@ -59,9 +59,10 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           transcript = await client.transcript(sessionId);
         } catch (error) {
-          // The server serves transcripts for its active session only. Opening
-          // a stored session's view engages it, exactly like executing a cell
-          // in a pinned notebook does.
+          // Transcripts are served per session, but lazily: reading a stored
+          // session that is not live yet resumes it. On legacy single-active
+          // servers the read fails with session_not_active for a non-foreground
+          // session; resuming first keeps both server shapes working.
           if (!(error instanceof FrontendError) || error.code !== "session_not_active") throw error;
           await client.resumeSession(sessionId);
           transcript = await client.transcript(sessionId);
@@ -654,7 +655,7 @@ function unwrapSessionRef(argument: CommandArgument): string | undefined {
 }
 
 /** Picks a session when a command carries no tree argument: the stored list
- * with display labels; the active session leads when it is stored. */
+ * with display labels in server order, most recently active first. */
 async function pickSession(
   client: FrontendClient,
   sessionId: string | undefined,

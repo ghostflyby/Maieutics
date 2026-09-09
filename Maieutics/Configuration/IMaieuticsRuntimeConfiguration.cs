@@ -6,6 +6,13 @@ internal interface IMaieuticsRuntimeConfiguration : IAgentRunProfileProvider, IM
 {
     long Version { get; }
 
+    /// <summary>Acquires a run profile lease for one explicit configured profile id,
+    /// bypassing the process selection (the per-session override path). Returns
+    /// <see langword="null" /> when the id no longer resolves.</summary>
+    Task<IAgentRunProfileLease?> AcquireProfileAsync(
+        string profileId,
+        CancellationToken cancellationToken = default);
+
     MaieuticsRuntimeStatus GetStatus();
 
     /// <summary>Returns models discovered from each model source's API endpoint.</summary>

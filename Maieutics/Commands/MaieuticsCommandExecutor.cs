@@ -21,11 +21,22 @@ internal sealed class MaieuticsCommandExecutor(
     MaieuticsStatusProvider? statusProvider,
     IMaieuticsMcpController? mcpController)
 {
-    /// <summary>Executes one command cell and returns its markdown rendering.</summary>
+    /// <summary>The command cell's markdown rendering plus whether this execution moved
+    /// the foreground session (a switch the calling notebook should follow).</summary>
+    internal sealed record MaieuticsCommandAnswer(string Markdown, bool MovedForeground);
+
+    /// <summary>Executes one command cell and returns its markdown rendering. The optional
+    /// addressing session scopes session-aware commands (<c>%session current</c>,
+    /// <c>%model use/current/reset</c> target that session's override); without it the
+    /// foreground/process semantics apply (the session-blind command endpoint).</summary>
     /// <exception cref="MaieuticsCommandException">The text is not a valid command or the
     /// command failed in an expected way.</exception>
-    public async Task<string> ExecuteAsync(string code, CancellationToken cancellationToken)
+    public async Task<MaieuticsCommandAnswer> ExecuteAsync(
+        string code,
+        AgentSessionId? session,
+        CancellationToken cancellationToken)
     {
+        var movedForeground = false;
         cancellationToken.ThrowIfCancellationRequested();
         var originalArguments = code.Split((char[]?)null,
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -43,17 +54,21 @@ internal sealed class MaieuticsCommandExecutor(
                     StringComparison.OrdinalIgnoreCase)
                     ? 3
                     : 2;
-                return ExecuteWorkspaceCommand(code, arguments, pathTokenCount);
+                return new MaieuticsCommandAnswer(
+                    ExecuteWorkspaceCommand(code, arguments, pathTokenCount), MovedForeground: false);
             }
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Model, StringComparison.OrdinalIgnoreCase))
-                return await ExecuteModelCommandAsync(arguments, cancellationToken).ConfigureAwait(false);
+            {
+                var markdown = await ExecuteModelCommandAsync(arguments, session, cancellationToken).ConfigureAwait(false);
+                return new MaieuticsCommandAnswer(markdown, MovedForeground: false);
+            }
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Mcp, StringComparison.OrdinalIgnoreCase))
-                return ExecuteMcpCommand(arguments);
+                return new MaieuticsCommandAnswer(ExecuteMcpCommand(arguments), MovedForeground: false);
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Status, StringComparison.OrdinalIgnoreCase))
-                return ExecuteStatusCommand(arguments);
+                return new MaieuticsCommandAnswer(ExecuteStatusCommand(arguments), MovedForeground: false);
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Session, StringComparison.OrdinalIgnoreCase))
             {
@@ -62,7 +77,8 @@ internal sealed class MaieuticsCommandExecutor(
                     StringComparison.OrdinalIgnoreCase)
                     ? 4
                     : 3;
-                return ExecuteSessionCommand(code, arguments, titleTokenCount);
+                var markdown = ExecuteSessionCommand(code, arguments, titleTokenCount, session, ref movedForeground);
+                return new MaieuticsCommandAnswer(markdown, movedForeground);
             }
 
             throw new MaieuticsCommandException(
@@ -82,11 +98,17 @@ internal sealed class MaieuticsCommandExecutor(
 
     private async Task<string> ExecuteModelCommandAsync(
         string[] arguments,
+        AgentSessionId? session,
         CancellationToken cancellationToken)
     {
         if (runtimeConfiguration is null)
             throw new MaieuticsCommandException(
                 MaieuticsCommandException.Unavailable, "Model profile commands are not available in this host.");
+
+        if (arguments.Length == 2 ||
+            (arguments.Length == 3 &&
+             string.Equals(arguments[2], MaieuticsCommandLanguage.Current, StringComparison.OrdinalIgnoreCase)))
+            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection(), session);
 
         if (arguments.Length >= 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Available, StringComparison.OrdinalIgnoreCase))
@@ -103,13 +125,6 @@ internal sealed class MaieuticsCommandExecutor(
             return RenderAvailable(groups, runtimeConfiguration.GetModelProfileSelection());
         }
 
-        if (arguments.Length == 2 ||
-            (arguments.Length == 3 && string.Equals(
-                arguments[2],
-                MaieuticsCommandLanguage.Current,
-                StringComparison.OrdinalIgnoreCase)))
-            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
-
         if (arguments.Length == 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
             return RenderList(runtimeConfiguration.GetModelProfileSelection());
@@ -117,15 +132,32 @@ internal sealed class MaieuticsCommandExecutor(
         if (arguments.Length == 4 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
         {
-            await runtimeConfiguration.SelectModelProfileAsync(arguments[3], cancellationToken).ConfigureAwait(false);
-            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
+            if (session is { } addressed)
+            {
+                // Session-scoped: only this session's next turns run on the profile.
+                sessionManager?.SetProfileOverride(addressed, arguments[3]);
+            }
+            else
+            {
+                await runtimeConfiguration.SelectModelProfileAsync(arguments[3], cancellationToken).ConfigureAwait(false);
+            }
+
+            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection(), session);
         }
 
         if (arguments.Length == 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
         {
-            runtimeConfiguration.ResetModelProfile();
-            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection());
+            if (session is { } addressed)
+            {
+                sessionManager?.SetProfileOverride(addressed, null);
+            }
+            else
+            {
+                runtimeConfiguration.ResetModelProfile();
+            }
+
+            return RenderCurrent(runtimeConfiguration.GetModelProfileSelection(), session);
         }
 
         throw new MaieuticsCommandException(
@@ -197,7 +229,12 @@ internal sealed class MaieuticsCommandExecutor(
         return MaieuticsStatusRenderer.Render(statusProvider.Capture());
     }
 
-    private string ExecuteSessionCommand(string code, string[] arguments, int titleTokenCount)
+    private string ExecuteSessionCommand(
+        string code,
+        string[] arguments,
+        int titleTokenCount,
+        AgentSessionId? session,
+        ref bool movedForeground)
     {
         if (sessionManager is null)
             throw new MaieuticsCommandException(
@@ -208,7 +245,9 @@ internal sealed class MaieuticsCommandExecutor(
                 arguments[2],
                 MaieuticsCommandLanguage.Current,
                 StringComparison.OrdinalIgnoreCase)))
-            return RenderSession(sessionManager);
+            return session is { } addressed
+                ? RenderSessionFor(sessionManager, addressed)
+                : RenderSession(sessionManager);
 
         if (arguments.Length == 3 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase))
@@ -218,6 +257,7 @@ internal sealed class MaieuticsCommandExecutor(
             string.Equals(arguments[2], MaieuticsCommandLanguage.New, StringComparison.OrdinalIgnoreCase))
         {
             sessionManager.StartNew();
+            movedForeground = true;
             return RenderSession(sessionManager);
         }
 
@@ -250,6 +290,7 @@ internal sealed class MaieuticsCommandExecutor(
             try
             {
                 sessionManager.Resume(sessionId);
+                movedForeground = true;
             }
             catch (AgentException exception)
             {
@@ -268,6 +309,7 @@ internal sealed class MaieuticsCommandExecutor(
             try
             {
                 var forkId = sessionManager.Fork(sessionId, forkPointSeq);
+                movedForeground = true;
                 return $"**Session** `{forkId.Value.ToString("N")[..12]}` — forked from `{sessionId.Value.ToString("N")[..12]}` " +
                        $"at turn {forkPointSeq + 1} and made active.";
             }
@@ -364,6 +406,19 @@ internal sealed class MaieuticsCommandExecutor(
         return $"**Session** `{manager.Id.Value.ToString("N")}` — {turns} turn(s) in memory · persistence {persistence}.";
     }
 
+    /// <summary>Renders one addressed session (the <c>%session current</c> form inside a
+    /// session-addressed cell): the conversation that cell belongs to, not the process
+    /// foreground.</summary>
+    private string RenderSessionFor(MaieuticsAgentSessionManager manager, AgentSessionId addressed)
+    {
+        var turns = manager.Resolve(addressed).GetTranscriptSnapshot().Turns.Length;
+        var persistence = manager.PersistenceEnabled ? "enabled" : "disabled";
+        var suffix = manager.GetProfileOverride(addressed) is { } profile
+            ? $" · model override `{profile}`"
+            : "";
+        return $"**Session** `{addressed.Value.ToString("N")}` — {turns} turn(s) in memory · persistence {persistence}{suffix}.";
+    }
+
     private static string RenderStoredSessions(MaieuticsAgentSessionManager manager)
     {
         if (!manager.PersistenceEnabled)
@@ -427,16 +482,37 @@ internal sealed class MaieuticsCommandExecutor(
         return code[index..].TrimEnd();
     }
 
-    private static string RenderCurrent(MaieuticsModelProfileSelection selection)
+    private string RenderCurrent(MaieuticsModelProfileSelection selection, AgentSessionId? session = null)
     {
         if (selection.Profiles.Count == 0) return "### Current model\n\nNo model profile is configured.";
 
-        var profile = selection.Profiles.Single(profile => profile.IsSelected);
-        var selectionSource = profile.IsAutomatic
-            ? "automatic session override"
-            : selection.HasSessionOverride
-                ? "session override"
-                : "configured default";
+        // An addressed session's own override wins over the process selection.
+        // A stale override (removed by a reload) falls back exactly like the
+        // turn path does instead of failing the render.
+        string? sessionOverride = null;
+        if (session is { } addressed && sessionManager is not null)
+        {
+            sessionOverride = sessionManager.GetProfileOverride(addressed);
+        }
+
+        var selected = selection.Profiles.Single(profile => profile.IsSelected);
+        var profile = sessionOverride is null
+            ? selected
+            : selection.Profiles.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, sessionOverride, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+        {
+            profile = selected;
+            sessionOverride = null;
+        }
+
+        var selectionSource = sessionOverride is not null
+            ? "session override"
+            : profile.IsAutomatic
+                ? "automatic session override"
+                : selection.HasSessionOverride
+                    ? "foreground override"
+                    : "configured default";
         return $"""
                 ### Current model
 

@@ -289,7 +289,7 @@ Size: M–L (revised down from XL once treated as de-scaffolding).
 Follow-up: `docs/multi-session-migration.md` (2026-09-09) carries the full
 feasibility study, verified coupling inventory, target shape (including the
 decision that the model-profile override is session-scoped), and a four-phase
-plan.
+plan. Status: **implemented**.
 
 ### C2. Multimodal input has no frontend path
 

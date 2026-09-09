@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using FluentAssertions;
 using Maieutics.Agent;
@@ -210,6 +211,113 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task EvictionSkipsSessionsWithRunsInFlight()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+        {
+            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+        }
+
+        var neverComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var manager = new MaieuticsAgentSessionManager(
+            new FixedProfileProvider(new HangingChatClient(neverComplete.Task)),
+            databaseDirectory,
+            familyId => new SqliteTranscriptStore(FamilyPath(familyId)));
+
+        var session = manager.Resolve(stored);
+        var run = await session.StartTurnAsync(AgentTurn.FromText("hang"), CancellationToken.None);
+        session.IsRunInProgress.Should().BeTrue();
+
+        // Churn the foreground past the capacity: the running session is never
+        // an eviction candidate (a second instance for the same identity would
+        // break the single-run gate).
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
+        {
+            manager.StartNew();
+        }
+
+        manager.IsLive(stored).Should().BeTrue();
+
+        await run.DisposeAsync();
+        session.IsRunInProgress.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ResolveEnforcesTheLiveCap()
+    {
+        var stored = new List<AgentSessionId>();
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity + 1; index++)
+        {
+            var id = AgentSessionId.Create();
+            stored.Add(id);
+            using (var store = new SqliteTranscriptStore(FamilyPath(id)))
+            {
+                store.AppendTurn(id, Turn(id, (index + 1).ToString(), "Question", "Answer"), []);
+            }
+        }
+
+        using var manager = CreateManager();
+        foreach (var id in stored)
+        {
+            manager.Resolve(id);
+        }
+
+        // The boot session is unresumable (zero turns) and stays, but every
+        // resumable session beyond the cap is evicted.
+        manager.LiveCount.Should().BeLessThanOrEqualTo(MaieuticsAgentSessionManager.LiveSessionCapacity + 1);
+        // The most recently resolved session is still live and complete.
+        manager.Resolve(stored[^1]).GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void ResolveLazilyResumesStoredSessionsWithoutMovingTheForeground()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+        {
+            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+        }
+
+        using var manager = CreateManager();
+        var before = manager.Id;
+
+        var resolved = manager.Resolve(stored);
+        resolved.Id.Should().Be(stored);
+        resolved.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        // Addressing a session never moves the foreground.
+        manager.Id.Should().Be(before);
+        manager.LiveCount.Should().Be(2);
+    }
+
+    [Fact]
+    public void EvictionKeepsResumableSessionsRecoverable()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+        {
+            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+        }
+
+        using var manager = CreateManager();
+        manager.Resolve(stored);
+
+        // Push the live set past its capacity with sessions that have no stored
+        // state: they must never be evicted, but the resumable one may be.
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
+        {
+            manager.StartNew();
+        }
+
+        var resolved = manager.Resolve(stored);
+        resolved.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        // The cap is soft by design: the zero-turn siblings cannot be evicted
+        // (their state exists nowhere else), so only the overage above the
+        // unresumable set is tolerated.
+        manager.LiveCount.Should().BeLessThanOrEqualTo(MaieuticsAgentSessionManager.LiveSessionCapacity + 2);
+    }
+
+    [Fact]
     public void ZeroTurnForksResumeThroughTheChain()
     {
         var source = AgentSessionId.Create();
@@ -255,11 +363,12 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             [new ChatMessage(ChatRole.User, userText), new ChatMessage(ChatRole.Assistant, assistantText)]);
     }
 
-    private sealed class FixedProfileProvider : IAgentRunProfileProvider
+    private sealed class FixedProfileProvider(IChatClient? chatClient = null) : IAgentRunProfileProvider
     {
         public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(new AgentRunProfile(new StubChatClient(), new AgentSessionOptions())));
+            return Task.FromResult<IAgentRunProfileLease>(new Lease(
+                new AgentRunProfile(chatClient ?? new StubChatClient(), new AgentSessionOptions())));
         }
 
         private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
@@ -267,6 +376,32 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             public AgentRunProfile Profile { get; } = profile;
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class HangingChatClient(Task neverComplete) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromException<ChatResponse>(new NotSupportedException());
+        }
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await neverComplete.WaitAsync(cancellationToken).ConfigureAwait(false);
+            yield break;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
         }
     }
 

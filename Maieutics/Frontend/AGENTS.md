@@ -12,8 +12,13 @@ frontend paths, the versioned REST endpoints, and the per-session event WebSocke
   WebSocket may take the token as a query parameter because the browser-standard WebSocket API cannot set headers.
 - Events are half-duplex (executable to frontend). The run stream never drops frames: backpressure closes the
   socket, and the client resumes with `sinceSequence` from its retained buffer.
-- Turns are served only for the active session; concurrent turns fail with the typed `agent_busy` code. The
-  protocol does not queue turns (invariant 4).
+- Every session-addressed route is served for its addressed session: a live session is used as-is, a stored
+  one is lazily resumed, and an unknown id is `404 not_found`. The process keeps multiple live sessions
+  (bounded, LRU-evicted when re-resumable; sessions with a run in flight are never evicted); the foreground
+  session exists only as the compatibility alias behind the singular endpoints and moves on start / resume /
+  fork. Concurrent turns on the *same* session fail with the typed `agent_busy` code — the protocol does not
+  queue turns (invariant 4). The model-profile override is per session (`%model use` in an addressed cell, a
+  fork's `profileId`); the configured default stays process-level.
 - The wire is provider-neutral: no Jupyter type and no Microsoft.Extensions.AI type crosses it. Convert in
   `FrontendTranscriptMapper` / the presentation sink.
 - Wire shapes live in `FrontendWireModels.cs` with source-generated JSON only (NativeAOT).

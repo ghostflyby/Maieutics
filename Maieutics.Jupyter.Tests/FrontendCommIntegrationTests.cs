@@ -211,20 +211,25 @@ public sealed class FrontendCommIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task CommsServeTheActiveSessionOnly()
+    public async Task CommsAreServedPerSession()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
             new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
             hanging: false);
-        await harness.GetSessionIdAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
-        var connect = async () => await ConnectCommsAsync(
+        // An unknown session fails the handshake...
+        var unknown = async () => await ConnectCommsAsync(
             harness,
             Guid.NewGuid().ToString("N"),
             deadline.Token);
-        await connect.Should().ThrowAsync<WebSocketException>();
+        await unknown.Should().ThrowAsync<WebSocketException>();
+
+        // ...while any known session's comms plane is served directly, whether
+        // or not it is the foreground session.
+        using var connection = await ConnectCommsAsync(harness, sessionId, deadline.Token);
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)

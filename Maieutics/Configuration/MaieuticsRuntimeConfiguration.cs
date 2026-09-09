@@ -253,38 +253,88 @@ internal sealed class MaieuticsRuntimeConfiguration :
                         mcpLeases.Add(mcpLease);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            if (Volatile.Read(ref pluginHosts) is { } activePluginHosts)
-            {
-                var dynamicLeases = await activePluginHosts
-                    .AcquireDynamicMcpLeasesAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                foreach (var lease in dynamicLeases) mcpLeases.Add(lease);
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            var tools = new List<AIFunction>(builtInTools.Count);
-            tools.AddRange(builtInTools);
-            if (selection.HostedCapabilities.Contains(TerminalShellCapability, StringComparer.OrdinalIgnoreCase))
-                tools.AddRange(terminalFunctions.Functions);
-            foreach (var lease in mcpLeases) tools.AddRange(lease.Tools);
-
-            return new RuntimeProfileLease(
-                generationLease,
-                mcpLeases,
-                new AgentRunProfile(
-                    selection.Generation.Client,
-                    CreateAgentOptions(selection.Snapshot.Options),
-                    selection.Identity,
-                    selection.Capabilities,
-                    selection.HostedCapabilities,
-                    tools));
+            return await FinishAcquisitionAsync(selection, generationLease, mcpLeases, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch
         {
             await RollbackRuntimeProfileAcquisitionAsync(generationLease, mcpLeases).ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>Acquires a run profile lease for one explicit configured profile id,
+    /// bypassing the process selection. This is the per-session override path
+    /// (<c>SessionProfileProvider</c>). Returns <see langword="null" /> when the id no
+    /// longer resolves — for example after a reload removed the profile — so the caller
+    /// falls back to the process selection instead of failing the turn.</summary>
+    public async Task<IAgentRunProfileLease?> AcquireProfileAsync(
+        string profileId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        cancellationToken.ThrowIfCancellationRequested();
+        RuntimeProfileSelection? selection = null;
+        ProfileGenerationLease? generationLease = null;
+        var mcpLeases = new List<McpServerGeneration.McpServerLease>();
+        try
+        {
+            lock (gate)
+            {
+                var snapshot = GetCurrent();
+                selection = SelectNamedRuntimeProfile(snapshot, profileId);
+                if (selection is null) return null;
+                generationLease = selection.Generation.Acquire();
+                foreach (var server in snapshot.McpServers.Values
+                             .OrderBy(static value => value.Id, StringComparer.OrdinalIgnoreCase))
+                    if (server.TryAcquire() is { } mcpLease)
+                        mcpLeases.Add(mcpLease);
+            }
+
+            return await FinishAcquisitionAsync(selection, generationLease, mcpLeases, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            await RollbackRuntimeProfileAcquisitionAsync(generationLease, mcpLeases).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>Completes one acquisition after the selection resolved and its generation
+    /// lease was taken: dynamic MCP leases, tool assembly, and the lease wrapper.</summary>
+    private async Task<IAgentRunProfileLease> FinishAcquisitionAsync(
+        RuntimeProfileSelection selection,
+        ProfileGenerationLease generationLease,
+        List<McpServerGeneration.McpServerLease> mcpLeases,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref pluginHosts) is { } activePluginHosts)
+        {
+            var dynamicLeases = await activePluginHosts
+                .AcquireDynamicMcpLeasesAsync(cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var lease in dynamicLeases) mcpLeases.Add(lease);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var tools = new List<AIFunction>(builtInTools.Count);
+        tools.AddRange(builtInTools);
+        if (selection.HostedCapabilities.Contains(TerminalShellCapability, StringComparer.OrdinalIgnoreCase))
+            tools.AddRange(terminalFunctions.Functions);
+        foreach (var lease in mcpLeases) tools.AddRange(lease.Tools);
+
+        return new RuntimeProfileLease(
+            generationLease,
+            mcpLeases,
+            new AgentRunProfile(
+                selection.Generation.Client,
+                CreateAgentOptions(selection.Snapshot.Options),
+                selection.Identity,
+                selection.Capabilities,
+                selection.HostedCapabilities,
+                tools));
     }
 
     public MaieuticsModelProfileSelection GetModelProfileSelection()
@@ -1496,6 +1546,27 @@ internal sealed class MaieuticsRuntimeConfiguration :
             automaticOverride?.Selector ?? selectedConfiguredProfileId ?? string.Empty,
             sessionOverride is not null,
             profiles);
+    }
+
+    /// <summary>Resolves one explicit configured profile id (case-insensitive) against the
+    /// snapshot, or <see langword="null" /> when it does not resolve. Automatic
+    /// <c>@source/model</c> selectors stay a process-level selection.</summary>
+    private RuntimeProfileSelection? SelectNamedRuntimeProfile(RuntimeSnapshot snapshot, string profileId)
+    {
+        foreach (var key in snapshot.Profiles.Keys)
+        {
+            if (!string.Equals(key, profileId, StringComparison.OrdinalIgnoreCase)) continue;
+
+            var entry = snapshot.Profiles[key];
+            return new RuntimeProfileSelection(
+                snapshot,
+                entry.Generation,
+                entry.Identity,
+                entry.Capabilities,
+                entry.HostedCapabilities);
+        }
+
+        return null;
     }
 
     private RuntimeProfileSelection SelectRuntimeProfile(RuntimeSnapshot snapshot)

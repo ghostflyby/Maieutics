@@ -101,8 +101,9 @@ widget with a **comm channel** that carries the model's life:
 ### `GET /v1/agent/sessions/{sid}/comms?sinceSeq=<n>&token=<hex>`
 
 Full-duplex WebSocket, session-scoped (ADR 0024). `token` is accepted as a
-query parameter like the events endpoint; a non-active session is
-`404 session_not_active`. The server's first frame is JSON text:
+query parameter like the events endpoint; an unknown session is
+`404 not_found` (legacy single-active servers answered
+`404 session_not_active` for a non-active one). The server's first frame is JSON text:
 
 ```json
 {"live": [{"commId": "…", "targetName": "…"}], "replayed": false, "truncated": false}
@@ -151,7 +152,7 @@ implement comms ignore it and never open the endpoint.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/v1/agent/capabilities` | Protocol version, server version, workspace root, feature flags |
-| GET | `/v1/agent/session` | The active session (id, turn count, persistence state, title) |
+| GET | `/v1/agent/session` | The foreground session (compatibility alias; id, turn count, persistence state, title) |
 | POST | `/v1/agent/sessions` | Start a new session and make it active |
 | GET | `/v1/agent/sessions` | List stored sessions with display metadata (persistence disabled → empty) |
 | POST | `/v1/agent/sessions/{sid}/resume` | Resume a stored session and make it active |
@@ -171,14 +172,26 @@ implement comms ignore it and never open the endpoint.
 The comms channel above is the one full-duplex WebSocket; the REST table
 stays request/reply only.
 
-Turn requests are limited to the active session; a turn addressed to another
-session id is `409` + `session_not_active`. This keeps "the kernel owns the
-authoritative live conversation" (invariant 1) while the path shape stays
-forward-compatible with multi-session.
+Every session-addressed route is served for its addressed session: a live
+session is used as-is, a stored one is lazily resumed, and an unknown id is
+`404 not_found`. Addressing a session never moves the foreground. This is
+advertised as `multiSession: true` on `/v1/agent/capabilities`; the process
+keeps an arbitrary number of live sessions (bounded; lazily resumable ones
+are evicted least-recently-used first), and the model-profile override
+(`%model use`, fork `profileId`) is per session — the configured default
+stays process-level. The legacy gate no longer occurs on this build; older
+single-active servers still rejected a session other than their single
+active one (`409 session_not_active` from turns, `404 session_not_active`
+from events/comms).
 
 `POST /v1/agent/sessions/{sid}/turns` body: `{"text": "..."}`. Empty text is
 `400`. `%`-command text is executed as a command (same semantics as the
-Jupyter adapter) and answered with `200 {markdown}` instead of starting a run.
+Jupyter adapter) and answered with `200 {markdown, sessionId}` instead of
+starting a run. `sessionId` is the addressed session unless the command moved
+the foreground (`%session new` / `resume` / `fork`), in which case it is the
+new foreground — a notebook frontend re-pins only when it differs from its
+pinned session. Session-aware commands (`%session current`, `%model
+use/current/reset`) are scoped to the addressed session.
 
 `GET /v1/agent/sessions/{sid}/transcript` returns the committed public
 transcript rendered provider-neutrally:
@@ -220,7 +233,9 @@ group them without loading transcripts (schema v4 of the transcript store):
   describe a fork head: its visible history is the parent's first
   `forkPointSeq` turns followed by its own (both absent on root sessions).
 - `GET /v1/agent/session` and the `session` inside `/v1/agent/capabilities`
-  carry the active session's `title?`.
+  carry the **foreground** session (most recently activated: start / resume /
+  fork move it; per-session addressing does not). Prefer the
+  session-addressed routes; the singular endpoint is a compatibility alias.
 - `/v1/agent/capabilities` carries `workspaceRoot?` — the process's current
   `Maieutics:Workspace:Root`, live across `%workspace use` switches — so a
   frontend can detect a server serving another workspace.
@@ -238,8 +253,8 @@ group them without loading transcripts (schema v4 of the transcript store):
   number of the source's committed turns the fork keeps, `0..turns`). The
   fork is a new head in the source's root family database (ADR 0009: turns
   are referenced, never copied), it is auto-titled from the source's
-  title/preview plus `" · branch @ turn N"`, and it becomes the active
-  session. The answer is `200 {"id": "…", "title": "…"}` (nulls omitted).
+  title/preview plus `" · branch @ turn N"`, and it becomes the
+  foreground session. The answer is `200 {"id": "…", "title": "…"}` (nulls omitted).
   Forking is **not** active-session-gated and fork of a fork chains through
   the parent link. An optional `profileId` switches the model profile first,
   so the fork's first turn runs on it (regenerate-with-model); an unknown
@@ -306,7 +321,7 @@ Rules:
 ## Notebook snapshot (frontend-owned)
 
 `.maieuticsnb` is a frontend-owned portable interaction snapshot; the server
-never reads or writes it. Save/load must not mutate the active session
+never reads or writes it. Save/load must not mutate the live session
 (invariant 13). Shape (frontend-side schema, informative here):
 
 ```json

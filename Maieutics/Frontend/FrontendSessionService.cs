@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Commands;
@@ -32,14 +33,7 @@ internal sealed class FrontendSessionService
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Func<string?>? workspaceRootAccessor;
     private readonly ILogger logger;
-    private readonly Lock gate = new();
-    private readonly Channel<FrontendRunStream> runAnnouncements =
-        Channel.CreateUnbounded<FrontendRunStream>(new UnboundedChannelOptions
-        {
-            SingleReader = false,
-            SingleWriter = true
-        });
-    private FrontendRunStream? latestRun;
+    private readonly ConcurrentDictionary<string, SessionRunHub> hubs = new(StringComparer.Ordinal);
 
     public FrontendSessionService(
         MaieuticsAgentSessionManager sessionManager,
@@ -59,10 +53,17 @@ internal sealed class FrontendSessionService
         this.workspaceRootAccessor = workspaceRootAccessor;
     }
 
-    /// <summary>Executes a Maieutics command cell and returns its markdown answer.</summary>
-    public Task<string> ExecuteCommandAsync(string text, CancellationToken cancellationToken)
+    /// <summary>Executes a Maieutics command cell and returns its markdown answer plus
+    /// whether this execution moved the foreground session. The addressing session scopes
+    /// session-aware commands (%session current, %model use); a null context keeps the
+    /// foreground semantics of the session-blind command endpoint.</summary>
+    public async Task<(string Markdown, bool MovedForeground)> ExecuteCommandAsync(
+        string text,
+        AgentSessionId? session,
+        CancellationToken cancellationToken)
     {
-        return commandExecutor.ExecuteAsync(text, cancellationToken);
+        var answer = await commandExecutor.ExecuteAsync(text, session, cancellationToken).ConfigureAwait(false);
+        return (answer.Markdown, answer.MovedForeground);
     }
 
     /// <summary>Renders the status snapshot as markdown.</summary>
@@ -97,15 +98,59 @@ internal sealed class FrontendSessionService
     /// <c>%workspace use</c> switch is reflected without a restart.</summary>
     public string? WorkspaceRoot => workspaceRootAccessor?.Invoke();
 
-    /// <summary>Gets the active session's wire description.</summary>
+    /// <summary>Gets the foreground session's wire description — the compatibility alias
+    /// behind <c>GET /v1/agent/session</c> and the capabilities payload. Identity and turn
+    /// count are read atomically; the title lookup follows the captured identity.</summary>
     public FrontendSessionInfo DescribeSession()
     {
-        var id = sessionManager.Id;
+        var (id, turns) = sessionManager.ForegroundInfo;
         return new FrontendSessionInfo(
             id.Value.ToString("N"),
-            sessionManager.GetTranscriptSnapshot().Turns.Length,
+            turns,
             sessionManager.PersistenceEnabled,
             sessionManager.FindDescriptor(id)?.Title);
+    }
+
+    /// <summary>Whether one session has a stored row, without mutating the live set
+    /// (existence checks for socket handshakes).</summary>
+    public bool SessionExists(string sessionId)
+    {
+        var id = ParseSessionId(sessionId);
+        return sessionManager.FindDescriptor(id) is not null || sessionManager.IsLive(id);
+    }
+
+    /// <summary>Gets one session's wire description, resolving it lazily when it is stored
+    /// but not live. Addressing a session never moves the foreground.</summary>
+    /// <exception cref="FrontendFailureException">The session id is invalid or unknown.</exception>
+    public FrontendSessionInfo DescribeSession(string sessionId)
+    {
+        var session = ResolveSession(sessionId);
+        var descriptor = sessionManager.FindDescriptor(session.Id);
+        return new FrontendSessionInfo(
+            session.Id.Value.ToString("N"),
+            session.GetTranscriptSnapshot().Turns.Length,
+            sessionManager.PersistenceEnabled,
+            descriptor?.Title);
+    }
+
+    /// <summary>Resolves the addressed session: live → use; stored → lazy-resume; otherwise
+    /// a typed 404. This replaces the old active-session gate.</summary>
+    private IAgentSession ResolveSession(string sessionId)
+    {
+        var id = ParseSessionId(sessionId);
+        try
+        {
+            return sessionManager.Resolve(id);
+        }
+        catch (AgentSessionNotFoundException)
+        {
+            throw new FrontendFailureException(
+                FrontendErrors.NotFound, $"No stored session matches '{sessionId}'.");
+        }
+        catch (ArgumentException exception)
+        {
+            throw new FrontendFailureException(FrontendErrors.InvalidRequest, exception.Message);
+        }
     }
 
     /// <summary>Lists stored sessions across family databases.</summary>
@@ -145,11 +190,12 @@ internal sealed class FrontendSessionService
         return new FrontendRenameResponse(id.Value.ToString("N"), stored);
     }
 
-    /// <summary>Starts a new session and makes it active.</summary>
+    /// <summary>Starts a new session and makes it the foreground. The returned
+    /// description is always the created session, even under concurrent switches.</summary>
     public FrontendSessionInfo StartNew()
     {
-        sessionManager.StartNew();
-        return DescribeSession();
+        var id = sessionManager.StartNew();
+        return DescribeSession(id.Value.ToString("N"));
     }
 
     /// <summary>Forks a stored session and makes the fork the active session. Not
@@ -191,10 +237,11 @@ internal sealed class FrontendSessionService
         try
         {
             var forkId = sessionManager.Fork(id, forkPointSeq);
-            if (profileId is { } appliedProfile && runtimeConfiguration is { } configuration)
+            if (profileId is { } appliedProfile)
             {
-                await configuration.SelectModelProfileAsync(appliedProfile, cancellationToken)
-                    .ConfigureAwait(false);
+                // The override is the fork's own, not the process selection: the
+                // source session keeps answering on its profile.
+                sessionManager.SetProfileOverride(forkId, appliedProfile);
             }
 
             var title = sessionManager.FindDescriptor(forkId)?.Title;
@@ -278,14 +325,13 @@ internal sealed class FrontendSessionService
             throw new FrontendFailureException(FrontendErrors.InvalidRequest, exception.Message);
         }
 
-        ResetRunAnnouncements();
-        return DescribeSession();
+        return DescribeSession(sessionId);
     }
 
     /// <summary>Prunes unreferenced objects.</summary>
     public int PruneObjects(string sessionId, int graceHours)
     {
-        EnsureActive(sessionId);
+        ResolveSession(sessionId);
         try
         {
             return sessionManager.PruneObjects(TimeSpan.FromHours(graceHours));
@@ -299,7 +345,7 @@ internal sealed class FrontendSessionService
     /// <summary>Rebuilds the derived object view.</summary>
     public int RepairObjectView(string sessionId)
     {
-        EnsureActive(sessionId);
+        ResolveSession(sessionId);
         try
         {
             return sessionManager.RepairObjectView();
@@ -310,11 +356,12 @@ internal sealed class FrontendSessionService
         }
     }
 
-    /// <summary>Gets the authoritative committed history of a session.</summary>
+    /// <summary>Gets the authoritative committed history of a session, lazily resuming it
+    /// when stored but not live.</summary>
     public FrontendTranscript GetTranscript(string sessionId)
     {
-        EnsureActive(sessionId);
-        return FrontendTranscriptMapper.ToTranscript(sessionManager.GetTranscriptSnapshot());
+        var session = ResolveSession(sessionId);
+        return FrontendTranscriptMapper.ToTranscript(session.GetTranscriptSnapshot());
     }
 
     /// <summary>
@@ -328,12 +375,12 @@ internal sealed class FrontendSessionService
         if (string.IsNullOrWhiteSpace(text))
             throw new FrontendFailureException(FrontendErrors.InvalidRequest, "The turn text must not be empty.");
 
-        EnsureActive(sessionId);
+        var session = ResolveSession(sessionId);
         ValidateTurnConfiguration();
         IAgentRun run;
         try
         {
-            run = await sessionManager.StartTurnAsync(AgentTurn.FromText(text)).ConfigureAwait(false);
+            run = await session.StartTurnAsync(AgentTurn.FromText(text)).ConfigureAwait(false);
         }
         catch (AgentTurnInProgressException exception)
         {
@@ -344,17 +391,12 @@ internal sealed class FrontendSessionService
             throw new FrontendFailureException(FrontendErrors.MapAgentException(exception), exception.Message);
         }
 
-        var stream = FrontendRunStream.Create(sessionManager.Id, run, presentationRouter, logger);
-        var scope = presentationRouter.Attach(sessionManager.Id, stream);
+        var stream = FrontendRunStream.Create(session.Id, run, presentationRouter, logger);
+        var scope = presentationRouter.Attach(session.Id, stream);
         stream.Start(scope);
         registry.Add(stream);
 
-        lock (gate)
-        {
-            latestRun = stream;
-        }
-
-        runAnnouncements.Writer.TryWrite(stream);
+        HubFor(session.Id).Announce(stream);
         return new FrontendTurnAccepted(run.Id.Value.ToString("N"));
     }
 
@@ -384,45 +426,85 @@ internal sealed class FrontendSessionService
     }
 
     /// <summary>
-    ///     Waits for the session's run to serve on an events WebSocket. When
-    ///     <paramref name="previous" /> is not the latest announced run it is returned
-    ///     immediately; otherwise the call blocks for the next announced run.
+    ///     Waits for the addressed session's next run to serve on its events WebSocket.
+    ///     When <paramref name="previous" /> is not that session's latest announced run it
+    ///     is returned immediately; otherwise the call blocks for the next announced run.
     /// </summary>
     public async Task<FrontendRunStream> WaitForRunAsync(
         AgentSessionId sessionId,
         FrontendRunStream? previous,
         CancellationToken cancellationToken)
     {
-        EnsureActive(sessionId.Value.ToString("N"));
-        FrontendRunStream? latest;
-        lock (gate)
+        var hub = HubFor(sessionId);
+        var latest = hub.Latest;
+        if (latest is not null && !ReferenceEquals(latest, previous))
         {
-            latest = latestRun;
+            hub.Drain(latest);
+            return latest;
         }
 
-        if (latest is not null && !ReferenceEquals(latest, previous)) return latest;
-
-        return await runAnnouncements.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return await hub.ReadAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private void ResetRunAnnouncements()
+    private SessionRunHub HubFor(AgentSessionId sessionId)
     {
-        lock (gate)
-        {
-            latestRun = null;
-        }
-
-        while (runAnnouncements.Reader.TryRead(out _))
-        {
-        }
+        return hubs.GetOrAdd(sessionId.Value.ToString("N"), static _ => new SessionRunHub());
     }
 
-    private void EnsureActive(string sessionId)
+    /// <summary>One session's run announcements: the latest stream for immediate
+    /// attachment and a small bounded buffer the events socket blocks on between runs.
+    /// The latest announcement supersedes older ones, so the buffer is drained on the
+    /// fast path and overflow drops the oldest entries instead of growing without
+    /// bound when no socket is listening.</summary>
+    private sealed class SessionRunHub
     {
-        if (!string.Equals(sessionId, sessionManager.Id.Value.ToString("N"), StringComparison.Ordinal))
-            throw new FrontendFailureException(
-                FrontendErrors.SessionNotActive,
-                "Turns and session queries are served by the active session.");
+        private readonly Lock gate = new();
+        private readonly Channel<FrontendRunStream> announcements =
+            Channel.CreateBounded<FrontendRunStream>(new BoundedChannelOptions(8)
+            {
+                SingleReader = false,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.DropOldest
+            });
+        private FrontendRunStream? latest;
+
+        public FrontendRunStream? Latest
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return latest;
+                }
+            }
+        }
+
+        public void Announce(FrontendRunStream stream)
+        {
+            lock (gate)
+            {
+                latest = stream;
+            }
+
+            announcements.Writer.TryWrite(stream);
+        }
+
+        /// <summary>Drops buffered announcements superseded by
+        /// <paramref name="current" /> (or everything, when null).</summary>
+        public void Drain(FrontendRunStream? current)
+        {
+            while (announcements.Reader.TryRead(out var item))
+            {
+                if (current is not null && ReferenceEquals(item, current)) continue;
+            }
+        }
+
+        public async Task<FrontendRunStream> ReadAsync(CancellationToken cancellationToken)
+        {
+            var stream = await announcements.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            Drain(stream);
+            return stream;
+        }
     }
 
     private static AgentSessionId ParseSessionId(string sessionId)

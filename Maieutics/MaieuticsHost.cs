@@ -347,7 +347,8 @@ public static class MaieuticsHost
             services.GetService<IAgentObjectStore>(),
             services.GetService<IObjectReclaimer>(),
             paths.AgentViewSessionsRoot,
-            paths.AgentObjectsRoot);
+            paths.AgentObjectsRoot,
+            services.GetService<IMaieuticsRuntimeConfiguration>());
     }
 
     [SupportedOSPlatform("windows")]

@@ -16,7 +16,8 @@ internal sealed record FrontendCapabilities(
     [property: JsonPropertyName("serverVersion")] string ServerVersion,
     [property: JsonPropertyName("session")] FrontendSessionInfo Session,
     [property: JsonPropertyName("workspaceRoot")] string? WorkspaceRoot = null,
-    [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null);
+    [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null,
+    [property: JsonPropertyName("multiSession")] bool? MultiSession = null);
 
 /// <summary>Advertises the comm plane (ADR 0024); null means the build serves no comms.</summary>
 internal sealed record FrontendCommCapability(

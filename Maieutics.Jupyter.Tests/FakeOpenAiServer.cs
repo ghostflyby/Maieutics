@@ -80,19 +80,51 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         // Handle the expected requests across connections. The OpenAI SDK's
         // HttpClient pools connections (keep-alive by default), so a client
         // may reuse the same TCP connection for consecutive requests or open
-        // a fresh one. Loop on a per-connection basis: read one request,
-        // answer it, and keep the connection open for the next request. A
-        // "Connection: close" response per request would race the client's
-        // connection reuse (the pooled connection may already be closed when
-        // the next request arrives), surfacing as an EndOfStreamException on
-        // slow CI.
+        // a fresh one — and concurrent runs issue their requests on distinct
+        // connections at the same time. Connections are therefore served
+        // concurrently: each accepted connection reads and answers requests
+        // (keeping it open for reuse) until the expected count is served. The
+        // served counter is the global request ordinal, so a tool flow's
+        // two-step sequence stays ordered as long as its calls are.
         var served = 0;
-        while (served < requestCount)
+        using var faulted = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var connections = new List<Task>();
+        while (Volatile.Read(ref served) < requestCount)
         {
-            using var client = await listener.AcceptTcpClientAsync(cancellationToken)
+            var client = await listener.AcceptTcpClientAsync(cancellationToken)
                 .ConfigureAwait(false);
+            connections.Add(ServeConnectionAsync(
+                client,
+                faulted.Token,
+                () => Volatile.Read(ref served),
+                () => Interlocked.Increment(ref served) - 1,
+                faulted.Cancel));
+        }
+
+        try
+        {
+            await Task.WhenAll(connections).ConfigureAwait(false);
+        }
+        catch (Exception) when (faulted.IsCancellationRequested &&
+                                !cancellationToken.IsCancellationRequested)
+        {
+            // A connection task faulted (an assertion, most likely): surface the
+            // original failure instead of letting the test time out.
+            throw;
+        }
+    }
+
+    private async Task ServeConnectionAsync(
+        TcpClient client,
+        CancellationToken cancellationToken,
+        Func<int> servedCount,
+        Func<int> claimRequestIndex,
+        Action fault)
+    {
+        try
+        {
             await using var stream = client.GetStream();
-            while (served < requestCount)
+            while (servedCount() < requestCount)
             {
                 HttpRequest request;
                 try
@@ -102,9 +134,10 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                 catch (EndOfStreamException)
                 {
                     // The client closed this connection (dispose or a fresh
-                    // connection for the next request); accept the next one.
-                    break;
+                    // connection for the next request).
+                    return;
                 }
+                var served = claimRequestIndex();
                 RequestBodies.Enqueue(request.Body.Clone());
                 AssertRequest(request, served);
 
@@ -126,15 +159,24 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                 };
                 var body = Encoding.UTF8.GetBytes(data);
                 // Keep the connection open (no "Connection: close") so the
-                // client's pooled connection can carry the next request; the
-                // outer loop accepts a fresh connection when this one ends.
+                // client's pooled connection can carry the next request.
                 var headers = Encoding.ASCII.GetBytes(
                     $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" +
                     $"Content-Length: {body.Length}\r\n\r\n");
                 await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
                 await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-                served++;
             }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Rethrown below, so the failure surfaces through WhenAll.
+            _ = exception;
+            fault();
+            throw;
+        }
+        finally
+        {
+            client.Dispose();
         }
     }
 

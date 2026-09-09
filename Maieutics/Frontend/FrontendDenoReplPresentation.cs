@@ -66,6 +66,25 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
         }
     }
 
+    /// <summary>Delivers a frontend stdin answer to whichever attached sink holds the
+    /// pending request. Request ids are unique per sink, so at most one sink matches;
+    /// an unknown or already-answered id returns false.</summary>
+    internal bool TryCompleteInput(string requestId, string value)
+    {
+        FrontendDenoReplPresentationSink[] sinks;
+        lock (gate)
+        {
+            sinks = runs.Values.Select(state => state.Sink).ToArray();
+        }
+
+        foreach (var sink in sinks)
+        {
+            if (sink.IsActive && sink.TryCompleteInput(requestId, value)) return true;
+        }
+
+        return false;
+    }
+
     internal FrontendPresentationScope Attach(AgentSessionId sessionId, IFrontendPresentationTarget target)
     {
         var state = new RunState(new FrontendDenoReplPresentationSink(target));
@@ -159,6 +178,11 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<string, TaskCompletionSource<string>> pendingInputs =
         new(StringComparer.Ordinal);
+
+    // Input answers arrive on the session-less /v1/agent/inputs/{requestId} route, so ids
+    // must be unique across every live sink (multi-active sessions can each hold a pending
+    // REPL stdin prompt); a per-sink unique prefix keeps the route unambiguous.
+    private readonly string inputPrefix = $"input-{Guid.NewGuid():N}";
     private int inputSequence;
     private int active = 1;
 
@@ -235,7 +259,7 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         lock (gate)
         {
             if (!IsActive) throw CreateInactive();
-            requestId = $"input-{++inputSequence}";
+            requestId = $"{inputPrefix}-{++inputSequence}";
             pendingInputs[requestId] = completion;
         }
 

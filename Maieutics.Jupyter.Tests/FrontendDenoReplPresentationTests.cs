@@ -139,6 +139,49 @@ public sealed class FrontendDenoReplPresentationTests
     }
 
     [Fact]
+    public async Task RouterCompletesTheOwningSinkAndRequestIdsNeverCollide()
+    {
+        var router = new FrontendDenoReplPresentationRouter();
+        var firstTarget = new FakeTarget();
+        var secondTarget = new FakeTarget();
+        await using var first = router.Attach(AgentSessionId.Create(), firstTarget);
+        await using var second = router.Attach(AgentSessionId.Create(), secondTarget);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var firstWait = first.Sink.RequestInputAsync("first:", false, deadline.Token);
+        var secondWait = second.Sink.RequestInputAsync("second:", false, deadline.Token);
+        var firstId = RequestIdOf(firstTarget);
+        var secondId = RequestIdOf(secondTarget);
+        firstId.Should().NotBe(secondId);
+
+        router.TryCompleteInput(secondId, "b").Should().BeTrue();
+        (await secondWait).Should().Be("b");
+        router.TryCompleteInput(firstId, "a").Should().BeTrue();
+        (await firstWait).Should().Be("a");
+        // Request ids are unique across sinks, so a delivered answer cannot be
+        // re-delivered anywhere.
+        router.TryCompleteInput(secondId, "again").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RouterInputAnswerWithoutAttachedSinksReturnsFalse()
+    {
+        new FrontendDenoReplPresentationRouter()
+            .TryCompleteInput($"input-{Guid.NewGuid():N}-1", "x").Should().BeFalse();
+        await Task.CompletedTask;
+    }
+
+    private static string RequestIdOf(FakeTarget target)
+    {
+        return target.Published
+            .Single(entry => entry.Type == "input.request")
+            .Data.GetProperty("requestId")
+            .GetString()!;
+    }
+
+    [Fact]
     public async Task InputRequestHonoursCallerCancellation()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());

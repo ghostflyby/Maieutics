@@ -105,8 +105,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         {
             await Task.WhenAll(connections).ConfigureAwait(false);
         }
-        catch (Exception exception) when (faulted.IsCancellationRequested &&
-                                          !cancellationToken.IsCancellationRequested)
+        catch (Exception) when (faulted.IsCancellationRequested &&
+                                !cancellationToken.IsCancellationRequested)
         {
             // A connection task faulted (an assertion, most likely): surface the
             // original failure instead of letting the test time out.

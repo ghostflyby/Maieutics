@@ -25,7 +25,6 @@ import { FrontendError } from "./protocol.ts";
 import {
   cellHistoryState,
   type CellLike,
-  frontierIndex,
   isRunAboveSelection,
   partitionByHistory,
   readTurnBinding,

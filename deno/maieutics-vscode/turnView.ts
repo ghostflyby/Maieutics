@@ -22,6 +22,7 @@ function summarize(value: unknown, limit = 48): string | undefined {
   }
   // Backticks and control characters are stripped: the preview is embedded
   // in a markdown code span, and tool arguments are untrusted model output.
+  // deno-lint-ignore no-control-regex -- stripping control characters is the point.
   const oneLine = text.replace(/[\u0000-\u001f\u007f`]+/g, " ").trim();
   if (oneLine.length === 0 || oneLine === "{}") return undefined;
   return oneLine.length <= limit ? oneLine : `${oneLine.slice(0, limit)}…`;

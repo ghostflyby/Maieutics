@@ -6,7 +6,9 @@
  */
 
 import * as vscode from "vscode";
+import { createCompletionGate } from "./completionCore.ts";
 import type { FrontendClient } from "./client.ts";
+import { NotebookType } from "./serializer.ts";
 
 const TriggerCharacters = ["%", "/"];
 
@@ -14,48 +16,39 @@ export function registerCommandCompletion(
   clientOf: () => Promise<FrontendClient>,
   log: (message: string) => void,
 ): vscode.Disposable {
+  const gate = createCompletionGate(
+    (text, cursor, signal) => clientOf().then((client) => client.complete(text, cursor, signal)),
+    log,
+  );
   return vscode.languages.registerCompletionItemProvider(
-    { language: "markdown", scheme: "untitled" },
+    // Cell documents of this extension's notebook type. Notebook-type scoping
+    // is the selector that actually fires for notebook cells: a plain
+    // `{ scheme: "untitled" }` selector never matches cell documents, which
+    // carry the vscode-notebook-cell scheme. Scheme stays unset so stored and
+    // untitled notebooks both match.
+    { language: "markdown", notebookType: NotebookType },
     {
       async provideCompletionItems(document, position): Promise<vscode.CompletionItem[]> {
-        if (!isMaieuticsNotebook(document.uri)) return [];
-
         const wordRange = document.getWordRangeAtPosition(
           position,
           /[%\/][^\s]*/,
         );
-        const text = document.getText();
-        const cursor = document.offsetAt(position);
-        try {
-          const client = await clientOf();
-          const matches = await client.complete(text, cursor);
-          return matches.map((match) => {
-            const item = new vscode.CompletionItem(
-              match,
-              vscode.CompletionItemKind.Keyword,
-            );
-            // Replace the whole partial command token, not just the word under
-            // the cursor (a command token contains no whitespace).
-            if (wordRange) {
-              item.range = wordRange;
-            }
+        const matches = await gate(document.getText(), document.offsetAt(position));
+        return matches.map((match) => {
+          const item = new vscode.CompletionItem(
+            match,
+            vscode.CompletionItemKind.Keyword,
+          );
+          // Replace the whole partial command token, not just the word under
+          // the cursor (a command token contains no whitespace).
+          if (wordRange) {
+            item.range = wordRange;
+          }
 
-            return item;
-          });
-        } catch (error) {
-          // Completion is a convenience: degrade silently.
-          log(`completion failed: ${error}`);
-          return [];
-        }
+          return item;
+        });
       },
     },
     ...TriggerCharacters,
   );
-}
-
-function isMaieuticsNotebook(uri: vscode.Uri): boolean {
-  // Cell documents live in the notebook scheme and their path ends with the
-  // notebook's file name; the selector matches the extension's notebook type
-  // by file extension, which is the same contract the serializer registers.
-  return uri.scheme === "vscode-notebook-cell" && uri.path.endsWith(".maieuticsnb");
 }

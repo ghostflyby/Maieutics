@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using Maieutics.Frontend;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
 using Microsoft.AspNetCore.Builder;
@@ -278,6 +279,30 @@ public sealed class FrontendApiIntegrationTests
             content: null,
             deadline.Token);
         missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CanceledTurnStartAbortsTheHandshakeWithoutReservingTheSession()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        // The cancellation token only reaches the pre-run handshake: AgentSession
+        // aborts before the session reservation, so the turn start leaves the
+        // session free and the transcript untouched.
+        var act = () => harness.SessionService.StartTurnAsync(
+            sessionId,
+            "hello",
+            new CancellationToken(canceled: true));
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        harness.SessionService.DescribeSession(sessionId).Turns.Should().Be(0);
+
+        // The session still accepts a normal turn afterwards.
+        var runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+        runId.Should().NotBeNullOrWhiteSpace();
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
     }
 
     [Fact(Timeout = 60_000)]
@@ -1215,6 +1240,11 @@ public sealed class FrontendApiIntegrationTests
         public void RegisterControlPeer(string sessionId) =>
             host.Services.GetRequiredService<Maieutics.Control.ReplControlSessionRegistry>()
                 .Register(Environment.ProcessId, sessionId);
+
+        /// <summary>The live frontend session service, for direct service-level tests
+        /// that need precise control over inputs such as cancellation tokens.</summary>
+        public FrontendSessionService SessionService =>
+            host.Services.GetRequiredService<FrontendSessionService>();
 
         /// <summary>The control host address (the Unix socket path on Unix).</summary>
         public string ControlAddress =>

@@ -366,11 +366,16 @@ internal sealed class FrontendSessionService
 
     /// <summary>
     ///     Submits one Agent turn. The run starts and its pump runs independently of the
-    ///     calling request; the caller receives the run id immediately.
+    ///     calling request; the caller receives the run id immediately. The cancellation
+    ///     token aborts only the pre-run handshake inside the session (its entry guard
+    ///     and profile lease acquisition); a started run never observes it.
     /// </summary>
     /// <exception cref="FrontendFailureException">Concurrent turn, inactive session, or missing
     /// model configuration.</exception>
-    public async Task<FrontendTurnAccepted> StartTurnAsync(string sessionId, string text)
+    public async Task<FrontendTurnAccepted> StartTurnAsync(
+        string sessionId,
+        string text,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(text))
             throw new FrontendFailureException(FrontendErrors.InvalidRequest, "The turn text must not be empty.");
@@ -380,7 +385,9 @@ internal sealed class FrontendSessionService
         IAgentRun run;
         try
         {
-            run = await session.StartTurnAsync(AgentTurn.FromText(text)).ConfigureAwait(false);
+            run = await session
+                .StartTurnAsync(AgentTurn.FromText(text), cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (AgentTurnInProgressException exception)
         {

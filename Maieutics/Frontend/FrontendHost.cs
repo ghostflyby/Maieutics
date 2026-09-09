@@ -269,7 +269,9 @@ internal sealed class FrontendHost : IAsyncDisposable
                 return;
             }
 
-            var accepted = await service.StartTurnAsync(sessionId, request.Text).ConfigureAwait(false);
+            var accepted = await service
+                .StartTurnAsync(sessionId, request.Text, context.RequestAborted)
+                .ConfigureAwait(false);
             context.Response.StatusCode = StatusCodes.Status202Accepted;
             await context.Response.WriteAsJsonAsync(
                 accepted,

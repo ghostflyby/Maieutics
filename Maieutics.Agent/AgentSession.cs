@@ -105,6 +105,56 @@ public sealed class AgentSession : IAgentSession
         return restored;
     }
 
+    /// <summary>Creates a fork head whose canonical history is the source session's first
+    /// <paramref name="forkPointSeq" /> committed turns, followed by the fork's own future
+    /// turns. The fork is a new session identity in the source's family (ADR 0009): existing
+    /// turns are referenced, never copied, and the source session stays intact.</summary>
+    /// <param name="profileProvider">The provider used to acquire each run's model client and options.</param>
+    /// <param name="transcriptStore">The family store the source persisted in; new turns append to it.</param>
+    /// <param name="sourceId">The stored session identity to fork from.</param>
+    /// <param name="forkId">The fresh identity for the fork head; the caller creates its stored row.</param>
+    /// <param name="forkPointSeq">How many of the source's committed turns the fork keeps as its
+    /// history prefix; zero starts the fork from an empty history.</param>
+    /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <param name="objectStore">The optional store that receives tool results exceeding the inline envelope limit.</param>
+    /// <returns>A session whose committed history ends exactly at the fork point.</returns>
+    /// <exception cref="AgentSessionNotFoundException">The store holds no session with the source identity.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The fork point is negative or beyond the source's committed turns.</exception>
+    /// <exception cref="AgentContentCompatibilityException">A stored turn cannot be represented canonically.</exception>
+    public static AgentSession Fork(
+        IAgentRunProfileProvider profileProvider,
+        IAgentTranscriptStore transcriptStore,
+        AgentSessionId sourceId,
+        AgentSessionId forkId,
+        int forkPointSeq,
+        IEnumerable<AIFunction>? tools = null,
+        IAgentObjectStore? objectStore = null)
+    {
+        ArgumentNullException.ThrowIfNull(profileProvider);
+        ArgumentNullException.ThrowIfNull(transcriptStore);
+        ArgumentOutOfRangeException.ThrowIfNegative(forkPointSeq);
+
+        var transcript = transcriptStore.LoadTranscript(sourceId) ??
+                         throw new AgentSessionNotFoundException(sourceId);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(forkPointSeq, transcript.Turns.Length);
+
+        var forked = new AgentSession(
+            profileProvider,
+            tools: tools,
+            transcriptStore: transcriptStore,
+            objectStore: objectStore,
+            forkId);
+        var turns = ImmutableArray.CreateBuilder<AgentTranscriptStateTurn>(forkPointSeq);
+        for (var index = 0; index < forkPointSeq; index++)
+        {
+            var turn = transcript.Turns[index];
+            turns.Add(AgentTranscriptCodec.DetachPrivateTurn(turn.RunId, turn.ModelIdentity, turn.Messages, turn.Truncated));
+        }
+
+        forked.InitializeRestoredState(new AgentTranscriptState(forkId, turns.Count, turns.ToImmutable()));
+        return forked;
+    }
+
     /// <summary>Installs a restored canonical state; called once by <see cref="Resume" /> before the session is visible.</summary>
     private void InitializeRestoredState(AgentTranscriptState restoredState)
     {
@@ -243,7 +293,7 @@ public sealed class AgentSession : IAgentSession
                 new AgentTurnTruncated(run.Id, run.NextSequence()),
                 cancellationToken).ConfigureAwait(false);
 
-        return new PreparedRunResult(turnMessages, turnMessages[^1], truncated);
+        return new PreparedRunResult(turnMessages, turnMessages[^1], truncated, toolState.BuildUsage());
     }
 
     private AgentTranscript CommitTurn(
@@ -299,7 +349,8 @@ public sealed class AgentSession : IAgentSession
             assistantMessage,
             transcript,
             modelIdentity,
-            prepared.Truncated);
+            prepared.Truncated,
+            prepared.Usage);
     }
 
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
@@ -472,6 +523,33 @@ public sealed class AgentSession : IAgentSession
         private readonly HashSet<int> publishedIterations = [];
         private int responseCharacters;
         private int toolCallCount;
+        private long usageInputTokens;
+        private long usageOutputTokens;
+        private long usageTotalTokens;
+
+        /// <summary>Accumulates the provider-reported token usage. Usage chunks carry no
+        /// text, so this must run before the text fast-path in the update observer.</summary>
+        private void AccumulateUsage(ChatResponseUpdate update)
+        {
+            foreach (var usage in update.Contents.OfType<UsageContent>())
+            {
+                usageInputTokens += usage.Details.InputTokenCount ?? 0;
+                usageOutputTokens += usage.Details.OutputTokenCount ?? 0;
+                usageTotalTokens += usage.Details.TotalTokenCount ?? 0;
+            }
+        }
+
+        /// <summary>The run's summed token usage, or <see langword="null" /> when the
+        /// provider reported none.</summary>
+        internal UsageDetails? BuildUsage() =>
+            usageInputTokens == 0 && usageOutputTokens == 0 && usageTotalTokens == 0
+                ? null
+                : new UsageDetails
+                {
+                    InputTokenCount = usageInputTokens,
+                    OutputTokenCount = usageOutputTokens,
+                    TotalTokenCount = usageTotalTokens
+                };
 
         internal async ValueTask<object?> InvokeAsync(
             FunctionInvocationContext invocation,
@@ -618,6 +696,7 @@ public sealed class AgentSession : IAgentSession
             ChatResponseUpdate update,
             CancellationToken cancellationToken)
         {
+            AccumulateUsage(update);
             var text = update.Text;
             if (string.IsNullOrEmpty(text)) return;
 
@@ -879,7 +958,8 @@ public sealed class AgentSession : IAgentSession
     private sealed record PreparedRunResult(
         IReadOnlyList<ChatMessage> TurnMessages,
         ChatMessage AssistantMessage,
-        bool Truncated);
+        bool Truncated,
+        UsageDetails? Usage);
 
     private sealed class AgentRun(
         AgentSession owner,

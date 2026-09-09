@@ -315,13 +315,15 @@ public static class MaieuticsHost
     private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)
     {
         var runtimeConfiguration = services.GetService<IMaieuticsRuntimeConfiguration>();
+        var workspace = services.GetService<Workspace>();
         return new FrontendSessionService(
             services.GetRequiredService<MaieuticsAgentSessionManager>(),
             services.GetRequiredService<MaieuticsCommandExecutor>(),
             services.GetRequiredService<FrontendDenoReplPresentationRouter>(),
             services.GetRequiredService<ILogger<FrontendSessionService>>(),
             runtimeConfiguration,
-            services.GetRequiredService<MaieuticsStatusProvider>());
+            services.GetRequiredService<MaieuticsStatusProvider>(),
+            workspace is null ? null : () => workspace.RootPath);
     }
 
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)
@@ -333,11 +335,15 @@ public static class MaieuticsHost
             return new MaieuticsAgentSessionManager(profileProvider, familiesRoot: null, storeFactory: null);
         }
 
+        // Session rows stamp the workspace root current at row creation; a %workspace switch
+        // stamps later sessions with the then-current root.
+        var workspace = services.GetService<Workspace>();
         return new MaieuticsAgentSessionManager(
             profileProvider,
             paths.AgentFamiliesRoot,
             familyId => new SqliteTranscriptStore(
-                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId)),
+                SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId),
+                workspace is null ? null : () => workspace.RootPath),
             services.GetService<IAgentObjectStore>(),
             services.GetService<IObjectReclaimer>(),
             paths.AgentViewSessionsRoot,

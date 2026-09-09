@@ -265,7 +265,8 @@ public sealed record AgentRunResult
         ChatMessage assistantMessage,
         AgentTranscript transcript,
         AgentModelIdentity? modelIdentity = null,
-        bool truncated = false)
+        bool truncated = false,
+        UsageDetails? usage = null)
     {
         if (runId.Value == Guid.Empty)
             throw new ArgumentException("Agent run identifiers cannot be empty.", nameof(runId));
@@ -276,6 +277,7 @@ public sealed record AgentRunResult
         Transcript = transcript ?? throw new ArgumentNullException(nameof(transcript));
         ModelIdentity = modelIdentity;
         Truncated = truncated;
+        Usage = usage;
     }
 
     /// <summary>Gets the run identifier.</summary>
@@ -295,6 +297,10 @@ public sealed record AgentRunResult
 
     /// <summary>Gets whether the turn exhausted its budget and committed partial progress.</summary>
     public bool Truncated { get; }
+
+    /// <summary>Gets the token usage the provider reported across the run's model
+    /// iterations, or <see langword="null" /> when the provider reported none.</summary>
+    public UsageDetails? Usage { get; }
 }
 
 /// <summary>Represents one normalized event emitted by an Agent run.</summary>

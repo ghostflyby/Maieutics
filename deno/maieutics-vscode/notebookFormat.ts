@@ -2,15 +2,24 @@
  * The `.maieuticsnb` portable interaction snapshot format (version 1).
  *
  * The notebook file is frontend-owned: saving and loading never touches the
- * live server session (invariant 13). The codec is tolerant on read — unknown
- * fields are preserved verbatim and missing optional fields degrade — and
- * strict enough that a foreign document is rejected with a typed error instead
- * of silently corrupting a user's notebook.
+ * live server session (invariant 13). The codec is tolerant on read — missing
+ * optional fields degrade, and unknown fields are ignored (they do not
+ * survive a round trip; forward-compatible data must become explicit fields,
+ * as `CellSnapshot.turn` did) — and strict enough that a foreign document is
+ * rejected with a typed error instead of silently corrupting a user's
+ * notebook.
  */
 
 export const NotebookKind = "maieutics-notebook";
 export const NotebookVersion = 1;
 export const NotebookLanguage = "markdown";
+
+/** The per-cell turn binding: the run a committed cell created and the text
+ * that was submitted, so stale detection needs no server round trip. */
+export interface TurnBinding {
+  runId: string;
+  input: string;
+}
 
 export interface OutputSnapshot {
   /** Final assistant markdown, when the turn produced text. */
@@ -38,6 +47,9 @@ export interface CellSnapshot {
   kind: "agent" | "markdown";
   text: string;
   output?: OutputSnapshot;
+  /** The turn binding of a committed cell; survives clear-output, so the
+   * commit frontier never depends on outputs being present. */
+  turn?: TurnBinding;
 }
 
 export interface MaieuticsNotebook {
@@ -107,7 +119,11 @@ function parseCell(value: unknown): CellSnapshot {
   const text = typeof record.text === "string" ? record.text : "";
   const kind = record.kind === "markdown" ? "markdown" : "agent";
   const output = isRecord(record.output) ? parseOutput(record.output) : undefined;
-  return { kind, text, output };
+  const turn = isRecord(record.turn) && typeof record.turn.runId === "string" &&
+      typeof record.turn.input === "string"
+    ? { runId: record.turn.runId, input: record.turn.input }
+    : undefined;
+  return { kind, text, output, turn };
 }
 
 function parseOutput(value: Record<string, unknown>): OutputSnapshot {

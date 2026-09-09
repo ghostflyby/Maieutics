@@ -22,12 +22,14 @@ internal static class MaieuticsCommandLanguage
     internal const string Status = "status";
     internal const string Workspace = "workspace";
     internal const string Current = "current";
+    internal const string Fork = "fork";
     internal const string List = "list";
     internal const string Use = "use";
     internal const string Reset = "reset";
     internal const string New = "new";
     internal const string Repair = "repair";
     internal const string Resume = "resume";
+    internal const string Rename = "rename";
     internal const string Gc = "gc";
     internal const string Available = "available";
     internal const string RefreshFlag = "--refresh";
@@ -50,7 +52,7 @@ internal static class MaieuticsCommandLanguage
     private static readonly string[] RootCommandMatches = [Mcp, Model, Session, Workspace];
     private static readonly string[] McpCommandMatches = [List];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
-    private static readonly string[] SessionCommandMatches = [Current, Gc, List, New, Repair, Resume];
+    private static readonly string[] SessionCommandMatches = [Current, Fork, Gc, List, New, Rename, Repair, Resume];
     private static readonly string[] WorkspaceCommandMatches = [Current, Use, Reset];
 
     internal static bool IsCommandCell(string code)

@@ -56,7 +56,14 @@ internal sealed class MaieuticsCommandExecutor(
                 return ExecuteStatusCommand(arguments);
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Session, StringComparison.OrdinalIgnoreCase))
-                return ExecuteSessionCommand(arguments);
+            {
+                var titleTokenCount = originalArguments[0].Equals(
+                    MaieuticsCommandLanguage.LegacyRoot,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? 4
+                    : 3;
+                return ExecuteSessionCommand(code, arguments, titleTokenCount);
+            }
 
             throw new MaieuticsCommandException(
                 MaieuticsCommandException.CommandError, "Unknown Maieutics command.");
@@ -190,7 +197,7 @@ internal sealed class MaieuticsCommandExecutor(
         return MaieuticsStatusRenderer.Render(statusProvider.Capture());
     }
 
-    private string ExecuteSessionCommand(string[] arguments)
+    private string ExecuteSessionCommand(string code, string[] arguments, int titleTokenCount)
     {
         if (sessionManager is null)
             throw new MaieuticsCommandException(
@@ -214,6 +221,28 @@ internal sealed class MaieuticsCommandExecutor(
             return RenderSession(sessionManager);
         }
 
+        if (arguments.Length >= 5 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Rename, StringComparison.OrdinalIgnoreCase))
+        {
+            var sessionId = ResolveStoredSessionId(sessionManager, arguments[3]);
+            var title = GetRemainderAfterTokens(code, titleTokenCount);
+            string? stored;
+            try
+            {
+                stored = sessionManager.SetTitle(sessionId, title);
+            }
+            catch (ArgumentException exception)
+            {
+                throw new MaieuticsCommandException(
+                    MaieuticsCommandException.CommandError, exception.Message);
+            }
+
+            var prefix = sessionId.Value.ToString("N")[..12];
+            return stored is null
+                ? $"**Session** `{prefix}` — title cleared."
+                : $"**Session** `{prefix}` — renamed to \"{stored}\".";
+        }
+
         if (arguments.Length == 4 &&
             string.Equals(arguments[2], MaieuticsCommandLanguage.Resume, StringComparison.OrdinalIgnoreCase))
         {
@@ -229,6 +258,24 @@ internal sealed class MaieuticsCommandExecutor(
             }
 
             return RenderSession(sessionManager);
+        }
+
+        if (arguments.Length == 5 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Fork, StringComparison.OrdinalIgnoreCase))
+        {
+            var sessionId = ResolveStoredSessionId(sessionManager, arguments[3]);
+            var forkPointSeq = ResolveForkPointSeq(sessionManager, sessionId, arguments[4]);
+            try
+            {
+                var forkId = sessionManager.Fork(sessionId, forkPointSeq);
+                return $"**Session** `{forkId.Value.ToString("N")[..12]}` — forked from `{sessionId.Value.ToString("N")[..12]}` " +
+                       $"at turn {forkPointSeq + 1} and made active.";
+            }
+            catch (AgentException exception)
+            {
+                throw new MaieuticsCommandException(
+                    MaieuticsCommandException.CommandError, exception.Message);
+            }
         }
 
         if (arguments.Length is 3 or 4 &&
@@ -259,6 +306,37 @@ internal sealed class MaieuticsCommandExecutor(
     {
         var removed = manager.PruneObjects(TimeSpan.FromHours(graceHours));
         return $"**GC** removed {removed} unreferenced object(s) (grace {graceHours} h).";
+    }
+
+    /// <summary>Interprets a <c>%session fork</c> point token: an integer is the number of the
+    /// source's committed turns the fork keeps; anything else must be a run id, resolved to
+    /// the index of the committed turn it produced (the fork re-runs that turn).</summary>
+    private static int ResolveForkPointSeq(
+        MaieuticsAgentSessionManager manager,
+        AgentSessionId sessionId,
+        string token)
+    {
+        if (int.TryParse(token, out var seq)) return seq;
+
+        if (!Guid.TryParseExact(token, "N", out var runGuid) && !Guid.TryParse(token, out runGuid))
+            throw new MaieuticsCommandException(
+                MaieuticsCommandException.CommandError,
+                "The fork point must be a turn number or a run id.");
+
+        var transcript = manager.LoadStoredTranscript(sessionId);
+        if (transcript is null)
+            throw new MaieuticsCommandException(
+                MaieuticsCommandException.CommandError, $"No stored session matches '{sessionId.Value.ToString("N")[..12]}'.");
+
+        var runId = new AgentRunId(runGuid);
+        for (var index = 0; index < transcript.Turns.Length; index++)
+        {
+            if (transcript.Turns[index].RunId == runId) return index;
+        }
+
+        throw new MaieuticsCommandException(
+            MaieuticsCommandException.CommandError,
+            $"No committed turn matches run '{token}'.");
     }
 
     private static AgentSessionId ResolveStoredSessionId(MaieuticsAgentSessionManager manager, string input)
@@ -295,15 +373,43 @@ internal sealed class MaieuticsCommandExecutor(
         if (sessions.Count == 0) return "No stored sessions yet.";
 
         var builder = new System.Text.StringBuilder();
-        builder.AppendLine("| Session | Turns | Created (UTC) | Last activity (UTC) |");
-        builder.Append("|---|---:|---|---|");
+        builder.AppendLine("| Session | Title | Turns | Created (UTC) | Last activity (UTC) |");
+        builder.Append("|---|---|---:|---|---|");
         foreach (var session in sessions)
         {
             builder.AppendLine();
-            builder.Append(CultureInfo.InvariantCulture, $"| `{session.Id.Value.ToString("N")[..12]}` | {session.TurnCount} | {session.CreatedAt.ToUniversalTime():yyyy-MM-dd HH:mm} | {session.LastActivityAt.ToUniversalTime():yyyy-MM-dd HH:mm} |");
+            builder.Append(CultureInfo.InvariantCulture, $"| `{session.Id.Value.ToString("N")[..12]}` | {RenderTitle(session)} | {session.TurnCount} | {session.CreatedAt.ToUniversalTime():yyyy-MM-dd HH:mm} | {session.LastActivityAt.ToUniversalTime():yyyy-MM-dd HH:mm} |");
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>Renders the display title column: the user title, else the preview in
+    /// parentheses, else a dash. Newlines collapse to spaces and pipes are escaped so the
+    /// markdown table survives arbitrary titles. Forks carry their lineage in the same cell
+    /// (the auto-title already names the branch point; a renamed fork still shows it).</summary>
+    private static string RenderTitle(AgentSessionDescriptor session)
+    {
+        const string dash = "—";
+        string? raw;
+        if (!string.IsNullOrEmpty(session.Title)) raw = session.Title;
+        else if (string.IsNullOrEmpty(session.Preview)) return dash;
+        else
+        {
+            var preview = session.Preview;
+            raw = preview.Length <= 40 ? preview : preview[..40] + "…";
+        }
+
+        var oneLine = string.Join(' ', raw.Split(new[] { '\r', '\n' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var escaped = oneLine.Replace("|", "\\|", StringComparison.Ordinal);
+        if (session.ParentSessionId is { } parent && !escaped.Contains("branch @ turn", StringComparison.Ordinal))
+        {
+            var point = session.ForkPointSeq is { } seq ? $" · branch @ turn {seq + 1}" : " · branch";
+            escaped += point;
+        }
+
+        return ReferenceEquals(raw, session.Title) ? escaped : $"({escaped})";
     }
 
     private static string GetRemainderAfterTokens(string code, int tokenCount)

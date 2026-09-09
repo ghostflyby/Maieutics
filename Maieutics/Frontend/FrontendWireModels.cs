@@ -15,6 +15,7 @@ internal sealed record FrontendCapabilities(
     [property: JsonPropertyName("protocolVersion")] int ProtocolVersion,
     [property: JsonPropertyName("serverVersion")] string ServerVersion,
     [property: JsonPropertyName("session")] FrontendSessionInfo Session,
+    [property: JsonPropertyName("workspaceRoot")] string? WorkspaceRoot = null,
     [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null);
 
 /// <summary>Advertises the comm plane (ADR 0024); null means the build serves no comms.</summary>
@@ -26,14 +27,42 @@ internal sealed record FrontendCommCapability(
 internal sealed record FrontendSessionInfo(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("turns")] long Turns,
-    [property: JsonPropertyName("persistenceEnabled")] bool PersistenceEnabled);
+    [property: JsonPropertyName("persistenceEnabled")] bool PersistenceEnabled,
+    [property: JsonPropertyName("title")] string? Title = null);
 
 /// <summary>Describes one stored (persisted) session.</summary>
 internal sealed record FrontendStoredSession(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("turns")] long Turns,
     [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt,
-    [property: JsonPropertyName("lastActivityAt")] DateTimeOffset LastActivityAt);
+    [property: JsonPropertyName("lastActivityAt")] DateTimeOffset LastActivityAt,
+    [property: JsonPropertyName("title")] string? Title = null,
+    [property: JsonPropertyName("preview")] string? Preview = null,
+    [property: JsonPropertyName("workspaceRoot")] string? WorkspaceRoot = null,
+    [property: JsonPropertyName("parentSessionId")] string? ParentSessionId = null,
+    [property: JsonPropertyName("forkPointSeq")] int? ForkPointSeq = null);
+
+/// <summary>A session rename body; an empty title clears.</summary>
+internal sealed record FrontendRenameRequest([property: JsonPropertyName("title")] string Title);
+
+/// <summary>A rename answer carrying the stored (normalized) title.</summary>
+internal sealed record FrontendRenameResponse(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("title")] string? Title);
+
+/// <summary>A fork request body: exactly one of <c>runId</c> (a committed turn of the source
+/// the fork rewinds to — the fork re-runs from that point) or <c>seq</c> (the number of the
+/// source's committed turns the fork keeps, zero-based count), plus an optional
+/// <c>profileId</c> that switches the model profile before the fork's first turn.</summary>
+internal sealed record FrontendForkRequest(
+    [property: JsonPropertyName("runId")] string? RunId = null,
+    [property: JsonPropertyName("seq")] int? Seq = null,
+    [property: JsonPropertyName("profileId")] string? ProfileId = null);
+
+/// <summary>A fork answer carrying the new head's identity and stored title.</summary>
+internal sealed record FrontendForkResponse(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("title")] string? Title);
 
 /// <summary>A turn submission body.</summary>
 internal sealed record FrontendTurnRequest([property: JsonPropertyName("text")] string Text);
@@ -60,6 +89,19 @@ internal sealed record FrontendCompleteResponse(
     [property: JsonPropertyName("matches")] string[] Matches,
     [property: JsonPropertyName("tokenStart")] int TokenStart,
     [property: JsonPropertyName("tokenEnd")] int TokenEnd);
+
+/// <summary>Token usage a provider reported for one run.</summary>
+internal sealed record FrontendUsage(
+    [property: JsonPropertyName("inputTokens")] long InputTokens,
+    [property: JsonPropertyName("outputTokens")] long OutputTokens,
+    [property: JsonPropertyName("totalTokens")] long? TotalTokens = null);
+
+/// <summary>One selectable model profile (read-only listing for frontends).</summary>
+internal sealed record FrontendModelProfile(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("selected")] bool Selected);
 
 /// <summary>A status answer.</summary>
 internal sealed record FrontendStatusResponse([property: JsonPropertyName("markdown")] string Markdown);
@@ -146,7 +188,9 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("password")] bool? Password = null,
     [property: JsonPropertyName("state")] string? State = null,
     [property: JsonPropertyName("session")] FrontendSessionInfo? Session = null,
-    [property: JsonPropertyName("replayed")] bool? Replayed = null);
+    [property: JsonPropertyName("replayed")] bool? Replayed = null,
+    [property: JsonPropertyName("model")] FrontendModelIdentity? Model = null,
+    [property: JsonPropertyName("usage")] FrontendUsage? Usage = null);
 
 /// <summary>Source-generated JSON binding for the frontend wire (NativeAOT path).</summary>
 [JsonSourceGenerationOptions(
@@ -158,11 +202,18 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendSessionInfo[]))]
 [JsonSerializable(typeof(FrontendTurnRequest))]
 [JsonSerializable(typeof(FrontendTurnAccepted))]
+[JsonSerializable(typeof(FrontendRenameRequest))]
+[JsonSerializable(typeof(FrontendRenameResponse))]
+[JsonSerializable(typeof(FrontendForkRequest))]
+[JsonSerializable(typeof(FrontendForkResponse))]
 [JsonSerializable(typeof(FrontendCommandRequest))]
 [JsonSerializable(typeof(FrontendCommandResponse))]
 [JsonSerializable(typeof(FrontendCompleteRequest))]
 [JsonSerializable(typeof(FrontendCompleteResponse))]
 [JsonSerializable(typeof(FrontendInputRequest))]
+[JsonSerializable(typeof(FrontendUsage))]
+[JsonSerializable(typeof(FrontendModelProfile))]
+[JsonSerializable(typeof(FrontendModelProfile[]))]
 [JsonSerializable(typeof(FrontendStatusResponse))]
 [JsonSerializable(typeof(FrontendInputAnswer))]
 [JsonSerializable(typeof(FrontendError))]

@@ -2,7 +2,9 @@
  * `.maieuticsnb` serializer: bridges the frontend-owned snapshot format onto
  * the VSCode notebook model. Deserialization only reads the file; live session
  * state is never touched (invariant 13). Structured turn results ride along as
- * a custom output item so save round-trips without scraping markdown.
+ * a custom output item so save round-trips without scraping markdown; the
+ * per-cell turn binding (runId + submitted input) round-trips through cell
+ * metadata so committed/stale history states survive save/reopen.
  */
 
 import * as vscode from "vscode";
@@ -16,7 +18,9 @@ import {
   parseNotebook,
   serializeNotebook as serializeNotebookBytes,
   type ToolSnapshot,
+  type TurnBinding,
 } from "./notebookFormat.ts";
+import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
 
 export const NotebookType = "maieutics-notebook";
@@ -68,6 +72,11 @@ export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
       if (snapshot.kind === "agent" && snapshot.output) {
         cell.outputs = renderSnapshotOutputs(snapshot.output);
       }
+      // The turn binding rides in cell metadata so committed/stale states
+      // survive reopen even when the outputs were cleared.
+      if (snapshot.turn !== undefined) {
+        cell.metadata = { [TurnBindingMetadataKey]: snapshot.turn };
+      }
       return cell;
     });
     return data;
@@ -93,10 +102,16 @@ export class MaieuticsNotebookSerializer implements vscode.NotebookSerializer {
         kind: "agent",
         text: cell.value,
         output: structured ?? snapshotFromMarkdownOutputs(cell),
+        turn: readCellBinding(cell),
       };
     });
     return serializeNotebookBytes(notebook);
   }
+}
+
+/** The persisted turn binding of a snapshot cell, if its metadata carries one. */
+function readCellBinding(cell: vscode.NotebookCellData): TurnBinding | undefined {
+  return readTurnBinding({ metadata: cell.metadata ?? {}, text: cell.value });
 }
 
 /** The structured output the controller leaves on executed cells. */

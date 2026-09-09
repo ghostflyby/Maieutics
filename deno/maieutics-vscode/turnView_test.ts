@@ -29,12 +29,22 @@ Deno.test("tool lifecycle renders statuses in call order", () => {
     callId: "c2",
     result: { status: "tool_error", message: "boom" },
   });
-  assertEquals(view.toolLines(), ["- ✅ `workspace_list`", "- ❌ `repl_execute`"]);
+  // Finished entries carry a receipt-time duration segment.
+  const [first, second] = view.toolLines();
+  assertEquals(first.startsWith("- ✅ `workspace_list` · "), true);
+  assertEquals(second.startsWith("- ❌ `repl_execute` · "), true);
   const final = view.finalOutput();
-  assertEquals(final.tools, [
-    { tool: "workspace_list", status: "ok" },
-    { tool: "repl_execute", status: "error" },
-  ]);
+  assertEquals(
+    final.tools.map((tool) => ({
+      tool: tool.tool,
+      status: tool.status,
+      timed: typeof tool.durationMs === "number",
+    })),
+    [
+      { tool: "workspace_list", status: "ok", timed: true },
+      { tool: "repl_execute", status: "error", timed: true },
+    ],
+  );
 });
 
 Deno.test("completed terminal carries truncation", () => {
@@ -157,4 +167,81 @@ Deno.test("terminal drain always includes the answer segment", () => {
   view.apply({ type: "run.completed", runId: "run-1", truncated: false });
   const dirty = view.takeDirty();
   assertEquals([...dirty].includes("answer:run-1"), true);
+});
+
+Deno.test("final output carries the turn binding for committed cells", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "text.delta", runId: "run-1", sequence: 1, text: "answer" });
+  view.apply({ type: "run.completed", runId: "run-1" });
+
+  const final = view.finalOutput("the question");
+  assertEquals(final.runId, "run-1");
+  assertEquals(final.input, "the question");
+  // Without the submitted input (older callers) the binding degrades.
+  assertEquals(view.finalOutput().input, undefined);
+  assertEquals(view.finalOutput().runId, "run-1");
+});
+
+Deno.test("terminal usage and model identity are captured", () => {
+  const view = new TurnView("run-1");
+  view.apply({
+    type: "text.delta",
+    runId: "run-1",
+    sequence: 1,
+    text: "answer",
+  });
+  view.apply({
+    type: "run.completed",
+    runId: "run-1",
+    model: { profileId: "default", provider: "OpenAI", model: "gpt-test" },
+    usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+  });
+
+  const final = view.finalOutput("question");
+  assertEquals(final.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  assertEquals(final.model, { profileId: "default", provider: "OpenAI", model: "gpt-test" });
+  // Older servers omit both; the snapshot degrades instead of failing.
+  assertEquals(new TurnView("r2").finalOutput().usage, undefined);
+});
+
+Deno.test("tool lines carry argument previews and durations", () => {
+  const view = new TurnView("run-1");
+  view.apply({
+    type: "tool.started",
+    runId: "run-1",
+    callId: "c1",
+    tool: "workspace_list",
+    arguments: { root: "/repos/alpha", depth: 3 },
+  });
+  assertEquals(view.toolLines(), [
+    "- ⏳ `workspace_list` · `{" +
+    '"root":"/repos/alpha","depth":3}`',
+  ]);
+
+  view.apply({ type: "tool.finished", runId: "run-1", callId: "c1", result: { status: "ok" } });
+  const line = view.toolLines()[0];
+  assertEquals(line.startsWith("- ✅ `workspace_list` · `"), true);
+  assertEquals(line.includes("` · "), true); // the duration segment follows
+
+  // Malformed or absent arguments render as the bare tool name.
+  const bare = new TurnView("run-2");
+  bare.apply({ type: "tool.started", runId: "run-2", callId: "c2", tool: "repl_execute" });
+  assertEquals(bare.toolLines(), ["- ⏳ `repl_execute`"]);
+
+  // Arguments are untrusted model output: backticks cannot break the code
+  // span the preview is embedded in.
+  const hostile = new TurnView("run-3");
+  hostile.apply({
+    type: "tool.started",
+    runId: "run-3",
+    callId: "c3",
+    tool: "terminal_run",
+    arguments: { command: "echo `injected` \u0007" },
+  });
+  const hostileLine = hostile.toolLines()[0];
+  assertEquals(hostileLine.includes("injected"), true);
+  assertEquals(hostileLine.includes("`injected`"), false);
+  // The preview stays one intact code span (open + close) beside the tool
+  // name's own span.
+  assertEquals(hostileLine.split("`").length, 5);
 });

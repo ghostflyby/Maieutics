@@ -11,12 +11,17 @@ export interface Capabilities {
   protocolVersion: number;
   serverVersion: string;
   session: SessionInfo;
+  /** The executable's workspace root; absent on older servers or when unknown. */
+  workspaceRoot?: string;
+  comm?: { version: number; maxMessageBytes: number };
 }
 
 export interface SessionInfo {
   id: string;
   turns: number;
   persistenceEnabled: boolean;
+  /** The user-set title; absent when never renamed (older servers omit it too). */
+  title?: string;
 }
 
 export interface StoredSession {
@@ -24,6 +29,20 @@ export interface StoredSession {
   turns: number;
   createdAt: string;
   lastActivityAt: string;
+  /** The user-set title; absent when never renamed. */
+  title?: string;
+  /** The first committed user message, truncated for display; absent before the
+   * first committed turn. */
+  preview?: string;
+  /** The workspace root stamped when the session's row was created; absent for
+   * rows written before the column existed. */
+  workspaceRoot?: string;
+  /** The session this one forked from; absent for root sessions. The fork's
+   * history is the parent's first `forkPointSeq` turns plus its own. */
+  parentSessionId?: string;
+  /** How many of the parent's turns the fork keeps as its prefix; absent for
+   * root sessions. */
+  forkPointSeq?: number;
 }
 
 export interface TranscriptMessagePart {
@@ -50,6 +69,20 @@ export interface Transcript {
   sessionId: string;
   version: number;
   turns: TranscriptTurn[];
+}
+
+/** Token usage a provider reported for one run. */
+export interface UsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens?: number;
+}
+
+/** The configured model identity that produced a run. */
+export interface ModelIdentity {
+  profileId: string;
+  provider: string;
+  model: string;
 }
 
 /** Typed protocol error carried by non-2xx REST responses. */
@@ -108,6 +141,10 @@ export interface EventFrame {
   password?: boolean;
   session?: SessionInfo;
   replayed?: boolean;
+  /** Terminal run metadata: the model identity and provider-reported usage
+   * (additive, absent on older servers and on failures). */
+  model?: ModelIdentity;
+  usage?: UsageSummary;
 }
 
 /** Comm types are re-exported from the shared codec so protocol consumers have

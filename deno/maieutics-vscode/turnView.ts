@@ -8,12 +8,36 @@
  * forwards every Agent event unsampled).
  */
 
-import type { EventFrame } from "./protocol.ts";
+import type { EventFrame, ModelIdentity, UsageSummary } from "./protocol.ts";
+
+/** Renders compactly: JSON collapsed to one line and truncated for the tool
+ * activity line. */
+function summarize(value: unknown, limit = 48): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  let text: string;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+  // Backticks and control characters are stripped: the preview is embedded
+  // in a markdown code span, and tool arguments are untrusted model output.
+  // deno-lint-ignore no-control-regex -- stripping control characters is the point.
+  const oneLine = text.replace(/[\u0000-\u001f\u007f`]+/g, " ").trim();
+  if (oneLine.length === 0 || oneLine === "{}") return undefined;
+  return oneLine.length <= limit ? oneLine : `${oneLine.slice(0, limit)}…`;
+}
 
 export interface ToolEntry {
   callId: string;
   tool: string;
   status: "running" | "ok" | "error";
+  /** Compact argument preview captured from tool.started. */
+  args?: string;
+  /** Wall-clock duration measured between the start and finish frames
+   * (receipt time, so replayed streams under-report). */
+  startedAt?: number;
+  durationMs?: number;
 }
 
 export type TerminalState =
@@ -46,6 +70,8 @@ export class TurnView {
   private anonymousDisplays = 0;
   private truncated = false;
   private terminal: TerminalState | null = null;
+  private usage: UsageSummary | undefined;
+  private model: ModelIdentity | undefined;
   private readonly dirty = new Set<SegmentId>();
 
   constructor(runId: string) {
@@ -137,6 +163,8 @@ export class TurnView {
             callId: frame.callId,
             tool: typeof frame.tool === "string" ? frame.tool : "unknown",
             status: "running",
+            args: summarize(frame.arguments),
+            startedAt: Date.now(),
           });
           this.toolOrder.push(frame.callId);
           this.dirty.add(`tools:${this.runId}`);
@@ -147,7 +175,10 @@ export class TurnView {
         if (typeof frame.callId === "string") {
           const entry = this.tools.get(frame.callId);
           const failed = isFailureResult(frame.result);
-          if (entry) entry.status = failed ? "error" : "ok";
+          if (entry) {
+            entry.status = failed ? "error" : "ok";
+            if (entry.startedAt !== undefined) entry.durationMs = Date.now() - entry.startedAt;
+          }
           this.dirty.add(`tools:${this.runId}`);
         }
         return true;
@@ -161,6 +192,8 @@ export class TurnView {
           kind: "completed",
           truncated: frame.truncated === true || this.truncated,
         };
+        this.usage = readUsage(frame);
+        this.model = readModel(frame);
         return true;
       }
       case "run.failed": {
@@ -185,29 +218,54 @@ export class TurnView {
     return this.text;
   }
 
-  /** Markdown lines summarizing tool activity, in call order. */
+  /** Markdown lines summarizing tool activity, in call order, with argument
+   * previews and durations (receipt-time measured). */
   toolLines(): string[] {
     return this.toolOrder
       .map((callId) => this.tools.get(callId))
       .filter((entry) => entry !== undefined)
-      .map((entry) =>
-        entry.status === "running"
-          ? `- ⏳ \`${entry.tool}\``
-          : entry.status === "error"
-          ? `- ❌ \`${entry.tool}\``
-          : `- ✅ \`${entry.tool}\``
-      );
+      .map((entry) => {
+        const detail = [
+          entry.args === undefined ? undefined : `\`${entry.args}\``,
+          entry.durationMs === undefined ? undefined : formatDuration(entry.durationMs),
+        ].filter((part) => part !== undefined).join(" · ");
+        const mark = entry.status === "running" ? "⏳" : entry.status === "error" ? "❌" : "✅";
+        return `- ${mark} \`${entry.tool}\`${detail === "" ? "" : ` · ${detail}`}`;
+      });
   }
 
-  /** Renders the complete cell output for a finished run. */
-  finalOutput(): {
+  /** Whether anything user-visible streamed (answer text or REPL displays). */
+  get hasStreamedContent(): boolean {
+    return this.text.length > 0 || this.replDisplays.size > 0;
+  }
+
+  /** The provider-reported usage carried by the terminal frame, when known. */
+  get runUsage(): UsageSummary | undefined {
+    return this.usage;
+  }
+
+  /** The model identity carried by the terminal frame, when known. */
+  get runModel(): ModelIdentity | undefined {
+    return this.model;
+  }
+
+  /** Renders the complete cell output for a finished run. `input` is the
+   * submitted cell text; together with `runId` it forms the turn binding that
+   * travels inside the structured snapshot (and round-trips through save). */
+  finalOutput(input?: string): {
+    runId: string;
+    input?: string;
     text: string;
     tools: ToolSnapshotView[];
     truncated: boolean;
     repl: ReplDisplayEntry[];
+    usage?: UsageSummary;
+    model?: ModelIdentity;
     error?: { code: string; message: string };
   } {
     return {
+      runId: this.runId,
+      ...(input === undefined ? {} : { input }),
       text: this.text,
       repl: this.replList(),
       tools: this.toolOrder
@@ -216,8 +274,12 @@ export class TurnView {
         .map((entry) => ({
           tool: entry.tool,
           status: entry.status === "error" ? "error" as const : "ok" as const,
+          ...(entry.args === undefined ? {} : { argsSummary: entry.args }),
+          ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
         })),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
+      ...(this.usage === undefined ? {} : { usage: this.usage }),
+      ...(this.model === undefined ? {} : { model: this.model }),
       error: this.terminal?.kind === "failed"
         ? { code: this.terminal.code, message: this.terminal.message }
         : undefined,
@@ -228,6 +290,42 @@ export class TurnView {
 export interface ToolSnapshotView {
   tool: string;
   status: "ok" | "error";
+  argsSummary?: string;
+  durationMs?: number;
+}
+
+function readUsage(frame: EventFrame): UsageSummary | undefined {
+  const usage = frame.usage;
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const record = usage as unknown as Record<string, unknown>;
+  if (typeof record.inputTokens !== "number" || typeof record.outputTokens !== "number") {
+    return undefined;
+  }
+  return {
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    ...(typeof record.totalTokens === "number" ? { totalTokens: record.totalTokens } : {}),
+  };
+}
+
+function readModel(frame: EventFrame): ModelIdentity | undefined {
+  const model = frame.model;
+  if (typeof model !== "object" || model === null) return undefined;
+  const record = model as unknown as Record<string, unknown>;
+  if (
+    typeof record.profileId !== "string" || typeof record.provider !== "string" ||
+    typeof record.model !== "string"
+  ) return undefined;
+  return { profileId: record.profileId, provider: record.provider, model: record.model };
+}
+
+/** 900 → "0.9s", 61000 → "1m 1s". */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
 /** Output item mimes: markdown renders; the turn snapshot round-trips structure. */

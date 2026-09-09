@@ -31,8 +31,8 @@ Jupyter kernel involved (ADR 0023).
   opened, searched, and diffed like any file. The mount is a snapshot view, not a live feed: the
   server transcript stays authoritative, listings refresh on mount or window reload, content
   materializes when a file is opened (opening — or full-text searching — a stored session's view
-  resumes it on the server, since transcripts are served for the active session only), and deleting
-  a file there only discards the local view until the next sync re-materializes it.
+  lazily resumes it on the server, since transcripts are served per session), and deleting a file
+  there only discards the local view until the next sync re-materializes it.
 - Turn timeline renderer: outputs carrying the structured turn snapshot offer a "Maieutics Turn
   Timeline" view (tools with argument previews and durations, truncation, errors, answering model,
   token usage) via the output's mimetype picker; markdown remains the default view.

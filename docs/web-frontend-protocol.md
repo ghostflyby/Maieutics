@@ -101,7 +101,7 @@ widget with a **comm channel** that carries the model's life:
 ### `GET /v1/agent/sessions/{sid}/comms?sinceSeq=<n>&token=<hex>`
 
 Full-duplex WebSocket, session-scoped (ADR 0024). `token` is accepted as a
-query parameter like the events endpoint; a non-active session is
+query parameter like the events endpoint; an unknown session is
 `404 session_not_active`. The server's first frame is JSON text:
 
 ```json
@@ -178,7 +178,9 @@ advertised as `multiSession: true` on `/v1/agent/capabilities`; the process
 keeps an arbitrary number of live sessions (bounded; lazily resumable ones
 are evicted least-recently-used first), and the model-profile override
 (`%model use`, fork `profileId`) is per session — the configured default
-stays process-level.
+stays process-level. The legacy `409 session_not_active` gate no longer
+occurs on this build (older single-active servers still emit it for
+non-addressed sessions).
 
 `POST /v1/agent/sessions/{sid}/turns` body: `{"text": "..."}`. Empty text is
 `400`. `%`-command text is executed as a command (same semantics as the
@@ -317,7 +319,7 @@ Rules:
 ## Notebook snapshot (frontend-owned)
 
 `.maieuticsnb` is a frontend-owned portable interaction snapshot; the server
-never reads or writes it. Save/load must not mutate the active session
+never reads or writes it. Save/load must not mutate the live session
 (invariant 13). Shape (frontend-side schema, informative here):
 
 ```json

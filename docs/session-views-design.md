@@ -319,7 +319,8 @@ instead of fighting it. Extension version skew between attached windows could
 make two projections disagree and cause rename churn at sync — noisy events,
 but no data loss (renames never touch content), and both sides converge once
 versions match. The one piece of cross-window shared state that projections
-cannot paper over is the server's single active session in attach mode: a
+cannot paper over is the server's foreground alias in attach mode on
+legacy single-active servers: a
 resume in one window switches it for the other. That is the existing session
 model (invariant 1), not a filesystem concern.
 

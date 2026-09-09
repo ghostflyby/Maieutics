@@ -169,6 +169,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            // Rethrown below, so the failure surfaces through WhenAll.
+            _ = exception;
             fault();
             throw;
         }

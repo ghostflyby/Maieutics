@@ -7,6 +7,7 @@ import { FrontendClient } from "./client.ts";
 
 function startMockSessionServer(
   multiSession = false,
+  persistenceEnabled = true,
 ): Promise<{
   url: string;
   shutdown(): Promise<void>;
@@ -27,7 +28,7 @@ function startMockSessionServer(
       return Response.json({
         protocolVersion: ProtocolVersion,
         serverVersion: "0.0.0-test",
-        session: { id: active.id, turns: 0, persistenceEnabled: true },
+        session: { id: active.id, turns: 0, persistenceEnabled },
         ...(multiSession ? { multiSession: true } : {}),
       });
     }
@@ -45,7 +46,7 @@ function startMockSessionServer(
     }
 
     if (url.pathname === "/v1/agent/session") {
-      return Response.json({ id: active.id, turns: 0, persistenceEnabled: true });
+      return Response.json({ id: active.id, turns: 0, persistenceEnabled });
     }
 
     if (url.pathname.match(/^\/v1\/agent\/sessions\/[^/]+\/resume$/)) {
@@ -184,6 +185,20 @@ Deno.test("multi-session: an unknown pin continues with a fresh session and warn
     assertEquals(decision.pinId, decision.session.id);
     assertEquals(decision.warning !== undefined, true);
     assertEquals(created.length, 1);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("multi-session with persistence off falls back to the foreground", async () => {
+  const { url, active, shutdown } = await startMockSessionServer(true, false);
+  const client = await clientAt(url);
+  try {
+    const decision = await resolveSessionPin("b".repeat(32), client);
+    assertEquals(decision.kind, "pin");
+    assertEquals(decision.session.id, active.id);
+    assertEquals(decision.pinId, active.id);
+    assertEquals(decision.warning !== undefined, true);
   } finally {
     await shutdown();
   }

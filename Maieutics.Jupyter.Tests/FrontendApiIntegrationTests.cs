@@ -655,6 +655,46 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task AddressedModelCommandsLazilyResumeStoredSessions()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
+        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var dualConfig = DUAL_PROVIDER_CONFIG_TEMPLATE
+            .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
+            .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token, openAi, hanging: false,
+            transformConfiguration: _ => dualConfig);
+        using var client = harness.CreateClient();
+
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
+
+        // Churn the foreground past the live capacity so the addressed session is
+        // evicted from the live set (it stays resumable in storage).
+        for (var index = 0; index < 8; index++)
+        {
+            await client.PostAsync("/v1/agent/sessions", null, deadline.Token);
+        }
+
+        // An addressed %model use lazily resumes the session and applies the
+        // override; the next turn runs on Anthropic.
+        var use = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/turns",
+            new { text = "%model use claude-profile" },
+            deadline.Token);
+        use.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await harness.SubmitTurnAsync(sessionId, "second turn", deadline.Token);
+        var transcript = await WaitForTranscriptTurnsAsync(
+            harness, sessionId, minimumTurns: 2, deadline.Token);
+        transcript.GetProperty("turns")[1].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("anthropic answer");
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ReasoningContentStaysOutOfTheFrontendSurface()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));

@@ -95,6 +95,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     public AgentSessionId Id => Foreground.Id;
 
     /// <inheritdoc />
+    public bool IsRunInProgress => Foreground.IsRunInProgress;
+
+    /// <inheritdoc />
     public Task<IAgentRun> StartTurnAsync(AgentTurn turn, CancellationToken cancellationToken = default)
     {
         return Foreground.StartTurnAsync(turn, cancellationToken);
@@ -104,6 +107,15 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     public AgentTranscript GetTranscriptSnapshot()
     {
         return Foreground.GetTranscriptSnapshot();
+    }
+
+    /// <summary>Whether the session currently has a live instance, without creating one.</summary>
+    public bool IsLive(AgentSessionId sessionId)
+    {
+        lock (gate)
+        {
+            return live.ContainsKey(sessionId.Value.ToString("N"));
+        }
     }
 
     /// <summary>Resolves one live session, lazily resuming a stored one. Addressing a session
@@ -146,8 +158,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             var entry = new LiveSession(restored, wrapper);
             live[key] = entry;
             entry.Touch();
-            return restored;
         }
+
+        EnforceLiveCapacity(sessionId);
+        return restored;
     }
 
     /// <summary>Replaces the foreground session with the stored session, lazily resuming it.
@@ -193,7 +207,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             MoveForegroundLocked(session);
         }
 
-        EnforceLiveCapacity();
+        EnforceLiveCapacity(sessionId);
         return sessionId;
     }
 
@@ -245,16 +259,16 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             MoveForegroundLocked(forked);
         }
 
-        EnforceLiveCapacity();
+        EnforceLiveCapacity(forkId);
         return forkId;
     }
 
-    /// <summary>Sets the addressed live session's model-profile override (a configured
-    /// profile id), so its next turn runs on that profile regardless of the process
-    /// selection. Clears the override when <paramref name="profileId" /> is
-    /// <see langword="null" />.</summary>
-    /// <exception cref="ArgumentException">No runtime configuration is available, the
-    /// profile is unknown, or the session is not live.</exception>
+    /// <summary>Sets the addressed session's model-profile override (a configured profile
+    /// id), so its next turn runs on that profile regardless of the process selection.
+    /// Clears the override when <paramref name="profileId" /> is <see langword="null" />.
+    /// A stored-but-not-live session is lazily resumed first.</summary>
+    /// <exception cref="ArgumentException">No runtime configuration is available or the
+    /// profile is unknown.</exception>
     public void SetProfileOverride(AgentSessionId sessionId, string? profileId)
     {
         var wrapper = RequireWrapper(sessionId);
@@ -275,8 +289,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         wrapper.SetOverride(match.Id);
     }
 
-    /// <summary>Gets the addressed live session's profile override, or
-    /// <see langword="null" /> when it follows the process selection.</summary>
+    /// <summary>Gets the addressed session's profile override, or
+    /// <see langword="null" /> when it follows the process selection. A
+    /// stored-but-not-live session is lazily resumed first.</summary>
     public string? GetProfileOverride(AgentSessionId sessionId)
     {
         return RequireWrapper(sessionId).Override;
@@ -445,6 +460,19 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return body + suffix;
     }
 
+    /// <summary>Reads the foreground session's identity and turn count atomically so the
+    /// compatibility alias cannot mix two foregrounds.</summary>
+    public (AgentSessionId Id, long Turns) ForegroundInfo
+    {
+        get
+        {
+            lock (gate)
+            {
+                return (foreground.Id, foreground.GetTranscriptSnapshot().Turns.Length);
+            }
+        }
+    }
+
     private IAgentSession Foreground
     {
         get
@@ -501,8 +529,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return session;
     }
 
-    /// <summary>Requires one LIVE session's profile wrapper; unknown or persistence-less
-    /// sessions have none.</summary>
+    /// <summary>Requires the addressed session's profile wrapper, lazily resuming a stored
+    /// session so addressed <c>%model</c> commands work on a freshly reopened notebook.</summary>
     private MaieuticsSessionProfileProvider RequireWrapper(AgentSessionId sessionId)
     {
         if (runtimeConfiguration is null)
@@ -510,44 +538,58 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             throw new ArgumentException("Model profile selection is not available in this host.");
         }
 
+        Resolve(sessionId);
+
         lock (gate)
         {
             if (live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.Profile is { } profile)
             {
-                entry.Touch();
                 return profile;
             }
         }
 
-        throw new ArgumentException(
-            $"No live session matches '{sessionId.Value.ToString("N")[..12]}'; run a turn first.");
+        throw new ArgumentException("The session's profile provider is not configured.");
     }
 
     /// <summary>Keeps the live set bounded, evicting the least recently used sessions that
-    /// can still be lazily re-resumed from storage. Runs outside the gate because
-    /// resumability checks open family databases.</summary>
-    private void EnforceLiveCapacity()
+    /// can still be lazily re-resumed from storage. Eviction drops the session's profile
+    /// override with it (overrides are not durable; a re-resume follows the process
+    /// selection). A session with a run in flight is never
+    /// evicted (evicting it would let the next addressed turn build a second instance for
+    /// the same identity and break the per-instance single-run gate), the newly activated
+    /// session is protected, and a candidate that was touched after candidacy is skipped.
+    /// Runs outside the gate because resumability checks open family databases.</summary>
+    private void EnforceLiveCapacity(AgentSessionId? protectedId = null)
     {
-        List<(string Key, AgentSessionId Id)> candidates;
+        List<(string Key, long Touched, AgentSessionId Id)> candidates;
         lock (gate)
         {
             if (live.Count <= LiveSessionCapacity) return;
 
             candidates = live.Values
-                .Where(entry => !ReferenceEquals(entry.Session, foreground))
+                .Where(entry =>
+                    !ReferenceEquals(entry.Session, foreground) &&
+                    !entry.Session.IsRunInProgress &&
+                    (protectedId is null || entry.Session.Id != protectedId.Value))
                 .OrderBy(entry => entry.Touched)
-                .Select(entry => (entry.Session.Id.Value.ToString("N"), entry.Session.Id))
+                .Select(entry => (entry.Session.Id.Value.ToString("N"), entry.Touched, entry.Session.Id))
                 .ToList();
         }
 
-        foreach (var (key, id) in candidates)
+        foreach (var (key, touched, id) in candidates)
         {
             if (LoadStoredTranscript(id) is null) continue; // never lose unresumable state
 
             lock (gate)
             {
                 if (live.Count <= LiveSessionCapacity) return;
-                if (live.TryGetValue(key, out var entry) && !ReferenceEquals(entry.Session, foreground))
+                // Still the stale entry we evaluated: not foreground or protected,
+                // not touched since candidacy, and with no run in flight.
+                if (live.TryGetValue(key, out var entry) &&
+                    entry.Touched == touched &&
+                    !ReferenceEquals(entry.Session, foreground) &&
+                    !entry.Session.IsRunInProgress &&
+                    (protectedId is null || entry.Session.Id != protectedId.Value))
                 {
                     live.Remove(key);
                 }

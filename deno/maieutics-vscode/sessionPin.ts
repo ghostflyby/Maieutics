@@ -35,13 +35,42 @@ export async function resolveSessionPin(
   const capabilities = await client.capabilities().catch(() => undefined);
 
   if (capabilities?.multiSession === true) {
+    const active = await client.session();
+
+    // With persistence disabled nothing is stored server-side (listSessions is
+    // empty by design), so a pin can never be verified: fall back to the legacy
+    // foreground semantics.
+    if (!active.persistenceEnabled) {
+      if (storedSessionId === undefined || storedSessionId === active.id) {
+        return {
+          kind: storedSessionId === undefined ? "pin" : "ok",
+          session: active,
+          pinId: storedSessionId === undefined ? active.id : undefined,
+        };
+      }
+
+      return {
+        kind: "pin",
+        session: active,
+        pinId: active.id,
+        warning: "The stored session could not be resumed (transcript persistence " +
+          "is disabled). Continuing with the active session.",
+      };
+    }
+
     if (storedSessionId === undefined) {
       const created = await client.newSession();
       return { kind: "pin", session: created, pinId: created.id };
     }
 
-    const stored = (await client.listSessions().catch(() => []))
-      .find((session) => session.id === storedSessionId);
+    // A listing failure is transient: keep targeting the pinned id — the turn
+    // route fails typed if the session is really gone.
+    const sessions = await client.listSessions().catch(() => undefined);
+    if (sessions === undefined) {
+      return { kind: "ok", session: { id: storedSessionId, turns: 0, persistenceEnabled: true } };
+    }
+
+    const stored = sessions.find((session) => session.id === storedSessionId);
     if (stored !== undefined) {
       // Target the pinned session directly; no resume, no foreground move.
       return {

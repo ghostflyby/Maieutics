@@ -53,15 +53,17 @@ internal sealed class FrontendSessionService
         this.workspaceRootAccessor = workspaceRootAccessor;
     }
 
-    /// <summary>Executes a Maieutics command cell and returns its markdown answer. The
-    /// addressing session scopes session-aware commands (%session current, %model use); a
-    /// null context keeps the foreground semantics of the session-blind command endpoint.</summary>
-    public Task<string> ExecuteCommandAsync(
+    /// <summary>Executes a Maieutics command cell and returns its markdown answer plus
+    /// whether this execution moved the foreground session. The addressing session scopes
+    /// session-aware commands (%session current, %model use); a null context keeps the
+    /// foreground semantics of the session-blind command endpoint.</summary>
+    public async Task<(string Markdown, bool MovedForeground)> ExecuteCommandAsync(
         string text,
         AgentSessionId? session,
         CancellationToken cancellationToken)
     {
-        return commandExecutor.ExecuteAsync(text, session, cancellationToken);
+        var answer = await commandExecutor.ExecuteAsync(text, session, cancellationToken).ConfigureAwait(false);
+        return (answer.Markdown, answer.MovedForeground);
     }
 
     /// <summary>Renders the status snapshot as markdown.</summary>
@@ -97,15 +99,24 @@ internal sealed class FrontendSessionService
     public string? WorkspaceRoot => workspaceRootAccessor?.Invoke();
 
     /// <summary>Gets the foreground session's wire description — the compatibility alias
-    /// behind <c>GET /v1/agent/session</c> and the capabilities payload.</summary>
+    /// behind <c>GET /v1/agent/session</c> and the capabilities payload. Identity and turn
+    /// count are read atomically; the title lookup follows the captured identity.</summary>
     public FrontendSessionInfo DescribeSession()
     {
-        var id = sessionManager.Id;
+        var (id, turns) = sessionManager.ForegroundInfo;
         return new FrontendSessionInfo(
             id.Value.ToString("N"),
-            sessionManager.GetTranscriptSnapshot().Turns.Length,
+            turns,
             sessionManager.PersistenceEnabled,
             sessionManager.FindDescriptor(id)?.Title);
+    }
+
+    /// <summary>Whether one session has a stored row, without mutating the live set
+    /// (existence checks for socket handshakes).</summary>
+    public bool SessionExists(string sessionId)
+    {
+        var id = ParseSessionId(sessionId);
+        return sessionManager.FindDescriptor(id) is not null || sessionManager.IsLive(id);
     }
 
     /// <summary>Gets one session's wire description, resolving it lazily when it is stored
@@ -179,11 +190,12 @@ internal sealed class FrontendSessionService
         return new FrontendRenameResponse(id.Value.ToString("N"), stored);
     }
 
-    /// <summary>Starts a new session and makes it active.</summary>
+    /// <summary>Starts a new session and makes it the foreground. The returned
+    /// description is always the created session, even under concurrent switches.</summary>
     public FrontendSessionInfo StartNew()
     {
-        sessionManager.StartNew();
-        return DescribeSession();
+        var id = sessionManager.StartNew();
+        return DescribeSession(id.Value.ToString("N"));
     }
 
     /// <summary>Forks a stored session and makes the fork the active session. Not
@@ -425,14 +437,14 @@ internal sealed class FrontendSessionService
     {
         var hub = HubFor(sessionId);
         var latest = hub.Latest;
-        if (latest is not null && !ReferenceEquals(latest, previous)) return latest;
+        if (latest is not null && !ReferenceEquals(latest, previous))
+        {
+            hub.Drain(latest);
+            return latest;
+        }
 
         return await hub.ReadAsync(cancellationToken).ConfigureAwait(false);
     }
-
-    /// <summary>Gets the manager's foreground-change counter so callers can detect whether
-    /// a command moved the foreground session.</summary>
-    public long ForegroundVersion => sessionManager.ForegroundVersion;
 
     private SessionRunHub HubFor(AgentSessionId sessionId)
     {
@@ -440,15 +452,19 @@ internal sealed class FrontendSessionService
     }
 
     /// <summary>One session's run announcements: the latest stream for immediate
-    /// attachment and a channel the events socket blocks on between runs.</summary>
+    /// attachment and a small bounded buffer the events socket blocks on between runs.
+    /// The latest announcement supersedes older ones, so the buffer is drained on the
+    /// fast path and overflow drops the oldest entries instead of growing without
+    /// bound when no socket is listening.</summary>
     private sealed class SessionRunHub
     {
         private readonly Lock gate = new();
         private readonly Channel<FrontendRunStream> announcements =
-            Channel.CreateUnbounded<FrontendRunStream>(new UnboundedChannelOptions
+            Channel.CreateBounded<FrontendRunStream>(new BoundedChannelOptions(8)
             {
                 SingleReader = false,
-                SingleWriter = false
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.DropOldest
             });
         private FrontendRunStream? latest;
 
@@ -473,9 +489,21 @@ internal sealed class FrontendSessionService
             announcements.Writer.TryWrite(stream);
         }
 
-        public Task<FrontendRunStream> ReadAsync(CancellationToken cancellationToken)
+        /// <summary>Drops buffered announcements superseded by
+        /// <paramref name="current" /> (or everything, when null).</summary>
+        public void Drain(FrontendRunStream? current)
         {
-            return announcements.Reader.ReadAsync(cancellationToken).AsTask();
+            while (announcements.Reader.TryRead(out var item))
+            {
+                if (current is not null && ReferenceEquals(item, current)) continue;
+            }
+        }
+
+        public async Task<FrontendRunStream> ReadAsync(CancellationToken cancellationToken)
+        {
+            var stream = await announcements.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            Drain(stream);
+            return stream;
         }
     }
 

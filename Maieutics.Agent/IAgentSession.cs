@@ -6,6 +6,10 @@ public interface IAgentSession
     /// <summary>Gets the session identifier.</summary>
     AgentSessionId Id { get; }
 
+    /// <summary>Gets whether a mutating run is currently in flight (the session is
+    /// reserved until it reaches a terminal state).</summary>
+    bool IsRunInProgress { get; }
+
     /// <summary>Starts a run and reserves the session before returning.</summary>
     Task<IAgentRun> StartTurnAsync(
         AgentTurn turn,

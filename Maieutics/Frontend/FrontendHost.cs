@@ -252,14 +252,16 @@ internal sealed class FrontendHost : IAsyncDisposable
             // sessionId lets the frontend re-pin when a command switched the foreground.
             if (MaieuticsCommandLanguage.IsCommandCell(request.Text))
             {
-                var addressed = ParseOptionalSessionId(sessionId);
-                var versionBefore = service.ForegroundVersion;
-                var markdown = await service.ExecuteCommandAsync(request.Text, addressed, context.RequestAborted)
+                var addressed = ParseOptionalSessionId(sessionId)
+                    ?? throw new FrontendFailureException(
+                        FrontendErrors.InvalidRequest, "The session id is not valid.");
+                var (markdown, movedForeground) = await service
+                    .ExecuteCommandAsync(request.Text, addressed, context.RequestAborted)
                     .ConfigureAwait(false);
-                // The addressed session unless the command moved the foreground.
-                var answerSession = service.ForegroundVersion == versionBefore
-                    ? addressed?.Value.ToString("N") ?? service.DescribeSession().Id
-                    : service.DescribeSession().Id;
+                // The addressed session unless THIS command moved the foreground.
+                var answerSession = movedForeground
+                    ? service.DescribeSession().Id
+                    : addressed.Value.ToString("N");
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(
                     new FrontendCommandResponse(markdown, answerSession),
@@ -307,7 +309,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         try
         {
-            var markdown = await service.ExecuteCommandAsync(request.Text, null, context.RequestAborted)
+            var (markdown, _) = await service.ExecuteCommandAsync(request.Text, null, context.RequestAborted)
                 .ConfigureAwait(false);
             await context.Response.WriteAsJsonAsync(
                 new FrontendCommandResponse(markdown, service.DescribeSession().Id),
@@ -401,19 +403,16 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        FrontendSessionInfo helloSession;
-        try
-        {
-            helloSession = service.DescribeSession(sessionId);
-        }
-        catch (FrontendFailureException exception)
+        if (!service.SessionExists(sessionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
-                new FrontendError(exception.Code, exception.Message),
+                new FrontendError(FrontendErrors.NotFound, $"No stored session matches '{sessionId}'."),
                 FrontendJsonContext.Default.FrontendError).ConfigureAwait(false);
             return;
         }
+
+        FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
@@ -544,15 +543,11 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        try
-        {
-            _ = service.DescribeSession(sessionId);
-        }
-        catch (FrontendFailureException exception)
+        if (!service.SessionExists(sessionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
-                new FrontendError(exception.Code, exception.Message),
+                new FrontendError(FrontendErrors.NotFound, $"No stored session matches '{sessionId}'."),
                 FrontendJsonContext.Default.FrontendError).ConfigureAwait(false);
             return;
         }

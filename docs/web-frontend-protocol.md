@@ -182,7 +182,12 @@ stays process-level.
 
 `POST /v1/agent/sessions/{sid}/turns` body: `{"text": "..."}`. Empty text is
 `400`. `%`-command text is executed as a command (same semantics as the
-Jupyter adapter) and answered with `200 {markdown}` instead of starting a run.
+Jupyter adapter) and answered with `200 {markdown, sessionId}` instead of
+starting a run. `sessionId` is the addressed session unless the command moved
+the foreground (`%session new` / `resume` / `fork`), in which case it is the
+new foreground — a notebook frontend re-pins only when it differs from its
+pinned session. Session-aware commands (`%session current`, `%model
+use/current/reset`) are scoped to the addressed session.
 
 `GET /v1/agent/sessions/{sid}/transcript` returns the committed public
 transcript rendered provider-neutrally:

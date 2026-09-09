@@ -87,6 +87,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         // served counter is the global request ordinal, so a tool flow's
         // two-step sequence stays ordered as long as its calls are.
         var served = 0;
+        using var faulted = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var connections = new List<Task>();
         while (Volatile.Read(ref served) < requestCount)
         {
@@ -94,19 +95,31 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                 .ConfigureAwait(false);
             connections.Add(ServeConnectionAsync(
                 client,
-                cancellationToken,
+                faulted.Token,
                 () => Volatile.Read(ref served),
-                () => Interlocked.Increment(ref served) - 1));
+                () => Interlocked.Increment(ref served) - 1,
+                faulted.Cancel));
         }
 
-        await Task.WhenAll(connections).ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(connections).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (faulted.IsCancellationRequested &&
+                                          !cancellationToken.IsCancellationRequested)
+        {
+            // A connection task faulted (an assertion, most likely): surface the
+            // original failure instead of letting the test time out.
+            throw;
+        }
     }
 
     private async Task ServeConnectionAsync(
         TcpClient client,
         CancellationToken cancellationToken,
         Func<int> servedCount,
-        Func<int> claimRequestIndex)
+        Func<int> claimRequestIndex,
+        Action fault)
     {
         try
         {
@@ -153,6 +166,11 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                 await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
                 await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
             }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            fault();
+            throw;
         }
         finally
         {

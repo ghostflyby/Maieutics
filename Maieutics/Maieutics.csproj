@@ -29,7 +29,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Ghostflyby.Pty" Version="0.5.0" />
+        <PackageReference Include="Ghostflyby.Pty" Version="1.0.0" />
         <!-- Core variant: no default SQLite engine dependency. The engine comes from the
              SqliteProviderMode-selected SQLitePCLRaw provider below (see the mode notes at
              the top of this file). -->

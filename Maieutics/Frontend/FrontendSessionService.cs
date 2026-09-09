@@ -30,6 +30,7 @@ internal sealed class FrontendSessionService
     private readonly MaieuticsAgentSessionManager sessionManager;
     private readonly MaieuticsStatusProvider? statusProvider;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
+    private readonly Func<string?>? workspaceRootAccessor;
     private readonly ILogger logger;
     private readonly Lock gate = new();
     private readonly Channel<FrontendRunStream> runAnnouncements =
@@ -46,7 +47,8 @@ internal sealed class FrontendSessionService
         FrontendDenoReplPresentationRouter presentationRouter,
         ILogger<FrontendSessionService> logger,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
-        MaieuticsStatusProvider? statusProvider = null)
+        MaieuticsStatusProvider? statusProvider = null,
+        Func<string?>? workspaceRootAccessor = null)
     {
         this.sessionManager = sessionManager;
         this.commandExecutor = commandExecutor;
@@ -54,6 +56,7 @@ internal sealed class FrontendSessionService
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.runtimeConfiguration = runtimeConfiguration;
         this.statusProvider = statusProvider;
+        this.workspaceRootAccessor = workspaceRootAccessor;
     }
 
     /// <summary>Executes a Maieutics command cell and returns its markdown answer.</summary>
@@ -90,13 +93,19 @@ internal sealed class FrontendSessionService
         return new FrontendCompleteResponse(completion.Matches, completion.TokenStart, completion.TokenEnd);
     }
 
+    /// <summary>Gets the process workspace root for capabilities; the accessor is live so a
+    /// <c>%workspace use</c> switch is reflected without a restart.</summary>
+    public string? WorkspaceRoot => workspaceRootAccessor?.Invoke();
+
     /// <summary>Gets the active session's wire description.</summary>
     public FrontendSessionInfo DescribeSession()
     {
+        var id = sessionManager.Id;
         return new FrontendSessionInfo(
-            sessionManager.Id.Value.ToString("N"),
+            id.Value.ToString("N"),
             sessionManager.GetTranscriptSnapshot().Turns.Length,
-            sessionManager.PersistenceEnabled);
+            sessionManager.PersistenceEnabled,
+            sessionManager.FindDescriptor(id)?.Title);
     }
 
     /// <summary>Lists stored sessions across family databases.</summary>
@@ -107,8 +116,33 @@ internal sealed class FrontendSessionService
                 session.Id.Value.ToString("N"),
                 session.TurnCount,
                 session.CreatedAt,
-                session.LastActivityAt))
+                session.LastActivityAt,
+                session.Title,
+                session.Preview,
+                session.WorkspaceRoot,
+                session.ParentSessionId?.Value.ToString("N"),
+                session.ForkPointSeq))
             .ToArray();
+    }
+
+    /// <summary>Sets or clears one stored session's title. Not active-session-gated: renaming
+    /// an old session from a tree view is the primary surface.</summary>
+    /// <exception cref="FrontendFailureException">Persistence is disabled, the session id is
+    /// invalid, or the title exceeds the length cap.</exception>
+    public FrontendRenameResponse Rename(string sessionId, string title)
+    {
+        var id = ParseSessionId(sessionId);
+        string? stored;
+        try
+        {
+            stored = sessionManager.SetTitle(id, title);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new FrontendFailureException(FrontendErrors.InvalidRequest, exception.Message);
+        }
+
+        return new FrontendRenameResponse(id.Value.ToString("N"), stored);
     }
 
     /// <summary>Starts a new session and makes it active.</summary>
@@ -116,6 +150,113 @@ internal sealed class FrontendSessionService
     {
         sessionManager.StartNew();
         return DescribeSession();
+    }
+
+    /// <summary>Forks a stored session and makes the fork the active session. Not
+    /// active-session-gated: forking an old session from a notebook view is the primary
+    /// surface (the run-rewind flow). An optional profile override switches the model
+    /// profile first, so the fork's first turn runs on it (regenerate-with-model).</summary>
+    /// <exception cref="FrontendFailureException">Persistence is disabled, the session id or
+    /// fork point is invalid, the source is unknown, the referenced run never committed, or
+    /// the requested profile is unknown.</exception>
+    public async Task<FrontendForkResponse> ForkAsync(
+        string sessionId,
+        FrontendForkRequest request,
+        CancellationToken cancellationToken)
+    {
+        var id = ParseSessionId(sessionId);
+
+        // Resolve (but do not apply) the profile override up front so an
+        // unknown profile is rejected before anything is created; the switch
+        // itself happens only after the fork succeeded, so a failed fork
+        // leaves no side effect behind.
+        string? profileId = null;
+        if (request.ProfileId is { } requestedProfile)
+        {
+            if (runtimeConfiguration is null)
+                throw new FrontendFailureException(
+                    FrontendErrors.InvalidRequest, "Model profile selection is not available in this host.");
+
+            var selection = runtimeConfiguration.GetModelProfileSelection();
+            var match = selection.Profiles.FirstOrDefault(profile =>
+                string.Equals(profile.Id, requestedProfile, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+                throw new FrontendFailureException(
+                    FrontendErrors.InvalidRequest, $"No model profile matches '{requestedProfile}'.");
+
+            profileId = match.Id;
+        }
+
+        var forkPointSeq = ResolveForkPointSeq(id, request);
+        try
+        {
+            var forkId = sessionManager.Fork(id, forkPointSeq);
+            if (profileId is { } appliedProfile && runtimeConfiguration is { } configuration)
+            {
+                await configuration.SelectModelProfileAsync(appliedProfile, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var title = sessionManager.FindDescriptor(forkId)?.Title;
+            return new FrontendForkResponse(forkId.Value.ToString("N"), title);
+        }
+        catch (AgentSessionNotFoundException)
+        {
+            throw new FrontendFailureException(
+                FrontendErrors.NotFound, $"No stored session matches '{sessionId}'.");
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new FrontendFailureException(FrontendErrors.InvalidRequest, exception.Message);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new FrontendFailureException(FrontendErrors.InvalidRequest, exception.Message);
+        }
+    }
+
+    /// <summary>Lists the selectable model profiles (read-only) so frontends can offer
+    /// model pickers without scraping command output.</summary>
+    /// <exception cref="FrontendFailureException">The model configuration is unavailable.</exception>
+    public IReadOnlyList<FrontendModelProfile> ListModelProfiles()
+    {
+        if (runtimeConfiguration is null)
+            throw new FrontendFailureException(
+                FrontendErrors.CommandError, "Model profiles are not available in this host.");
+
+        return runtimeConfiguration.GetModelProfileSelection()
+            .Profiles
+            .Select(profile => new FrontendModelProfile(
+                profile.Id, profile.Provider, profile.Model, profile.IsSelected))
+            .ToArray();
+    }
+
+    /// <summary>Converts the fork request's run id or sequence into the number of the source's
+    /// committed turns the fork keeps. A run id names the turn the fork rewinds to, so the
+    /// fork re-runs that turn as its own first one. Run ids are accepted in any textual
+    /// representation (matching the command surface).</summary>
+    private int ResolveForkPointSeq(AgentSessionId id, FrontendForkRequest request)
+    {
+        if (request.Seq is { } seq) return seq;
+
+        if (!Guid.TryParse(request.RunId, out var runGuid) || runGuid == Guid.Empty)
+            throw new FrontendFailureException(
+                FrontendErrors.InvalidRequest, "The fork request must carry a runId or a seq.");
+
+        var transcript = sessionManager.LoadStoredTranscript(id);
+        if (transcript is null)
+            throw new FrontendFailureException(
+                FrontendErrors.NotFound, $"No stored session matches '{id.Value.ToString("N")}'.");
+
+        var runId = new AgentRunId(runGuid);
+        for (var index = 0; index < transcript.Turns.Length; index++)
+        {
+            if (transcript.Turns[index].RunId == runId) return index;
+        }
+
+        throw new FrontendFailureException(
+            FrontendErrors.NotFound,
+            $"No committed turn of '{id.Value.ToString("N")}' matches run '{request.RunId}'.");
     }
 
     /// <summary>Resumes a stored session and makes it active.</summary>

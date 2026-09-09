@@ -5,6 +5,13 @@
  * point, so a second concurrent turn surfaces as the typed busy error instead
  * of a protocol queue.
  *
+ * History gate (docs/notebook-agent-semantics-design.md): cells bound to
+ * committed turns are not re-submitted blindly. Run Below/Run All filter to
+ * pending cells; Run Above finds only committed history and explains instead
+ * of running; an explicit run on one committed cell forks at that point
+ * (regenerate, or edit-and-continue when the text drifted) so history stays
+ * immutable while the mainstream agent UX — continue from here — still works.
+ *
  * Streaming: text deltas fold into a TurnView and repaint the cell's markdown
  * output at most every PaintIntervalMs (mirroring the kernel adapter's flush
  * cadence). Tool activity renders as status lines above the answer; REPL
@@ -15,6 +22,16 @@ import * as vscode from "vscode";
 import type { FrontendClient, SubmitAnswer } from "./client.ts";
 import type { EventFrame, SessionInfo } from "./protocol.ts";
 import { FrontendError } from "./protocol.ts";
+import {
+  cellHistoryState,
+  type CellLike,
+  frontierIndex,
+  isRunAboveSelection,
+  partitionByHistory,
+  readTurnBinding,
+  withoutTurnBinding,
+  withTurnBinding,
+} from "./cellHistory.ts";
 import {
   bundleItems,
   drainPendingObjectItems,
@@ -41,11 +58,23 @@ export interface NotebookBridge {
   fetchObject(sha256: string): Promise<Uint8Array>;
 }
 
+/** Adapts a VSCode cell onto the structural view the history model reads,
+ * keeping the original cell reachable for execution and metadata edits. */
+export interface TaggedCell extends CellLike {
+  cell: vscode.NotebookCell;
+}
+
+export function taggedCell(cell: vscode.NotebookCell): TaggedCell {
+  return { cell, metadata: cell.metadata, text: cell.document.getText() };
+}
+
 export class MaieuticsNotebookController implements vscode.Disposable {
   private readonly controller: vscode.NotebookController;
   private readonly queues = new Map<string, Promise<void>>();
   private readonly streams = new Map<string, NotebookStream>();
   private readonly warnedPins = new Set<string>();
+  /** Run ids of each notebook's in-flight turn, for the interrupt handler. */
+  private readonly activeRuns = new Map<string, string>();
 
   constructor(
     private readonly bridge: NotebookBridge,
@@ -59,6 +88,12 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     this.controller.description = "Maieutics agent kernel";
     this.controller.supportsExecutionOrder = true;
     this.controller.executeHandler = (cells, document) => this.executeAsync(cells, document);
+    // Presence of the interrupt handler is what adds the stop button. The
+    // kernel "Restart" verb routes through the same handler, which matches its
+    // only agent meaning: abort the in-flight run. Once this is set, the cell
+    // cancellation token no longer fires for UI stops, so cancellation goes
+    // through here alone (cooperative cancel, invariant 9).
+    this.controller.interruptHandler = (notebook) => this.interruptAsync(notebook);
   }
 
   dispose(): void {
@@ -84,6 +119,12 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     this.queues.delete(document.uri.toString());
   }
 
+  /** Runs cells through the notebook's execution queue (commands that submit
+   * follow-up turns join here, behind anything already in flight). */
+  runAsync(cells: vscode.NotebookCell[], document: vscode.NotebookDocument): Promise<void> {
+    return this.executeAsync(cells, document);
+  }
+
   private async executeAsync(
     cells: vscode.NotebookCell[],
     document: vscode.NotebookDocument,
@@ -92,10 +133,171 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     const previous = this.queues.get(queueKey) ?? Promise.resolve();
     const run = previous.then(async () => {
       const sessionId = await this.ensureSessionAsync(document);
-      await Promise.all(cells.map((cell) => this.executeCellAsync(cell, sessionId)));
+      // The history gate: committed cells never re-submit silently.
+      const { pending, committed } = partitionByHistory(cells.map(taggedCell));
+
+      if (
+        committed.length > 0 &&
+        isRunAboveSelection(committed.map((entry) => entry.cell.index))
+      ) {
+        this.warnOnce(
+          `${document.uri.toString()}:run-above`,
+          "Maieutics: Run Above targets committed history, so there is nothing to run. " +
+            "New cells continue below the last answered cell; run a committed cell to branch from it.",
+        );
+        return;
+      }
+
+      let targets = pending;
+      let activeSession = sessionId;
+      if (committed.length > 0) {
+        // An explicit run on committed history forks at the first committed
+        // cell (regenerate, or edit-and-continue when the text drifted); any
+        // further committed cells in the same request stay on the old branch.
+        if (pending.length > 0) {
+          this.warnOnce(
+            `${document.uri.toString()}:mixed-run`,
+            "Maieutics: skipped committed cell(s) — history is immutable. " +
+              "Run a committed cell on its own to branch from it.",
+          );
+        } else {
+          if (committed.length > 1) {
+            this.warnOnce(
+              `${document.uri.toString()}:fork-siblings`,
+              "Maieutics: only the first committed cell branches — the others stay on the old branch.",
+            );
+          }
+          const forked = await this.forkAtCellAsync(committed[0].cell, document, activeSession);
+          if (forked === undefined) return;
+          activeSession = forked;
+          targets = [committed[0]];
+        }
+      }
+
+      // One cell at a time, in document order: the session's single-run gate
+      // makes concurrent submissions typed busy errors, not a queue.
+      for (const target of targets) {
+        await this.executeCellAsync(target.cell, activeSession);
+      }
     });
     this.queues.set(queueKey, run.then(() => {}, () => {}));
     await run;
+  }
+
+  /** Forks the pinned session at a committed cell and re-pins the notebook to
+   * the new head. Unedited cells regenerate; edited cells continue from the
+   * edit (mainstream edit-rewind). Returns the fork's session id, or
+   * <code>undefined</code> when the user declined or the fork failed. */
+  private async forkAtCellAsync(
+    cell: vscode.NotebookCell,
+    document: vscode.NotebookDocument,
+    sessionId: string,
+  ): Promise<string | undefined> {
+    const binding = readTurnBinding(taggedCell(cell));
+    if (binding === undefined) return undefined;
+
+    const configuration = vscode.workspace.getConfiguration();
+    let profileId: string | undefined;
+    if (configuration.get<boolean>("maieutics.confirmFork", true)) {
+      const stale = cellHistoryState(taggedCell(cell)) === "stale";
+      const verb = stale ? "continue from your edit" : "re-run this cell";
+      const answer = await vscode.window.showWarningMessage(
+        `Maieutics: run this cell? The session forks here and the run ${verb} as the new branch's first turn. ` +
+          "The original branch is kept.",
+        { modal: true },
+        "Fork and run",
+        "Fork with another model\u2026",
+      );
+      if (answer === undefined) return undefined;
+      if (answer === "Fork with another model\u2026") {
+        const client = await this.bridge.client();
+        const profiles = await client.modelProfiles().catch(() => []);
+        const picked = await vscode.window.showQuickPick(
+          profiles.map((profile) => ({
+            label: `${profile.selected ? "$(check) " : ""}${profile.id}`,
+            description: `${profile.provider} / ${profile.model}`,
+            id: profile.id,
+          })),
+          { placeHolder: "Model profile for the new branch" },
+        );
+        if (picked === undefined) return undefined;
+        profileId = picked.id;
+      }
+    }
+
+    let fork: { id: string; title?: string };
+    try {
+      fork = await (await this.bridge.client()).forkSession(
+        sessionId,
+        profileId === undefined ? { runId: binding.runId } : { runId: binding.runId, profileId },
+      );
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Maieutics: the fork failed (${error instanceof Error ? error.message : String(error)}).`,
+      );
+      return undefined;
+    }
+
+    await this.writeSessionId(document, fork.id);
+
+    // The fork's history ends at this cell: committed cells below it belong to
+    // the old branch and leave the view (they stay on the server under the old
+    // branch's title). Pending cells below are view-only composer drafts the
+    // server never saw — they stay, moving below the new frontier.
+    const cells = document.getCells();
+    const deletable = new Set<number>();
+    for (let index = cell.index + 1; index < cells.length; index++) {
+      if (readTurnBinding(taggedCell(cells[index])) !== undefined) deletable.add(index);
+    }
+
+    if (deletable.size > 0) {
+      // Contiguous ranges, deleted bottom-up inside one edit so the earlier
+      // ranges stay valid as each delete applies.
+      const runs: Array<[number, number]> = [];
+      for (const index of [...deletable].sort((a, b) => a - b)) {
+        const last = runs.at(-1);
+        if (last !== undefined && last[1] === index) last[1] = index + 1;
+        else runs.push([index, index + 1]);
+      }
+
+      const edit = new vscode.WorkspaceEdit();
+      // Labeled edits (WorkspaceEditMetadata.label) do not exist in the 1.99
+      // stable API; the edit stays plain and the toast carries the story.
+      edit.set(
+        document.uri,
+        runs.reverse().map(([start, end]) =>
+          vscode.NotebookEdit.deleteCells(new vscode.NotebookRange(start, end))
+        ),
+      );
+      await vscode.workspace.applyEdit(edit);
+    }
+
+    // This cell is about to create a fresh turn on the new head: drop the old
+    // branch's binding so a failed re-run leaves the cell pending instead of
+    // pointing at a run that belongs to the source session.
+    const unbind = new vscode.WorkspaceEdit();
+    unbind.set(document.uri, [
+      vscode.NotebookEdit.updateCellMetadata(cell.index, withoutTurnBinding(cell.metadata)),
+    ]);
+    await vscode.workspace.applyEdit(unbind);
+
+    void vscode.window.showInformationMessage(
+      `Maieutics: original branch kept as "${fork.title ?? fork.id.slice(0, 12)}" — ` +
+        "switch in the Sessions tree. Pending drafts below the fork were kept.",
+    );
+    return fork.id;
+  }
+
+  /** Cancels the notebook's in-flight run (stop button / kernel restart). */
+  private async interruptAsync(notebook: vscode.NotebookDocument): Promise<void> {
+    const runId = this.activeRuns.get(notebook.uri.toString());
+    if (runId === undefined) return;
+
+    try {
+      await (await this.bridge.client()).cancelRun(runId);
+    } catch (error) {
+      this.output.appendLine(`interrupt failed: ${error}`);
+    }
   }
 
   private async executeCellAsync(cell: vscode.NotebookCell, sessionId: string): Promise<void> {
@@ -126,13 +328,52 @@ export class MaieuticsNotebookController implements vscode.Disposable {
         return;
       }
 
-      await stream.awaitRunAsync(answer.runId, execution);
+      // Track the in-flight run for the interrupt handler; the stop button
+      // cancels it instead of relying on the cell token (which the presence
+      // of the interrupt handler disables for UI stops).
+      const runKey = cell.notebook.uri.toString();
+      this.activeRuns.set(runKey, answer.runId);
+      try {
+        const committed = await stream.awaitRunAsync(answer.runId, execution, text);
+        // Only a successfully completed run becomes part of history: failed
+        // and cancelled turns roll back server-side, so their cells stay
+        // pending and can be retried.
+        if (committed) {
+          await this.writeTurnBindingForCell(cell, answer.runId, text);
+        }
+      } finally {
+        this.activeRuns.delete(runKey);
+      }
     } catch (error) {
       execution.start(Date.now());
       execution.clearOutput();
       execution.replaceOutput([errorOutput(error)]);
       execution.end(false, Date.now());
     }
+  }
+
+  /** Persists the turn binding of a committed cell: metadata is the binding's
+   * home (it survives clear-output), written via a metadata-only edit. */
+  private async writeTurnBindingForCell(
+    cell: vscode.NotebookCell,
+    runId: string,
+    input: string,
+  ): Promise<void> {
+    const edit = new vscode.WorkspaceEdit();
+    edit.set(cell.notebook.uri, [
+      vscode.NotebookEdit.updateCellMetadata(
+        cell.index,
+        withTurnBinding(cell.metadata, { runId, input }),
+      ),
+    ]);
+    await vscode.workspace.applyEdit(edit);
+  }
+
+  /** Shows an informational toast once per key (document-scoped warnings). */
+  private warnOnce(key: string, message: string): void {
+    if (this.warnedPins.has(key)) return;
+    this.warnedPins.add(key);
+    void vscode.window.showWarningMessage(message);
   }
 
   /** Re-attaches the notebook to the server session stored in its metadata before the
@@ -239,13 +480,16 @@ class NotebookStream {
     this.runs.clear();
   }
 
-  /** Registers an execution and resolves when its run reaches a terminal frame. */
+  /** Registers an execution and resolves to whether the run committed (a
+   * successful terminal frame) when it reaches a terminal frame. Failed,
+   * cancelled, and missing runs resolve to false so their cells stay pending. */
   awaitRunAsync(
     runId: string,
     execution: vscode.NotebookCellExecution,
-  ): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const run = new RunExecution(runId, execution, this.client, resolve);
+    input: string,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const run = new RunExecution(runId, execution, input, this.client, resolve);
       this.runs.set(runId, run);
       run.begin();
       execution.token.onCancellationRequested(() => {
@@ -302,8 +546,9 @@ class RunExecution {
   constructor(
     runId: string,
     private readonly execution: vscode.NotebookCellExecution,
+    private readonly input: string,
     private readonly client: FrontendClient,
-    private readonly resolve: () => void,
+    private readonly resolve: (committed: boolean) => void,
   ) {
     this.view = new TurnView(runId);
   }
@@ -345,7 +590,7 @@ class RunExecution {
         this.paintTimer = null;
       }
       this.paintFinal();
-      this.settle();
+      this.settle(this.view.terminalState?.kind === "completed");
       return;
     }
 
@@ -354,16 +599,34 @@ class RunExecution {
 
   fail(code: string, message: string): void {
     if (this.settled) return;
-    this.execution.replaceOutput([
-      errorOutput(new FrontendError(code, 0, message)),
-    ]);
-    this.execution.end(false, Date.now());
-    this.settle();
+    this.paintFailure(code, message);
+    this.settle(false);
   }
 
-  private settle(): void {
+  /** Renders a terminal failure, preserving what already streamed: mainstream
+   * agents keep the partial answer and append the failure instead of wiping
+   * the cell. Only a cell with nothing to show collapses to the error alone. */
+  private paintFailure(code: string, message: string): void {
+    if (this.paintTimer !== null) {
+      clearTimeout(this.paintTimer);
+      this.paintTimer = null;
+    }
+
+    const streamed = this.view.hasStreamedContent;
+    const error = errorOutput(new FrontendError(code, 0, message));
+    if (streamed) {
+      this.paintChanged();
+      this.execution.appendOutput([error]);
+    } else {
+      this.execution.replaceOutput([error]);
+    }
+
+    this.execution.end(false, Date.now());
+  }
+
+  private settle(committed: boolean): void {
     this.settled = true;
-    this.resolve();
+    this.resolve(committed);
   }
 
   /** Repaints changed segments, throttled while the run streams. */
@@ -461,16 +724,14 @@ class RunExecution {
   }
 
   /** Freezes the segments: final answer text, the structured turn snapshot
-   * appended to the answer output, and final tool statuses. */
+   * (carrying the runId + input binding) appended to the answer output, and
+   * final tool statuses. */
   private paintFinal(): void {
     const terminal = this.view.terminalState;
-    const final = this.view.finalOutput();
+    const final = this.view.finalOutput(this.input);
 
     if (terminal?.kind === "failed") {
-      this.execution.replaceOutput([
-        errorOutput(new FrontendError(terminal.code, 0, terminal.message)),
-      ]);
-      this.execution.end(false, Date.now());
+      this.paintFailure(terminal.code, terminal.message);
       return;
     }
 

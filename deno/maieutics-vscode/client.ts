@@ -23,6 +23,14 @@ import type {
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
 
+/** One selectable model profile (read-only listing). */
+export interface ModelProfile {
+  id: string;
+  provider: string;
+  model: string;
+  selected: boolean;
+}
+
 export interface DiscoveryFile {
   version: number;
   url: string;
@@ -103,6 +111,66 @@ export class FrontendClient {
 
   async resumeSession(sessionId: string, signal?: AbortSignal): Promise<SessionInfo> {
     return await this.post(`/v1/agent/sessions/${sessionId}/resume`, undefined, signal);
+  }
+
+  /** Sets or clears one stored session's title (not active-session-gated). An
+   * empty title clears; the answer carries the stored, normalized title. */
+  async renameSession(
+    sessionId: string,
+    title: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    const body = await this.post<{ id?: string; title?: string }>(
+      `/v1/agent/sessions/${sessionId}/rename`,
+      { title },
+      signal,
+    );
+    return body.title;
+  }
+
+  /** Forks a stored session at a committed turn and makes the fork the active
+   * session (not active-session-gated). The fork keeps the source's turns
+   * before the referenced run and re-runs it as its own first turn; the answer
+   * carries the new head's id and stored title. An optional `profileId`
+   * switches the model profile first (regenerate-with-model). */
+  async forkSession(
+    sessionId: string,
+    body: { runId?: string; seq?: number; profileId?: string },
+    signal?: AbortSignal,
+  ): Promise<{ id: string; title?: string }> {
+    return await this.post(
+      `/v1/agent/sessions/${sessionId}/fork`,
+      body,
+      signal,
+    );
+  }
+
+  /** Lists the server's selectable model profiles (read-only; absent on older
+   * servers, where the call fails with a typed error). */
+  async modelProfiles(signal?: AbortSignal): Promise<ModelProfile[]> {
+    return await this.get("/v1/model/profiles", signal);
+  }
+
+  /** Prunes unreferenced objects of the active session (grace in hours). */
+  async pruneObjects(
+    sessionId: string,
+    graceHours = 24,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return await this.commandAnswer(
+      "POST",
+      `/v1/agent/sessions/${sessionId}/gc?graceHours=${graceHours}`,
+      signal,
+    );
+  }
+
+  /** Rebuilds the derived object view of the active session. */
+  async repairObjectView(sessionId: string, signal?: AbortSignal): Promise<string> {
+    return await this.commandAnswer(
+      "POST",
+      `/v1/agent/sessions/${sessionId}/repair`,
+      signal,
+    );
   }
 
   async statusMarkdown(signal?: AbortSignal): Promise<string> {
@@ -409,6 +477,19 @@ export class FrontendClient {
     const response = await this.fetchJson("GET", path, undefined, signal);
     if (!response.ok) throw await this.errorOf(response);
     return await response.json() as T;
+  }
+
+  /** POSTs without a body and unwraps the `{markdown}` answer the gc/repair
+   * endpoints reuse. */
+  private async commandAnswer(
+    method: "POST",
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const response = await this.fetchJson(method, path, undefined, signal);
+    if (!response.ok) throw await this.errorOf(response);
+    const body = await response.json() as { markdown?: string };
+    return typeof body.markdown === "string" ? body.markdown : "";
   }
 
   private async post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {

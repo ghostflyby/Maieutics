@@ -150,11 +150,13 @@ implement comms ignore it and never open the endpoint.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/v1/agent/capabilities` | Protocol version, server version, feature flags |
-| GET | `/v1/agent/session` | The active session (id, turn count, persistence state) |
+| GET | `/v1/agent/capabilities` | Protocol version, server version, workspace root, feature flags |
+| GET | `/v1/agent/session` | The active session (id, turn count, persistence state, title) |
 | POST | `/v1/agent/sessions` | Start a new session and make it active |
-| GET | `/v1/agent/sessions` | List stored sessions (persistence disabled → empty) |
+| GET | `/v1/agent/sessions` | List stored sessions with display metadata (persistence disabled → empty) |
 | POST | `/v1/agent/sessions/{sid}/resume` | Resume a stored session and make it active |
+| POST | `/v1/agent/sessions/{sid}/rename` | Set or clear one stored session's title |
+| POST | `/v1/agent/sessions/{sid}/fork` | Fork a stored session at a turn and make the fork active |
 | POST | `/v1/agent/sessions/{sid}/gc?graceHours=24` | Prune unreferenced objects |
 | POST | `/v1/agent/sessions/{sid}/repair` | Rebuild the derived object view |
 | POST | `/v1/agent/sessions/{sid}/turns` | Submit one Agent turn → `202 {runId}` |
@@ -162,6 +164,7 @@ implement comms ignore it and never open the endpoint.
 | POST | `/v1/agent/runs/{runId}/cancel` | Cooperative cancel; waits for termination |
 | POST | `/v1/agent/commands` | Execute a `%`-command cell → `{markdown}` |
 | POST | `/v1/agent/complete` | Command completion for the current cell text |
+| GET | `/v1/model/profiles` | Selectable model profiles (id, provider, model, selected) |
 | GET | `/v1/status` | Status snapshot as markdown |
 | GET | `/v1/objects/{sha256}` | Immutable binary object stream (content-addressed) |
 
@@ -202,6 +205,50 @@ transcript rendered provider-neutrally:
 is a UTF-16 code-unit offset (no Jupyter code-point conversion). Response:
 `{"matches": ["…"], "tokenStart": 0, "tokenEnd": 8}`.
 
+## Session display metadata
+
+Stored sessions carry bounded display metadata so frontends can name and
+group them without loading transcripts (schema v4 of the transcript store):
+
+- `GET /v1/agent/sessions` items are
+  `{id, turns, createdAt, lastActivityAt, title?, preview?, workspaceRoot?, parentSessionId?, forkPointSeq?}`.
+  `title` is the user-set name (absent when never renamed); `preview` is the
+  first committed user message, collapsed to one line and capped at 200
+  chars (absent before the first committed turn); `workspaceRoot` is the
+  workspace root stamped when the session's row was created (absent for rows
+  written before the column existed). `parentSessionId` and `forkPointSeq`
+  describe a fork head: its visible history is the parent's first
+  `forkPointSeq` turns followed by its own (both absent on root sessions).
+- `GET /v1/agent/session` and the `session` inside `/v1/agent/capabilities`
+  carry the active session's `title?`.
+- `/v1/agent/capabilities` carries `workspaceRoot?` — the process's current
+  `Maieutics:Workspace:Root`, live across `%workspace use` switches — so a
+  frontend can detect a server serving another workspace.
+- `POST /v1/agent/sessions/{sid}/rename` body `{"title": "..."}` sets the
+  title; empty or whitespace-only clears it. The answer is
+  `{"id": "…", "title": "…"}` with the stored, normalized title (nulls
+  omitted). Renaming is **not** active-session-gated and works for any stored
+  session; renaming a session with no stored row creates one (zero turns), so
+  a named session is listed before its first committed turn. Errors:
+  `400 invalid_request` for a malformed id or a title over 200 chars. The
+  command surface equivalent is `%session rename <id-prefix> <title...>`.
+- `POST /v1/agent/sessions/{sid}/fork` body is exactly one of
+  `{"runId": "…"}` (a committed turn of the source; the fork keeps the turns
+  before it and re-runs it as the fork's first turn) or `{"seq": n}` (the
+  number of the source's committed turns the fork keeps, `0..turns`). The
+  fork is a new head in the source's root family database (ADR 0009: turns
+  are referenced, never copied), it is auto-titled from the source's
+  title/preview plus `" · branch @ turn N"`, and it becomes the active
+  session. The answer is `200 {"id": "…", "title": "…"}` (nulls omitted).
+  Forking is **not** active-session-gated and fork of a fork chains through
+  the parent link. An optional `profileId` switches the model profile first,
+  so the fork's first turn runs on it (regenerate-with-model); an unknown
+  profile is `400 invalid_request`. Other errors: `404 not_found` for an
+  unknown session or a run id that never committed on it, `400
+  invalid_request` for a malformed body, an out-of-range `seq`, or
+  persistence disabled. The command surface equivalent is
+  `%session fork <id-prefix> <runId|seq>`.
+
 ## WebSocket event stream (executable → frontend, half-duplex)
 
 `GET /v1/agent/sessions/{sid}/events?sinceSequence=<n>` upgrades to a
@@ -224,7 +271,9 @@ JSON text:
 {"type": "tool.finished", "runId": "…", "sequence": 8, "callId": "…",
  "result": {"status": "ok", "value": {"…": "…"}}}
 {"type": "turn.truncated", "runId": "…", "sequence": 9}
-{"type": "run.completed", "runId": "…", "truncated": false}
+{"type": "run.completed", "runId": "…", "truncated": false,
+ "model": {"profileId": "…", "provider": "openai", "model": "…"},
+ "usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}
 {"type": "run.failed", "runId": "…", "code": "agent_provider_error", "message": "…"}
 {"type": "repl.display", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "repl.updateDisplay", "displayId": "…", "mime": "text/markdown", "data": "…"}
@@ -248,6 +297,11 @@ Rules:
 - Tool activity, presentation, and status frames route by `runId`; REPL
   presentation frames use the display id as the tracking key (the extension
   maps it onto one updatable notebook output).
+- `run.completed` carries the run's model identity and the provider-reported
+  token usage (additive; absent on older servers, on failures, and when the
+  provider reports nothing). The chat-completions wire flavor only returns
+  usage when the client asks for it — the executable's OpenAI adapter asks on
+  the Responses flavor, which always reports it.
 
 ## Notebook snapshot (frontend-owned)
 

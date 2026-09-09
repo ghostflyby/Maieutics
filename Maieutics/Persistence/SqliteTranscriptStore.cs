@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Maieutics.Agent;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.AI;
 
 namespace Maieutics.Persistence;
 
@@ -16,7 +17,15 @@ namespace Maieutics.Persistence;
 /// </summary>
 internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 {
-    private const int CurrentSchemaVersion = 2;
+    private const int CurrentSchemaVersion = 4;
+
+    /// <summary>Bounded display metadata: the preview (first user text) and the title cap at
+    /// this many characters.</summary>
+    internal const int MaxDisplayTextLength = 200;
+
+    /// <summary>Fork-chain walks stop here so a corrupted (cyclic) parent link fails with a
+    /// typed error instead of looping forever. Real chains are a few links deep.</summary>
+    private const int MaxForkChainDepth = 64;
 
     /// <summary>One database file per fork family; the family directory is keyed by the family
     /// root session id so derived scanners and backups can glob <c>families/*/history.db</c>.</summary>
@@ -27,11 +36,15 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 
     private readonly Lock gate = new();
     private readonly SqliteConnection connection;
+    private readonly Func<string?>? workspaceRootAccessor;
     private bool disposed;
 
-    public SqliteTranscriptStore(string databasePath)
+    public SqliteTranscriptStore(
+        string databasePath,
+        Func<string?>? workspaceRootAccessor = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+        this.workspaceRootAccessor = workspaceRootAccessor;
         var directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         // Pooling disabled: each family store holds exactly one connection for its lifetime, and
@@ -72,13 +85,18 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             using var transaction = connection.BeginTransaction();
             var session = connection.CreateCommand();
             session.Transaction = transaction;
+            // Rows that already exist (fork heads, sessions named before their first commit)
+            // keep every stored column and only gain the still-missing preview from their
+            // first committing turn; rows with a preview keep it (write-once).
             session.CommandText = """
-                INSERT INTO sessions(id, created_at, last_activity_at, turn_count)
-                VALUES($id, $now, $now, 0)
-                ON CONFLICT(id) DO NOTHING;
+                INSERT INTO sessions(id, created_at, last_activity_at, turn_count, preview, workspace_root)
+                VALUES($id, $now, $now, 0, $preview, $workspace)
+                ON CONFLICT(id) DO UPDATE SET preview = COALESCE(sessions.preview, excluded.preview);
                 """;
             session.Parameters.AddWithValue("$id", familyId);
             session.Parameters.AddWithValue("$now", now);
+            session.Parameters.AddWithValue("$preview", (object?)ComputePreview(turn) ?? DBNull.Value);
+            session.Parameters.AddWithValue("$workspace", (object?)workspaceRootAccessor?.Invoke() ?? DBNull.Value);
             session.ExecuteNonQuery();
 
             var append = connection.CreateCommand();
@@ -139,38 +157,167 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         }
     }
 
+    /// <summary>Sets or clears one session's title. An absent row is created (zero turns) so an
+    /// explicitly named session is listed before its first committed turn; preview stays absent
+    /// until a turn commits and the workspace follows the same creation accessor as
+    /// <see cref="AppendTurn" />.</summary>
+    public void SetTitle(AgentSessionId sessionId, string? title)
+    {
+        var id = sessionId.Value.ToString("N");
+        lock (gate)
+        {
+            using var transaction = connection.BeginTransaction();
+            var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO sessions(id, created_at, last_activity_at, turn_count, title, preview, workspace_root)
+                VALUES($id, $now, $now, 0, $title, NULL, $workspace)
+                ON CONFLICT(id) DO UPDATE SET title = $title;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
+            command.Parameters.AddWithValue("$workspace", (object?)workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+            command.ExecuteNonQuery();
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>Creates a fork head: a zero-turn session row whose history is
+    /// <c>parent_session_id</c>'s turns with <c>seq &lt; fork_point_seq</c>, followed by its own.
+    /// Constant cost per ADR 0009 — turns are never copied; the row lives in the family
+    /// database this store owns (the root ancestor's).</summary>
+    public void CreateForkSession(
+        AgentSessionId forkId,
+        AgentSessionId parentSessionId,
+        int forkPointSeq,
+        string? title)
+    {
+        if (forkPointSeq < 0)
+            throw new ArgumentOutOfRangeException(nameof(forkPointSeq), forkPointSeq,
+                "The fork point cannot be negative.");
+
+        lock (gate)
+        {
+            // parent_session_id carries no foreign key (an ALTER TABLE cannot add
+            // one), so the parent's presence is enforced explicitly at creation
+            // time; a parent that vanishes later still fails the chain walk.
+            if (ReadSessionRow(parentSessionId.Value.ToString("N")) is null)
+            {
+                throw new InvalidOperationException(
+                    $"The fork parent '{parentSessionId.Value.ToString("N")}' has no row in this family database.");
+            }
+
+            using var transaction = connection.BeginTransaction();
+            var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO sessions(
+                    id, created_at, last_activity_at, turn_count, title, preview, workspace_root,
+                    parent_session_id, fork_point_seq)
+                VALUES($id, $now, $now, 0, $title, NULL, $workspace, $parent, $forkPoint);
+                """;
+            command.Parameters.AddWithValue("$id", forkId.Value.ToString("N"));
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
+            command.Parameters.AddWithValue("$workspace", (object?)workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+            command.Parameters.AddWithValue("$parent", parentSessionId.Value.ToString("N"));
+            command.Parameters.AddWithValue("$forkPoint", forkPointSeq);
+            command.ExecuteNonQuery();
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>Loads the committed transcript of one session, walking the fork parent chain:
+    /// each ancestor contributes turns with <c>seq &lt; fork_point_seq</c> of the child that
+    /// forked from it, then the session's own turns. A stored session with zero turns
+    /// (renamed ahead of its first commit, or a fresh fork head) yields an empty transcript
+    /// rather than "absent" — resuming it stays meaningful because the chain supplies the
+    /// prefix.</summary>
     public AgentTranscript? LoadTranscript(AgentSessionId sessionId)
     {
         var id = sessionId.Value.ToString("N");
         lock (gate)
         {
-            using var turns = connection.CreateCommand();
-            turns.CommandText = """
-                SELECT seq, run_id, truncated, profile_id, model_provider, model_name, messages
-                FROM turns
-                WHERE session_id = $id
-                ORDER BY seq;
-                """;
-            turns.Parameters.AddWithValue("$id", id);
-            using var reader = turns.ExecuteReader();
-            if (!reader.HasRows) return null;
+            // Resolve the parent chain from the target back to its root before reading any
+            // turns, so a broken link fails loudly instead of silently truncating history.
+            var chain = new List<(string Id, long? ForkPoint)>();
+            var cursor = id;
+            while (true)
+            {
+                var row = ReadSessionRow(cursor);
+                if (row is null)
+                {
+                    if (chain.Count == 0) return null;
+                    throw new InvalidOperationException(
+                        $"The fork parent '{cursor}' of '{chain[^1].Id}' has no session row in this family database.");
+                }
+
+                chain.Add((cursor, row.Value.ForkPoint));
+                if (row.Value.Parent is null) break;
+
+                if (chain.Count >= MaxForkChainDepth)
+                {
+                    throw new InvalidOperationException(
+                        $"The fork chain of session '{id}' exceeds {MaxForkChainDepth} links; the parent links are corrupt.");
+                }
+
+                cursor = row.Value.Parent;
+            }
 
             var builder = ImmutableArray.CreateBuilder<AgentTranscriptTurn>();
-            while (reader.Read())
+            // Walk root → target: an ancestor contributes the turns its child forked at.
+            for (var index = chain.Count - 1; index >= 0; index--)
             {
-                var runId = new AgentRunId(Guid.ParseExact(reader.GetString(1), "N"));
-                var truncated = reader.GetInt64(2) != 0;
-                var messages = AgentTranscriptEncoding.Decode((byte[])reader.GetValue(6));
-                AgentModelIdentity? identity = reader.IsDBNull(3)
-                    ? null
-                    : new AgentModelIdentity(
-                        new AgentModelProfileId(reader.GetString(3)),
-                        reader.GetString(4),
-                        reader.GetString(5));
-                builder.Add(new AgentTranscriptTurn(runId, messages, identity, truncated));
+                var limit = index > 0 ? chain[index - 1].ForkPoint : null;
+                AppendTurns(chain[index].Id, limit, builder);
             }
 
             return new AgentTranscript(sessionId, builder.Count, builder.ToImmutable());
+        }
+    }
+
+    /// <summary>Reads one session row's lineage link, or <see langword="null" /> when the row
+    /// is absent.</summary>
+    private (string? Parent, long? ForkPoint)? ReadSessionRow(string id)
+    {
+        using var query = connection.CreateCommand();
+        query.CommandText = "SELECT parent_session_id, fork_point_seq FROM sessions WHERE id = $id;";
+        query.Parameters.AddWithValue("$id", id);
+        using var reader = query.ExecuteReader();
+        if (!reader.Read()) return null;
+
+        return (
+            reader.IsDBNull(0) ? null : reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetInt64(1));
+    }
+
+    /// <summary>Appends one session's stored turns, optionally bounded to
+    /// <c>seq &lt; limit</c>, in commit order.</summary>
+    private void AppendTurns(string id, long? limit, ImmutableArray<AgentTranscriptTurn>.Builder builder)
+    {
+        using var turns = connection.CreateCommand();
+        turns.CommandText = """
+            SELECT seq, run_id, truncated, profile_id, model_provider, model_name, messages
+            FROM turns
+            WHERE session_id = $id AND ($limit IS NULL OR seq < $limit)
+            ORDER BY seq;
+            """;
+        turns.Parameters.AddWithValue("$id", id);
+        turns.Parameters.AddWithValue("$limit", (object?)limit ?? DBNull.Value);
+        using var reader = turns.ExecuteReader();
+        while (reader.Read())
+        {
+            var runId = new AgentRunId(Guid.ParseExact(reader.GetString(1), "N"));
+            var truncated = reader.GetInt64(2) != 0;
+            var messages = AgentTranscriptEncoding.Decode((byte[])reader.GetValue(6));
+            AgentModelIdentity? identity = reader.IsDBNull(3)
+                ? null
+                : new AgentModelIdentity(
+                    new AgentModelProfileId(reader.GetString(3)),
+                    reader.GetString(4),
+                    reader.GetString(5));
+            builder.Add(new AgentTranscriptTurn(runId, messages, identity, truncated));
         }
     }
 
@@ -179,7 +326,8 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         {
             using var query = connection.CreateCommand();
             query.CommandText = """
-                SELECT id, created_at, last_activity_at, turn_count
+                SELECT id, created_at, last_activity_at, turn_count, title, preview, workspace_root,
+                       parent_session_id, fork_point_seq
                 FROM sessions
                 ORDER BY last_activity_at DESC;
                 """;
@@ -191,7 +339,14 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     new AgentSessionId(Guid.ParseExact(reader.GetString(0), "N")),
                     DateTimeOffset.Parse(reader.GetString(1)),
                     DateTimeOffset.Parse(reader.GetString(2)),
-                    reader.GetInt32(3)));
+                    reader.GetInt32(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7)
+                        ? null
+                        : new AgentSessionId(Guid.ParseExact(reader.GetString(7), "N")),
+                    reader.IsDBNull(8) ? null : reader.GetInt32(8)));
             }
 
             return sessions;
@@ -263,9 +418,11 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             using var transaction = connection.BeginTransaction();
             var migrate = connection.CreateCommand();
             migrate.Transaction = transaction;
-            // The full idempotent script: every step uses IF NOT EXISTS, so a fresh database
-            // and any older version both converge to the current schema in one transaction.
-            migrate.CommandText = """
+            // The table script is idempotent (IF NOT EXISTS), so a fresh database and any
+            // older version converge here. The ALTER steps are not idempotent, so each is
+            // gated on the version that introduced its columns and runs at most once per
+            // database, inside this one transaction.
+            var script = """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     created_at TEXT NOT NULL,
@@ -290,11 +447,44 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     seq INTEGER NOT NULL,
                     sha256 TEXT NOT NULL,
                     PRIMARY KEY (session_id, seq, sha256));
-
-                PRAGMA user_version=2;
                 """;
+            if (current < 3)
+            {
+                script += """
+                    ALTER TABLE sessions ADD COLUMN title TEXT;
+                    ALTER TABLE sessions ADD COLUMN preview TEXT;
+                    ALTER TABLE sessions ADD COLUMN workspace_root TEXT;
+                    """;
+            }
+
+            if (current < 4)
+            {
+                script += """
+                    ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+                    ALTER TABLE sessions ADD COLUMN fork_point_seq INTEGER;
+                    """;
+            }
+
+            script += $"PRAGMA user_version={CurrentSchemaVersion};";
+            migrate.CommandText = script;
             migrate.ExecuteNonQuery();
             transaction.Commit();
         }
+    }
+
+    /// <summary>Derives the session preview from the turn that creates the row: the first user
+    /// message's text, newlines collapsed for one-line display and truncated. Write-once —
+    /// later turns never change it.</summary>
+    private static string? ComputePreview(AgentTranscriptTurn turn)
+    {
+        var text = turn.Messages.FirstOrDefault(message => message.Role == ChatRole.User)?.Text;
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var preview = string.Join(' ', lines).Trim();
+        if (preview.Length == 0) return null;
+        return preview.Length <= MaxDisplayTextLength
+            ? preview
+            : preview[..(MaxDisplayTextLength - 1)] + "…";
     }
 }

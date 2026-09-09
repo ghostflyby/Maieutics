@@ -37,12 +37,12 @@ public sealed class MaieuticsCompletionTests
     public void SessionSubcommandsCompleteAtBoundariesAndIgnoreCase()
     {
         var canonical = Complete("%session ");
-        canonical.Matches.Should().Equal("current", "gc", "list", "new", "repair", "resume");
+        canonical.Matches.Should().Equal("current", "fork", "gc", "list", "new", "rename", "repair", "resume");
         canonical.CursorStart.Should().Be(9);
         canonical.CursorEnd.Should().Be(9);
 
         var legacy = Complete("%maieutics session ");
-        legacy.Matches.Should().Equal("current", "gc", "list", "new", "repair", "resume");
+        legacy.Matches.Should().Equal("current", "fork", "gc", "list", "new", "rename", "repair", "resume");
 
         var partial = Complete("%SESSION RES");
         partial.Matches.Should().Equal("resume");

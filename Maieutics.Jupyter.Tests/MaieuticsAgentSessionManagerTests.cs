@@ -146,6 +146,93 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             .Should().Throw<AgentSessionNotFoundException>();
     }
 
+    [Fact]
+    public void ForkCreatesTheHeadInTheRootFamilyAndActivatesIt()
+    {
+        var source = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(source)))
+        {
+            store.AppendTurn(source, Turn(source, "a", "Question one", "Answer one"), []);
+            store.AppendTurn(source, Turn(source, "b", "Question two", "Answer two"), []);
+        }
+
+        using var manager = CreateManager();
+        manager.Resume(source);
+        var forkId = manager.Fork(source, forkPointSeq: 1);
+
+        // The fork is active and its history ends at the fork point.
+        manager.Id.Should().Be(forkId);
+        manager.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text.Should().Be("Question one");
+
+        // The head row lives in the source's family database with lineage and an
+        // auto-derived title.
+        var head = manager.FindDescriptor(forkId);
+        head.Should().NotBeNull();
+        head?.ParentSessionId.Should().Be(source);
+        head?.ForkPointSeq.Should().Be(1);
+        head?.Title.Should().Be("Question one · branch @ turn 2");
+        manager.LoadStoredTranscript(forkId)!.Turns.Should().HaveCount(1);
+
+        // The source session is untouched and still loadable.
+        manager.LoadStoredTranscript(source)!.Turns.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void ForkOutOfRangePointsAreRejectedTyped()
+    {
+        var source = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(source)))
+        {
+            store.AppendTurn(source, Turn(source, "a", "Question one", "Answer one"), []);
+        }
+
+        using var manager = CreateManager();
+        manager.Invoking(m => m.Fork(source, 2))
+            .Should().Throw<ArgumentOutOfRangeException>();
+        manager.Invoking(m => m.Fork(source, -1))
+            .Should().Throw<ArgumentOutOfRangeException>();
+        manager.Invoking(m => m.Fork(AgentSessionId.Create(), 0))
+            .Should().Throw<AgentSessionNotFoundException>();
+
+        // A rejected fork leaves no phantom head row behind.
+        manager.ListStoredSessions().Should().ContainSingle();
+
+        // Creating a fork head over a missing parent fails typed and writes nothing.
+        using (var store = new SqliteTranscriptStore(FamilyPath(source)))
+        {
+            store.Invoking(s => s.CreateForkSession(
+                    AgentSessionId.Create(), AgentSessionId.Create(), 0, null))
+                .Should().Throw<InvalidOperationException>().WithMessage("*has no row*");
+        }
+
+        manager.ListStoredSessions().Should().ContainSingle();
+    }
+
+    [Fact]
+    public void ZeroTurnForksResumeThroughTheChain()
+    {
+        var source = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(source)))
+        {
+            store.AppendTurn(source, Turn(source, "a", "Question one", "Answer one"), []);
+        }
+
+        using var manager = CreateManager();
+        var forkId = manager.Fork(source, forkPointSeq: 0);
+        manager.Id.Should().Be(forkId);
+        manager.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+        // A zero-turn fork stays resumable: the chain supplies the prefix.
+        manager.StartNew();
+        manager.Resume(forkId).Should().Be(forkId);
+        manager.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+
+        // Resuming the fork's source still restores the full history.
+        manager.Resume(source);
+        manager.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+    }
+
     private MaieuticsAgentSessionManager CreateManager()
     {
         return new MaieuticsAgentSessionManager(

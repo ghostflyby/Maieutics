@@ -396,6 +396,254 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task SessionsCarryDisplayMetadataAndRenameWithoutActivation()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+        using var client = harness.CreateClient();
+
+        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
+        capabilities.GetProperty("workspaceRoot").GetString().Should().NotBeNullOrEmpty();
+
+        // Renaming the active session before any turn creates its zero-turn row.
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var rename = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/rename",
+            new { title = "Design review" },
+            deadline.Token);
+        rename.StatusCode.Should().Be(HttpStatusCode.OK);
+        var renamed = await rename.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        renamed.GetProperty("id").GetString().Should().Be(sessionId);
+        renamed.GetProperty("title").GetString().Should().Be("Design review");
+
+        // The active-session endpoint surfaces the stored title once set.
+        var activeAfterRename = await client.GetFromJsonAsync<JsonElement>(
+            "/v1/agent/session",
+            deadline.Token);
+        activeAfterRename.GetProperty("id").GetString().Should().Be(sessionId);
+        activeAfterRename.GetProperty("title").GetString().Should().Be("Design review");
+
+        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
+        var match = stored.EnumerateArray()
+            .Single(session => session.GetProperty("id").GetString() == sessionId);
+        match.GetProperty("title").GetString().Should().Be("Design review");
+        match.GetProperty("turns").GetInt32().Should().Be(0);
+        match.GetProperty("workspaceRoot").GetString().Should().NotBeNullOrEmpty();
+
+        // Renaming a never-seen session is not a 404: the row is created (family = itself).
+        var fresh = Guid.NewGuid().ToString("N");
+        var create = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{fresh}/rename",
+            new { title = "Named ahead of time" },
+            deadline.Token);
+        create.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Over the cap is a typed invalid request; whitespace-only clears the title.
+        var tooLong = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/rename",
+            new { title = new string('x', 201) },
+            deadline.Token);
+        tooLong.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var error = await tooLong.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        error.GetProperty("code").GetString().Should().Be("invalid_request");
+
+        var invalid = await client.PostAsJsonAsync(
+            "/v1/agent/sessions/not-a-guid/rename",
+            new { title = "x" },
+            deadline.Token);
+        invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var clear = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/rename",
+            new { title = "   " },
+            deadline.Token);
+        clear.StatusCode.Should().Be(HttpStatusCode.OK);
+        var cleared = await clear.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        // Nulls are omitted on write (protocol convention), so a cleared title is absent.
+        cleared.TryGetProperty("title", out _).Should().BeFalse();
+
+        // The active session endpoint carries no title once cleared.
+        var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+        active.GetProperty("id").GetString().Should().Be(sessionId);
+        active.TryGetProperty("title", out _).Should().BeFalse();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ForkRewindsToACommittedTurnAndActivatesTheNewHead()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        // Two committed turns need two provider requests; the fake server serves exactly
+        // the configured count and stops answering after that.
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token,
+            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer, requestCount: 2),
+            hanging: false);
+        using var client = harness.CreateClient();
+
+        var sourceId = await harness.GetSessionIdAsync(deadline.Token);
+        await harness.SubmitTurnAsync(sourceId, "first question", deadline.Token);
+        // The single-run gate rejects concurrent turns; wait for the first to commit.
+        await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 1, deadline.Token);
+        await harness.SubmitTurnAsync(sourceId, "second question", deadline.Token);
+        var source = await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 2, deadline.Token);
+        var firstRunId = source.GetProperty("turns")[0].GetProperty("runId").GetString()!;
+
+        // Fork by run id: the fork keeps the turns before the referenced one and re-runs it.
+        // Referencing the first turn keeps zero turns — the branch point is turn 1.
+        var byRun = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sourceId}/fork",
+            new { runId = firstRunId },
+            deadline.Token);
+        byRun.StatusCode.Should().Be(HttpStatusCode.OK);
+        var fork = await byRun.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var forkId = fork.GetProperty("id").GetString()!;
+        forkId.Should().NotBe(sourceId);
+        // Auto-title from the source preview plus the branch point.
+        fork.GetProperty("title").GetString().Should().Be("first question · branch @ turn 1");
+
+        // The fork is the active session and its history ends at the fork point.
+        var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+        active.GetProperty("id").GetString().Should().Be(forkId);
+        active.GetProperty("turns").GetInt32().Should().Be(0);
+        var forkTranscript = await client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{forkId}/transcript",
+            deadline.Token);
+        forkTranscript.GetProperty("turns").GetArrayLength().Should().Be(0);
+
+        // The stored list carries the lineage.
+        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
+        var head = stored.EnumerateArray().Single(session => session.GetProperty("id").GetString() == forkId);
+        head.GetProperty("parentSessionId").GetString().Should().Be(sourceId);
+        head.GetProperty("forkPointSeq").GetInt32().Should().Be(0);
+
+        // Forking by seq keeps one committed turn and works for a non-active source too.
+        var bySeq = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sourceId}/fork",
+            new { seq = 1 },
+            deadline.Token);
+        bySeq.StatusCode.Should().Be(HttpStatusCode.OK);
+        var second = await bySeq.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        second.GetProperty("title").GetString().Should().Be("first question · branch @ turn 2");
+
+        // Typed failures: an out-of-range seq, an unknown run, an unknown session.
+        var outOfRange = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sourceId}/fork",
+            new { seq = 99 },
+            deadline.Token);
+        outOfRange.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var rangeError = await outOfRange.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        rangeError.GetProperty("code").GetString().Should().Be("invalid_request");
+
+        var unknownRun = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sourceId}/fork",
+            new { runId = Guid.NewGuid().ToString("N") },
+            deadline.Token);
+        unknownRun.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var noBody = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sourceId}/fork",
+            new { },
+            deadline.Token);
+        noBody.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var unknownSource = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{Guid.NewGuid().ToString("N")}/fork",
+            new { seq = 0 },
+            deadline.Token);
+        unknownSource.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task RunCompletedCarriesModelIdentityAndUsage()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        // The Responses flavor's final event carries the provider usage; the
+        // chat-completions flavor omits it unless the client asks for it.
+        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, answer: Answer);
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false,
+            transformConfiguration: body => body.Replace("ChatCompletions", "Responses"));
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+        await events.ReceiveFrameAsync(deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "count my tokens", deadline.Token);
+        var frames = await events.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.status" &&
+                     frame.GetProperty("state").GetString() == "idle",
+            deadline.Token);
+
+        var completed = frames.Single(frame => frame.GetProperty("type").GetString() == "run.completed");
+        var usage = completed.GetProperty("usage");
+        usage.GetProperty("inputTokens").GetInt32().Should().Be(1);
+        usage.GetProperty("outputTokens").GetInt32().Should().Be(1);
+        usage.GetProperty("totalTokens").GetInt32().Should().Be(2);
+        var model = completed.GetProperty("model");
+        model.GetProperty("provider").GetString().Should().Be("OpenAI");
+        model.GetProperty("model").GetString().Should().Be("test-model");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ModelProfilesAreListedWithTheSelection()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+        using var client = harness.CreateClient();
+
+        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
+        profiles.GetArrayLength().Should().BeGreaterThan(0);
+        profiles.EnumerateArray().Count(profile => profile.GetProperty("selected").GetBoolean())
+            .Should().Be(1);
+        profiles[0].GetProperty("provider").GetString().Should().Be("OpenAI");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ForkAppliesTheRequestedProfileOverride()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
+        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var dualConfig = DUAL_PROVIDER_CONFIG_TEMPLATE
+            .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
+            .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token, openAi, hanging: false,
+            transformConfiguration: _ => dualConfig);
+        using var client = harness.CreateClient();
+
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
+
+        var fork = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/fork",
+            new { seq = 0, profileId = "claude-profile" },
+            deadline.Token);
+        fork.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // The override becomes the active selection for the fork's first turn.
+        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
+        profiles.EnumerateArray()
+            .Single(profile => profile.GetProperty("id").GetString() == "claude-profile")
+            .GetProperty("selected").GetBoolean().Should().BeTrue();
+
+        var unknown = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/fork",
+            new { seq = 0, profileId = "no-such-profile" },
+            deadline.Token);
+        unknown.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var error = await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        error.GetProperty("code").GetString().Should().Be("invalid_request");
+
+        // A failed fork applies no model side effect: the selection that the
+        // successful fork made is untouched after the rejected request.
+        var after = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
+        after.EnumerateArray()
+            .Single(profile => profile.GetProperty("id").GetString() == "claude-profile")
+            .GetProperty("selected").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ReasoningContentStaysOutOfTheFrontendSurface()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));

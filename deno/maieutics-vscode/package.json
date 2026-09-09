@@ -22,12 +22,19 @@
     "onCommand:maieutics.newSession",
     "onCommand:maieutics.showStatus",
     "onCommand:maieutics.listSessions",
+    "onCommand:maieutics.renameSession",
+    "onCommand:maieutics.copySessionId",
+    "onCommand:maieutics.pruneObjects",
+    "onCommand:maieutics.repairObjectView",
     "onCommand:maieutics.restartServer",
     "onCommand:maieutics.mountSessionsFolder",
+    "onCommand:maieutics.toggleCurrentWorkspaceFilter",
     "onFileSystem:maieutics",
     "onRenderer:maieutics-turn-renderer",
     "onRenderer:maieutics-widget-renderer",
-    "onView:maieutics.sessions"
+    "onView:maieutics.sessions",
+    "onCommand:maieutics.switchBranch",
+    "onCommand:maieutics.queueTurn"
   ],
   "contributes": {
     "notebooks": [
@@ -76,6 +83,29 @@
         "category": "Maieutics"
       },
       {
+        "command": "maieutics.renameSession",
+        "title": "Rename Session",
+        "category": "Maieutics",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "maieutics.copySessionId",
+        "title": "Copy Session Id",
+        "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.pruneObjects",
+        "title": "Prune Unreferenced Objects",
+        "category": "Maieutics",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "maieutics.repairObjectView",
+        "title": "Rebuild Object View",
+        "category": "Maieutics",
+        "icon": "$(wrench)"
+      },
+      {
         "command": "maieutics.restartServer",
         "title": "Restart Server",
         "category": "Maieutics"
@@ -87,10 +117,28 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "maieutics.toggleCurrentWorkspaceFilter",
+        "title": "Toggle Current-Workspace Filter",
+        "category": "Maieutics",
+        "icon": "$(filter)"
+      },
+      {
         "command": "maieutics.mountSessionsFolder",
         "title": "Mount Sessions as Workspace Folder",
         "category": "Maieutics",
         "icon": "$(new-folder)"
+      },
+      {
+        "command": "maieutics.switchBranch",
+        "title": "Switch Branch",
+        "category": "Maieutics",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "maieutics.queueTurn",
+        "title": "Queue Follow-up Turn",
+        "category": "Maieutics",
+        "icon": "$(add)"
       }
     ],
     "configuration": {
@@ -105,6 +153,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Attach to an externally launched executable through this discovery file instead of launching one. Leave empty to let the extension own the process."
+        },
+        "maieutics.confirmFork": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Ask before running a committed cell (which forks the session and continues from that point)."
         }
       }
     },
@@ -127,6 +180,23 @@
       ]
     },
     "menus": {
+      "notebook/toolbar": [
+        {
+          "command": "maieutics.newSession",
+          "group": "maieutics@1",
+          "when": "notebookType == 'maieutics-notebook'"
+        },
+        {
+          "command": "maieutics.showStatus",
+          "group": "maieutics@2",
+          "when": "notebookType == 'maieutics-notebook'"
+        },
+        {
+          "command": "maieutics.queueTurn",
+          "group": "maieutics@3",
+          "when": "notebookType == 'maieutics-notebook'"
+        }
+      ],
       "view/title": [
         {
           "command": "maieutics.refreshSessions",
@@ -134,9 +204,36 @@
           "when": "view == maieutics.sessions"
         },
         {
+          "command": "maieutics.toggleCurrentWorkspaceFilter",
+          "group": "navigation",
+          "when": "view == maieutics.sessions"
+        },
+        {
+          "command": "maieutics.pruneObjects",
+          "group": "1_maintenance@1",
+          "when": "view == maieutics.sessions"
+        },
+        {
+          "command": "maieutics.repairObjectView",
+          "group": "1_maintenance@2",
+          "when": "view == maieutics.sessions"
+        },
+        {
           "command": "maieutics.mountSessionsFolder",
           "group": "navigation",
           "when": "view == maieutics.sessions"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "maieutics.renameSession",
+          "group": "1_session@1",
+          "when": "view == maieutics.sessions && (viewItem == maieutics.storedSession || viewItem == maieutics.activeSession)"
+        },
+        {
+          "command": "maieutics.copySessionId",
+          "group": "1_session@2",
+          "when": "view == maieutics.sessions && (viewItem == maieutics.storedSession || viewItem == maieutics.activeSession)"
         }
       ]
     }

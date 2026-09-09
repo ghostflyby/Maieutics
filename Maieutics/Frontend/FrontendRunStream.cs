@@ -319,7 +319,16 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         Publish(new FrontendEventFrame(
             "run.completed",
             RunId: run.Id.Value.ToString("N"),
-            Truncated: result.Truncated || truncated));
+            Truncated: result.Truncated || truncated,
+            Model: result.ModelIdentity is { } identity
+                ? new FrontendModelIdentity(identity.ProfileId.Value, identity.Provider, identity.Model)
+                : null,
+            Usage: result.Usage is { } usage
+                ? new FrontendUsage(
+                    usage.InputTokenCount ?? 0,
+                    usage.OutputTokenCount ?? 0,
+                    usage.TotalTokenCount)
+                : null));
         Publish(new FrontendEventFrame("run.status", State: "idle"));
     }
 

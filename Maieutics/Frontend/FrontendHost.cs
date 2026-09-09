@@ -30,6 +30,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private static readonly HashSet<string> FrontendPrefixes = new(StringComparer.Ordinal)
     {
         "/v1/agent",
+        "/v1/model",
         "/v1/status",
         "/v1/objects"
     };
@@ -76,6 +77,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapPost("/v1/agent/sessions", HandleNewSession);
         endpoints.MapGet("/v1/agent/sessions", HandleListSessions);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/resume", HandleResumeSession);
+        endpoints.MapPost("/v1/agent/sessions/{sessionId}/rename", HandleRenameSession);
+        endpoints.MapPost("/v1/agent/sessions/{sessionId}/fork", HandleForkSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/gc", HandleGcSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/repair", HandleRepairSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/turns", HandleTurn);
@@ -83,6 +86,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms);
         endpoints.MapPost("/v1/agent/runs/{runId}/cancel", HandleCancel);
+        endpoints.MapGet("/v1/model/profiles", HandleModelProfiles);
         endpoints.MapPost("/v1/agent/commands", HandleCommand);
         endpoints.MapPost("/v1/agent/complete", HandleComplete);
         endpoints.MapGet("/v1/status", HandleStatus);
@@ -153,6 +157,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             FrontendProtocol.Version,
             typeof(FrontendHost).Assembly.GetName().Version?.ToString() ?? "0.0.0",
             session,
+            service.WorkspaceRoot,
             commRouter is null
                 ? null
                 : new FrontendCommCapability(
@@ -179,6 +184,33 @@ internal sealed class FrontendHost : IAsyncDisposable
     {
         await GuardAsync(context, () => Task.FromResult(
             Results.Json(service.Resume(sessionId), FrontendJsonContext.Default.FrontendSessionInfo)));
+    }
+
+    private async Task HandleRenameSession(HttpContext context, string sessionId)
+    {
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendRenameRequest)
+            .ConfigureAwait(false);
+        if (request is null) return;
+
+        await GuardAsync(context, () => Task.FromResult(
+            Results.Json(service.Rename(sessionId, request.Title), FrontendJsonContext.Default.FrontendRenameResponse)));
+    }
+
+    private async Task HandleForkSession(HttpContext context, string sessionId)
+    {
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendForkRequest)
+            .ConfigureAwait(false);
+        if (request is null) return;
+
+        await GuardAsync(context, async () => Results.Json(
+            await service.ForkAsync(sessionId, request, context.RequestAborted).ConfigureAwait(false),
+            FrontendJsonContext.Default.FrontendForkResponse));
+    }
+
+    private async Task HandleModelProfiles(HttpContext context)
+    {
+        await GuardAsync(context, () => Task.FromResult(
+            Results.Json(service.ListModelProfiles(), FrontendJsonContext.Default.FrontendModelProfileArray)));
     }
 
     private async Task HandleGcSession(HttpContext context, string sessionId)

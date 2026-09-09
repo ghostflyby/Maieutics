@@ -73,3 +73,31 @@ Deno.test("unknown fields and missing output fields are tolerated", () => {
   assertEquals(parsed.cells[1].kind, "agent");
   assertEquals(parsed.cells[1].text, "no kind");
 });
+
+Deno.test("turn bindings survive the round trip", () => {
+  const notebook = emptyNotebook();
+  notebook.cells.push({
+    kind: "agent",
+    text: "edited body",
+    turn: { runId: "b".repeat(32), input: "original body" },
+  });
+
+  const parsed = parseNotebook(serializeNotebook(notebook));
+  assertEquals(parsed.cells[1].turn, { runId: "b".repeat(32), input: "original body" });
+});
+
+Deno.test("malformed turn bindings degrade to absent", () => {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    maieutics: "maieutics-notebook",
+    version: 1,
+    cells: [
+      { kind: "agent", text: "a", turn: { runId: 7, input: "x" } },
+      { kind: "agent", text: "b", turn: "stale" },
+      { kind: "agent", text: "c" },
+    ],
+  }));
+  const parsed = parseNotebook(bytes);
+  assertEquals(parsed.cells[0].turn, undefined);
+  assertEquals(parsed.cells[1].turn, undefined);
+  assertEquals(parsed.cells[2].turn, undefined);
+});

@@ -44,12 +44,22 @@ public sealed record AgentSessionDescriptor
         AgentSessionId id,
         DateTimeOffset createdAt,
         DateTimeOffset lastActivityAt,
-        int turnCount)
+        int turnCount,
+        string? title = null,
+        string? preview = null,
+        string? workspaceRoot = null,
+        AgentSessionId? parentSessionId = null,
+        int? forkPointSeq = null)
     {
         Id = id;
         CreatedAt = createdAt;
         LastActivityAt = lastActivityAt;
         TurnCount = turnCount;
+        Title = title;
+        Preview = preview;
+        WorkspaceRoot = workspaceRoot;
+        ParentSessionId = parentSessionId;
+        ForkPointSeq = forkPointSeq;
     }
 
     /// <summary>Gets the session identifier.</summary>
@@ -63,4 +73,28 @@ public sealed record AgentSessionDescriptor
 
     /// <summary>Gets the number of complete turns stored for the session.</summary>
     public int TurnCount { get; }
+
+    /// <summary>Gets the user-set session title, or <see langword="null" /> when the session
+    /// was never renamed. A session renamed before its first committed turn has a row with a
+    /// title and zero turns.</summary>
+    public string? Title { get; }
+
+    /// <summary>Gets the first committed user message text, truncated for display, or
+    /// <see langword="null" /> when no turn was committed.</summary>
+    public string? Preview { get; }
+
+    /// <summary>Gets the workspace root the session's owning process was launched with, stamped
+    /// when the row was created, or <see langword="null" /> for rows written before the column
+    /// existed.</summary>
+    public string? WorkspaceRoot { get; }
+
+    /// <summary>Gets the session this one forked from, or <see langword="null" /> for a root
+    /// session. The fork's visible history is this parent's first
+    /// <see cref="ForkPointSeq" /> turns followed by the fork's own turns.</summary>
+    public AgentSessionId? ParentSessionId { get; }
+
+    /// <summary>Gets how many turns of <see cref="ParentSessionId" /> the fork keeps as its
+    /// history prefix, or <see langword="null" /> for a root session. Zero means the fork
+    /// starts from an empty history.</summary>
+    public int? ForkPointSeq { get; }
 }

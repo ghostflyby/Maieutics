@@ -9,9 +9,10 @@ namespace Maieutics.Commands;
 ///     kernel application. Runs already started keep executing against the session they began
 ///     on; a swap only affects later turns.
 ///     With persistence enabled, every session belongs to one fork family and each family owns
-///     exactly one <c>families/&lt;family-id&gt;/history.db</c>. Fork does not exist yet, so a
-///     session's family id is its own id; when fork arrives, a child opens its root ancestor's
-///     family file and this layout is unchanged. Family databases are opened lazily, cached,
+///     exactly one <c>families/&lt;family-id&gt;/history.db</c>, keyed by the family root's
+///     session id. Fork heads live in their root ancestor's family file and reference the
+///     shared prefix turns instead of copying them (ADR 0009); <see cref="ResolveFamily" />
+///     locates the owning family for any member. Family databases are opened lazily, cached,
 ///     and disposed with the manager. Recovery is manual only: nothing is restored until a
 ///     <c>%session resume</c> cell names a stored session.
 /// </summary>
@@ -65,7 +66,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     }
 
     /// <summary>Lists the stored sessions across all family databases, most recently active
-    /// first. Sessions that never committed a turn have no row and are not listed.</summary>
+    /// first. Sessions that never committed a turn have no row and are not listed, except
+    /// sessions that were explicitly renamed: naming one creates a zero-turn row so the
+    /// name survives.</summary>
     public IReadOnlyList<AgentSessionDescriptor> ListStoredSessions()
     {
         if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return [];
@@ -105,6 +108,137 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
 
         return sessionId;
+    }
+
+    /// <summary>Forks a stored session: creates a new head in the source's root family database
+    /// whose history is the source's first <paramref name="forkPointSeq" /> turns, and makes the
+    /// fork the active session. The source session keeps its stored history; the fork starts
+    /// empty above the fork point, so its next turn continues from there (ADR 0009 — existing
+    /// turns are referenced, never copied).</summary>
+    /// <returns>The new fork's session id.</returns>
+    /// <param name="sourceId">The stored session to fork from.</param>
+    /// <param name="forkPointSeq">How many of the source's committed turns the fork keeps;
+    /// zero starts the fork from an empty history.</param>
+    /// <param name="title">An explicit title; when omitted one is derived from the source's
+    /// title or preview plus the branch point.</param>
+    /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>
+    /// <exception cref="AgentSessionNotFoundException">No family database holds the source.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The fork point is negative or beyond the source's committed turns.</exception>
+    public AgentSessionId Fork(AgentSessionId sourceId, int forkPointSeq, string? title = null)
+    {
+        if (storeFactory is null)
+        {
+            throw new ArgumentException(
+                "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to fork sessions.");
+        }
+
+        var familyId = ResolveFamily(sourceId) ?? throw new AgentSessionNotFoundException(sourceId);
+        var store = RequiredStore(familyId);
+        // Validate the fork point against the source's visible history BEFORE
+        // writing the head row, so a rejected fork leaves no phantom session.
+        var sourceTranscript = store.LoadTranscript(sourceId) ??
+                               throw new AgentSessionNotFoundException(sourceId);
+        ArgumentOutOfRangeException.ThrowIfNegative(forkPointSeq);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(forkPointSeq, sourceTranscript.Turns.Length);
+
+        var forkId = AgentSessionId.Create();
+        var effectiveTitle = title ?? ForkTitle(store, sourceId, forkPointSeq);
+        store.CreateForkSession(forkId, sourceId, forkPointSeq, effectiveTitle);
+        var forked = AgentSession.Fork(
+            profileProvider,
+            store,
+            sourceId,
+            forkId,
+            forkPointSeq,
+            objectStore: objectStore);
+        lock (gate)
+        {
+            current = forked;
+        }
+
+        return forkId;
+    }
+
+    /// <summary>Loads one stored session's committed transcript across family databases, or
+    /// <see langword="null" /> when the session has no stored row. Fork heads load their
+    /// ancestor prefix plus their own turns.</summary>
+    public AgentTranscript? LoadStoredTranscript(AgentSessionId sessionId)
+    {
+        if (storeFactory is null) return null;
+
+        var familyId = ResolveFamily(sessionId);
+        if (familyId is not { } resolved) return null;
+
+        return RequiredStore(resolved).LoadTranscript(sessionId);
+    }
+
+    /// <summary>Derives the fork's display title: the source's title or preview, collapsed to
+    /// one line and capped, plus the branch point. A source with neither stays untitled.</summary>
+    private static string? ForkTitle(
+        SqliteTranscriptStore store,
+        AgentSessionId sourceId,
+        int forkPointSeq)
+    {
+        var source = store.ListSessions().FirstOrDefault(session => session.Id == sourceId);
+        var display = source?.Title ?? source?.Preview;
+        if (string.IsNullOrWhiteSpace(display)) return null;
+
+        var oneLine = string.Join(' ', display.Split(new[] { '\r', '\n' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var suffix = $" · branch @ turn {forkPointSeq + 1}";
+        var budget = SqliteTranscriptStore.MaxDisplayTextLength - suffix.Length;
+        var body = oneLine.Length <= budget ? oneLine : oneLine[..budget] + "…";
+        return body + suffix;
+    }
+
+    /// <summary>Sets or clears one stored session's title. Renaming works for any stored
+    /// session, active or not; an uncommitted session gets its row created (zero turns) so the
+    /// name survives and the session is listed. Whitespace-only titles clear; titles are
+    /// trimmed and capped at 200 characters.</summary>
+    /// <returns>The stored (normalized) title.</returns>
+    /// <exception cref="ArgumentException">Transcript persistence is disabled or the title
+    /// exceeds the length cap.</exception>
+    public string? SetTitle(AgentSessionId sessionId, string? title)
+    {
+        if (storeFactory is null)
+        {
+            throw new ArgumentException(
+                "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to rename sessions.");
+        }
+
+        string? normalized;
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            normalized = null;
+        }
+        else
+        {
+            normalized = title.Trim();
+            if (normalized.Length > SqliteTranscriptStore.MaxDisplayTextLength)
+            {
+                throw new ArgumentException(
+                    $"The session title must be at most {SqliteTranscriptStore.MaxDisplayTextLength} characters.");
+            }
+        }
+
+        // A session with no family database yet is its own family root; naming it creates the
+        // database and its zero-turn row.
+        var familyId = ResolveFamily(sessionId) ?? sessionId;
+        RequiredStore(familyId).SetTitle(sessionId, normalized);
+        return normalized;
+    }
+
+    /// <summary>Finds one stored session's descriptor across family databases, or
+    /// <see langword="null" /> when the session has no stored row.</summary>
+    public AgentSessionDescriptor? FindDescriptor(AgentSessionId sessionId)
+    {
+        if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return null;
+
+        var familyId = ResolveFamily(sessionId);
+        if (familyId is not { } resolved) return null;
+
+        return RequiredStore(resolved).ListSessions()
+            .FirstOrDefault(session => session.Id == sessionId);
     }
 
     /// <summary>Replaces the active session with a fresh one in its own family. The previous

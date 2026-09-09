@@ -620,11 +620,22 @@ public sealed class FrontendApiIntegrationTests
             new { seq = 0, profileId = "claude-profile" },
             deadline.Token);
         fork.StatusCode.Should().Be(HttpStatusCode.OK);
+        var forkBody = await fork.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var forkId = forkBody.GetProperty("id").GetString()!;
 
-        // The override becomes the active selection for the fork's first turn.
+        // The override is the fork's own: its next turn runs on Anthropic while
+        // the process selection stays on the configured default (OpenAI).
+        await harness.SubmitTurnAsync(forkId, "second turn", deadline.Token);
+        await harness.WaitForTurnCommittedAsync(forkId, deadline.Token);
+        var forkTranscript = await client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{forkId}/transcript",
+            deadline.Token);
+        forkTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("anthropic answer");
+
         var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
         profiles.EnumerateArray()
-            .Single(profile => profile.GetProperty("id").GetString() == "claude-profile")
+            .Single(profile => profile.GetProperty("id").GetString() == "openai-profile")
             .GetProperty("selected").GetBoolean().Should().BeTrue();
 
         var unknown = await client.PostAsJsonAsync(
@@ -635,11 +646,11 @@ public sealed class FrontendApiIntegrationTests
         var error = await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         error.GetProperty("code").GetString().Should().Be("invalid_request");
 
-        // A failed fork applies no model side effect: the selection that the
-        // successful fork made is untouched after the rejected request.
+        // A failed fork applies no model side effect: the process selection is
+        // untouched after the rejected request (overrides are per session).
         var after = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
         after.EnumerateArray()
-            .Single(profile => profile.GetProperty("id").GetString() == "claude-profile")
+            .Single(profile => profile.GetProperty("id").GetString() == "openai-profile")
             .GetProperty("selected").GetBoolean().Should().BeTrue();
     }
 
@@ -948,16 +959,81 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task SessionQueriesAreServedByTheActiveSessionOnly()
+    public async Task SessionQueriesAreServedPerSessionWithLazyResolve()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await StartHostAsync(deadline.Token);
-        using var response = await harness.Client.GetAsync(
+        using var client = harness.CreateClient();
+
+        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
+        capabilities.GetProperty("multiSession").GetBoolean().Should().BeTrue();
+
+        var bootId = await harness.GetSessionIdAsync(deadline.Token);
+
+        // Unknown sessions fail with not_found.
+        var missing = await client.GetAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/transcript",
             deadline.Token);
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        var error = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("session_not_active");
+        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // A stored session that is not the foreground is still served: it is
+        // lazily resumed. Starting a new session moves the foreground alias.
+        await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{bootId}/rename",
+            new { title = "boot" },
+            deadline.Token);
+        await client.PostAsync("/v1/agent/sessions", null, deadline.Token);
+        var foreground = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+        foreground.GetProperty("id").GetString().Should().NotBe(bootId);
+
+        var transcript = await client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{bootId}/transcript",
+            deadline.Token);
+        transcript.GetProperty("sessionId").GetString().Should().Be(bootId);
+        transcript.GetProperty("turns").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task SessionsRunConcurrentlyAndCommandsStaySessionScoped()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        // Two in-flight turns on two sessions must both commit (the old
+        // single-active semantics busy-rejected the second submission).
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token,
+            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer, requestCount: 2),
+            hanging: false);
+        using var client = harness.CreateClient();
+
+        var first = await harness.GetSessionIdAsync(deadline.Token);
+        var second = await (await client.PostAsync("/v1/agent/sessions", null, deadline.Token))
+            .Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var secondId = second.GetProperty("id").GetString()!;
+
+        var firstTurn = harness.SubmitTurnAsync(first, "turn on first", deadline.Token);
+        var secondTurn = harness.SubmitTurnAsync(secondId, "turn on second", deadline.Token);
+        await Task.WhenAll(firstTurn, secondTurn);
+        await WaitForTranscriptTurnsAsync(harness, first, minimumTurns: 1, deadline.Token);
+        await WaitForTranscriptTurnsAsync(harness, secondId, minimumTurns: 1, deadline.Token);
+
+        // A command cell answers with its own session: no re-pin happens.
+        var command = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{first}/turns",
+            new { text = "%session current" },
+            deadline.Token);
+        command.StatusCode.Should().Be(HttpStatusCode.OK);
+        var answered = await command.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        answered.GetProperty("sessionId").GetString().Should().Be(first);
+        answered.GetProperty("markdown").GetString().Should().Contain(first[..12]);
+
+        // A session-switching command moves the foreground and the answer carries
+        // the new session so the notebook re-pins.
+        var switched = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{first}/turns",
+            new { text = "%session new" },
+            deadline.Token);
+        var switchedBody = await switched.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        switchedBody.GetProperty("sessionId").GetString().Should().NotBe(first);
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)

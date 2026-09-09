@@ -162,7 +162,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                 ? null
                 : new FrontendCommCapability(
                     FrontendCommRouter.Version,
-                    ReplCommLimits.MaximumMessageBytes)), FrontendJsonContext.Default.FrontendCapabilities);
+                    ReplCommLimits.MaximumMessageBytes),
+            MultiSession: true), FrontendJsonContext.Default.FrontendCapabilities);
     }
 
     private IResult HandleSession()
@@ -247,14 +248,21 @@ internal sealed class FrontendHost : IAsyncDisposable
         try
         {
             // A command cell executes inline and answers with markdown, so the same cell text keeps its historical
-            // semantics.
+            // semantics. The addressing session scopes session-aware commands; the answer's
+            // sessionId lets the frontend re-pin when a command switched the foreground.
             if (MaieuticsCommandLanguage.IsCommandCell(request.Text))
             {
-                var markdown = await service.ExecuteCommandAsync(request.Text, context.RequestAborted)
+                var addressed = ParseOptionalSessionId(sessionId);
+                var versionBefore = service.ForegroundVersion;
+                var markdown = await service.ExecuteCommandAsync(request.Text, addressed, context.RequestAborted)
                     .ConfigureAwait(false);
+                // The addressed session unless the command moved the foreground.
+                var answerSession = service.ForegroundVersion == versionBefore
+                    ? addressed?.Value.ToString("N") ?? service.DescribeSession().Id
+                    : service.DescribeSession().Id;
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(
-                    new FrontendCommandResponse(markdown, service.DescribeSession().Id),
+                    new FrontendCommandResponse(markdown, answerSession),
                     FrontendJsonContext.Default.FrontendCommandResponse).ConfigureAwait(false);
                 return;
             }
@@ -299,7 +307,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         try
         {
-            var markdown = await service.ExecuteCommandAsync(request.Text, context.RequestAborted)
+            var markdown = await service.ExecuteCommandAsync(request.Text, null, context.RequestAborted)
                 .ConfigureAwait(false);
             await context.Response.WriteAsJsonAsync(
                 new FrontendCommandResponse(markdown, service.DescribeSession().Id),
@@ -309,6 +317,15 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             await WriteErrorAsync(context, FrontendErrors.CommandError, exception.Message);
         }
+    }
+
+    /// <summary>Parses a route session id, or returns <see langword="null" /> when it is not
+    /// a well-formed id (the caller decides whether that is fatal).</summary>
+    private static AgentSessionId? ParseOptionalSessionId(string sessionId)
+    {
+        return Guid.TryParseExact(sessionId, "N", out var parsed) && parsed != Guid.Empty
+            ? new AgentSessionId(parsed)
+            : null;
     }
 
     private async Task HandleComplete(HttpContext context)
@@ -377,13 +394,23 @@ internal sealed class FrontendHost : IAsyncDisposable
         var singleRunId = context.Request.Query.TryGetValue("runId", out var rawRun)
             ? rawRun.ToString()
             : null;
-        var activeSessionId = service.DescribeSession().Id;
-        if (!string.Equals(sessionId, activeSessionId, StringComparison.Ordinal))
+        // Events are per session: the addressed session need not be the foreground.
+        if (!Guid.TryParseExact(sessionId, "N", out var addressedSession) || addressedSession == Guid.Empty)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        FrontendSessionInfo helloSession;
+        try
+        {
+            helloSession = service.DescribeSession(sessionId);
+        }
+        catch (FrontendFailureException exception)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
-                new FrontendError(FrontendErrors.SessionNotActive,
-                    "Events are served for the active session."),
+                new FrontendError(exception.Code, exception.Message),
                 FrontendJsonContext.Default.FrontendError).ConfigureAwait(false);
             return;
         }
@@ -394,7 +421,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             lifetime.Token);
         await SendFrameAsync(
             socket,
-            new FrontendEventFrame("hello", Session: service.DescribeSession(), Replayed: since > 0),
+            new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
         try
@@ -419,7 +446,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 while (!peer.IsCancellationRequested && socket.State == WebSocketState.Open)
                 {
                     var stream = await service
-                        .WaitForRunAsync(new AgentSessionId(Guid.ParseExact(activeSessionId, "N")), previous, peer.Token)
+                        .WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token)
                         .ConfigureAwait(false);
                     await ServeStreamAsync(socket, stream, since, peer.Token).ConfigureAwait(false);
                     previous = stream;
@@ -509,18 +536,28 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        var activeSessionId = service.DescribeSession().Id;
-        if (!string.Equals(sessionId, activeSessionId, StringComparison.Ordinal))
+        // Comms are per session (ADR 0024); the addressed session need not be the
+        // foreground, but it must exist — planes are created on demand.
+        if (!Guid.TryParseExact(sessionId, "N", out var commsSession) || commsSession == Guid.Empty)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        try
+        {
+            _ = service.DescribeSession(sessionId);
+        }
+        catch (FrontendFailureException exception)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
-                new FrontendError(FrontendErrors.SessionNotActive,
-                    "Comms are served for the active session."),
+                new FrontendError(exception.Code, exception.Message),
                 FrontendJsonContext.Default.FrontendError).ConfigureAwait(false);
             return;
         }
 
-        var plane = commRouter.PlaneFor(activeSessionId);
+        var plane = commRouter.PlaneFor(sessionId);
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
@@ -549,7 +586,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         // an open published in between lands in both initial replay and live, folded by
         // comm id.
         var (initial, channel, truncated) = plane.Subscribe(since);
-        var uplink = ServeCommUplinkAsync(socket, commRouter, activeSessionId, plane, SendAsync, peer.Token);
+        var uplink = ServeCommUplinkAsync(socket, commRouter, sessionId, plane, SendAsync, peer.Token);
         try
         {
             await SendAsync(() => SendTextFrameAsync(

@@ -151,7 +151,7 @@ implement comms ignore it and never open the endpoint.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/v1/agent/capabilities` | Protocol version, server version, workspace root, feature flags |
-| GET | `/v1/agent/session` | The active session (id, turn count, persistence state, title) |
+| GET | `/v1/agent/session` | The foreground session (compatibility alias; id, turn count, persistence state, title) |
 | POST | `/v1/agent/sessions` | Start a new session and make it active |
 | GET | `/v1/agent/sessions` | List stored sessions with display metadata (persistence disabled → empty) |
 | POST | `/v1/agent/sessions/{sid}/resume` | Resume a stored session and make it active |
@@ -171,10 +171,14 @@ implement comms ignore it and never open the endpoint.
 The comms channel above is the one full-duplex WebSocket; the REST table
 stays request/reply only.
 
-Turn requests are limited to the active session; a turn addressed to another
-session id is `409` + `session_not_active`. This keeps "the kernel owns the
-authoritative live conversation" (invariant 1) while the path shape stays
-forward-compatible with multi-session.
+Every session-addressed route is served for its addressed session: a live
+session is used as-is, a stored one is lazily resumed, and an unknown id is
+`404 not_found`. Addressing a session never moves the foreground. This is
+advertised as `multiSession: true` on `/v1/agent/capabilities`; the process
+keeps an arbitrary number of live sessions (bounded; lazily resumable ones
+are evicted least-recently-used first), and the model-profile override
+(`%model use`, fork `profileId`) is per session — the configured default
+stays process-level.
 
 `POST /v1/agent/sessions/{sid}/turns` body: `{"text": "..."}`. Empty text is
 `400`. `%`-command text is executed as a command (same semantics as the
@@ -220,7 +224,9 @@ group them without loading transcripts (schema v4 of the transcript store):
   describe a fork head: its visible history is the parent's first
   `forkPointSeq` turns followed by its own (both absent on root sessions).
 - `GET /v1/agent/session` and the `session` inside `/v1/agent/capabilities`
-  carry the active session's `title?`.
+  carry the **foreground** session (most recently activated: start / resume /
+  fork move it; per-session addressing does not). Prefer the
+  session-addressed routes; the singular endpoint is a compatibility alias.
 - `/v1/agent/capabilities` carries `workspaceRoot?` — the process's current
   `Maieutics:Workspace:Root`, live across `%workspace use` switches — so a
   frontend can detect a server serving another workspace.

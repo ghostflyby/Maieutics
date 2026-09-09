@@ -210,6 +210,53 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     }
 
     [Fact]
+    public void ResolveLazilyResumesStoredSessionsWithoutMovingTheForeground()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+        {
+            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+        }
+
+        using var manager = CreateManager();
+        var before = manager.Id;
+
+        var resolved = manager.Resolve(stored);
+        resolved.Id.Should().Be(stored);
+        resolved.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        // Addressing a session never moves the foreground.
+        manager.Id.Should().Be(before);
+        manager.LiveCount.Should().Be(2);
+    }
+
+    [Fact]
+    public void EvictionKeepsResumableSessionsRecoverable()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+        {
+            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+        }
+
+        using var manager = CreateManager();
+        manager.Resolve(stored);
+
+        // Push the live set past its capacity with sessions that have no stored
+        // state: they must never be evicted, but the resumable one may be.
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
+        {
+            manager.StartNew();
+        }
+
+        var resolved = manager.Resolve(stored);
+        resolved.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        // The cap is soft by design: the zero-turn siblings cannot be evicted
+        // (their state exists nowhere else), so only the overage above the
+        // unresumable set is tolerated.
+        manager.LiveCount.Should().BeLessThanOrEqualTo(MaieuticsAgentSessionManager.LiveSessionCapacity + 2);
+    }
+
+    [Fact]
     public void ZeroTurnForksResumeThroughTheChain()
     {
         var source = AgentSessionId.Create();

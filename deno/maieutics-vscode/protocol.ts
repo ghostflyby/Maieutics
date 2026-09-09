@@ -14,6 +14,9 @@ export interface Capabilities {
   /** The executable's workspace root; absent on older servers or when unknown. */
   workspaceRoot?: string;
   comm?: { version: number; maxMessageBytes: number };
+  /** The server keeps multiple sessions live and serves every session-addressed
+   * route directly; absent means the legacy single-active-server semantics. */
+  multiSession?: boolean;
 }
 
 export interface SessionInfo {

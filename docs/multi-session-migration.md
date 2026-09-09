@@ -1,7 +1,11 @@
 # Multi-Session Migration Research
 
-Status: Research draft — pre-implementation (feasibility, inventory, target
-shape, phased plan).
+Status: Implemented (all four phases) on `feat/multi-active-session` —
+registry with lazy resolve and soft-cap eviction, per-session run hubs,
+per-session profile overrides, command addressing, extension de-pinning via
+`capabilities.multiSession`. Deviation from the draft: live-set eviction is
+capacity-based only (no idle timer), and unresumable sessions (zero-turn,
+persistence-less) are never evicted.
 
 Date: 2026-09-09
 

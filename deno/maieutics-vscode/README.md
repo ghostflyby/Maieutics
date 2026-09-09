@@ -16,6 +16,9 @@ Jupyter kernel involved (ADR 0023).
 - Session commands: new session, resume a stored session, show status, rename a session
   (`title →
   first prompt → id prefix` is the display-name fallback everywhere).
+- Multi-session servers (`capabilities.multiSession`): every session-addressed route is served
+  directly, so each notebook simply targets its pinned session — an unpinned notebook creates its
+  own instead of competing for the foreground, and two notebooks run turns concurrently.
 - Sessions tree: grouped by the workspace each session was created in (current workspace first and
   expanded), with a current-workspace-only filter toggle in the view title. Fork branches render
   directly under their root (lineage adjacency, branch badge in the description). Context menus

@@ -1,24 +1,36 @@
 using Maieutics.Agent;
+using Maieutics.Configuration;
 using Maieutics.Persistence;
 
 namespace Maieutics.Commands;
 
 /// <summary>
-///     Owns the executable's active <see cref="IAgentSession" /> and implements the interface by
-///     delegation, so notebook control cells can replace the session without re-resolving the
-///     kernel application. Runs already started keep executing against the session they began
-///     on; a swap only affects later turns.
+///     Owns the executable's live sessions: a bounded registry of <see cref="AgentSession" />
+///     instances keyed by identity, created eagerly (<see cref="StartNew" />, fork) or lazily
+///     (addressing a stored session resumes it first — <see cref="Resolve" />). Runs already
+///     started keep executing against the session they began on. One mutating run per session
+///     is enforced by the session itself (invariant 4), so distinct sessions run concurrently.
+///     The <see cref="IAgentSession" /> implementation is the <em>foreground</em> view: the
+///     most recently activated session (start / resume / fork move it; per-session addressing
+///     does not), kept for process-level surfaces — status, legacy singular endpoints, and
+///     session-blind commands.
 ///     With persistence enabled, every session belongs to one fork family and each family owns
-///     exactly one <c>families/&lt;family-id&gt;/history.db</c>, keyed by the family root's
-///     session id. Fork heads live in their root ancestor's family file and reference the
-///     shared prefix turns instead of copying them (ADR 0009); <see cref="ResolveFamily" />
-///     locates the owning family for any member. Family databases are opened lazily, cached,
-///     and disposed with the manager. Recovery is manual only: nothing is restored until a
-///     <c>%session resume</c> cell names a stored session.
+///     exactly one <c>families/&lt;family-id&gt;/history.db</c>. Fork heads live in their root
+///     ancestor's family file and reference the shared prefix turns instead of copying them
+///     (ADR 0009); <see cref="ResolveFamily" /> locates the owning family for any member.
+///     Family databases are opened lazily, cached, and disposed with the manager. Recovery is
+///     manual only: nothing is restored until a cell or request names a stored session.
 /// </summary>
 internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 {
+    /// <summary>Bounded live set: the registry keeps at most this many sessions, evicting the
+    /// least recently used ones that can still be lazily re-resumed from storage (zero-turn
+    /// and persistence-less sessions are never evicted, since their state exists nowhere
+    /// else). Eviction only drops the registry entry — in-flight runs keep their session.</summary>
+    internal const int LiveSessionCapacity = 8;
+
     private readonly IAgentRunProfileProvider profileProvider;
+    private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly string? familiesRoot;
     private readonly Func<AgentSessionId, SqliteTranscriptStore>? storeFactory;
     private readonly IAgentObjectStore? objectStore;
@@ -26,8 +38,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly string? viewSessionsRoot;
     private readonly string? objectsRoot;
     private readonly Lock gate = new();
+    private readonly Dictionary<string, LiveSession> live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
-    private IAgentSession current;
+    private IAgentSession foreground;
+    private long foregroundVersion;
 
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
@@ -36,83 +50,156 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         IAgentObjectStore? objectStore = null,
         IObjectReclaimer? reclaimer = null,
         string? viewSessionsRoot = null,
-        string? objectsRoot = null)
+        string? objectsRoot = null,
+        IMaieuticsRuntimeConfiguration? runtimeConfiguration = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        this.runtimeConfiguration = runtimeConfiguration;
         this.familiesRoot = familiesRoot;
         this.storeFactory = storeFactory;
         this.objectStore = objectStore;
         this.reclaimer = reclaimer;
         this.viewSessionsRoot = viewSessionsRoot;
         this.objectsRoot = objectsRoot;
-        current = new AgentSession(
-            profileProvider,
-            transcriptStore: OpenStore(AgentSessionId.Create()),
-            objectStore: objectStore);
+        foreground = CreateLive(AgentSessionId.Create());
     }
 
     public bool PersistenceEnabled => storeFactory is not null;
 
-    public AgentSessionId Id => Current.Id;
+    /// <summary>Gets how many sessions are currently live. Exposed for diagnostics.</summary>
+    public int LiveCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return live.Count;
+            }
+        }
+    }
 
+    /// <summary>Gets a monotonically increasing version that changes whenever the foreground
+    /// session moves, so callers can detect "did this command switch sessions".</summary>
+    public long ForegroundVersion
+    {
+        get
+        {
+            lock (gate)
+            {
+                return foregroundVersion;
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public AgentSessionId Id => Foreground.Id;
+
+    /// <inheritdoc />
     public Task<IAgentRun> StartTurnAsync(AgentTurn turn, CancellationToken cancellationToken = default)
     {
-        return Current.StartTurnAsync(turn, cancellationToken);
+        return Foreground.StartTurnAsync(turn, cancellationToken);
     }
 
+    /// <inheritdoc />
     public AgentTranscript GetTranscriptSnapshot()
     {
-        return Current.GetTranscriptSnapshot();
+        return Foreground.GetTranscriptSnapshot();
     }
 
-    /// <summary>Lists the stored sessions across all family databases, most recently active
-    /// first. Sessions that never committed a turn have no row and are not listed, except
-    /// sessions that were explicitly renamed: naming one creates a zero-turn row so the
-    /// name survives.</summary>
-    public IReadOnlyList<AgentSessionDescriptor> ListStoredSessions()
+    /// <summary>Resolves one live session, lazily resuming a stored one. Addressing a session
+    /// never moves the foreground. Unknown sessions (or persistence disabled with no live
+    /// match) fail typed.</summary>
+    public IAgentSession Resolve(AgentSessionId sessionId)
     {
-        if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return [];
-
-        var descriptors = new List<AgentSessionDescriptor>();
-        foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+        var key = sessionId.Value.ToString("N");
+        lock (gate)
         {
-            if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
-
-            descriptors.AddRange(RequiredStore(new AgentSessionId(familyId)).ListSessions());
+            if (live.TryGetValue(key, out var existing))
+            {
+                existing.Touch();
+                return existing.Session;
+            }
         }
 
-        return descriptors
-            .OrderByDescending(session => session.LastActivityAt)
-            .ToArray();
+        if (storeFactory is null)
+        {
+            throw new AgentSessionNotFoundException(sessionId);
+        }
+
+        // Resume outside the gate: opens family databases and loads transcripts.
+        var familyId = ResolveFamily(sessionId) ?? throw new AgentSessionNotFoundException(sessionId);
+        var wrapper = CreateWrapper();
+        var restored = AgentSession.Resume(
+            ProviderFor(wrapper),
+            RequiredStore(familyId),
+            sessionId,
+            objectStore: objectStore);
+
+        lock (gate)
+        {
+            if (live.TryGetValue(key, out var raced))
+            {
+                raced.Touch();
+                return raced.Session;
+            }
+
+            var entry = new LiveSession(restored, wrapper);
+            live[key] = entry;
+            entry.Touch();
+            return restored;
+        }
     }
 
-    /// <summary>Replaces the active session with the stored session. Resuming the already active
-    /// identity is a no-op; in-flight runs continue against the session they started on.</summary>
+    /// <summary>Replaces the foreground session with the stored session, lazily resuming it.
+    /// Resuming the already-foreground identity is a no-op; in-flight runs continue against
+    /// the session they started on.</summary>
     /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>
     /// <exception cref="AgentSessionNotFoundException">No family database holds the session.</exception>
     public AgentSessionId Resume(AgentSessionId sessionId)
     {
         if (storeFactory is null)
         {
+            lock (gate)
+            {
+                if (live.TryGetValue(sessionId.Value.ToString("N"), out var existing))
+                {
+                    MoveForegroundLocked(existing.Session);
+                    return sessionId;
+                }
+            }
+
             throw new ArgumentException(
                 "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to resume sessions.");
         }
 
-        if (sessionId == Id) return sessionId;
+        MoveForeground(Resolve(sessionId));
+        return sessionId;
+    }
 
-        var familyId = ResolveFamily(sessionId) ?? throw new AgentSessionNotFoundException(sessionId);
-        var restored = AgentSession.Resume(profileProvider, RequiredStore(familyId), sessionId, objectStore: objectStore);
+    /// <summary>Replaces the foreground session with a fresh one. The previous session stays
+    /// live until evicted; its stored history remains.</summary>
+    public AgentSessionId StartNew()
+    {
+        var sessionId = AgentSessionId.Create();
+        var wrapper = CreateWrapper();
+        var session = new AgentSession(
+            ProviderFor(wrapper),
+            transcriptStore: OpenStore(sessionId),
+            objectStore: objectStore,
+            sessionId: sessionId);
         lock (gate)
         {
-            current = restored;
+            live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
+            MoveForegroundLocked(session);
         }
 
+        EnforceLiveCapacity();
         return sessionId;
     }
 
     /// <summary>Forks a stored session: creates a new head in the source's root family database
     /// whose history is the source's first <paramref name="forkPointSeq" /> turns, and makes the
-    /// fork the active session. The source session keeps its stored history; the fork starts
+    /// fork the foreground session. The source session keeps its stored history; the fork starts
     /// empty above the fork point, so its next turn continues from there (ADR 0009 — existing
     /// turns are referenced, never copied).</summary>
     /// <returns>The new fork's session id.</returns>
@@ -144,8 +231,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         var forkId = AgentSessionId.Create();
         var effectiveTitle = title ?? ForkTitle(store, sourceId, forkPointSeq);
         store.CreateForkSession(forkId, sourceId, forkPointSeq, effectiveTitle);
+        var wrapper = CreateWrapper();
         var forked = AgentSession.Fork(
-            profileProvider,
+            ProviderFor(wrapper),
             store,
             sourceId,
             forkId,
@@ -153,42 +241,66 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             objectStore: objectStore);
         lock (gate)
         {
-            current = forked;
+            live[forkId.Value.ToString("N")] = new LiveSession(forked, wrapper);
+            MoveForegroundLocked(forked);
         }
 
+        EnforceLiveCapacity();
         return forkId;
     }
 
-    /// <summary>Loads one stored session's committed transcript across family databases, or
-    /// <see langword="null" /> when the session has no stored row. Fork heads load their
-    /// ancestor prefix plus their own turns.</summary>
-    public AgentTranscript? LoadStoredTranscript(AgentSessionId sessionId)
+    /// <summary>Sets the addressed live session's model-profile override (a configured
+    /// profile id), so its next turn runs on that profile regardless of the process
+    /// selection. Clears the override when <paramref name="profileId" /> is
+    /// <see langword="null" />.</summary>
+    /// <exception cref="ArgumentException">No runtime configuration is available, the
+    /// profile is unknown, or the session is not live.</exception>
+    public void SetProfileOverride(AgentSessionId sessionId, string? profileId)
     {
-        if (storeFactory is null) return null;
+        var wrapper = RequireWrapper(sessionId);
+        if (profileId is null)
+        {
+            wrapper.SetOverride(null);
+            return;
+        }
 
-        var familyId = ResolveFamily(sessionId);
-        if (familyId is not { } resolved) return null;
+        var selection = runtimeConfiguration!.GetModelProfileSelection();
+        var match = selection.Profiles.FirstOrDefault(profile =>
+            string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
+        if (match is null)
+        {
+            throw new ArgumentException($"No model profile matches '{profileId}'.");
+        }
 
-        return RequiredStore(resolved).LoadTranscript(sessionId);
+        wrapper.SetOverride(match.Id);
     }
 
-    /// <summary>Derives the fork's display title: the source's title or preview, collapsed to
-    /// one line and capped, plus the branch point. A source with neither stays untitled.</summary>
-    private static string? ForkTitle(
-        SqliteTranscriptStore store,
-        AgentSessionId sourceId,
-        int forkPointSeq)
+    /// <summary>Gets the addressed live session's profile override, or
+    /// <see langword="null" /> when it follows the process selection.</summary>
+    public string? GetProfileOverride(AgentSessionId sessionId)
     {
-        var source = store.ListSessions().FirstOrDefault(session => session.Id == sourceId);
-        var display = source?.Title ?? source?.Preview;
-        if (string.IsNullOrWhiteSpace(display)) return null;
+        return RequireWrapper(sessionId).Override;
+    }
 
-        var oneLine = string.Join(' ', display.Split(new[] { '\r', '\n' },
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-        var suffix = $" · branch @ turn {forkPointSeq + 1}";
-        var budget = SqliteTranscriptStore.MaxDisplayTextLength - suffix.Length;
-        var body = oneLine.Length <= budget ? oneLine : oneLine[..budget] + "…";
-        return body + suffix;
+    /// <summary>Lists the stored sessions across all family databases, most recently active
+    /// first. Sessions that never committed a turn have no row and are not listed, except
+    /// sessions that were explicitly renamed: naming one creates a zero-turn row so the
+    /// name survives.</summary>
+    public IReadOnlyList<AgentSessionDescriptor> ListStoredSessions()
+    {
+        if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return [];
+
+        var descriptors = new List<AgentSessionDescriptor>();
+        foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+        {
+            if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
+
+            descriptors.AddRange(RequiredStore(new AgentSessionId(familyId)).ListSessions());
+        }
+
+        return descriptors
+            .OrderByDescending(session => session.LastActivityAt)
+            .ToArray();
     }
 
     /// <summary>Sets or clears one stored session's title. Renaming works for any stored
@@ -241,19 +353,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             .FirstOrDefault(session => session.Id == sessionId);
     }
 
-    /// <summary>Replaces the active session with a fresh one in its own family. The previous
-    /// session's stored history remains.</summary>
-    public AgentSessionId StartNew()
+    /// <summary>Loads one stored session's committed transcript across family databases, or
+    /// <see langword="null" /> when the session has no stored row. Fork heads load their
+    /// ancestor prefix plus their own turns.</summary>
+    public AgentTranscript? LoadStoredTranscript(AgentSessionId sessionId)
     {
-        var sessionId = AgentSessionId.Create();
-        lock (gate)
-        {
-            current = new AgentSession(
-                profileProvider,
-                transcriptStore: OpenStore(sessionId),
-                objectStore: objectStore);
-            return sessionId;
-        }
+        if (storeFactory is null) return null;
+
+        var familyId = ResolveFamily(sessionId);
+        if (familyId is not { } resolved) return null;
+
+        return RequiredStore(resolved).LoadTranscript(sessionId);
     }
 
     public void Dispose()
@@ -316,6 +426,135 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return AgentObjectView.Repair(viewSessionsRoot, objectsRoot, familyStores);
     }
 
+    /// <summary>Derives the fork's display title: the source's title or preview, collapsed to
+    /// one line and capped, plus the branch point. A source with neither stays untitled.</summary>
+    private static string? ForkTitle(
+        SqliteTranscriptStore store,
+        AgentSessionId sourceId,
+        int forkPointSeq)
+    {
+        var source = store.ListSessions().FirstOrDefault(session => session.Id == sourceId);
+        var display = source?.Title ?? source?.Preview;
+        if (string.IsNullOrWhiteSpace(display)) return null;
+
+        var oneLine = string.Join(' ', display.Split(new[] { '\r', '\n' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var suffix = $" · branch @ turn {forkPointSeq + 1}";
+        var budget = SqliteTranscriptStore.MaxDisplayTextLength - suffix.Length;
+        var body = oneLine.Length <= budget ? oneLine : oneLine[..budget] + "…";
+        return body + suffix;
+    }
+
+    private IAgentSession Foreground
+    {
+        get
+        {
+            lock (gate)
+            {
+                return foreground;
+            }
+        }
+    }
+
+    private void MoveForeground(IAgentSession session)
+    {
+        lock (gate)
+        {
+            MoveForegroundLocked(session);
+        }
+    }
+
+    private void MoveForegroundLocked(IAgentSession session)
+    {
+        foreground = session;
+        foregroundVersion++;
+    }
+
+    /// <summary>Creates the per-session profile wrapper, or returns
+    /// <see langword="null" /> when no runtime configuration backs per-session overrides.</summary>
+    private MaieuticsSessionProfileProvider? CreateWrapper()
+    {
+        return runtimeConfiguration is null ? null : new MaieuticsSessionProfileProvider(runtimeConfiguration);
+    }
+
+    private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper)
+    {
+        return wrapper ?? profileProvider;
+    }
+
+    /// <summary>Creates and registers a fresh live session (its own family database), making
+    /// it the foreground. Used for the boot session.</summary>
+    private IAgentSession CreateLive(AgentSessionId sessionId)
+    {
+        var wrapper = CreateWrapper();
+        var session = new AgentSession(
+            wrapper is null ? profileProvider : ProviderFor(wrapper),
+            transcriptStore: OpenStore(sessionId),
+            objectStore: objectStore,
+            sessionId: sessionId);
+        lock (gate)
+        {
+            live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
+            MoveForegroundLocked(session);
+        }
+
+        return session;
+    }
+
+    /// <summary>Requires one LIVE session's profile wrapper; unknown or persistence-less
+    /// sessions have none.</summary>
+    private MaieuticsSessionProfileProvider RequireWrapper(AgentSessionId sessionId)
+    {
+        if (runtimeConfiguration is null)
+        {
+            throw new ArgumentException("Model profile selection is not available in this host.");
+        }
+
+        lock (gate)
+        {
+            if (live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.Profile is { } profile)
+            {
+                entry.Touch();
+                return profile;
+            }
+        }
+
+        throw new ArgumentException(
+            $"No live session matches '{sessionId.Value.ToString("N")[..12]}'; run a turn first.");
+    }
+
+    /// <summary>Keeps the live set bounded, evicting the least recently used sessions that
+    /// can still be lazily re-resumed from storage. Runs outside the gate because
+    /// resumability checks open family databases.</summary>
+    private void EnforceLiveCapacity()
+    {
+        List<(string Key, AgentSessionId Id)> candidates;
+        lock (gate)
+        {
+            if (live.Count <= LiveSessionCapacity) return;
+
+            candidates = live.Values
+                .Where(entry => !ReferenceEquals(entry.Session, foreground))
+                .OrderBy(entry => entry.Touched)
+                .Select(entry => (entry.Session.Id.Value.ToString("N"), entry.Session.Id))
+                .ToList();
+        }
+
+        foreach (var (key, id) in candidates)
+        {
+            if (LoadStoredTranscript(id) is null) continue; // never lose unresumable state
+
+            lock (gate)
+            {
+                if (live.Count <= LiveSessionCapacity) return;
+                if (live.TryGetValue(key, out var entry) && !ReferenceEquals(entry.Session, foreground))
+                {
+                    live.Remove(key);
+                }
+            }
+        }
+    }
+
     private SqliteTranscriptStore? OpenStore(AgentSessionId familyId)
     {
         if (storeFactory is null) return null;
@@ -336,9 +575,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return store ?? throw new InvalidOperationException("The transcript store factory is not configured.");
     }
 
-    /// <summary>Locates the family that owns a session. Today every session is its own family
-    /// root, so the direct <c>families/&lt;id&gt;</c> directory almost always answers; the scan
-    /// covers the future fork case where children live in their ancestor's family file.</summary>
+    /// <summary>Locates the family that owns a session: the direct
+    /// <c>families/&lt;id&gt;</c> directory when the session is a family root, otherwise a
+    /// scan that covers fork members living in their ancestor's family file.</summary>
     private AgentSessionId? ResolveFamily(AgentSessionId sessionId)
     {
         if (familiesRoot is null) return null;
@@ -360,14 +599,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return null;
     }
 
-    private IAgentSession Current
+    private sealed class LiveSession(IAgentSession session, MaieuticsSessionProfileProvider? profile)
     {
-        get
+        public IAgentSession Session { get; } = session;
+
+        public MaieuticsSessionProfileProvider? Profile { get; } = profile;
+
+        public long Touched { get; private set; } = Environment.TickCount64;
+
+        public void Touch()
         {
-            lock (gate)
-            {
-                return current;
-            }
+            Touched = Environment.TickCount64;
         }
     }
 }

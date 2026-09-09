@@ -655,7 +655,7 @@ function unwrapSessionRef(argument: CommandArgument): string | undefined {
 }
 
 /** Picks a session when a command carries no tree argument: the stored list
- * with display labels; the foreground session leads when it is stored. */
+ * with display labels in server order, most recently active first. */
 async function pickSession(
   client: FrontendClient,
   sessionId: string | undefined,

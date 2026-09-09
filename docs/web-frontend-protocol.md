@@ -102,7 +102,8 @@ widget with a **comm channel** that carries the model's life:
 
 Full-duplex WebSocket, session-scoped (ADR 0024). `token` is accepted as a
 query parameter like the events endpoint; an unknown session is
-`404 session_not_active`. The server's first frame is JSON text:
+`404 not_found` (legacy single-active servers answered
+`404 session_not_active` for a non-active one). The server's first frame is JSON text:
 
 ```json
 {"live": [{"commId": "…", "targetName": "…"}], "replayed": false, "truncated": false}
@@ -178,9 +179,10 @@ advertised as `multiSession: true` on `/v1/agent/capabilities`; the process
 keeps an arbitrary number of live sessions (bounded; lazily resumable ones
 are evicted least-recently-used first), and the model-profile override
 (`%model use`, fork `profileId`) is per session — the configured default
-stays process-level. The legacy `409 session_not_active` gate no longer
-occurs on this build (older single-active servers still emit it for
-non-addressed sessions).
+stays process-level. The legacy gate no longer occurs on this build; older
+single-active servers still rejected a session other than their single
+active one (`409 session_not_active` from turns, `404 session_not_active`
+from events/comms).
 
 `POST /v1/agent/sessions/{sid}/turns` body: `{"text": "..."}`. Empty text is
 `400`. `%`-command text is executed as a command (same semantics as the
@@ -251,8 +253,8 @@ group them without loading transcripts (schema v4 of the transcript store):
   number of the source's committed turns the fork keeps, `0..turns`). The
   fork is a new head in the source's root family database (ADR 0009: turns
   are referenced, never copied), it is auto-titled from the source's
-  title/preview plus `" · branch @ turn N"`, and it becomes the active
-  session. The answer is `200 {"id": "…", "title": "…"}` (nulls omitted).
+  title/preview plus `" · branch @ turn N"`, and it becomes the
+  foreground session. The answer is `200 {"id": "…", "title": "…"}` (nulls omitted).
   Forking is **not** active-session-gated and fork of a fork chains through
   the parent link. An optional `profileId` switches the model profile first,
   so the fork's first turn runs on it (regenerate-with-model); an unknown

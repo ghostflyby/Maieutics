@@ -319,9 +319,12 @@ instead of fighting it. Extension version skew between attached windows could
 make two projections disagree and cause rename churn at sync — noisy events,
 but no data loss (renames never touch content), and both sides converge once
 versions match. The one piece of cross-window shared state that projections
-cannot paper over is the server's foreground alias in attach mode on
-legacy single-active servers: a
-resume in one window switches it for the other. That is the existing session
+cannot paper over is the server's foreground alias in attach mode: a
+resume in one window switches it for the other. Legacy single-active servers
+additionally switched it whenever any window merely opened a view or ran a
+cell; multi-session servers move it only on start / resume / fork commands,
+and the projections address sessions per id so they no longer depend on it.
+That is the existing session
 model (invariant 1), not a filesystem concern.
 
 **Mount UX.** `maieutics.mountSessionsFolder` offers a quick pick: "All

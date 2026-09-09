@@ -41,7 +41,7 @@ export interface DiscoveryFile {
 export type CommandAnswer = {
   kind: "command";
   markdown: string;
-  /** The active session after the command (session-switching commands). */
+  /** The session the notebook should target after the command: its own unless the command moved the foreground. */
   sessionId?: string;
 };
 export type TurnAnswer = { kind: "turn"; runId: string };
@@ -151,7 +151,7 @@ export class FrontendClient {
     return await this.get("/v1/model/profiles", signal);
   }
 
-  /** Prunes unreferenced objects of the active session (grace in hours). */
+  /** Prunes unreferenced objects of the given session (grace in hours). */
   async pruneObjects(
     sessionId: string,
     graceHours = 24,
@@ -164,7 +164,7 @@ export class FrontendClient {
     );
   }
 
-  /** Rebuilds the derived object view of the active session. */
+  /** Rebuilds the derived object view of the given session. */
   async repairObjectView(sessionId: string, signal?: AbortSignal): Promise<string> {
     return await this.commandAnswer(
       "POST",

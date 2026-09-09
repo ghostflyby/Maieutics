@@ -26,9 +26,28 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(databaseDirectory))
+        // Windows can keep the database handle briefly alive after the last
+        // connection closes (WAL teardown, antivirus scanning); retry so a
+        // teardown lock never masks the test result.
+        for (var attempt = 0; ; attempt++)
         {
-            Directory.Delete(databaseDirectory, recursive: true);
+            try
+            {
+                if (Directory.Exists(databaseDirectory))
+                {
+                    Directory.Delete(databaseDirectory, recursive: true);
+                }
+
+                return;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                Thread.Sleep(200);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 4)
+            {
+                Thread.Sleep(200);
+            }
         }
     }
 

@@ -27,7 +27,7 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FetchReturnsTheStoredJsonAsStructuredData()
     {
         var store = new ObjectStore(objectsRoot);
@@ -41,7 +41,7 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         value!.Value.GetProperty("answer").GetInt32().Should().Be(42);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FetchRejectsNonJsonObjectsWithATypedFailure()
     {
         var store = new ObjectStore(objectsRoot);
@@ -54,7 +54,7 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         exception.Code.Should().Be("object_not_json");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FetchRejectsUnknownObjectsWithATypedFailure()
     {
         var store = new ObjectStore(objectsRoot);
@@ -68,7 +68,7 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         exception.Code.Should().Be("object_not_found");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FetchRejectsMalformedIdsBeforeTouchingTheStore()
     {
         var store = new ObjectStore(objectsRoot);

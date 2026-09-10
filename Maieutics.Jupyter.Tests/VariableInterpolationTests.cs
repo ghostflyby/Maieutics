@@ -4,6 +4,8 @@ using Maieutics.Permissions;
 
 namespace Maieutics.Jupyter.Tests;
 
+[Collection(JupyterSocketIntegrationCollection.Name)]
+
 public sealed class VariableInterpolationTests
 {
     [Fact]

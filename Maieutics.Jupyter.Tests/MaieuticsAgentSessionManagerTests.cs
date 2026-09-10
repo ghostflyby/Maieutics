@@ -229,7 +229,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         manager.ListStoredSessions().Should().ContainSingle();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EvictionSkipsSessionsWithRunsInFlight()
     {
         var stored = AgentSessionId.Create();

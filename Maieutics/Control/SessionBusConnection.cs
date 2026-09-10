@@ -80,12 +80,20 @@ internal sealed class SessionBusConnection : IAsyncDisposable
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        return new ValueTask(CloseAsync(
-            WebSocketCloseStatus.NormalClosure,
-            "closed",
-            CancellationToken.None));
+        // Disposal must stay deterministic even when the writer is stuck on a socket
+        // send: the budget bounds the graceful drain, and its cancellation (registered
+        // in CloseCoreAsync) then releases the writer before the close frame goes out.
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", budget.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+        }
     }
 
     private async Task RunWriterAsync()
@@ -157,16 +165,19 @@ internal sealed class SessionBusConnection : IAsyncDisposable
 
         if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
         {
+            using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
                 await socket.CloseOutputAsync(
                     closeStatus,
                     statusDescription,
-                    CancellationToken.None).ConfigureAwait(false);
+                    closeTimeout.Token).ConfigureAwait(false);
             }
-            catch (WebSocketException)
+            catch (Exception exception) when
+                (exception is WebSocketException or OperationCanceledException or InvalidOperationException)
             {
-                // The peer may have closed concurrently.
+                // The peer may have closed concurrently, or the close write overran
+                // its budget on a dead socket.
             }
         }
 

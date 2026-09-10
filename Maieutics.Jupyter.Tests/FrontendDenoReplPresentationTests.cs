@@ -23,7 +23,7 @@ public sealed class FrontendDenoReplPresentationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TrackedDisplayAndUpdatesCarryAStableDisplayId()
     {
         var target = new FakeTarget();
@@ -49,7 +49,7 @@ public sealed class FrontendDenoReplPresentationTests
         target.Published[1].Data.GetProperty("text/plain").GetString().Should().Be("updated");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UntrackedDisplayPublishesWithoutDisplayIdAndErrorsCarryTheBundle()
     {
         var target = new FakeTarget();
@@ -64,7 +64,7 @@ public sealed class FrontendDenoReplPresentationTests
         target.Published[1].Data.GetProperty("text/plain").GetString().Should().Contain("Boom: broken");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ClearedOutputPublishesAnEmptyClearFrame()
     {
         var target = new FakeTarget();
@@ -76,7 +76,7 @@ public sealed class FrontendDenoReplPresentationTests
             .Which.Type.Should().Be("repl.clear");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DetachingTheScopeRejectsWaitersAndDeactivatesTheSink()
     {
         var router = new FrontendDenoReplPresentationRouter();
@@ -104,7 +104,7 @@ public sealed class FrontendDenoReplPresentationTests
         target.Published.Should().BeEmpty();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputRequestPublishesAFrameAndCompletesWithTheAnswer()
     {
         var target = new FakeTarget();
@@ -130,7 +130,7 @@ public sealed class FrontendDenoReplPresentationTests
         sink.TryCompleteInput(requestId, "again").Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnknownInputAnswerReturnsFalse()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
@@ -138,7 +138,7 @@ public sealed class FrontendDenoReplPresentationTests
         await Task.CompletedTask;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RouterCompletesTheOwningSinkAndRequestIdsNeverCollide()
     {
         var router = new FrontendDenoReplPresentationRouter();
@@ -165,7 +165,7 @@ public sealed class FrontendDenoReplPresentationTests
         router.TryCompleteInput(secondId, "again").Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RouterInputAnswerWithoutAttachedSinksReturnsFalse()
     {
         new FrontendDenoReplPresentationRouter()
@@ -181,7 +181,7 @@ public sealed class FrontendDenoReplPresentationTests
             .GetString()!;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputRequestHonoursCallerCancellation()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());

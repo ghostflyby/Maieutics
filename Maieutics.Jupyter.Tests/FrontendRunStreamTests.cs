@@ -8,7 +8,7 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class FrontendRunStreamTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputRequestPresentationIsFlattenedOntoTheWireFrame()
     {
         var stream = FrontendRunStream.Create(
@@ -35,7 +35,7 @@ public sealed class FrontendRunStreamTests
         await Task.CompletedTask;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task OtherPresentationFramesKeepTheDisplayIdAndBundleData()
     {
         var stream = FrontendRunStream.Create(

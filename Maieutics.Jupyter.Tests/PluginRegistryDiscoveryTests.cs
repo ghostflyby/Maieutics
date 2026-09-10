@@ -66,7 +66,7 @@ public sealed class PluginRegistryDiscoveryTests
         descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");
     }
 
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task TryLoadNpmResolvesTheExtractedPackageAndReportsMissingManifests()
     {
         var diagnostics = new List<string>();

@@ -262,7 +262,7 @@ public sealed class PluginHostReplRegistrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task BrokerAddressIsPassedToTheHostWhenConfigured()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

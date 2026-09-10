@@ -1411,7 +1411,15 @@ public sealed class FrontendApiIntegrationTests
 
             await ((IAsyncDisposable)host).DisposeAsync();
             await provider.DisposeAsync();
-            File.Delete(configurationFile);
+            try
+            {
+                File.Delete(configurationFile);
+            }
+            catch (IOException)
+            {
+                // The reload file watcher can hold the config file briefly on
+                // Windows; a leftover temp file must not mask the test result.
+            }
         }
     }
 
@@ -1493,13 +1501,14 @@ public sealed class FrontendApiIntegrationTests
         private readonly CancellationTokenSource cancellation = new();
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Task serveLoop;
 
         public HangingOpenAiServer()
         {
             listener.Start();
             var endpoint = (IPEndPoint)listener.LocalEndpoint;
             Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-            _ = ServeAsync(cancellation.Token);
+            serveLoop = ServeAsync(cancellation.Token);
         }
 
         public Uri Endpoint { get; }
@@ -1511,6 +1520,17 @@ public sealed class FrontendApiIntegrationTests
             await cancellation.CancelAsync();
             listener.Stop();
             release.TrySetResult();
+            try
+            {
+                // The accept loop settles once the listener stops; without observing
+                // it, a late ObjectDisposedException on the disposed CTS escapes.
+                await serveLoop.ConfigureAwait(false);
+            }
+            catch (Exception exception) when
+                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
+            {
+            }
+
             cancellation.Dispose();
         }
 

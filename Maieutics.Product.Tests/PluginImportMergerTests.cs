@@ -228,6 +228,8 @@ public sealed class PluginImportMergerTests
             "auto",
             [],
             imports ?? [],
+            [],
+            [],
             []);
     }
 

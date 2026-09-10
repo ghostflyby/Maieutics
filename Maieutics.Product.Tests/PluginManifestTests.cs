@@ -171,6 +171,103 @@ public sealed class PluginManifestTests
         targets[0].Should().Be(Path.GetFullPath(Path.Combine(directory, "local-dep", "mod.ts")));
     }
 
+    [Fact]
+    public void LoadsDeclarativeExtensionEntriesForKnownKinds()
+    {
+        var descriptor = LoadPlugin(
+            """
+            {
+              "name": "@maieutics/declarative",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """,
+            """
+            {
+              "extensions": {
+                "McpDiscover": [
+                  { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } }
+                ]
+              }
+            }
+            """);
+
+        descriptor.Extensions.Should().ContainSingle();
+        descriptor.Extensions[0].Kind.Should().Be("McpDiscover");
+        descriptor.Extensions[0].Data.GetProperty("module")
+            .GetString().Should().Be("npm:@maieutics/probe-server");
+        descriptor.ExtensionDiagnostics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UnknownExtensionKindsBecomeDiagnosticsAndAreDropped()
+    {
+        var descriptor = LoadPlugin(
+            """
+            {
+              "name": "@maieutics/declarative",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """,
+            """
+            {
+              "extensions": {
+                "McpDiscover": [
+                  { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } }
+                ],
+                "FutureKind": [{ "opaque": true }]
+              }
+            }
+            """);
+
+        // Only catalogued kinds survive; the unknown kind degrades to a visible
+        // diagnostic instead of being silently honored or failing the plugin.
+        descriptor.Extensions.Should().ContainSingle().Which.Kind.Should().Be("McpDiscover");
+        descriptor.ExtensionDiagnostics.Should().ContainSingle()
+            .Which.Should().Contain("FutureKind");
+    }
+
+    [Fact]
+    public void RejectsMalformedExtensionsSections()
+    {
+        // A non-object section is structural corruption, not inert data: the plugin
+        // fails to load loudly (maieutics.json strictness).
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/broken", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "extensions": ["not", "an", "object"] }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("extensions");
+
+        var directory2 = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/broken", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "extensions": { "McpDiscover": ["not-an-object"] } }
+            """);
+        PluginManifest.TryLoad(directory2, out _, out var error2).Should().BeFalse();
+        error2.Should().Contain("entries must be objects");
+    }
+
+    [Fact]
+    public void RejectsTheReservedManifestExportNameAsALoadFailure()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/shadow", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            {
+              "entrypoints": { "maieutics.json": ["./mod.ts"] }
+            }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("reserved");
+    }
+
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)
     {
         if (PluginManifest.TryLoad(

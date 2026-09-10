@@ -105,6 +105,9 @@ internal sealed class PluginHostManager(
 
     // Capability calls wrap kernel tool invokes, which legitimately run longer than
     // extension-point hooks; the budget bounds one call, it is not a stage reset.
+    // Note the effective ceiling for hook-initiated calls is InvokeTimeout (15 s):
+    // the outer hook await gives up first, after which the capability result no
+    // longer has an observer and is simply dropped.
     private static readonly TimeSpan CapabilityCallTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
 
@@ -442,6 +445,7 @@ internal sealed class PluginHostManager(
             }
             descriptors.AddRange(graph.Enabled.Where(
                 plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
+            capabilityGrants.Clear();
             RecordCapabilityGrants(descriptors);
         }
 
@@ -880,20 +884,25 @@ internal sealed class PluginHostManager(
         lock (gate)
         {
             draining = [.. capabilityCalls];
+            capabilityCalls.Clear();
         }
 
-        foreach (var call in draining)
+        if (draining.Length > 0)
         {
+            // One total budget for every in-flight capability call; each call's own
+            // reply write is bounded, so the drain cannot extend past it observably.
+            using var drainBudget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             try
             {
-                await call.ConfigureAwait(false);
+                await Task.WhenAll(draining).WaitAsync(drainBudget.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception exception) when (
+                exception is OperationCanceledException or AggregateException)
             {
-            }
-            catch (Exception exception)
-            {
-                logger.LogDebug(exception, "A capability call was still running at host stop.");
+                logger.LogDebug(
+                    exception,
+                    "{Count} capability call(s) were still running at host stop.",
+                    draining.Length);
             }
         }
 
@@ -1284,12 +1293,23 @@ internal sealed class PluginHostManager(
     }
 
     /// <summary>Tracks one capability call so shutdown can observe it; completed entries
-    /// are pruned as new calls arrive to keep the list bounded.</summary>
+    /// are pruned as new calls arrive to keep the list bounded. HandleCapabilityInvokeAsync
+    /// handles its own failures, so a faulted call here means the reply path failed — the
+    /// continuation observes it instead of leaving an unobserved task exception.</summary>
     private void TrackCapabilityCall(Task call)
     {
         lock (gate)
         {
-            capabilityCalls.RemoveAll(static call => call.IsCompleted);
+            capabilityCalls.RemoveAll(static tracked =>
+            {
+                if (!tracked.IsCompleted) return false;
+                if (tracked.IsFaulted)
+                {
+                    _ = tracked.Exception;
+                }
+
+                return true;
+            });
             capabilityCalls.Add(call);
         }
     }
@@ -1346,8 +1366,18 @@ internal sealed class PluginHostManager(
                 return;
             }
 
+            if (request.Payload is not { } payload)
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "invalid_capability_invoke",
+                    "The capability.invoke payload requires a capability payload object.").ConfigureAwait(false);
+                return;
+            }
+
             var executor = CapabilityExecutor;
-            if (executor is null || request.Payload is not { } payload)
+            if (executor is null)
             {
                 await PushCapabilityErrorAsync(
                     socket,
@@ -1374,7 +1404,7 @@ internal sealed class PluginHostManager(
             }
 
             var result = await executor(invoke.Tool, invoke.Arguments, budget.Token).ConfigureAwait(false);
-            await PushAsync(
+            await PushCapabilityReplyAsync(
                 socket,
                 new ReplEnvelope(
                     envelope.Version,
@@ -1382,8 +1412,7 @@ internal sealed class PluginHostManager(
                     envelope.CorrelationId,
                     JsonSerializer.SerializeToElement(
                         new CapabilityResultPayload(result),
-                        ReplControlJsonContext.Default.CapabilityResultPayload)),
-                CancellationToken.None).ConfigureAwait(false);
+                        ReplControlJsonContext.Default.CapabilityResultPayload))).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (budget.IsCancellationRequested)
         {
@@ -1407,13 +1436,13 @@ internal sealed class PluginHostManager(
         }
     }
 
-    private async Task PushCapabilityErrorAsync(
+    private Task PushCapabilityErrorAsync(
         WebSocket socket,
         string correlationId,
         string code,
         string message)
     {
-        await PushAsync(
+        return PushCapabilityReplyAsync(
             socket,
             new ReplEnvelope(
                 EnvelopeVersion,
@@ -1421,8 +1450,25 @@ internal sealed class PluginHostManager(
                 correlationId,
                 JsonSerializer.SerializeToElement(
                     new BusErrorPayload(code, message),
-                    ReplControlJsonContext.Default.BusErrorPayload)),
-            CancellationToken.None).ConfigureAwait(false);
+                    ReplControlJsonContext.Default.BusErrorPayload)));
+    }
+
+    /// <summary>Sends one capability reply with a bounded write: a host that stays
+    /// connected but stops reading must not hold the tracked call (and with it the
+    /// shutdown drain) open forever.</summary>
+    private static async Task PushCapabilityReplyAsync(WebSocket socket, ReplEnvelope envelope)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await PushAsync(socket, envelope, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+        {
+            // The host vanished or overran the write budget; the tracked call ends
+            // either way and the reply is not observable by anyone else.
+        }
     }
 
     /// <summary>Refreshes the capability-grant snapshot from the kernel-parsed

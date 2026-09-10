@@ -458,7 +458,6 @@ public sealed class PluginHostIntegrationTests
                 resultValues.Should().NotContain(
                     text => text!.Contains("missing-without-capability-callback"),
                     trace);
-                File.WriteAllText("/tmp/capability-e2e-trace.txt", trace);
             }
         }
 

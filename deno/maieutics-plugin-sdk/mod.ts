@@ -647,9 +647,11 @@ export async function initPluginWorker(): Promise<void> {
     if (frame.ok === true) pending.resolve(frame.result);
     else {
       const reason = frame.message ?? "The capability call failed.";
-      pending.reject(
-        new Error(frame.code ? `${frame.code}: ${reason}` : reason),
-      );
+      const error = new Error(
+        frame.code ? `${frame.code}: ${reason}` : reason,
+      ) as Error & { code?: string };
+      error.code = frame.code;
+      pending.reject(error);
     }
   });
 

@@ -488,12 +488,12 @@ export class PluginHost {
           (result: unknown) => {
             requester.postMessage({ type: "capability.response", id, ok: true, result });
           },
-          (error: Error) => {
+          (error: Error & { code?: string }) => {
             requester.postMessage({
               type: "capability.response",
               id,
               ok: false,
-              code: "capability_failed",
+              code: error.code ?? "capability_failed",
               message: error.message,
             });
           },

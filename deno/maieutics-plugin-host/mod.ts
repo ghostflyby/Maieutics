@@ -145,9 +145,13 @@ async function main(): Promise<void> {
       if (envelope.type === "capability.result") {
         pending.resolve(payload?.result);
       } else {
-        pending.reject(
-          new Error(payload?.message ?? payload?.code ?? "The capability call failed."),
-        );
+        // Carry the kernel's typed code through the rejection so the host relay
+        // can hand it to the worker unchanged.
+        const error = new Error(
+          payload?.message ?? payload?.code ?? "The capability call failed.",
+        ) as Error & { code?: string };
+        error.code = payload?.code;
+        pending.reject(error);
       }
       return;
     }

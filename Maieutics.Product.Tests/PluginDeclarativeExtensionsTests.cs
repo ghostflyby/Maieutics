@@ -106,6 +106,149 @@ public sealed class PluginDeclarativeExtensionsTests
         }
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task DeclarativeSectionRemovalTakesEffectOnReload()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The fake deno executable is a shell script.
+
+        var root = CreateDeclarativePluginsRoot("declarative-reload");
+        var pluginId = Path.GetFileName(root);
+        var manager = new PluginHostManager(
+            root,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+
+            // Remove the section from the manifest and apply the reload: the synthetic
+            // registration and the contribution must both disappear.
+            File.WriteAllText(
+                Path.Combine(root, "maieutics.json"),
+                """
+                {
+                  "capabilities": ["tools.invoke"]
+                }
+                """);
+            await ApplyReloadAsync(manager, deadline.Token);
+
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            var discovery = manager.DiscoverManifestMcpAsync(
+                new PluginRegistration(pluginId, PluginHostManager.ManifestExportName, PluginExtensionKind.McpDiscover));
+            discovery.IsSuccess.Should().BeFalse(discovery.Failure);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task DeclarativeSectionAdditionTakesEffectOnReload()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The fake deno executable is a shell script.
+
+        var root = Path.Combine(Path.GetTempPath(), "declarative-add-reload");
+        if (Directory.Exists(root)) Directory.Delete(root, true);
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/declarative-add",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["tools.invoke"]
+            }
+            """);
+        var manager = new PluginHostManager(
+            root,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            ReplControlHost.CreateSocketPath(),
+            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
+            new PluginHostModule(),
+            new ReplControlSessionRegistry(),
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+
+            // Add the section and apply the reload (a workerless plugin never
+            // triggers a host registry resend, so the manager republishes itself).
+            File.WriteAllText(
+                Path.Combine(root, "maieutics.json"),
+                """
+                {
+                  "capabilities": ["tools.invoke"],
+                  "extensions": {
+                    "McpDiscover": [
+                      { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } }
+                    ]
+                  }
+                }
+                """);
+            await ApplyReloadAsync(manager, deadline.Token);
+
+            var registrations = manager.GetRegistrations(PluginExtensionKind.McpDiscover);
+            var registration = registrations.Should().ContainSingle().Which;
+            registration.PluginId.Should().Be(Path.GetFileName(root));
+            var discovery = manager.DiscoverManifestMcpAsync(registration);
+            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
+            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
+                .Be($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    /// <summary>Applies the pending reloads for the plugin-root change, waiting out the
+    /// watcher debounce before draining (bounded condition-polling, like discovery
+    /// waits elsewhere in the suite).</summary>
+    private static async Task ApplyReloadAsync(
+        PluginHostManager manager,
+        CancellationToken cancellationToken)
+    {
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        wait.CancelAfter(TimeSpan.FromSeconds(10));
+        while (manager.PendingReloadCount == 0)
+        {
+            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+        }
+
+        await manager.ApplyPendingReloadsAsync(wait.Token).ConfigureAwait(false);
+    }
+
     private static string CreateDeclarativePluginsRoot(
         string pluginName,
         bool includeUnknownKind = false)

@@ -252,6 +252,22 @@ public sealed class PluginManifestTests
         error2.Should().Contain("entries must be objects");
     }
 
+    [Fact]
+    public void RejectsTheReservedManifestExportNameAsALoadFailure()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/shadow", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            {
+              "entrypoints": { "maieutics.json": ["./mod.ts"] }
+            }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("reserved");
+    }
+
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)
     {
         if (PluginManifest.TryLoad(

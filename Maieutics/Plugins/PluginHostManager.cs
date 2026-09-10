@@ -162,6 +162,7 @@ internal sealed class PluginHostManager(
         new(StringComparer.Ordinal);
 
     private readonly List<PluginRegistration> registrations = [];
+    private readonly List<PluginRegistration> hostRegistrations = [];
     private readonly List<PluginState> states = [];
 
     /// <summary>Pids of the REPL processes the attached plugin host derived, keyed by pid to the
@@ -454,10 +455,13 @@ internal sealed class PluginHostManager(
                 plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
             capabilityGrants.Clear();
             RecordCapabilityGrants(descriptors);
-            RecordDescriptorExtensionsLock(descriptors);
+            descriptorExtensions.Clear();
+            foreach (var descriptor in descriptors)
+                RecordDescriptorExtensionsLock(descriptor);
 
             // Manifest-declared entries seed the registry before any host payload:
             // a declarative-only plugin contributes without ever spawning a worker.
+            hostRegistrations.Clear();
             registrations.Clear();
             registrations.AddRange(DeclarativeRegistrationsLock());
         }
@@ -486,7 +490,15 @@ internal sealed class PluginHostManager(
         // The coordinator missed Start()'s seed (it starts later), so publish the
         // initial declarative snapshot now; the host's own registry payload will
         // union with it when it arrives.
-        RepublishRegistry();
+        PluginRegistration[] initialSnapshot;
+        lock (gate)
+        {
+            initialSnapshot = registrations
+                .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
+                .ToArray();
+        }
+
+        RepublishRegistry(initialSnapshot);
     }
 
     /// <summary>Creates the plugins root on first start as an empty deno project skeleton:
@@ -681,19 +693,25 @@ internal sealed class PluginHostManager(
                 replacement = config.Plugins.FirstOrDefault();
                 // A reload re-reads the manifest, so the capability-grant and
                 // declarative-extension snapshots must follow it (the grant and
-                // interpretation authority stays in the kernel).
+                // interpretation authority stays in the kernel). The upsert also
+                // removes the snapshot entry when the section disappears entirely.
+                PluginRegistration[] mcpSnapshotForReload;
                 lock (gate)
                 {
-                    RecordDescriptorExtensionsLock([reloaded]);
+                    RecordDescriptorExtensionsLock(reloaded);
+
+                    // A declarative-only change (or a plugin without workers) never
+                    // triggers a host registry resend: rebuild the merged snapshot so
+                    // the coordinator regenerates from the new manifest data.
+                    registrations.Clear();
+                    registrations.AddRange(hostRegistrations);
+                    registrations.AddRange(DeclarativeRegistrationsLock());
+                    mcpSnapshotForReload = registrations
+                        .Where(static r => r.ExtensionPoint == ReplExtensionPointName.McpDiscover)
+                        .ToArray();
                 }
 
-                if (reloaded.Extensions.Any(static entry => entry.Kind == PluginExtensionKind.McpDiscover))
-                {
-                    // A declarative-only change (or a plugin without workers) never
-                    // triggers a host registry resend: republish the merged snapshot so
-                    // the coordinator regenerates from the new manifest data.
-                    RepublishRegistry();
-                }
+                RepublishRegistry(mcpSnapshotForReload);
             }
         }
 
@@ -1561,10 +1579,13 @@ internal sealed class PluginHostManager(
         PluginRegistration[] registrySnapshot;
         lock (gate)
         {
-            registrations.Clear();
+            hostRegistrations.Clear();
             foreach (var plugin in payload.Plugins)
                 foreach (var extensionPoint in plugin.ExtensionPoints)
-                    registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+                    hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+
+            registrations.Clear();
+            registrations.AddRange(hostRegistrations);
 
             // Manifest-declared entries join the same registry: they are discovery
             // results the kernel computed from the manifest snapshot, so they ride the
@@ -1591,18 +1612,11 @@ internal sealed class PluginHostManager(
         dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
     }
 
-    /// <summary>Republishes the merged registry snapshot (worker registrations plus
-    /// manifest-declared entries) after a declarative-only manifest change.</summary>
-    private void RepublishRegistry()
+    /// <summary>Republishes the MCP subset of the merged registry snapshot (worker
+    /// registrations plus manifest-declared entries) after a declarative-only manifest
+    /// change.</summary>
+    private void RepublishRegistry(PluginRegistration[] mcpSnapshot)
     {
-        PluginRegistration[] mcpSnapshot;
-        lock (gate)
-        {
-            mcpSnapshot = registrations
-                .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
-                .ToArray();
-        }
-
         dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
     }
 
@@ -1617,18 +1631,15 @@ internal sealed class PluginHostManager(
         }
     }
 
-    /// <summary>Replaces the declarative-extension snapshot from the kernel-parsed
-    /// descriptors. Called under <see cref="gate" />.</summary>
-    private void RecordDescriptorExtensionsLock(IEnumerable<PluginDescriptor> descriptors)
+    /// <summary>Updates one plugin's declarative-extension snapshot (reload): an empty
+    /// extension list removes the entry, so section removals take effect.</summary>
+    private void RecordDescriptorExtensionsLock(PluginDescriptor descriptor)
     {
-        descriptorExtensions.Clear();
-        foreach (var descriptor in descriptors)
-        {
-            if (descriptor.Extensions.Count > 0) descriptorExtensions[descriptor.Id] = descriptor.Extensions;
+        if (descriptor.Extensions.Count > 0) descriptorExtensions[descriptor.Id] = descriptor.Extensions;
+        else descriptorExtensions.Remove(descriptor.Id);
 
-            foreach (var diagnostic in descriptor.ExtensionDiagnostics)
-                logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
-        }
+        foreach (var diagnostic in descriptor.ExtensionDiagnostics)
+            logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
     }
 
     private async Task<PluginMcpDiscoveryResult> DiscoverDynamicMcpAsync(

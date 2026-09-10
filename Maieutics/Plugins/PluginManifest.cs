@@ -133,7 +133,16 @@ internal static class PluginManifest
 
         var id = Path.GetFileName(Path.TrimEndingDirectorySeparator(directory));
         var name = ReadPackageName(directory, id);
-        var workers = ReadEntrypoints(pluginManifest.Entrypoints, directory);
+        IReadOnlyList<PluginWorkerDescriptor> workers;
+        try
+        {
+            workers = ReadEntrypoints(pluginManifest.Entrypoints, directory);
+        }
+        catch (JsonException exception)
+        {
+            error = exception.Message;
+            return false;
+        }
         var permissions = ReadPermissions(ReadPackagePermissions(directory));
         var isolation = pluginManifest.Isolation;
         var dependencies = pluginManifest.Dependencies ?? [];
@@ -287,6 +296,11 @@ internal static class PluginManifest
         foreach (var (entrypointName, scripts) in entrypoints)
         {
             if (string.IsNullOrWhiteSpace(entrypointName)) continue;
+            // The manifest export name is reserved for declarative entries: a worker
+            // export with this name would be shadowed by the manifest discovery branch.
+            if (string.Equals(entrypointName, PluginHostManager.ManifestExportName, StringComparison.Ordinal))
+                throw new JsonException(
+                    $"The entrypoint name '{PluginHostManager.ManifestExportName}' is reserved.");
             if (scripts is null || scripts.Length == 0) continue;
 
             var entry = scripts[0];

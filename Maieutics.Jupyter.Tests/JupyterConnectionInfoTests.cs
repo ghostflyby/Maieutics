@@ -11,16 +11,16 @@ namespace Maieutics.Jupyter.Tests;
 /// </summary>
 public sealed class JupyterConnectionInfoTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WriteFileAsyncRoundTripsThroughReadFileAsync()
     {
         var info = JupyterConnectionInfo.CreateLocalTcp();
         var path = Path.Combine(Path.GetTempPath(), $"conn-{Guid.NewGuid():N}.json");
         try
         {
-            await info.WriteFileAsync(path);
+            await info.WriteFileAsync(path, TestContext.Current.CancellationToken);
 
-            var read = await JupyterConnectionInfo.ReadFileAsync(path);
+            var read = await JupyterConnectionInfo.ReadFileAsync(path, TestContext.Current.CancellationToken);
             read.Transport.Should().Be(info.Transport);
             read.Ip.Should().Be(info.Ip);
             read.ShellPort.Should().Be(info.ShellPort);
@@ -36,21 +36,21 @@ public sealed class JupyterConnectionInfoTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WriteFileAsyncPublishesAtomicallyWithoutTempArtifacts()
     {
         var info = JupyterConnectionInfo.CreateLocalTcp();
         var path = Path.Combine(Path.GetTempPath(), $"conn-{Guid.NewGuid():N}.json");
         try
         {
-            await info.WriteFileAsync(path);
+            await info.WriteFileAsync(path, TestContext.Current.CancellationToken);
 
             // The published file parses in one read and no temp sibling remains.
-            var json = await File.ReadAllTextAsync(path);
+            var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
             using var document = JsonDocument.Parse(json);
             document.RootElement.GetProperty("transport").GetString().Should().Be(info.Transport);
             Directory.EnumerateFiles(
-                    Path.GetDirectoryName(path)!,
+                    Path.GetTempPath(),
                     Path.GetFileName(path) + ".tmp-*")
                 .Should().BeEmpty();
         }

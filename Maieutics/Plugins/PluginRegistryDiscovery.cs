@@ -326,7 +326,10 @@ internal static class PluginRegistryDiscovery
         {
             // The child has exited, so both pipes have hit EOF and the drains are
             // already complete or within one scheduling hop of completing.
-            return standardOutput.GetAwaiter().GetResult();
+            var stdout = standardOutput.GetAwaiter().GetResult();
+            if (process.ExitCode != 0) return null;
+
+            return stdout;
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {

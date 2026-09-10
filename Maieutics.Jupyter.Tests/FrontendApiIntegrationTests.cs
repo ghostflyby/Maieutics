@@ -323,8 +323,6 @@ public sealed class FrontendApiIntegrationTests
 
         // A run ending (the presentation scope detaching) cancels pending requests
         // server-side, so the late answer for an outstanding id is a typed 404 too.
-        // A run ending (the presentation scope detaching) cancels pending requests
-        // server-side, so the late answer for an outstanding id is a typed 404 too.
         var lateTask = scope.Sink.RequestInputAsync("late:", password: false, waitDeadline.Token);
         target.Published.Should().Contain(entry => entry.Type == "input.request");
         await scope.DisposeAsync();
@@ -356,6 +354,30 @@ public sealed class FrontendApiIntegrationTests
             new StringContent("not json", Encoding.UTF8, "application/json"),
             deadline.Token);
         malformed.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CanceledTurnStartAbortsTheHandshakeWithoutReservingTheSession()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        // The cancellation token only reaches the pre-run handshake: AgentSession
+        // aborts before the session reservation, so the turn start leaves the
+        // session free and the transcript untouched.
+        var act = () => harness.SessionService.StartTurnAsync(
+            sessionId,
+            "hello",
+            new CancellationToken(canceled: true));
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        harness.SessionService.DescribeSession(sessionId).Turns.Should().Be(0);
+
+        // The session still accepts a normal turn afterwards.
+        var runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+        runId.Should().NotBeNullOrWhiteSpace();
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
     }
 
     [Fact(Timeout = 60_000)]
@@ -1293,6 +1315,11 @@ public sealed class FrontendApiIntegrationTests
         public void RegisterControlPeer(string sessionId) =>
             host.Services.GetRequiredService<Maieutics.Control.ReplControlSessionRegistry>()
                 .Register(Environment.ProcessId, sessionId);
+
+        /// <summary>The live frontend session service, for direct service-level tests
+        /// that need precise control over inputs such as cancellation tokens.</summary>
+        public FrontendSessionService SessionService =>
+            host.Services.GetRequiredService<FrontendSessionService>();
 
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real

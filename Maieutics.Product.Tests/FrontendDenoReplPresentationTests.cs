@@ -1,0 +1,201 @@
+using System.Text.Json;
+using FluentAssertions;
+using Maieutics.Agent;
+using Maieutics.DenoRepl;
+using Maieutics.Frontend;
+
+namespace Maieutics.Product.Tests;
+
+public sealed class FrontendDenoReplPresentationTests
+{
+    private sealed class FakeTarget : IFrontendPresentationTarget
+    {
+        public List<(string Type, string? DisplayId, JsonElement Data)> Published { get; } = [];
+
+        public void PublishPresentation(
+            string type,
+            string? displayId,
+            JsonElement data,
+            CancellationToken cancellationToken)
+        {
+            Published.Add((type, displayId, data.Clone()));
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task TrackedDisplayAndUpdatesCarryAStableDisplayId()
+    {
+        var target = new FakeTarget();
+        var sink = new FrontendDenoReplPresentationSink(target);
+        var displayId = ReplDisplayId.Create();
+
+        await sink.DisplayTrackedAsync(
+            ReplDisplayBundle.FromMarkdown("# hello"),
+            displayId,
+            EmptyMetadata(),
+            TestContext.Current.CancellationToken);
+        await sink.UpdateDisplayAsync(
+            displayId,
+            ReplDisplayBundle.FromText("updated"),
+            EmptyMetadata(),
+            TestContext.Current.CancellationToken);
+
+        target.Published.Should().HaveCount(2);
+        target.Published[0].Type.Should().Be("repl.display");
+        target.Published[1].Type.Should().Be("repl.updateDisplay");
+        target.Published.Should().OnlyContain(entry => entry.DisplayId == displayId.Value);
+        target.Published[0].Data.GetProperty("text/markdown").GetString().Should().Be("# hello");
+        target.Published[1].Data.GetProperty("text/plain").GetString().Should().Be("updated");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task UntrackedDisplayPublishesWithoutDisplayIdAndErrorsCarryTheBundle()
+    {
+        var target = new FakeTarget();
+        var sink = new FrontendDenoReplPresentationSink(target);
+
+        await sink.DisplayAsync(
+            ReplDisplayBundle.FromText("hi"),
+            EmptyMetadata(),
+            TestContext.Current.CancellationToken);
+        await sink.PublishErrorAsync("Boom", "broken", [], TestContext.Current.CancellationToken);
+
+        target.Published[0].Type.Should().Be("repl.display");
+        target.Published[0].DisplayId.Should().BeNull();
+        target.Published[1].Type.Should().Be("repl.error");
+        target.Published[1].Data.GetProperty("text/plain").GetString().Should().Contain("Boom: broken");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ClearedOutputPublishesAnEmptyClearFrame()
+    {
+        var target = new FakeTarget();
+        var sink = new FrontendDenoReplPresentationSink(target);
+
+        await sink.ClearOutputAsync(wait: false, TestContext.Current.CancellationToken);
+
+        target.Published.Should().ContainSingle()
+            .Which.Type.Should().Be("repl.clear");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task DetachingTheScopeRejectsWaitersAndDeactivatesTheSink()
+    {
+        var router = new FrontendDenoReplPresentationRouter();
+        var target = new FakeTarget();
+        var sessionId = AgentSessionId.Create();
+        await using var scope = router.Attach(sessionId, target);
+        var sink = scope.Sink;
+        var callId = AgentToolCallId.Create();
+
+        router.OpenCall(sessionId, callId);
+        var resolved = await router
+            .WaitForCallAsync(sessionId, callId, TestContext.Current.CancellationToken);
+        resolved.Should().BeSameAs(sink);
+
+        await scope.DisposeAsync();
+
+        // After detach the sink is inert and late waiters get the typed failure.
+        var act = async () => await sink.DisplayAsync(
+            ReplDisplayBundle.FromText("late"),
+            EmptyMetadata(),
+            CancellationToken.None);
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        var lateCall = async () => await router.WaitForCallAsync(sessionId, callId, CancellationToken.None);
+        (await lateCall.Should().ThrowAsync<AgentToolException>()).Which.Code.Should()
+            .Be("repl_presentation_unavailable");
+        target.Published.Should().BeEmpty();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task InputRequestPublishesAFrameAndCompletesWithTheAnswer()
+    {
+        var target = new FakeTarget();
+        var sink = new FrontendDenoReplPresentationSink(target);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var wait = sink.RequestInputAsync("Name:", password: true, deadline.Token);
+        target.Published.Should().ContainSingle();
+        var frame = target.Published[0];
+        frame.Type.Should().Be("input.request");
+        frame.DisplayId.Should().BeNull();
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(frame.Data.GetRawText());
+        var requestId = payload.GetProperty("requestId").GetString()!;
+        payload.GetProperty("prompt").GetString().Should().Be("Name:");
+        payload.GetProperty("password").GetBoolean().Should().BeTrue();
+
+        sink.TryCompleteInput(requestId, "ghost").Should().BeTrue();
+        (await wait).Should().Be("ghost");
+        // 第二次应答：请求已完成
+        sink.TryCompleteInput(requestId, "again").Should().BeFalse();
+    }
+
+    [Fact]
+    public void UnknownInputAnswerReturnsFalse()
+    {
+        var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
+        sink.TryCompleteInput("input-404", "x").Should().BeFalse();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task RouterCompletesTheOwningSinkAndRequestIdsNeverCollide()
+    {
+        var router = new FrontendDenoReplPresentationRouter();
+        var firstTarget = new FakeTarget();
+        var secondTarget = new FakeTarget();
+        await using var first = router.Attach(AgentSessionId.Create(), firstTarget);
+        await using var second = router.Attach(AgentSessionId.Create(), secondTarget);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+
+        var firstWait = first.Sink.RequestInputAsync("first:", false, deadline.Token);
+        var secondWait = second.Sink.RequestInputAsync("second:", false, deadline.Token);
+        var firstId = RequestIdOf(firstTarget);
+        var secondId = RequestIdOf(secondTarget);
+        firstId.Should().NotBe(secondId);
+
+        router.TryCompleteInput(secondId, "b").Should().BeTrue();
+        (await secondWait).Should().Be("b");
+        router.TryCompleteInput(firstId, "a").Should().BeTrue();
+        (await firstWait).Should().Be("a");
+        // Request ids are unique across sinks, so a delivered answer cannot be
+        // re-delivered anywhere.
+        router.TryCompleteInput(secondId, "again").Should().BeFalse();
+    }
+
+    [Fact]
+    public void RouterInputAnswerWithoutAttachedSinksReturnsFalse()
+    {
+        new FrontendDenoReplPresentationRouter()
+            .TryCompleteInput($"input-{Guid.NewGuid():N}-1", "x").Should().BeFalse();
+    }
+
+    private static string RequestIdOf(FakeTarget target)
+    {
+        return target.Published
+            .Single(entry => entry.Type == "input.request")
+            .Data.GetProperty("requestId")
+            .GetString()!;
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task InputRequestHonoursCallerCancellation()
+    {
+        var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        var wait = sink.RequestInputAsync("prompt", false, cancellation.Token);
+        cancellation.Cancel();
+        var act = async () => await wait;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    private static IReadOnlyDictionary<string, JsonElement> EmptyMetadata()
+    {
+        return new Dictionary<string, JsonElement>();
+    }
+}

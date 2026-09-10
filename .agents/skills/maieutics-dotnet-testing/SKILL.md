@@ -8,7 +8,8 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 ## Test Placement
 
 - `Maieutics.Agent.Tests` owns Jupyter-independent Agent runtime unit tests.
-- `Maieutics.Jupyter.Tests` owns Shared, Client, Kernel, executable adapter, self-hosted, real Deno, configuration, and process-level integration tests.
+- `Maieutics.Jupyter.Tests` owns retained-library tests only (Shared, Client, Kernel, self-hosted, real Deno Jupyter interop) and references no Agent or executable project.
+- `Maieutics.Product.Tests` owns executable and product integration tests: frontend web API, provider conformance, configuration reload, permissions, Deno execution/REPL, plugins, control plane, persistence, and process-level smoke tests.
 - Use deterministic fake providers and tools. Default tests must not call external model services.
 
 ## xUnit And Assertions

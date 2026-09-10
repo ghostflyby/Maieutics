@@ -65,7 +65,7 @@ Status: 已实施(2026-08-24)
 ### 4. 测试
 
 - Deno 单测:`deno task test`(comm WS 往返、buffers 原生 `Uint8Array`、事件分派)。
-- 集成(`Maieutics.Jupyter.Tests`):真 Deno REPL + 真 kernel 端到端——前端发 `comm_open` → REPL
+- 集成(`Maieutics.Product.Tests`):真 Deno REPL + 真 kernel 端到端——前端发 `comm_open` → REPL
   收到;脚本 `Deno.jupyter.broadcast("comm_msg", …, { buffers })` → 前端收到二进制;`comm_close`
   双向;REPL 懒创建。
 - 回归:`dotnet test Maieutics.slnx`、`deno fmt --check deno`、

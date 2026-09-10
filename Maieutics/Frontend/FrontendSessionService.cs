@@ -416,6 +416,13 @@ internal sealed class FrontendSessionService
         return registry.TryGet(new AgentRunId(parsed), out stream);
     }
 
+    /// <summary>Delivers a frontend stdin answer to the pending REPL input request
+    /// announced by an <c>input.request</c> frame.</summary>
+    public bool TryCompleteInput(string requestId, string value)
+    {
+        return presentationRouter.TryCompleteInput(requestId, value);
+    }
+
     /// <summary>Cancels a run cooperatively and waits for its termination.</summary>
     public async Task CancelRunAsync(string runId, CancellationToken cancellationToken)
     {

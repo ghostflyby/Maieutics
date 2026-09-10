@@ -510,6 +510,88 @@ public sealed class PluginHostIntegrationTests
         return root;
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task DeclarativeOnlyPluginsContributeWithoutSpawningWorkers()
+    {
+        // A real plugin host process, a real control bus — but a plugin that is pure
+        // manifest data: no entrypoint, no worker, just a declarative mcp.discover
+        // section. The kernel publishes its synthetic registration into the same
+        // registry the host's own worker registrations land in.
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var root = Path.Combine(Path.GetTempPath(), $"mc-decl-e2e-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/declarative-e2e",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "extensions": {
+                "McpDiscover": [
+                  { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } }
+                ]
+              }
+            }
+            """);
+        var manager = new PluginHostManager(
+            root,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+
+        try
+        {
+            await manager.StartAsync(timeout.Token);
+            await manager.WaitUntilReadyAsync(timeout.Token);
+
+            var registration = (await WaitForRegistrationsAsync(
+                    manager,
+                    ReplExtensionPointName.McpDiscover,
+                    timeout.Token))
+                .Should().ContainSingle().Which;
+            registration.PluginId.Should().Be(Path.GetFileName(root));
+            registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
+
+            var discovery = manager.DiscoverManifestMcpAsync(registration);
+            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
+            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
+                .Be($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server");
+
+            // No worker was ever spawned for a data-only plugin.
+            manager.GetStatus().PluginCount.Should().Be(1);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            await application.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static async Task<WebApplication> StartHostAsync(
         string socketPath,
         ReplControlHost controlHost,

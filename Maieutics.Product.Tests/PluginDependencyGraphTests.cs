@@ -24,6 +24,8 @@ public sealed class PluginDependencyGraphTests
             "auto",
             dependencies,
             [],
+            [],
+            [],
             []);
     }
 

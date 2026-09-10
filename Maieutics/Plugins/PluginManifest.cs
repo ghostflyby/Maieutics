@@ -14,7 +14,27 @@ internal sealed record PluginDescriptor(
     string? Isolation,
     IReadOnlyList<string> Dependencies,
     IReadOnlyList<PluginImportEntry> Imports,
-    IReadOnlyList<string> Capabilities);
+    IReadOnlyList<string> Capabilities,
+    IReadOnlyList<PluginExtensionEntry> Extensions,
+    IReadOnlyList<string> ExtensionDiagnostics);
+
+/// <summary>One declarative extension entry from the manifest's `extensions` section:
+/// a kernel-known kind plus the raw data the kind's kernel interpreter consumes.
+/// Entries are data-only — they never require or imply a worker.</summary>
+internal sealed record PluginExtensionEntry(string Kind, JsonElement Data);
+
+/// <summary>The kernel-known declarative extension kinds (the manifest counterpart of
+/// the closed extension-point catalog). Unknown kinds in a manifest are surfaced as
+/// diagnostics and ignored, so newer plugins degrade visibly on older kernels.</summary>
+internal static class PluginExtensionKind
+{
+    public const string McpDiscover = "McpDiscover";
+
+    public static bool IsKnown(string kind)
+    {
+        return kind == McpDiscover;
+    }
+}
 
 internal sealed record PluginWorkerDescriptor(string ExportName, string EntryUrl);
 
@@ -123,6 +143,18 @@ internal static class PluginManifest
         var capabilities = (pluginManifest.Capabilities ?? [])
             .Where(PluginCapabilityCatalog.Contains)
             .ToArray();
+        IReadOnlyList<PluginExtensionEntry> extensions;
+        IReadOnlyList<string> extensionDiagnostics;
+        try
+        {
+            extensions = ReadExtensions(pluginManifest.Extensions, out extensionDiagnostics);
+        }
+        catch (JsonException exception)
+        {
+            error = $"Invalid 'extensions' section: {exception.Message}";
+            return false;
+        }
+
         descriptor = new PluginDescriptor(
             id,
             name,
@@ -132,9 +164,54 @@ internal static class PluginManifest
             isolation,
             dependencies,
             imports,
-            capabilities);
+            capabilities,
+            extensions,
+            extensionDiagnostics);
         error = string.Empty;
         return true;
+    }
+
+    /// <summary>Parses the manifest's declarative `extensions` section. The section must
+    /// be an object of kind → entry arrays (structural failures fail the plugin, matching
+    /// maieutics.json strictness); entry data is carried raw for the kind's kernel
+    /// interpreter. Unknown kinds are dropped with a diagnostic, never honored.</summary>
+    private static IReadOnlyList<PluginExtensionEntry> ReadExtensions(
+        JsonElement? section,
+        out IReadOnlyList<string> diagnostics)
+    {
+        var found = new List<string>();
+        var entries = new List<PluginExtensionEntry>();
+        if (section is not { ValueKind: JsonValueKind.Object } objectSection)
+        {
+            if (section is { ValueKind: not JsonValueKind.Null and not JsonValueKind.Undefined })
+                throw new JsonException("The 'extensions' section must be an object.");
+            diagnostics = found.AsReadOnly();
+            return entries;
+        }
+
+        foreach (var kind in objectSection.EnumerateObject())
+        {
+            if (kind.Value.ValueKind != JsonValueKind.Array)
+                throw new JsonException($"The 'extensions.{kind.Name}' section must be an array of entries.");
+            if (!PluginExtensionKind.IsKnown(kind.Name))
+            {
+                found.Add(
+                    $"Unknown extension kind '{kind.Name}' is declared but not supported by this kernel; " +
+                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}).");
+                continue;
+            }
+
+            foreach (var entry in kind.Value.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object)
+                    throw new JsonException(
+                        $"The 'extensions.{kind.Name}' entries must be objects.");
+                entries.Add(new PluginExtensionEntry(kind.Name, entry.Clone()));
+            }
+        }
+
+        diagnostics = found.AsReadOnly();
+        return entries;
     }
 
     /// <summary>Reads the package name from deno.json (falling back to the directory name).</summary>
@@ -320,7 +397,8 @@ internal sealed record MaieuticsManifestFile(
     IReadOnlyDictionary<string, string[]>? Entrypoints = null,
     IReadOnlyList<string>? Dependencies = null,
     string? Isolation = null,
-    IReadOnlyList<string>? Capabilities = null);
+    IReadOnlyList<string>? Capabilities = null,
+    JsonElement? Extensions = null);
 
 /// <summary>The package identity file (deno.json), read for name and permissions only.</summary>
 internal sealed record PluginManifestFile(

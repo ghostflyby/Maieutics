@@ -103,6 +103,11 @@ internal sealed class PluginHostManager(
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
 
+    /// <summary>The synthetic export name given to manifest-declared extension entries.
+    /// They have no worker export; discovery reads the kernel-parsed manifest snapshot
+    /// directly instead of performing a host invoke.</summary>
+    internal const string ManifestExportName = "maieutics.json";
+
     // Capability calls wrap kernel tool invokes, which legitimately run longer than
     // extension-point hooks; the budget bounds one call, it is not a stage reset.
     // Note the effective ceiling for hook-initiated calls is InvokeTimeout (15 s):
@@ -150,6 +155,8 @@ internal sealed class PluginHostManager(
     /// <see cref="RegisterHostRepl"/>).</summary>
     private readonly List<Task> capabilityCalls = [];
     private readonly Dictionary<string, IReadOnlyList<string>> capabilityGrants =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, IReadOnlyList<PluginExtensionEntry>> descriptorExtensions =
         new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
         new(StringComparer.Ordinal);
@@ -447,6 +454,12 @@ internal sealed class PluginHostManager(
                 plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
             capabilityGrants.Clear();
             RecordCapabilityGrants(descriptors);
+            RecordDescriptorExtensionsLock(descriptors);
+
+            // Manifest-declared entries seed the registry before any host payload:
+            // a declarative-only plugin contributes without ever spawning a worker.
+            registrations.Clear();
+            registrations.AddRange(DeclarativeRegistrationsLock());
         }
 
         // The root deno.json must exist before the host process starts: it carries the
@@ -470,6 +483,10 @@ internal sealed class PluginHostManager(
         processExitObservation = ObserveExitAsync(process, configPath);
         StartDynamicMcpCoordinator();
         StartPluginWatcher();
+        // The coordinator missed Start()'s seed (it starts later), so publish the
+        // initial declarative snapshot now; the host's own registry payload will
+        // union with it when it arrives.
+        RepublishRegistry();
     }
 
     /// <summary>Creates the plugins root on first start as an empty deno project skeleton:
@@ -662,9 +679,21 @@ internal sealed class PluginHostManager(
             {
                 var config = BuildConfig([reloaded]);
                 replacement = config.Plugins.FirstOrDefault();
-                // A reload re-reads the manifest, so the capability-grant snapshot
-                // must follow it (the grant authority stays in the kernel).
-                RecordCapabilityGrants([reloaded]);
+                // A reload re-reads the manifest, so the capability-grant and
+                // declarative-extension snapshots must follow it (the grant and
+                // interpretation authority stays in the kernel).
+                lock (gate)
+                {
+                    RecordDescriptorExtensionsLock([reloaded]);
+                }
+
+                if (reloaded.Extensions.Any(static entry => entry.Kind == PluginExtensionKind.McpDiscover))
+                {
+                    // A declarative-only change (or a plugin without workers) never
+                    // triggers a host registry resend: republish the merged snapshot so
+                    // the coordinator regenerates from the new manifest data.
+                    RepublishRegistry();
+                }
             }
         }
 
@@ -1528,7 +1557,7 @@ internal sealed class PluginHostManager(
     {
         if (payload is null) return;
 
-        PluginRegistration[] snapshot;
+        PluginRegistration[] mcpSnapshot;
         PluginRegistration[] registrySnapshot;
         lock (gate)
         {
@@ -1536,6 +1565,12 @@ internal sealed class PluginHostManager(
             foreach (var plugin in payload.Plugins)
                 foreach (var extensionPoint in plugin.ExtensionPoints)
                     registrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+
+            // Manifest-declared entries join the same registry: they are discovery
+            // results the kernel computed from the manifest snapshot, so they ride the
+            // same revision/generation pipeline without a worker.
+            foreach (var registration in DeclarativeRegistrationsLock())
+                registrations.Add(registration);
 
             states.Clear();
             foreach (var state in payload.States ?? [])
@@ -1546,20 +1581,68 @@ internal sealed class PluginHostManager(
                 registrations.Count,
                 payload.Plugins.Count);
 
-            snapshot = registrations
+            mcpSnapshot = registrations
                 .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
                 .ToArray();
             registrySnapshot = registrations.ToArray();
         }
 
         RegistryChanges.Writer.TryWrite(registrySnapshot);
-        dynamicMcpCoordinator?.PublishRegistry(snapshot);
+        dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+    }
+
+    /// <summary>Republishes the merged registry snapshot (worker registrations plus
+    /// manifest-declared entries) after a declarative-only manifest change.</summary>
+    private void RepublishRegistry()
+    {
+        PluginRegistration[] mcpSnapshot;
+        lock (gate)
+        {
+            mcpSnapshot = registrations
+                .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
+                .ToArray();
+        }
+
+        dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+    }
+
+    /// <summary>The synthetic registrations for manifest-declared entries. Called under
+    /// <see cref="gate" />.</summary>
+    private IEnumerable<PluginRegistration> DeclarativeRegistrationsLock()
+    {
+        foreach (var pair in descriptorExtensions)
+        {
+            if (pair.Value.Any(static entry => entry.Kind == PluginExtensionKind.McpDiscover))
+                yield return new PluginRegistration(pair.Key, ManifestExportName, ReplExtensionPointName.McpDiscover);
+        }
+    }
+
+    /// <summary>Replaces the declarative-extension snapshot from the kernel-parsed
+    /// descriptors. Called under <see cref="gate" />.</summary>
+    private void RecordDescriptorExtensionsLock(IEnumerable<PluginDescriptor> descriptors)
+    {
+        descriptorExtensions.Clear();
+        foreach (var descriptor in descriptors)
+        {
+            if (descriptor.Extensions.Count > 0) descriptorExtensions[descriptor.Id] = descriptor.Extensions;
+
+            foreach (var diagnostic in descriptor.ExtensionDiagnostics)
+                logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
+        }
     }
 
     private async Task<PluginMcpDiscoveryResult> DiscoverDynamicMcpAsync(
         PluginRegistration registration,
         CancellationToken cancellationToken)
     {
+        if (registration.ExportName == ManifestExportName)
+        {
+            // Manifest-declared entries have no worker: the kernel-parsed manifest
+            // snapshot is the discovery result. Failures here keep the previous
+            // contribution active (the same sticky-last-good semantics as handlers).
+            return DiscoverManifestMcpAsync(registration);
+        }
+
         var request = JsonSerializer.SerializeToElement(
             new DiscoverContextPayload("registry_update"),
             ReplControlJsonContext.Default.DiscoverContextPayload);
@@ -1578,6 +1661,31 @@ internal sealed class PluginHostManager(
         foreach (var item in array.EnumerateArray())
         {
             if (!TryToMcpDefinition(registration.PluginId, item, out var definition))
+                return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
+
+            definitions.Add(definition);
+        }
+
+        return PluginMcpDiscoveryResult.Success(definitions);
+    }
+
+    /// <summary>Parses the plugin's declarative `mcp.discover` entries with the same
+    /// definition rules the handler path applies; the result carries the same id scheme
+    /// (`plugin:<pluginId>::<module>`) so merges and conflicts behave identically.</summary>
+    internal PluginMcpDiscoveryResult DiscoverManifestMcpAsync(PluginRegistration registration)
+    {
+        IReadOnlyList<PluginExtensionEntry> entries;
+        lock (gate)
+        {
+            if (!descriptorExtensions.TryGetValue(registration.PluginId, out var recorded)) return PluginMcpDiscoveryResult.Failed("unknown_manifest_plugin");
+            entries = recorded;
+        }
+
+        var definitions = new List<McpServerDefinition>();
+        foreach (var entry in entries)
+        {
+            if (entry.Kind != PluginExtensionKind.McpDiscover) continue;
+            if (!TryToMcpDefinition(registration.PluginId, entry.Data, out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
             definitions.Add(definition);

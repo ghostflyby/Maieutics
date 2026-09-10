@@ -233,21 +233,32 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IReplPolicyRegistrar>(static services =>
             services.GetRequiredService<PluginHostManager>());
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
-        builder.Services.AddSingleton(services => new ReplControlHost(
-            controlSocketPath,
-            services.GetRequiredService<ReplControlSessionRegistry>(),
-            services.GetRequiredService<ILogger<ReplControlHost>>(),
-            services.GetRequiredService<WorkspaceFunctions>().Functions,
-            services.GetRequiredService<PluginHostManager>(),
-            services.GetRequiredService<ReplControlCredentialRegistry>(),
-            OperatingSystem.IsWindows()
-                ? services.GetRequiredService<IWindowsPipeBootstrap>()
-                : null,
-            frontendOptions.Enabled
-                ? (sessionId, message, cancellationToken) =>
-                    services.GetRequiredService<FrontendCommRouter>()
-                        .AcceptFromReplAsync(sessionId, message, cancellationToken)
-                : null));
+        builder.Services.AddSingleton(services =>
+        {
+            var controlHost = new ReplControlHost(
+                controlSocketPath,
+                services.GetRequiredService<ReplControlSessionRegistry>(),
+                services.GetRequiredService<ILogger<ReplControlHost>>(),
+                services.GetRequiredService<WorkspaceFunctions>().Functions,
+                services.GetRequiredService<PluginHostManager>(),
+                services.GetRequiredService<ReplControlCredentialRegistry>(),
+                OperatingSystem.IsWindows()
+                    ? services.GetRequiredService<IWindowsPipeBootstrap>()
+                    : null,
+                frontendOptions.Enabled
+                    ? (sessionId, message, cancellationToken) =>
+                        services.GetRequiredService<FrontendCommRouter>()
+                            .AcceptFromReplAsync(sessionId, message, cancellationToken)
+                    : null);
+
+            // Plugin capability calls execute kernel script tools through the same
+            // invocation path the control bus uses; the manager is resolved lazily so
+            // wiring stays side-effect free at registration time.
+            services.GetRequiredService<PluginHostManager>().CapabilityExecutor =
+                controlHost.InvokeScriptToolAsync;
+
+            return controlHost;
+        });
         builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
             DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));

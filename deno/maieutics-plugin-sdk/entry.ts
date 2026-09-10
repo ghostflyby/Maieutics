@@ -66,6 +66,10 @@ export type { AdmissionContext, AdmissionHook } from "./mod.ts";
 
 export { ExtensionPoint } from "./mod.ts";
 
+// —— Kernel capability surface (ADR 0020 §7.2; deny-by-default) ——
+
+export { callCapability, capabilities } from "./mod.ts";
+
 // —— Types ——
 
 export type {

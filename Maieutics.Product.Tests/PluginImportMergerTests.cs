@@ -227,7 +227,8 @@ public sealed class PluginImportMergerTests
             grants,
             "auto",
             [],
-            imports ?? []);
+            imports ?? [],
+            []);
     }
 
     private static (

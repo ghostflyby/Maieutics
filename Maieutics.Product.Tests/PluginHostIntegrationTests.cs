@@ -361,6 +361,156 @@ public sealed class PluginHostIntegrationTests
         Directory.Delete(workspaceRoot, true);
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task PluginHookCallsBackIntoTheKernelThroughTheCapabilityApi()
+    {
+        // The full two-sided cooperation loop: a real plugin worker's ToolPreInvoke
+        // hook requests the tools.invoke capability through the SDK; the host relays
+        // it over the control bus with the plugin identity derived from its worker
+        // mapping; the kernel gates it (catalog + manifest grants), executes the real
+        // script tool, and returns the result. The hook observes the answer by
+        // replacing the outer tool's arguments — so the outer result proves whether
+        // the callback succeeded.
+        if (OperatingSystem.IsWindows()) return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var credentials = new ReplControlCredentialRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var pluginsRoot = CreateCapabilityPluginsRoot();
+        var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-capability-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspaceRoot);
+        var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            functions,
+            manager);
+        manager.CapabilityExecutor = controlHost.InvokeScriptToolAsync;
+        await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
+        await using var outputHost = new ReplOutputWebSocketHost(registry, credentials);
+        var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            var registrations = await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.ToolPreInvoke,
+                timeout.Token);
+            registrations.Should().NotBeEmpty();
+
+            var options = new DenoReplOptions();
+            var factory = new LocalDenoReplSessionFactory(
+                options,
+                controlHost,
+                new DenoReplModule(),
+                evalHost,
+                outputHost,
+                registry,
+                credentials,
+                NullLogger<DenoReplProcess>.Instance,
+                SharedBroker);
+            var session = new DenoReplSession(
+                AgentSessionId.Create(),
+                "capability-session",
+                false,
+                Directory.GetCurrentDirectory(),
+                options,
+                factory,
+                new DenoReplSessionTests.ImmediatePresentationRouter(),
+                NullLogger<DenoReplSession>.Instance);
+            await using (session)
+            {
+                await session.StartAsync(timeout.Token);
+                var result = await session.ExecuteAsync(
+                    "await maieutics.tools.invoke('list_directory', { path: 'missing-without-capability-callback' })",
+                    AgentToolCallId.Create(),
+                    timeout.Token);
+                var resultValues = result.Outputs
+                    .Where(static item => item is { Kind: "result", Value: not null })
+                    .Select(static item => item.Value?.GetRawText())
+                    .Where(static text => text is not null)
+                    .ToArray();
+                var trace = string.Join("\n", result.Outputs.Select(static item =>
+                    $"{item.Kind}:{(item.Value is { } value ? value.GetRawText() : item.Text)}")) +
+                    $"\nstatus={result.ExecutionStatus}";
+                // The hook replaced the bogus outer path with the real root listing only
+                // if the capability callback executed the kernel tool end to end; a failed
+                // callback leaves the bogus path in place and the tool errors on it.
+                result.ExecutionStatus.Should().Be("ok", trace);
+                resultValues.Should().Contain(
+                    text => text!.Contains("workspace://local/") && text.Contains("entries"),
+                    trace);
+                resultValues.Should().NotContain(
+                    text => text!.Contains("missing-without-capability-callback"),
+                    trace);
+                File.WriteAllText("/tmp/capability-e2e-trace.txt", trace);
+            }
+        }
+
+        Directory.Delete(workspaceRoot, true);
+    }
+
+    private static string CreateCapabilityPluginsRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/capability-e2e",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] },
+              "capabilities": ["tools.invoke"]
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mod.ts"),
+            """
+            import { capabilities, defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+            export const pre = defineExtensionPoint("ToolPreInvoke", {
+              handler: async () => {
+                try {
+                  const result = await capabilities.invokeTool("list_directory", {});
+                  if (result.status === "ok") {
+                    // Replace the bogus outer path with the real root listing: the
+                    // outer result only turns "ok" when the callback executed.
+                    return { action: "replace", arguments: {} };
+                  }
+                  return { action: "reject", error: { code: "cap_status", message: JSON.stringify(result) } };
+                } catch (error) {
+                  return { action: "reject", error: { code: "cap_threw", message: String(error) } };
+                }
+              },
+            });
+            """);
+        return root;
+    }
+
     private static async Task<WebApplication> StartHostAsync(
         string socketPath,
         ReplControlHost controlHost,

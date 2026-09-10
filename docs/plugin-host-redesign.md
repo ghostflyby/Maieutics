@@ -354,6 +354,34 @@ Deno side:
 - `dotnet build Maieutics.slnx --no-restore -warnaserror`.
 - `git diff --check`.
 
+## 13. Plugin → kernel capability API (ADR 0020 §7.2 follow-up)
+
+The plugin SDK originally had no way to call kernel functionality: workers never touch
+the control bus (the host process owns that connection), and the only host↔worker
+sidebands were storage and actor acquisition. The `capabilities` surface closes that gap
+as **one** generic mechanism, not per-capability protocols:
+
+- **Wire.** A worker posts one frame shape, `capability.request {id, capability, payload}`;
+  the host relays it over the authenticated control bus as `capability.invoke` with the
+  plugin id derived from its own worker→plugin mapping (identity never comes from the
+  frame) and correlates the `capability.result` / `capability.error` reply back.
+- **Catalog.** The kernel pre-defines the closed capability set (`PluginCapabilityCatalog`).
+  An unknown capability is refused with `capability_unknown` before any grant check, so
+  adding a capability is always a deliberate kernel-side change.
+- **Grants.** Deny-by-default. A plugin declares its capabilities in `maieutics.json`
+  (`capabilities: [...]`, filtered to catalogued names at parse time); the kernel's
+  manifest snapshot is the grant authority and undeclared capabilities answer
+  `capability_denied`. Reload re-reads the manifest and refreshes the snapshot.
+- **Execution.** The composition root binds the manager's `CapabilityExecutor` to the
+  control host's script tool registry (`tools.invoke`). Capability-initiated tool calls
+  skip the plugin hook chain — the plugin explicitly asked the kernel for the tool, and
+  re-running hooks would let the calling hook recurse into itself.
+- **Budget.** One total budget per call (30 s); expiry answers `capability_timeout`.
+
+Known limits: only `tools.invoke` is catalogued today; nested (dependency) workers rely
+on the storage-style frame relay and are not yet wired for capability requests; the jsr
+SDK release must publish the new surface before jsr-importing plugins can use it.
+
 ## References
 
 - `worker-actor/PLUGIN-SYSTEM.md` (orchestration model, §3–§8)

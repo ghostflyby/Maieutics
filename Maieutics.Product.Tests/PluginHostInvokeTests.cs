@@ -124,6 +124,126 @@ public sealed class PluginHostInvokeTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task CapabilityInvokeServesTheCataloguedCapability()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
+        var executed = new List<string>();
+        harness.Manager.CapabilityExecutor = (tool, arguments, _) =>
+        {
+            executed.Add(tool);
+            return Task.FromResult(JsonSerializer.SerializeToElement(
+                new { status = "ok", value = $"ran:{tool}" }));
+        };
+
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-1\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
+            "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
+
+        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+        envelope.Type.Should().Be("capability.result");
+        envelope.CorrelationId.Should().Be("cap-1");
+        var payload = JsonSerializer.Deserialize(
+            envelope.Payload!.Value.GetRawText(),
+            ReplControlJsonContext.Default.CapabilityResultPayload)!;
+        payload.Result.GetProperty("status").GetString().Should().Be("ok");
+        payload.Result.GetProperty("value").GetString().Should().Be("ran:workspace_list");
+        executed.Should().ContainSingle().Which.Should().Be("workspace_list");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CapabilityInvokeRefusesUnknownCapabilitiesBeforeAnyGrantCheck()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
+        var executorRan = false;
+        harness.Manager.CapabilityExecutor = (_, _, _) =>
+        {
+            executorRan = true;
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { status = "ok" }));
+        };
+
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-2\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"filesystem.write\"," +
+            "\"payload\":{\"tool\":\"workspace_write\",\"arguments\":{}}}}");
+
+        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+        envelope.Type.Should().Be("capability.error");
+        envelope.CorrelationId.Should().Be("cap-2");
+        var payload = JsonSerializer.Deserialize(
+            envelope.Payload!.Value.GetRawText(),
+            ReplControlJsonContext.Default.BusErrorPayload)!;
+        payload.Code.Should().Be("capability_unknown");
+        executorRan.Should().BeFalse();
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CapabilityInvokeDeniesUndeclaredCapabilities()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        // No grants recorded for plugin-1: deny-by-default.
+        harness.Manager.CapabilityExecutor = (_, _, _) =>
+            Task.FromResult(JsonSerializer.SerializeToElement(new { status = "ok" }));
+
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-3\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
+            "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
+
+        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+        envelope.Type.Should().Be("capability.error");
+        var payload = JsonSerializer.Deserialize(
+            envelope.Payload!.Value.GetRawText(),
+            ReplControlJsonContext.Default.BusErrorPayload)!;
+        payload.Code.Should().Be("capability_denied");
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CapabilityInvokeAnswersUnavailableWithoutABoundExecutor()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
+
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-4\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
+            "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
+
+        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+        envelope.Type.Should().Be("capability.error");
+        var payload = JsonSerializer.Deserialize(
+            envelope.Payload!.Value.GetRawText(),
+            ReplControlJsonContext.Default.BusErrorPayload)!;
+        payload.Code.Should().Be("capability_unavailable");
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task InvokeTimesOutWhenTheHostNeverAnswers()
     {
         if (OperatingSystem.IsWindows())

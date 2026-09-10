@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Maieutics.Control;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -12,7 +13,8 @@ internal sealed record PluginDescriptor(
     PluginPermissionGrants Permissions,
     string? Isolation,
     IReadOnlyList<string> Dependencies,
-    IReadOnlyList<PluginImportEntry> Imports);
+    IReadOnlyList<PluginImportEntry> Imports,
+    IReadOnlyList<string> Capabilities);
 
 internal sealed record PluginWorkerDescriptor(string ExportName, string EntryUrl);
 
@@ -116,7 +118,21 @@ internal static class PluginManifest
         var isolation = pluginManifest.Isolation;
         var dependencies = pluginManifest.Dependencies ?? [];
         var imports = ReadImports(directory);
-        descriptor = new PluginDescriptor(id, name, directory, workers, permissions, isolation, dependencies, imports);
+        // Capabilities are deny-by-default: only names the core's catalog knows are
+        // kept, so a manifest can never grant a capability the kernel has not defined.
+        var capabilities = (pluginManifest.Capabilities ?? [])
+            .Where(PluginCapabilityCatalog.Contains)
+            .ToArray();
+        descriptor = new PluginDescriptor(
+            id,
+            name,
+            directory,
+            workers,
+            permissions,
+            isolation,
+            dependencies,
+            imports,
+            capabilities);
         error = string.Empty;
         return true;
     }
@@ -303,7 +319,8 @@ internal sealed partial class PluginManifestJsonContext : JsonSerializerContext;
 internal sealed record MaieuticsManifestFile(
     IReadOnlyDictionary<string, string[]>? Entrypoints = null,
     IReadOnlyList<string>? Dependencies = null,
-    string? Isolation = null);
+    string? Isolation = null,
+    IReadOnlyList<string>? Capabilities = null);
 
 /// <summary>The package identity file (deno.json), read for name and permissions only.</summary>
 internal sealed record PluginManifestFile(

@@ -341,6 +341,86 @@ Deno.test("capability requests before the caller is wired answer unavailable", a
   }
 });
 
+Deno.test("nested worker capability requests relay with parent attribution", async () => {
+  const dir = Deno.makeTempDirSync();
+  // The parent's hook spawns a nested dependency worker; the nested module posts
+  // a raw capability.request frame (no SDK import needed), and the parent realm's
+  // relay forwards it upward with the parent plugin identity. The nested module
+  // answers through the correlated response frame routed back down.
+  Deno.writeTextFileSync(
+    `${dir}/nested.ts`,
+    `
+    const id = "nested-cap-1";
+    (self as unknown as { postMessage(value: unknown): void }).postMessage({
+      type: "capability.request",
+      id,
+      capability: "tools.invoke",
+      payload: { tool: "workspace_list", arguments: {} },
+    });
+    self.onmessage = (event: MessageEvent) => {
+      const frame = event.data as {
+        type?: string;
+        id?: string;
+        ok?: boolean;
+        result?: unknown;
+      };
+      if (frame?.type !== "capability.response" || frame.id !== id) return;
+      (self as unknown as { postMessage(value: unknown): void }).postMessage({
+        phase: "done",
+        ok: frame.ok === true,
+        result: frame.result,
+      });
+    };
+  `,
+  );
+  const plugin = createPlugin(
+    dir,
+    pluginSource(`
+    const nested = new Worker(new URL("./nested.ts", import.meta.url), { type: "module" });
+    const nestedResult = new Promise((resolve) => {
+      nested.onmessage = (event) => {
+        const data = event.data as { phase?: string };
+        if (data.phase !== "done") return;
+        resolve(data);
+        nested.terminate();
+      };
+      nested.onerror = (event) => {
+        resolve({ phase: "nested-error", message: event.message });
+        nested.terminate();
+      };
+    });
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => ({ action: "continue" as const, nested: await nestedResult }),
+    });
+  `),
+  );
+  const host = makeHost(plugin);
+  const calls: { plugin: string; capability: string; payload: unknown }[] = [];
+  try {
+    await host.startAll();
+    host.setCapabilityCaller((calledPlugin, calledCapability, payload) => {
+      calls.push({ plugin: calledPlugin, capability: calledCapability, payload });
+      return Promise.resolve({ status: "ok", value: "kernel-tool-result" });
+    });
+
+    const decision = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      nested?: { phase?: string; ok?: boolean; result?: { status?: string; value?: unknown } };
+    };
+
+    // Attribution: the frame carried no identity — the relay's parent realm does.
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0].plugin, "test");
+    assertEquals(calls[0].capability, "tools.invoke");
+    // The correlated answer was routed back down into the nested worker.
+    assertEquals(decision.nested?.phase, "done");
+    assertEquals(decision.nested?.ok, true);
+    assertEquals(decision.nested?.result?.status, "ok");
+    assertEquals(decision.nested?.result?.value, "kernel-tool-result");
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("invokes an object handler", async () => {
   const dir = Deno.makeTempDirSync();
   const plugin = createPlugin(

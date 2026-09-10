@@ -145,7 +145,7 @@ internal sealed class SessionBusConnection : IAsyncDisposable
         string statusDescription,
         CancellationToken cancellationToken)
     {
-        using var cancellation = cancellationToken.Register(static state =>
+        var cancellation = cancellationToken.Register(static state =>
         {
             if (state is CancellationTokenSource source) source.Cancel();
         }, lifetime);
@@ -165,13 +165,14 @@ internal sealed class SessionBusConnection : IAsyncDisposable
 
         if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
         {
-            using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
+                // One total budget: the close write rides the caller's token (the
+                // disposal budget), not a second stacked timeout.
                 await socket.CloseOutputAsync(
                     closeStatus,
                     statusDescription,
-                    closeTimeout.Token).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (Exception exception) when
                 (exception is WebSocketException or OperationCanceledException or InvalidOperationException)
@@ -181,6 +182,9 @@ internal sealed class SessionBusConnection : IAsyncDisposable
             }
         }
 
+        // Unregister the budget callback before disposing the lifetime CTS: a budget
+        // expiry in this window would otherwise Cancel a disposed source.
+        await cancellation.DisposeAsync().ConfigureAwait(false);
         lifetime.Dispose();
     }
 

@@ -1581,7 +1581,8 @@ public sealed class FrontendApiIntegrationTests
                 {
                 }
             }
-            catch (Exception exception) when (exception is OperationCanceledException or IOException)
+            catch (Exception exception) when
+                (exception is OperationCanceledException or IOException or ObjectDisposedException)
             {
             }
         }

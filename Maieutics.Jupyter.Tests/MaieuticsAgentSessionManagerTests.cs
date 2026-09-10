@@ -245,7 +245,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)));
 
         var session = manager.Resolve(stored);
-        var run = await session.StartTurnAsync(AgentTurn.FromText("hang"), CancellationToken.None);
+        var run = await session
+            .StartTurnAsync(AgentTurn.FromText("hang"), TestContext.Current.CancellationToken);
         session.IsRunInProgress.Should().BeTrue();
 
         // Churn the foreground past the capacity: the running session is never

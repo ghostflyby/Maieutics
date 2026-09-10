@@ -34,12 +34,12 @@ public sealed class FrontendDenoReplPresentationTests
             ReplDisplayBundle.FromMarkdown("# hello"),
             displayId,
             EmptyMetadata(),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
         await sink.UpdateDisplayAsync(
             displayId,
             ReplDisplayBundle.FromText("updated"),
             EmptyMetadata(),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
 
         target.Published.Should().HaveCount(2);
         target.Published[0].Type.Should().Be("repl.display");
@@ -55,8 +55,11 @@ public sealed class FrontendDenoReplPresentationTests
         var target = new FakeTarget();
         var sink = new FrontendDenoReplPresentationSink(target);
 
-        await sink.DisplayAsync(ReplDisplayBundle.FromText("hi"), EmptyMetadata(), CancellationToken.None);
-        await sink.PublishErrorAsync("Boom", "broken", [], CancellationToken.None);
+        await sink.DisplayAsync(
+            ReplDisplayBundle.FromText("hi"),
+            EmptyMetadata(),
+            TestContext.Current.CancellationToken);
+        await sink.PublishErrorAsync("Boom", "broken", [], TestContext.Current.CancellationToken);
 
         target.Published[0].Type.Should().Be("repl.display");
         target.Published[0].DisplayId.Should().BeNull();
@@ -70,7 +73,7 @@ public sealed class FrontendDenoReplPresentationTests
         var target = new FakeTarget();
         var sink = new FrontendDenoReplPresentationSink(target);
 
-        await sink.ClearOutputAsync(wait: false, CancellationToken.None);
+        await sink.ClearOutputAsync(wait: false, TestContext.Current.CancellationToken);
 
         target.Published.Should().ContainSingle()
             .Which.Type.Should().Be("repl.clear");
@@ -87,7 +90,8 @@ public sealed class FrontendDenoReplPresentationTests
         var callId = AgentToolCallId.Create();
 
         router.OpenCall(sessionId, callId);
-        var resolved = await router.WaitForCallAsync(sessionId, callId, CancellationToken.None);
+        var resolved = await router
+            .WaitForCallAsync(sessionId, callId, TestContext.Current.CancellationToken);
         resolved.Should().BeSameAs(sink);
 
         await scope.DisposeAsync();
@@ -130,12 +134,11 @@ public sealed class FrontendDenoReplPresentationTests
         sink.TryCompleteInput(requestId, "again").Should().BeFalse();
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task UnknownInputAnswerReturnsFalse()
+    [Fact]
+    public void UnknownInputAnswerReturnsFalse()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
         sink.TryCompleteInput("input-404", "x").Should().BeFalse();
-        await Task.CompletedTask;
     }
 
     [Fact(Timeout = 30_000)]
@@ -165,12 +168,11 @@ public sealed class FrontendDenoReplPresentationTests
         router.TryCompleteInput(secondId, "again").Should().BeFalse();
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task RouterInputAnswerWithoutAttachedSinksReturnsFalse()
+    [Fact]
+    public void RouterInputAnswerWithoutAttachedSinksReturnsFalse()
     {
         new FrontendDenoReplPresentationRouter()
             .TryCompleteInput($"input-{Guid.NewGuid():N}-1", "x").Should().BeFalse();
-        await Task.CompletedTask;
     }
 
     private static string RequestIdOf(FakeTarget target)
@@ -185,7 +187,8 @@ public sealed class FrontendDenoReplPresentationTests
     public async Task InputRequestHonoursCallerCancellation()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
         var wait = sink.RequestInputAsync("prompt", false, cancellation.Token);
         cancellation.Cancel();
         var act = async () => await wait;

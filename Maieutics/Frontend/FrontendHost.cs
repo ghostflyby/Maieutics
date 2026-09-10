@@ -742,10 +742,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 {
                     // Invariant 17: a malformed frame ends this connection with a typed
                     // close instead of crashing the receive loop.
-                    await send(() => socket.CloseOutputAsync(
+                    await send(() => CloseSocketOutputAsync(
+                        socket,
                         WebSocketCloseStatus.InvalidMessageType,
-                        "comm frame is malformed",
-                        CancellationToken.None)).ConfigureAwait(false);
+                        "comm frame is malformed")).ConfigureAwait(false);
                     return;
                 }
 
@@ -758,10 +758,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 catch (FrontendCommRejectException reject) when
                     (reject.Code == FrontendErrors.InvalidRequest)
                 {
-                    await send(() => socket.CloseOutputAsync(
+                    await send(() => CloseSocketOutputAsync(
+                        socket,
                         WebSocketCloseStatus.PolicyViolation,
-                        reject.Message,
-                        CancellationToken.None)).ConfigureAwait(false);
+                        reject.Message)).ConfigureAwait(false);
                     return;
                 }
                 catch (FrontendCommRejectException reject)

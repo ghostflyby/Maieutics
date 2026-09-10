@@ -304,40 +304,46 @@ internal static class PluginRegistryDiscovery
         return null;
     }
 
-    /// <summary>Reads the child's stdout within one total budget. Stderr is drained
-    /// concurrently (a child blocked on a full stderr pipe would never close stdout and
-    /// deadlock the read), and a child that outlives the budget is killed instead of
-    /// being orphaned by the <c>using</c> disposal. Returns null when the child failed
-    /// or the budget elapsed.</summary>
+    /// <summary>Reads the child's stdout within one total budget: the wait is bounded,
+    /// so a stalled child is killed instead of blocking startup forever. Both pipes are
+    /// drained concurrently (a child blocked on a full pipe never exits), and a child
+    /// that outlives the budget is killed instead of being orphaned by the
+    /// <c>using</c> disposal. Returns null when the child failed or the budget
+    /// elapsed.</summary>
     private static string? ReadOutput(Process process, TimeSpan timeout)
     {
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
-        string stdout;
+        if (!process.WaitForExit(timeout))
+        {
+            process.Kill(entireProcessTree: true);
+            ObserveDrain(standardOutput);
+            ObserveDrain(standardError);
+            return null;
+        }
+
         try
         {
-            stdout = process.StandardOutput.ReadToEnd();
-            if (!process.WaitForExit(timeout))
-            {
-                process.Kill(entireProcessTree: true);
-                return null;
-            }
-
-            if (process.ExitCode != 0) return null;
+            // The child has exited, so both pipes have hit EOF and the drains are
+            // already complete or within one scheduling hop of completing.
+            return standardOutput.GetAwaiter().GetResult();
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            return null;
         }
         finally
         {
             ObserveDrain(standardError);
         }
-
-        return stdout;
     }
 
-    private static void ObserveDrain(Task<string> standardError)
+    private static void ObserveDrain(Task<string> drain)
     {
         // The drain completes once the child dies (killed or exited); only faults are
         // observed here so they never surface as unobserved task exceptions.
-        standardError.ContinueWith(
-            static drained => _ = drained.Exception,
+        drain.ContinueWith(
+            static completed => _ = completed.Exception,
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted,
             TaskScheduler.Default);

@@ -223,7 +223,7 @@ public sealed class FrontendProcessSmokeTests
         /// a reader racing the rename can observe a not-yet-readable state.</summary>
         public async Task<JsonElement> WaitForDiscoveryAsync(CancellationToken cancellationToken)
         {
-            var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(60));
             while (true)
             {

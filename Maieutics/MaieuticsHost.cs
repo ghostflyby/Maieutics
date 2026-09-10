@@ -107,11 +107,10 @@ public static class MaieuticsHost
             // A supervised frontend child inherits its parent's stdout, and a parent
             // that never drains it would block the host's logging — and with it
             // request handling and shutdown — once the pipe buffer fills. The child's
-            // protocol surface is the discovery file plus the web API, so diagnostics
-            // go to stderr at Error+ instead; MAIEUTICS_CONSOLE_LOG opts back in.
-            builder.Logging
-                .AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Error)
-                .AddSimpleConsole();
+            // protocol surface is the discovery file plus the web API, so no console
+            // provider is registered at all: a provider filter could be re-enabled by
+            // the child's own Logging config rules, while dropping the provider is
+            // deterministic. MAIEUTICS_CONSOLE_LOG=1 opts a supervised child back in.
         }
         else
         {
@@ -386,7 +385,8 @@ public static class MaieuticsHost
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()
     {
         var aliases = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        AddAlias(aliases, "MAIEUTICS_PROFILE", "Maieutics:DefaultProfile");        AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
+        AddAlias(aliases, "MAIEUTICS_PROFILE", "Maieutics:DefaultProfile");
+        AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
         AddAlias(aliases, "MAIEUTICS_MODEL", "Maieutics:Model:Name");
         AddAlias(aliases, "MAIEUTICS_WORKSPACE", "Maieutics:Workspace:Root");
         AddAlias(aliases, "MAIEUTICS_OPENAI_API", "Maieutics:Sources:openai:ApiFlavor");

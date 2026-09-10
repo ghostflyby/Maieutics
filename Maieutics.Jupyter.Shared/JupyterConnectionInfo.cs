@@ -85,10 +85,10 @@ public sealed record JupyterConnectionInfo(
             {
                 if (File.Exists(temporary)) File.Delete(temporary);
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 // The rename already succeeded or the next write retries; a stale
-                // temp file is harmless.
+                // temp file is harmless, and cleanup must not mask the write error.
             }
         }
     }

@@ -73,6 +73,8 @@ internal sealed class DenoModuleGraphWarmer(
                           $"Could not start '{options.Executable}' to warm the Deno REPL module graph.");
             var standardOutput = process.StandardOutput.ReadToEndAsync(lifetime.Token);
             var standardError = process.StandardError.ReadToEndAsync(lifetime.Token);
+            ObserveDrain(standardOutput);
+            ObserveDrain(standardError);
             await process.WaitForExitAsync(lifetime.Token).ConfigureAwait(false);
             var error = await standardError.ConfigureAwait(false);
             _ = await standardOutput.ConfigureAwait(false);
@@ -111,5 +113,16 @@ internal sealed class DenoModuleGraphWarmer(
         {
             // The child already exited or the OS refused the kill; nothing further to do.
         }
+    }
+
+    private static void ObserveDrain(Task<string> drain)
+    {
+        // The cancellation path abandons these drains; the kill closes the pipes, and
+        // only faults are observed so they never surface as unobserved exceptions.
+        drain.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
     }
 }

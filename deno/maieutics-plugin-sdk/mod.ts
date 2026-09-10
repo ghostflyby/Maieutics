@@ -272,7 +272,13 @@ export function callCapability<T = unknown>(
  * The kernel capability surface available to plugin workers. Every entry maps
  * to one catalogued capability; the kernel remains the sole grant authority.
  */
-export const capabilities = {
+export const capabilities: {
+  invokeTool<T = unknown>(
+    name: string,
+    args?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ): Promise<T>;
+} = {
   /** Invokes one script-callable kernel tool (the same registry REPL scripts
    * reach through `maieutics.tools.invoke`) and returns its structured result
    * envelope (`{status: "ok", value}` / `{status: "error", ...}`). */

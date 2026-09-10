@@ -116,7 +116,7 @@ export type McpDiscovery =
 
 /** Why the host asked for a discovery pass. */
 export interface DiscoverContext {
-  readonly reason: "startup" | "config-changed";
+  readonly reason: "registry_update" | "startup" | "config-changed";
 }
 
 /** Decision returned by a pre-invoke hook; hook chain semantics, not observation. */
@@ -300,6 +300,14 @@ export function defineExtensionPoint(
   impl: unknown,
 ): ExtensionPointImpl<ExtensionPointName> {
   const symbol = ExtensionPoint[name as ExtensionPointName];
+  if (symbol === undefined) {
+    // The kernel only scans for known markers, so this export would silently
+    // never be discovered. Say so instead of attaching a meaningless marker.
+    console.error(
+      `[maieutics] defineExtensionPoint('${name}') is not known to this kernel ` +
+        `version; the export is ignored (known: ${Object.keys(ExtensionPoint).join(", ")}).`,
+    );
+  }
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {

@@ -5,5 +5,6 @@
     <Project Path="Maieutics.Jupyter.Kernel/Maieutics.Jupyter.Kernel.csproj"/>
     <Project Path="Maieutics.Jupyter.Shared/Maieutics.Jupyter.Shared.csproj"/>
     <Project Path="Maieutics.Jupyter.Tests/Maieutics.Jupyter.Tests.csproj"/>
+    <Project Path="Maieutics.Product.Tests/Maieutics.Product.Tests.csproj"/>
     <Project Path="Maieutics/Maieutics.csproj"/>
 </Solution>

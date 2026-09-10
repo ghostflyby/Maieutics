@@ -25,7 +25,8 @@ above the protocol and kernel-host layers.
 | `Maieutics.Jupyter.Shared` | Reusable, transport-independent Jupyter wire models and serialization |
 | `Maieutics.Jupyter.Client` | Reusable Jupyter client, protocol session, ZmqSharp transport, and local kernel manager |
 | `Maieutics.Jupyter.Kernel` | Reusable server-side Jupyter host and ZmqSharp transport |
-| `Maieutics.Jupyter.Tests` | Jupyter unit, transport, interoperability, and product integration tests |
+| `Maieutics.Jupyter.Tests` | Retained Jupyter library unit, transport, and interoperability tests |
+| `Maieutics.Product.Tests` | Executable and product integration tests (frontend, providers, configuration, permissions, Deno, plugins, control, persistence, smoke) |
 | `Maieutics.Agent` | Jupyter-independent Agent facade, run lifecycle, transcript, and tool runtime |
 | `Maieutics.Agent.Tests` | Agent runtime unit tests |
 | `Maieutics` | NativeAOT executable composition root, configuration, providers, permissions, process policy, Deno execution, frontend web API, and VSCode extension workspace (`deno/`) |
@@ -255,7 +256,8 @@ Rules apply cumulatively from this file down to the nearest child `AGENTS.md`.
 | Provider adapters | `Maieutics/Providers/AGENTS.md` |
 | Frontend web API | `Maieutics/Frontend/AGENTS.md` |
 | Agent tests | `Maieutics.Agent.Tests/AGENTS.md` |
-| Jupyter and product integration tests | `Maieutics.Jupyter.Tests/AGENTS.md` |
+| Jupyter library tests | `Maieutics.Jupyter.Tests/AGENTS.md` |
+| Product integration tests | `Maieutics.Product.Tests/AGENTS.md` |
 
 Project-local reusable guidance belongs under `.agents/skills/<skill-name>/SKILL.md`. Skills describe domain practices
 that apply across multiple project folders; `AGENTS.md` files describe ownership and constraints for their directory.

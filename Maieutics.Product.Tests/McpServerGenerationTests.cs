@@ -1,0 +1,253 @@
+using System.IO.Pipelines;
+using System.Text.Json;
+using FluentAssertions;
+using Maieutics.Execution;
+using Maieutics.Mcp;
+using Maieutics.Permissions;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
+
+namespace Maieutics.Product.Tests;
+
+public sealed class McpServerGenerationTests
+{
+    [Fact]
+    public void RestrictedRunPolicyRejectsAnMcpServerCommand()
+    {
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-server"] }));
+
+        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted);
+
+        check.Should().Throw<ArgumentException>()
+            .WithMessage("*not permitted by the effective policy*");
+    }
+
+    [Fact]
+    public void RestrictedRunPolicyAllowsAMatchingCommand()
+    {
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-server"] }));
+
+        McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-server", restricted);
+    }
+
+    [Fact]
+    public void DefaultPolicyAllowsAnyCommand()
+    {
+        McpServerGeneration.EnsureCommandAllowed("/usr/bin/anything", EffectivePolicy.Default);
+    }
+
+    private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
+    {
+        return PermissionLayerStore.Build(
+            [new PermissionLayer { Kinds = kinds.ToDictionary(static entry => entry.Kind, static entry => entry.Rules) }],
+            new VariableTable(new EmptyVariableSource()));
+    }
+
+    private sealed class EmptyVariableSource : IPermissionVariableSource
+    {
+        public string? GetVariable(string name)
+        {
+            return null;
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task OfficialStreamServerDiscoversAndInvokesAllExposedTools()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync);
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        var lease = acquired;
+        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
+        using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hello\"}");
+        var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone()));
+
+        var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
+
+        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        resultElement.TryGetProperty("isError", out _).Should().BeFalse();
+        resultElement.GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hello");
+        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
+            new MaieuticsMcpToolInfo("echo", "echo", true));
+        var retirement = generation.Retire();
+        retirement.IsCompleted.Should().BeFalse();
+        await lease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ReservedToolNamesAreHiddenAndMarkedUnavailable()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            new HashSet<string>(StringComparer.Ordinal) { "echo" });
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        acquired.Tools.Should().BeEmpty();
+        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
+            new MaieuticsMcpToolInfo("echo", "echo", false));
+        var retirement = generation.Retire();
+        await acquired.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact]
+    public void DeserializesDiscoveryTransportByTypeDiscriminator()
+    {
+        using var stdio = JsonDocument.Parse("""
+                                             {
+                                               "type": "stdio",
+                                               "command": "deno",
+                                               "args": ["run", "server.ts"],
+                                               "env": { "PORT": "8080" },
+                                               "futureField": 42
+                                             }
+                                             """);
+        var stdioDefinition = stdio.RootElement
+            .Deserialize(McpJsonContext.Default.McpTransportDefinition)
+            .Should()
+            .BeOfType<StdioMcpTransportDefinition>()
+            .Subject;
+        stdioDefinition.Command.Should().Be("deno");
+        stdioDefinition.Arguments.Should().Equal("run", "server.ts");
+        stdioDefinition.EnvironmentVariables.Should().ContainKey("PORT").WhoseValue.Should().Be("8080");
+        stdioDefinition.Kind.Should().Be(McpServerTransportKind.Stdio);
+
+        using var http = JsonDocument.Parse("""
+                                            {
+                                              "type": "http",
+                                              "url": "https://example.com/mcp",
+                                              "headers": { "Authorization": "Bearer token" }
+                                            }
+                                            """);
+        var httpDefinition = http.RootElement
+            .Deserialize(McpJsonContext.Default.McpTransportDefinition)
+            .Should()
+            .BeOfType<HttpMcpTransportDefinition>()
+            .Subject;
+        httpDefinition.Endpoint.Should().Be(new Uri("https://example.com/mcp"));
+        httpDefinition.Headers.Should().ContainKey("Authorization");
+        httpDefinition.Kind.Should().Be(McpServerTransportKind.Http);
+
+        FluentActions.Invoking(() =>
+            {
+                using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
+                return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
+            })
+            .Should()
+            .Throw<JsonException>();
+    }
+
+    private static McpServerDefinition CreateStdioDefinition()
+    {
+        var transport = new StdioMcpTransportDefinition(
+            "unused",
+            [],
+            null,
+            new Dictionary<string, string?>());
+        return new McpServerDefinition(
+            "test",
+            transport,
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.Zero,
+            McpServerDefinition.CreateGenerationKey(
+                transport,
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5),
+                TimeSpan.Zero));
+    }
+
+    private sealed class StreamServerFactory : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource lifetime = new();
+        private readonly List<(McpServer Server, Task Completion)> servers = [];
+
+        public async ValueTask DisposeAsync()
+        {
+            await lifetime.CancelAsync();
+            foreach (var (server, _) in servers) await server.DisposeAsync();
+
+            foreach (var (_, completion) in servers)
+                try
+                {
+                    await completion;
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                {
+                }
+
+            lifetime.Dispose();
+        }
+
+        internal ValueTask<IClientTransport> CreateTransportAsync(
+            McpServerDefinition definition,
+            ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var clientToServer = new Pipe();
+            var serverToClient = new Pipe();
+            var serverTransport = new StreamServerTransport(
+                clientToServer.Reader.AsStream(),
+                serverToClient.Writer.AsStream(),
+                definition.Id,
+                loggerFactory);
+            var function = AIFunctionFactory.Create(
+                (string value) => new EchoResult(value),
+                "echo",
+                "Echoes one value.");
+            var server = McpServer.Create(
+                serverTransport,
+                new McpServerOptions
+                {
+                    ServerInfo = new Implementation { Name = "test", Version = "1.0" },
+                    ToolCollection =
+                    [
+                        McpServerTool.Create(
+                            function,
+                            new McpServerToolCreateOptions { UseStructuredContent = true })
+                    ]
+                },
+                loggerFactory,
+                null);
+            servers.Add((server, server.RunAsync(lifetime.Token)));
+            IClientTransport clientTransport = new StreamClientTransport(
+                clientToServer.Writer.AsStream(),
+                serverToClient.Reader.AsStream(),
+                loggerFactory);
+            return ValueTask.FromResult(clientTransport);
+        }
+    }
+
+    private sealed record EchoResult(string Value);
+}

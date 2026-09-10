@@ -746,7 +746,7 @@ internal sealed class PluginHostManager(
         }
 
         var payload = new PluginReloadPayload(pluginId, exportName, replacement);
-        await PushAsync(
+        var delivered = await PushAsync(
             socket,
             new ReplEnvelope(
                 EnvelopeVersion,
@@ -754,6 +754,15 @@ internal sealed class PluginHostManager(
                 Guid.NewGuid().ToString("N"),
                 JsonSerializer.SerializeToElement(payload, PluginHostJsonContext.Default.PluginReloadPayload)),
             lifetime.Token).ConfigureAwait(false);
+        if (!delivered)
+        {
+            logger.LogWarning(
+                "Plugin reload request for '{PluginId}/{ExportName}' could not be delivered (the host connection is detached).",
+                pluginId,
+                exportName);
+            return;
+        }
+
         logger.LogInformation(
             "Plugin reload requested for '{PluginId}/{ExportName}'.",
             pluginId,
@@ -947,14 +956,17 @@ internal sealed class PluginHostManager(
     /// <summary>Drains the outbound queue: one writer, one outstanding WebSocket send.
     /// Per-frame send budget bounds a host that stops reading; a send failure ends the
     /// loop and the disconnect path takes over.</summary>
-    private static async Task WriteOutboundAsync(
+    private async Task WriteOutboundAsync(
         WebSocket socket,
         Channel<byte[]> channel,
         CancellationToken cancellationToken)
     {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            lifetime.Token);
         try
         {
-            await foreach (var payload in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var payload in channel.Reader.ReadAllAsync(linked.Token).ConfigureAwait(false))
             {
                 using var sendBudget = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                 await socket
@@ -998,8 +1010,8 @@ internal sealed class PluginHostManager(
 
         if (draining.Length > 0)
         {
-            // One total budget for every in-flight capability call; each call's own
-            // reply write is bounded, so the drain cannot extend past it observably.
+            // One total budget for every in-flight capability call; reply writes ride
+            // the bounded queue, so nothing here extends past the budget observably.
             using var drainBudget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             try
             {
@@ -1562,9 +1574,8 @@ internal sealed class PluginHostManager(
                     ReplControlJsonContext.Default.BusErrorPayload)));
     }
 
-    /// <summary>Sends one capability reply with a bounded write: a host that stays
-    /// connected but stops reading must not hold the tracked call (and with it the
-    /// shutdown drain) open forever.</summary>
+    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue;
+    /// a reply to a detached host is dropped (the tracked call ends with the socket).</summary>
     private async Task PushCapabilityReplyAsync(WebSocket socket, ReplEnvelope envelope)
     {
         // The enqueue rides the caller's budget; the bounded writer owns the write.
@@ -1887,7 +1898,10 @@ internal sealed class PluginHostManager(
         };
     }
 
-    private async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
+    /// <summary>Enqueues one frame on the bounded outbound queue. Returns whether the
+    /// frame was accepted; a detached host or a completed queue drops it, and callers
+    /// that report delivery must branch on the result.</summary>
+    private async Task<bool> PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
         ChannelWriter<byte[]>? writer;
@@ -1899,7 +1913,7 @@ internal sealed class PluginHostManager(
         if (writer is null)
         {
             // No attached host writer (detached or never attached): nothing to send to.
-            return;
+            return false;
         }
 
         try
@@ -1907,10 +1921,12 @@ internal sealed class PluginHostManager(
             // Bounded with backpressure: a host that stops reading applies pressure to the
             // enqueueing callers instead of growing the queue without bound.
             await writer.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (ChannelClosedException)
         {
             // The writer loop ended (disconnect or stop): the frame has no destination.
+            return false;
         }
     }
 

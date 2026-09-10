@@ -77,9 +77,10 @@ internal sealed class FrontendOptions
         {
             File.Delete(DiscoveryFile);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Best-effort cleanup must not mask shutdown.
+            // Best-effort cleanup must not mask shutdown; AV scanners can deny the
+            // delete briefly on Windows.
         }
     }
 

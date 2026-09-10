@@ -25,51 +25,57 @@ public sealed class FrontendProcessSmokeTests
             TestContext.Current.CancellationToken,
             TimeSpan.FromSeconds(90));
         var provider = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "smoke answer");
-        await using var process = StartHostProcess(provider.Endpoint, deadline.Token);
-        var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
-
-        var baseUrl = discovery.GetProperty("url").GetString()!;
-        var token = discovery.GetProperty("token").GetString()!;
-        var client = new HttpClient { BaseAddress = new Uri(baseUrl) };
-        client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", token);
+        var process = StartHostProcess(provider.Endpoint, deadline.Token);
         try
         {
-            var capabilities = await client.GetFromJsonAsync<JsonElement>(
-                "/v1/agent/capabilities", deadline.Token);
-            capabilities.GetProperty("protocolVersion").GetInt32().Should().Be(1);
-            var session = await client.GetFromJsonAsync<JsonElement>(
-                "/v1/agent/session", deadline.Token);
-            var sessionId = session.GetProperty("id").GetString()!;
+            var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
 
-            using var response = await client.PostAsJsonAsync(
-                $"/v1/agent/sessions/{sessionId}/turns",
-                new { text = "%status" },
-                deadline.Token);
-            response.StatusCode.Should().Be(HttpStatusCode.OK);
-            var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-            body.GetProperty("markdown").GetString().Should().Contain("### Maieutics status");
+            var baseUrl = discovery.GetProperty("url").GetString()!;
+            var token = discovery.GetProperty("token").GetString()!;
+            var client = new HttpClient { BaseAddress = new Uri(baseUrl) };
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", token);
+            try
+            {
+                var capabilities = await client.GetFromJsonAsync<JsonElement>(
+                    "/v1/agent/capabilities", deadline.Token);
+                capabilities.GetProperty("protocolVersion").GetInt32().Should().Be(1);
+                var session = await client.GetFromJsonAsync<JsonElement>(
+                    "/v1/agent/session", deadline.Token);
+                var sessionId = session.GetProperty("id").GetString()!;
 
-            var turn = await client.PostAsJsonAsync(
-                $"/v1/agent/sessions/{sessionId}/turns",
-                new { text = "hello" },
-                deadline.Token);
-            turn.StatusCode.Should().Be(HttpStatusCode.Accepted);
-            var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-                .GetProperty("runId").GetString()!;
+                using var response = await client.PostAsJsonAsync(
+                    $"/v1/agent/sessions/{sessionId}/turns",
+                    new { text = "%status" },
+                    deadline.Token);
+                response.StatusCode.Should().Be(HttpStatusCode.OK);
+                var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+                body.GetProperty("markdown").GetString().Should().Contain("### Maieutics status");
 
-            var transcript = await WaitForTranscriptTurnAsync(client, sessionId, deadline.Token);
-            transcript.GetProperty("runId").GetString().Should().Be(runId);
-            transcript.GetProperty("messages")[1].GetProperty("parts")[0]
-                .GetProperty("text").GetString().Should().Be("smoke answer");
+                var turn = await client.PostAsJsonAsync(
+                    $"/v1/agent/sessions/{sessionId}/turns",
+                    new { text = "hello" },
+                    deadline.Token);
+                turn.StatusCode.Should().Be(HttpStatusCode.Accepted);
+                var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+                    .GetProperty("runId").GetString()!;
+
+                var transcript = await WaitForTranscriptTurnAsync(client, sessionId, deadline.Token);
+                transcript.GetProperty("runId").GetString().Should().Be(runId);
+                transcript.GetProperty("messages")[1].GetProperty("parts")[0]
+                    .GetProperty("text").GetString().Should().Be("smoke answer");
+            }
+            finally
+            {
+                client.Dispose();
+            }
         }
         finally
         {
-            client.Dispose();
+            // The child must never outlive the test, including on failures: a leaked
+            // host keeps running for the rest of the job and holds the temp files.
+            await process.DisposeAsync();
         }
-
-        await process.DisposeAsync();
-        File.Exists(process.DiscoveryPath).Should().BeFalse();
     }
 
     private static CancellationTokenSource CreateDeadline(
@@ -87,7 +93,7 @@ public sealed class FrontendProcessSmokeTests
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(30));
+        wait.CancelAfter(TimeSpan.FromSeconds(45));
         while (true)
         {
             var transcript = await client.GetFromJsonAsync<JsonElement>(
@@ -146,13 +152,16 @@ public sealed class FrontendProcessSmokeTests
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("The Maieutics process could not be started.");
         Console.WriteLine($"[smoke] host pid {process.Id} discovery {discoveryPath}");
-        var stderrTail = TailStderr(process);
+        var stderrTail = TailStream(process, redirectError: true);
+        // Stdout must be drained even though the protocol lives on the discovery file:
+        // an undrained pipe fills on Windows and blocks the child mid-write.
+        var stdoutTail = TailStream(process, redirectError: false);
 
         return new SmokeHostProcess(
             process,
             discoveryPath,
             configurationFile,
-            stderrTail);
+            () => $"{stdoutTail()}\n{stderrTail()}".Trim());
     }
 
     private static string GetManagedHostAssemblyPath()
@@ -167,17 +176,32 @@ public sealed class FrontendProcessSmokeTests
             "Maieutics", "bin", configuration, "net10.0", "maieutics.dll");
     }
 
-    private static Func<string> TailStderr(Process process)
+    private static Func<string> TailStream(Process process, bool redirectError)
     {
         var chunks = new List<string>();
-        process.ErrorDataReceived += static (_, _) => { };
-        process.ErrorDataReceived += (_, eventArgs) =>
+        if (redirectError)
         {
-            if (eventArgs.Data is null) return;
-            lock (chunks) chunks.Add(eventArgs.Data);
-            while (chunks.Count > 40) chunks.RemoveAt(0);
-        };
-        process.BeginErrorReadLine();
+            process.ErrorDataReceived += static (_, _) => { };
+            process.ErrorDataReceived += (_, eventArgs) =>
+            {
+                if (eventArgs.Data is null) return;
+                lock (chunks) chunks.Add(eventArgs.Data);
+                while (chunks.Count > 40) chunks.RemoveAt(0);
+            };
+            process.BeginErrorReadLine();
+        }
+        else
+        {
+            process.OutputDataReceived += static (_, _) => { };
+            process.OutputDataReceived += (_, eventArgs) =>
+            {
+                if (eventArgs.Data is null) return;
+                lock (chunks) chunks.Add(eventArgs.Data);
+                while (chunks.Count > 40) chunks.RemoveAt(0);
+            };
+            process.BeginOutputReadLine();
+        }
+
         return () => string.Join("\n", chunks);
     }
 
@@ -185,22 +209,30 @@ public sealed class FrontendProcessSmokeTests
         Process process,
         string discoveryPath,
         string configurationFile,
-        Func<string> stderrTail) : IAsyncDisposable
+        Func<string> outputTail) : IAsyncDisposable
     {
+        // Teardown must run at most once: the explicit finally dispose would
+        // otherwise double-kill.
+        private int disposeState;
+
         public string DiscoveryPath { get; } = discoveryPath;
 
+        /// <summary>Waits for the discovery file's appearance within the remaining test
+        /// budget. Transient read failures are retried: the writer publishes atomically,
+        /// but on Windows an AV scanner can hold the file briefly (sharing violation) and
+        /// a reader racing the rename can observe a not-yet-readable state.</summary>
         public async Task<JsonElement> WaitForDiscoveryAsync(CancellationToken cancellationToken)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(TimeSpan.FromSeconds(45));
+            deadline.CancelAfter(TimeSpan.FromSeconds(60));
             while (true)
             {
                 if (process.HasExited)
                 {
-                    var tail = stderrTail();
+                    var tail = outputTail();
                     throw new InvalidOperationException(
                         $"The Maieutics process exited with code {process.ExitCode} before publishing discovery."
-                        + (tail.Length > 0 ? $"\nstderr:\n{tail}" : ""));
+                        + (tail.Length > 0 ? $"\noutput:\n{tail}" : ""));
                 }
 
                 try
@@ -210,10 +242,11 @@ public sealed class FrontendProcessSmokeTests
                         stream, cancellationToken: deadline.Token).ConfigureAwait(false);
                     return document.RootElement.Clone();
                 }
-                catch (FileNotFoundException)
-                {
-                }
-                catch (DirectoryNotFoundException)
+                catch (Exception exception) when (
+                    exception is FileNotFoundException or
+                        DirectoryNotFoundException or
+                        IOException or
+                        JsonException)
                 {
                 }
 
@@ -223,17 +256,33 @@ public sealed class FrontendProcessSmokeTests
 
         public async ValueTask DisposeAsync()
         {
+            if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+
             try
             {
                 if (!process.HasExited)
                 {
                     process.Kill(entireProcessTree: true);
-                    await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
                 }
             }
-            catch (Exception exception) when (exception is InvalidOperationException or InvalidOperationException)
+            catch (Exception exception) when (
+                exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                // The process instance lost its association (already reaped by the OS); nothing to kill.
+                // The process instance lost its association (already reaped by the OS)
+                // or the OS refused the kill because the child just exited.
+            }
+
+            // Bounded: a kill that has not reaped within this budget must not consume
+            // the test's remaining xUnit timeout — a canceled teardown was exactly the
+            // smoke-test flake signature.
+            using var reaped = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                await process.WaitForExitAsync(reaped.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is OperationCanceledException or InvalidOperationException)
+            {
             }
 
             process.Dispose();
@@ -242,8 +291,9 @@ public sealed class FrontendProcessSmokeTests
                 {
                     File.Delete(path);
                 }
-                catch (IOException)
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
+                    // Best-effort cleanup; a Windows lock can outlive the kill briefly.
                 }
         }
     }

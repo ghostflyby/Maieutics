@@ -51,6 +51,7 @@ internal sealed class DenoModuleGraphWarmer(
 
     private async Task WarmAsync()
     {
+        Process? process = null;
         try
         {
             var startInfo = new ProcessStartInfo
@@ -67,9 +68,9 @@ internal sealed class DenoModuleGraphWarmer(
             startInfo.ArgumentList.Add($"--lock={modules.LockFile}");
             startInfo.ArgumentList.Add(modules.MainUrl);
 
-            using var process = Process.Start(startInfo)
-                                ?? throw new InvalidOperationException(
-                                    $"Could not start '{options.Executable}' to warm the Deno REPL module graph.");
+            process = Process.Start(startInfo)
+                      ?? throw new InvalidOperationException(
+                          $"Could not start '{options.Executable}' to warm the Deno REPL module graph.");
             var standardOutput = process.StandardOutput.ReadToEndAsync(lifetime.Token);
             var standardError = process.StandardError.ReadToEndAsync(lifetime.Token);
             await process.WaitForExitAsync(lifetime.Token).ConfigureAwait(false);
@@ -85,11 +86,30 @@ internal sealed class DenoModuleGraphWarmer(
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
+            // Shutdown cancelled the warm: kill the child so `using` disposal below
+            // cannot orphan a still-running `deno cache`.
+            TryKill(process);
         }
         catch (Exception exception)
         {
             // A failed warm must not take down the host; the REPL session re-installs on demand.
             logger.LogDebug(exception, "Deno REPL module-graph warm failed; the REPL will install on demand.");
+        }
+        finally
+        {
+            process?.Dispose();
+        }
+    }
+
+    private static void TryKill(Process? process)
+    {
+        try
+        {
+            if (process is not null && !process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // The child already exited or the OS refused the kill; nothing further to do.
         }
     }
 }

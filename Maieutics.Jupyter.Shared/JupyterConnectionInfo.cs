@@ -62,12 +62,35 @@ public sealed record JupyterConnectionInfo(
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
-        await using var stream = File.Create(path);
-        await JsonSerializer.SerializeAsync(
-            stream,
-            ToConnectionFile(),
-            JupyterConnectionJsonContext.Default.JupyterConnectionFile,
-            cancellationToken);
+        // The connection file is a cross-process readiness signal (kernels may re-read
+        // it on restart), so it is published atomically: readers never see a truncated
+        // or half-written file.
+        var temporary = $"{path}.tmp-{Guid.NewGuid():N}";
+        try
+        {
+            await using (var stream = File.Create(temporary))
+            {
+                await JsonSerializer.SerializeAsync(
+                    stream,
+                    ToConnectionFile(),
+                    JupyterConnectionJsonContext.Default.JupyterConnectionFile,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+            }
+            catch (IOException)
+            {
+                // The rename already succeeded or the next write retries; a stale
+                // temp file is harmless.
+            }
+        }
     }
 
     public string Endpoint(JupyterChannel channel)

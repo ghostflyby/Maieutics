@@ -100,8 +100,23 @@ public static class MaieuticsHost
             });
 
         builder.Logging
-            .AddConfiguration(builder.Configuration.GetSection("Logging"))
-            .AddSimpleConsole();
+            .AddConfiguration(builder.Configuration.GetSection("Logging"));
+        if (!string.IsNullOrWhiteSpace(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]) &&
+            !IsConsoleLogRequested(builder.Configuration))
+        {
+            // A supervised frontend child inherits its parent's stdout, and a parent
+            // that never drains it would block the host's logging — and with it
+            // request handling and shutdown — once the pipe buffer fills. The child's
+            // protocol surface is the discovery file plus the web API, so diagnostics
+            // go to stderr at Error+ instead; MAIEUTICS_CONSOLE_LOG opts back in.
+            builder.Logging
+                .AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Error)
+                .AddSimpleConsole();
+        }
+        else
+        {
+            builder.Logging.AddSimpleConsole();
+        }
         var denoReplOptions = new DenoReplOptions();
         builder.Configuration.GetSection(DenoReplOptions.SectionName).Bind(denoReplOptions);
         denoReplOptions.Validate();
@@ -361,11 +376,17 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
     }
 
+    private static bool IsConsoleLogRequested(IConfiguration configuration)
+    {
+        return configuration["MAIEUTICS_CONSOLE_LOG"] is { } value &&
+               (value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("true", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()
     {
         var aliases = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        AddAlias(aliases, "MAIEUTICS_PROFILE", "Maieutics:DefaultProfile");
-        AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
+        AddAlias(aliases, "MAIEUTICS_PROFILE", "Maieutics:DefaultProfile");        AddAlias(aliases, "MAIEUTICS_PROVIDER", "Maieutics:Model:Provider");
         AddAlias(aliases, "MAIEUTICS_MODEL", "Maieutics:Model:Name");
         AddAlias(aliases, "MAIEUTICS_WORKSPACE", "Maieutics:Workspace:Root");
         AddAlias(aliases, "MAIEUTICS_OPENAI_API", "Maieutics:Sources:openai:ApiFlavor");

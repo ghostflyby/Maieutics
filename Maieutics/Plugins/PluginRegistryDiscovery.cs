@@ -255,9 +255,8 @@ internal static class PluginRegistryDiscovery
         startInfo.ArgumentList.Add(specifier);
         using var process = Process.Start(startInfo);
         if (process is null) return null;
-        var stdout = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(TimeSpan.FromSeconds(120));
-        if (process.ExitCode != 0) return null;
+        var stdout = ReadOutput(process, TimeSpan.FromSeconds(120));
+        if (stdout is null) return null;
 
         var document = JsonDocument.Parse(stdout);
         var packages = document.RootElement.GetProperty("npmPackages");
@@ -289,9 +288,8 @@ internal static class PluginRegistryDiscovery
         startInfo.ArgumentList.Add(url);
         using var process = Process.Start(startInfo);
         if (process is null) return null;
-        var stdout = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(TimeSpan.FromSeconds(60));
-        if (process.ExitCode != 0) return null;
+        var stdout = ReadOutput(process, TimeSpan.FromSeconds(60));
+        if (stdout is null) return null;
 
         var document = JsonDocument.Parse(stdout);
         foreach (var module in document.RootElement.GetProperty("modules").EnumerateArray())
@@ -304,5 +302,44 @@ internal static class PluginRegistryDiscovery
             }
         }
         return null;
+    }
+
+    /// <summary>Reads the child's stdout within one total budget. Stderr is drained
+    /// concurrently (a child blocked on a full stderr pipe would never close stdout and
+    /// deadlock the read), and a child that outlives the budget is killed instead of
+    /// being orphaned by the <c>using</c> disposal. Returns null when the child failed
+    /// or the budget elapsed.</summary>
+    private static string? ReadOutput(Process process, TimeSpan timeout)
+    {
+        var standardError = process.StandardError.ReadToEndAsync();
+        string stdout;
+        try
+        {
+            stdout = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(timeout))
+            {
+                process.Kill(entireProcessTree: true);
+                return null;
+            }
+
+            if (process.ExitCode != 0) return null;
+        }
+        finally
+        {
+            ObserveDrain(standardError);
+        }
+
+        return stdout;
+    }
+
+    private static void ObserveDrain(Task<string> standardError)
+    {
+        // The drain completes once the child dies (killed or exited); only faults are
+        // observed here so they never surface as unobserved task exceptions.
+        standardError.ContinueWith(
+            static drained => _ = drained.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
     }
 }

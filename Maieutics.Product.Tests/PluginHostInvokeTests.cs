@@ -124,6 +124,46 @@ public sealed class PluginHostInvokeTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ConcurrentSendsAreSerializedThroughTheOutboundQueue()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
+        harness.Manager.CapabilityExecutor = (_, arguments, _) =>
+            Task.FromResult(JsonSerializer.SerializeToElement(
+                new { status = "ok", value = arguments.GetProperty("marker").GetInt32() }));
+
+        // 12 concurrent capability invokes: the bounded outbound queue serializes
+        // the reply frames on the one WebSocket without interleaving or send faults,
+        // and every correlated answer reaches the host.
+        Parallel.For(0, 12, index =>
+        {
+            harness.Manager.HandleHostMessage(
+                "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-" + index + "\"," +
+                "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
+                "\"payload\":{\"tool\":\"probe\",\"arguments\":{\"marker\":" + index + "}}}}");
+        });
+
+        var markers = new List<int>();
+        for (var index = 0; index < 12; index++)
+        {
+            var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+            var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+            envelope.Type.Should().Be("capability.result");
+            var payload = JsonSerializer.Deserialize(
+                envelope.Payload!.Value.GetRawText(),
+                ReplControlJsonContext.Default.CapabilityResultPayload)!;
+            markers.Add(payload.Result.GetProperty("value").GetInt32());
+        }
+
+        markers.Should().BeEquivalentTo(Enumerable.Range(0, 12));
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task CapabilityInvokeServesTheCataloguedCapability()
     {
         if (OperatingSystem.IsWindows())

@@ -153,6 +153,9 @@ internal sealed class PluginHostManager(
     /// session and generation — a report for a session/generation no derivation is waiting on is
     /// ignored (a spontaneous host-derived REPL still registers its pid through
     /// <see cref="RegisterHostRepl"/>).</summary>
+    private const int OutboundCapacity = 512;
+    private Channel<byte[]>? outbound;
+    private Task? outboundWriter;
     private readonly List<Task> capabilityCalls = [];
     private readonly Dictionary<string, IReadOnlyList<string>> capabilityGrants =
         new(StringComparer.Ordinal);
@@ -884,6 +887,17 @@ internal sealed class PluginHostManager(
         lock (gate)
         {
             Socket = socket;
+            // A WebSocket permits one outstanding send: every C#→host frame is
+            // serialized through this bounded channel instead of concurrent direct
+            // sends, which would fault with "already one outstanding send" the
+            // moment a capability reply raced a hook request.
+            outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(OutboundCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait,
+            });
+            outboundWriter = WriteOutboundAsync(socket, outbound, cancellationToken);
         }
 
         try
@@ -905,11 +919,59 @@ internal sealed class PluginHostManager(
                 if (ReferenceEquals(socket, Socket)) Socket = null;
             }
 
+            outbound?.Writer.TryComplete();
+            outbound = null;
+            outboundWriter = null;
             FailPending("The plugin host connection closed.");
+            if (outboundWriter is not null)
+            {
+                try
+                {
+                    await outboundWriter.ConfigureAwait(false);
+                }
+                catch (Exception exception) when (
+                    exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+                {
+                    // The writer ends with the socket; a mid-frame failure is the
+                    // disconnect itself and is surfaced through FailPending above.
+                }
+            }
+
             // A crashed or killed host leaves its derived REPL children registered; release their
             // session identities and broker policies here (the host's own exited reports never
             // arrive). Idempotent with the exited-report path.
             ReleaseHostReplRegistrations();
+        }
+    }
+
+    /// <summary>Drains the outbound queue: one writer, one outstanding WebSocket send.
+    /// Per-frame send budget bounds a host that stops reading; a send failure ends the
+    /// loop and the disconnect path takes over.</summary>
+    private static async Task WriteOutboundAsync(
+        WebSocket socket,
+        Channel<byte[]> channel,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var payload in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                using var sendBudget = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                await socket
+                    .SendAsync(payload, WebSocketMessageType.Text, true, sendBudget.Token)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (
+            exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+        {
+            // Socket died, host stopped, or a frame overran its send budget.
+        }
+        finally
+        {
+            // Completing the channel makes any late enqueue fail fast with
+            // ChannelClosedException instead of blocking on a dead connection.
+            channel.Writer.TryComplete();
         }
     }
 
@@ -1503,19 +1565,10 @@ internal sealed class PluginHostManager(
     /// <summary>Sends one capability reply with a bounded write: a host that stays
     /// connected but stops reading must not hold the tracked call (and with it the
     /// shutdown drain) open forever.</summary>
-    private static async Task PushCapabilityReplyAsync(WebSocket socket, ReplEnvelope envelope)
+    private async Task PushCapabilityReplyAsync(WebSocket socket, ReplEnvelope envelope)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        try
-        {
-            await PushAsync(socket, envelope, timeout.Token).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (
-            exception is OperationCanceledException or WebSocketException or InvalidOperationException)
-        {
-            // The host vanished or overran the write budget; the tracked call ends
-            // either way and the reply is not observable by anyone else.
-        }
+        // The enqueue rides the caller's budget; the bounded writer owns the write.
+        await PushAsync(socket, envelope, CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>Refreshes the capability-grant snapshot from the kernel-parsed
@@ -1834,16 +1887,31 @@ internal sealed class PluginHostManager(
         };
     }
 
-    private static async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
+    private async Task PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
-        await socket
-            .SendAsync(
-                Encoding.UTF8.GetBytes(json),
-                WebSocketMessageType.Text,
-                true,
-                cancellationToken)
-            .ConfigureAwait(false);
+        ChannelWriter<byte[]>? writer;
+        lock (gate)
+        {
+            writer = outbound?.Writer;
+        }
+
+        if (writer is null)
+        {
+            // No attached host writer (detached or never attached): nothing to send to.
+            return;
+        }
+
+        try
+        {
+            // Bounded with backpressure: a host that stops reading applies pressure to the
+            // enqueueing callers instead of growing the queue without bound.
+            await writer.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            // The writer loop ended (disconnect or stop): the frame has no destination.
+        }
     }
 
 }

@@ -377,18 +377,23 @@ Deno.test("nested worker capability requests relay with parent attribution", asy
     dir,
     pluginSource(`
     const nested = new Worker(new URL("./nested.ts", import.meta.url), { type: "module" });
-    const nestedResult = new Promise((resolve) => {
-      nested.onmessage = (event) => {
-        const data = event.data as { phase?: string };
-        if (data.phase !== "done") return;
-        resolve(data);
-        nested.terminate();
-      };
-      nested.onerror = (event) => {
-        resolve({ phase: "nested-error", message: event.message });
-        nested.terminate();
-      };
-    });
+    const nestedResult = Promise.race([
+      new Promise((resolve) => {
+        nested.onmessage = (event) => {
+          const data = event.data as { phase?: string };
+          if (data.phase !== "done") return;
+          resolve(data);
+          nested.terminate();
+        };
+        nested.onerror = (event) => {
+          resolve({ phase: "nested-error", message: event.message });
+          nested.terminate();
+        };
+      }),
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ phase: "relay-timeout" }), 15_000)
+      ),
+    ]);
     export default defineExtensionPoint("ToolPreInvoke", {
       handler: async () => ({ action: "continue" as const, nested: await nestedResult }),
     });

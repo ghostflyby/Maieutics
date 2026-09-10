@@ -30,6 +30,11 @@ void initPluginWorker();
  * the correlated `capability.response` frames back down into the requesting
  * nested worker. Ids are rewritten with a relay prefix, so the parent's own
  * capability pending map and a nested worker's can never collide.
+ * Depth is exactly one level: nested realms enter through the shared
+ * bootstrap, which does not install this relay, so a grandchild's
+ * requests are dropped and their callers time out. Routes have no
+ * settle budget of their own — the kernel call budget and the nested
+ * caller's deadline bound them.
  */
 function installCapabilityRelay(): void {
   const routes = new Map<string, { worker: Worker; nestedId: string }>();

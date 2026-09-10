@@ -923,20 +923,31 @@ internal sealed class PluginHostManager(
         }
         finally
         {
+            Task? writer;
             lock (gate)
             {
-                if (ReferenceEquals(socket, Socket)) Socket = null;
+                // Guarded by the same identity check as Socket: a successor attach
+                // must never have its channel completed by the old detach.
+                if (ReferenceEquals(socket, Socket))
+                {
+                    Socket = null;
+                    outbound?.Writer.TryComplete();
+                    outbound = null;
+                }
+
+                writer = outboundWriter;
+                outboundWriter = null;
             }
 
-            outbound?.Writer.TryComplete();
-            outbound = null;
-            outboundWriter = null;
+            // Fail dependents BEFORE draining the pump: a stuck send must not delay
+            // the typed host_disconnected outcomes by even one send budget.
             FailPending("The plugin host connection closed.");
-            if (outboundWriter is not null)
+
+            if (writer is not null)
             {
                 try
                 {
-                    await outboundWriter.ConfigureAwait(false);
+                    await writer.ConfigureAwait(false);
                 }
                 catch (Exception exception) when (
                     exception is OperationCanceledException or WebSocketException or InvalidOperationException)

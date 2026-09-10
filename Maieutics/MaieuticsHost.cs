@@ -100,8 +100,22 @@ public static class MaieuticsHost
             });
 
         builder.Logging
-            .AddConfiguration(builder.Configuration.GetSection("Logging"))
-            .AddSimpleConsole();
+            .AddConfiguration(builder.Configuration.GetSection("Logging"));
+        if (!string.IsNullOrWhiteSpace(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]) &&
+            !IsConsoleLogRequested(builder.Configuration))
+        {
+            // A supervised frontend child inherits its parent's stdout, and a parent
+            // that never drains it would block the host's logging — and with it
+            // request handling and shutdown — once the pipe buffer fills. The child's
+            // protocol surface is the discovery file plus the web API, so no console
+            // provider is registered at all: a provider filter could be re-enabled by
+            // the child's own Logging config rules, while dropping the provider is
+            // deterministic. MAIEUTICS_CONSOLE_LOG=1 opts a supervised child back in.
+        }
+        else
+        {
+            builder.Logging.AddSimpleConsole();
+        }
         var denoReplOptions = new DenoReplOptions();
         builder.Configuration.GetSection(DenoReplOptions.SectionName).Bind(denoReplOptions);
         denoReplOptions.Validate();
@@ -359,6 +373,13 @@ public static class MaieuticsHost
             services.GetRequiredService<ReplControlSessionRegistry>(),
             services.GetRequiredService<ReplControlCredentialRegistry>(),
             services.GetRequiredService<ILogger<WindowsPipeBootstrap>>());
+    }
+
+    private static bool IsConsoleLogRequested(IConfiguration configuration)
+    {
+        return configuration["MAIEUTICS_CONSOLE_LOG"] is { } value &&
+               (value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("true", StringComparison.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyDictionary<string, string?> GetEnvironmentAliases()

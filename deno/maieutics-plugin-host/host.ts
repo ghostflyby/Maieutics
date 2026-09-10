@@ -229,6 +229,32 @@ export class PluginHost {
    * posts a frame. */
   readonly #storage: PluginStoragePool;
 
+  /** Kernel capability caller, wired by mod.ts once the bus is up (the same
+   * late-wiring pattern as ReplManager's reporter). Requests carry the plugin
+   * identity the host derives from its own worker→plugin mapping. */
+  #capabilityCaller:
+    | ((
+      plugin: string,
+      capability: string,
+      payload: unknown,
+    ) => Promise<unknown>)
+    | undefined;
+
+  /** Sets (or replaces) the kernel capability caller. Must be non-null before a
+   * plugin worker posts a capability.request; earlier requests are refused with
+   * a typed capability_unavailable response. */
+  setCapabilityCaller(
+    caller:
+      | ((
+        plugin: string,
+        capability: string,
+        payload: unknown,
+      ) => Promise<unknown>)
+      | undefined,
+  ): void {
+    this.#capabilityCaller = caller;
+  }
+
   /** The plugin HTTP gateway (aggregator + router), created on first use. */
   httpGateway(): HttpGateway {
     return this.#http ??= new HttpGateway();
@@ -427,7 +453,53 @@ export class PluginHost {
         providerKey?: unknown;
         providerModule?: unknown;
         sab?: unknown;
+        id?: unknown;
+        capability?: unknown;
+        payload?: unknown;
       };
+      if (frame?.type === "capability.request") {
+        // A plugin worker asks the kernel for one catalogued capability. Identity
+        // comes from the worker→plugin mapping, never from the frame (same rule
+        // as the storage relay): a worker cannot claim another plugin's grants.
+        const requester = event.currentTarget as Worker;
+        const sender = [...this.#workers.values()].find((handle) => handle.worker === requester);
+        const id = typeof frame.id === "string" ? frame.id : "";
+        const capability = typeof frame.capability === "string" ? frame.capability : "";
+        if (id === "") return;
+        if (
+          sender === undefined ||
+          capability === "" ||
+          this.#capabilityCaller === undefined
+        ) {
+          requester.postMessage({
+            type: "capability.response",
+            id,
+            ok: false,
+            code: sender === undefined ? "capability_unattributed" : "capability_unavailable",
+            message: sender === undefined
+              ? "The requesting worker is not a registered plugin worker."
+              : "The kernel capability caller is not wired yet.",
+          });
+          return;
+        }
+
+        const caller = this.#capabilityCaller;
+        void caller(sender.plugin.id, capability, frame.payload).then(
+          (result: unknown) => {
+            requester.postMessage({ type: "capability.response", id, ok: true, result });
+          },
+          (error: Error & { code?: string }) => {
+            requester.postMessage({
+              type: "capability.response",
+              id,
+              ok: false,
+              code: error.code ?? "capability_failed",
+              message: error.message,
+            });
+          },
+        );
+        return;
+      }
       if (frame?.type === STORAGE_FRAME_TYPE) {
         const requester = event.currentTarget as Worker;
         const sender = [...this.#workers.values()].find((handle) => handle.worker === requester);

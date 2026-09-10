@@ -261,6 +261,86 @@ Deno.test("scans object and function extension points", async () => {
   }
 });
 
+Deno.test("capability requests relay the derived plugin identity and correlate answers", async () => {
+  const dir = Deno.makeTempDirSync();
+  // The hook performs the worker-side capability call through the SDK and hands
+  // the kernel's answer back inside its decision, so one extension-point invoke
+  // covers the whole worker → host relay → correlated reply round trip.
+  const plugin = createPlugin(
+    dir,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const { capabilities } = await import(${JSON.stringify(SDK_URL)});
+        const result = await capabilities.invokeTool("workspace_list", {});
+        return { action: "continue", toolResult: result };
+      },
+    });
+  `),
+  );
+  const host = makeHost(plugin);
+  const calls: { plugin: string; capability: string; payload: unknown }[] = [];
+  try {
+    await host.startAll();
+    host.setCapabilityCaller((calledPlugin, calledCapability, payload) => {
+      calls.push({ plugin: calledPlugin, capability: calledCapability, payload });
+      return Promise.resolve({ status: "ok", value: "kernel-tool-result" });
+    });
+
+    const decision = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      action?: string;
+      toolResult?: { status?: string; value?: unknown };
+    };
+
+    // Identity is derived from the host's worker→plugin mapping, never the frame.
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0].plugin, "test");
+    assertEquals(calls[0].capability, "tools.invoke");
+    assertEquals(
+      JSON.stringify(calls[0].payload),
+      JSON.stringify({ tool: "workspace_list", arguments: {} }),
+    );
+    // The correlated answer reached the worker and rode along in the decision.
+    assertEquals(decision.action, "continue");
+    assertEquals(decision.toolResult?.status, "ok");
+    assertEquals(decision.toolResult?.value, "kernel-tool-result");
+  } finally {
+    host.dispose();
+  }
+});
+
+Deno.test("capability requests before the caller is wired answer unavailable", async () => {
+  const dir = Deno.makeTempDirSync();
+  const plugin = createPlugin(
+    dir,
+    pluginSource(`
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: async () => {
+        const { callCapability } = await import(${JSON.stringify(SDK_URL)});
+        try {
+          await callCapability("tools.invoke", { tool: "workspace_list", arguments: {} });
+          return { action: "continue", outcome: "resolved" };
+        } catch (error) {
+          return { action: "continue", outcome: (error as Error).message };
+        }
+      },
+    });
+  `),
+  );
+  const host = makeHost(plugin);
+  try {
+    await host.startAll();
+    // The caller is deliberately NOT wired: the host answers with a typed
+    // capability_unavailable instead of leaving the worker hanging.
+    const decision = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      outcome?: string;
+    };
+    assert(decision.outcome?.includes("capability_unavailable"));
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("invokes an object handler", async () => {
   const dir = Deno.makeTempDirSync();
   const plugin = createPlugin(

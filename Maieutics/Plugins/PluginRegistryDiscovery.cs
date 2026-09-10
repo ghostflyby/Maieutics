@@ -95,11 +95,14 @@ internal static class PluginRegistryDiscovery
                 return null;
             }
 
+            // Registry-discovered plugins carry no maieutics.json, so they start with
+            // no capability grants (deny-by-default).
             return new PluginDescriptor(
                 name, name, Path.GetDirectoryName(denoJsonLocal) ?? "/",
                 workers, permissions, pluginManifest.Isolation,
                 pluginManifest.Dependencies ?? [],
-                PluginImportReader.Read(packageManifest.Imports));
+                PluginImportReader.Read(packageManifest.Imports),
+                []);
         }
         catch (Exception exception) when (exception is JsonException or IOException)
         {
@@ -188,7 +191,8 @@ internal static class PluginRegistryDiscovery
                 name, name, packageDir,
                 workers, permissions, pluginManifest.Isolation,
                 pluginManifest.Dependencies ?? [],
-                PluginImportReader.Read(packageManifest?.Imports));
+                PluginImportReader.Read(packageManifest?.Imports),
+                []);
         }
         catch (Exception exception) when (exception is JsonException or IOException)
         {

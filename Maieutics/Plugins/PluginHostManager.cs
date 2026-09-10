@@ -40,6 +40,14 @@ internal enum PluginHostState
     Exited
 }
 
+/// <summary>Executes one catalogued kernel capability on behalf of a plugin worker
+/// (ADR 0020 §7.2). The composition root binds this to the script tool registry;
+/// the plugin host itself never implements capabilities.</summary>
+internal delegate Task<JsonElement> PluginCapabilityExecutor(
+    string tool,
+    JsonElement arguments,
+    CancellationToken cancellationToken);
+
 internal readonly record struct ExtensionCallOutcome(
     bool IsError,
     JsonElement? Value,
@@ -94,6 +102,13 @@ internal sealed class PluginHostManager(
 {
     private const int EnvelopeVersion = 1;
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
+
+    // Capability calls wrap kernel tool invokes, which legitimately run longer than
+    // extension-point hooks; the budget bounds one call, it is not a stage reset.
+    // Note the effective ceiling for hook-initiated calls is InvokeTimeout (15 s):
+    // the outer hook await gives up first, after which the capability result no
+    // longer has an observer and is simply dropped.
+    private static readonly TimeSpan CapabilityCallTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
 
     /// <summary>How long a <c>host.repl.derive</c> instruction waits for the host's spawned /
@@ -133,6 +148,9 @@ internal sealed class PluginHostManager(
     /// session and generation — a report for a session/generation no derivation is waiting on is
     /// ignored (a spontaneous host-derived REPL still registers its pid through
     /// <see cref="RegisterHostRepl"/>).</summary>
+    private readonly List<Task> capabilityCalls = [];
+    private readonly Dictionary<string, IReadOnlyList<string>> capabilityGrants =
+        new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
         new(StringComparer.Ordinal);
 
@@ -251,6 +269,11 @@ internal sealed class PluginHostManager(
     {
         return readiness.Task.WaitAsync(cancellationToken);
     }
+
+    /// <summary>Gets or sets the kernel capability executor. The composition root binds
+    /// this to the control host's script tool registry; capability requests arriving
+    /// before it is bound are refused with a typed <c>capability_unavailable</c> error.</summary>
+    internal PluginCapabilityExecutor? CapabilityExecutor { get; set; }
 
     internal PluginHostStatus GetStatus()
     {
@@ -422,6 +445,8 @@ internal sealed class PluginHostManager(
             }
             descriptors.AddRange(graph.Enabled.Where(
                 plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
+            capabilityGrants.Clear();
+            RecordCapabilityGrants(descriptors);
         }
 
         // The root deno.json must exist before the host process starts: it carries the
@@ -637,6 +662,9 @@ internal sealed class PluginHostManager(
             {
                 var config = BuildConfig([reloaded]);
                 replacement = config.Plugins.FirstOrDefault();
+                // A reload re-reads the manifest, so the capability-grant snapshot
+                // must follow it (the grant authority stays in the kernel).
+                RecordCapabilityGrants([reloaded]);
             }
         }
 
@@ -852,6 +880,32 @@ internal sealed class PluginHostManager(
         readiness.TrySetCanceled();
         await lifetime.CancelAsync().ConfigureAwait(false);
         FailPending("The plugin host is stopping.");
+        Task[] draining;
+        lock (gate)
+        {
+            draining = [.. capabilityCalls];
+            capabilityCalls.Clear();
+        }
+
+        if (draining.Length > 0)
+        {
+            // One total budget for every in-flight capability call; each call's own
+            // reply write is bounded, so the drain cannot extend past it observably.
+            using var drainBudget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await Task.WhenAll(draining).WaitAsync(drainBudget.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is OperationCanceledException or AggregateException)
+            {
+                logger.LogDebug(
+                    exception,
+                    "{Count} capability call(s) were still running at host stop.",
+                    draining.Length);
+            }
+        }
+
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
         RegistryChanges.Writer.TryComplete();
         StopPluginWatcher();
@@ -1080,6 +1134,9 @@ internal sealed class PluginHostManager(
 
         switch (envelope.Type)
         {
+            case ReplMessageType.CapabilityInvoke:
+                TrackCapabilityCall(HandleCapabilityInvokeAsync(envelope));
+                break;
             case ReplMessageType.HostInvokeResult:
             case ReplMessageType.HostInvokeError:
                 CompletePending(envelope);
@@ -1232,6 +1289,220 @@ internal sealed class PluginHostManager(
                 "after the plugin host disconnected without reporting its exit.",
                 sessionId,
                 pid);
+        }
+    }
+
+    /// <summary>Tracks one capability call so shutdown can observe it; completed entries
+    /// are pruned as new calls arrive to keep the list bounded. HandleCapabilityInvokeAsync
+    /// handles its own failures, so a faulted call here means the reply path failed — the
+    /// continuation observes it instead of leaving an unobserved task exception.</summary>
+    private void TrackCapabilityCall(Task call)
+    {
+        lock (gate)
+        {
+            capabilityCalls.RemoveAll(static tracked =>
+            {
+                if (!tracked.IsCompleted) return false;
+                if (tracked.IsFaulted)
+                {
+                    _ = tracked.Exception;
+                }
+
+                return true;
+            });
+            capabilityCalls.Add(call);
+        }
+    }
+
+    /// <summary>Serves one <c>capability.invoke</c> from the plugin host: the catalog gate
+    /// (core-predefined capabilities only), the per-plugin grant gate (manifest-declared,
+    /// deny-by-default), then the bound kernel executor. Replies echo the envelope's
+    /// correlationId on the host connection.</summary>
+    private async Task HandleCapabilityInvokeAsync(ReplEnvelope envelope)
+    {
+        WebSocket? socket;
+        lock (gate)
+        {
+            socket = Socket;
+        }
+
+        if (socket is null || envelope.CorrelationId is null) return;
+
+        // One budget per call: it bounds the kernel executor; expiry is reported as a
+        // typed timeout instead of leaving the host's pending call hanging.
+        using var budget = new CancellationTokenSource(CapabilityCallTimeout);
+        try
+        {
+            var request = ParsePayload<CapabilityInvokePayload>(envelope);
+            if (request is null ||
+                string.IsNullOrWhiteSpace(request.PluginId) ||
+                string.IsNullOrWhiteSpace(request.Capability))
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "invalid_capability_invoke",
+                    "The capability.invoke payload requires a pluginId, a capability, and a payload.").ConfigureAwait(false);
+                return;
+            }
+
+            if (!PluginCapabilityCatalog.Contains(request.Capability))
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "capability_unknown",
+                    $"Capability '{request.Capability}' is not in the kernel capability catalog.").ConfigureAwait(false);
+                return;
+            }
+
+            if (!IsCapabilityGranted(request.PluginId, request.Capability))
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "capability_denied",
+                    $"Plugin '{request.PluginId}' has not declared capability '{request.Capability}'.").ConfigureAwait(false);
+                return;
+            }
+
+            if (request.Payload is not { } payload)
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "invalid_capability_invoke",
+                    "The capability.invoke payload requires a capability payload object.").ConfigureAwait(false);
+                return;
+            }
+
+            var executor = CapabilityExecutor;
+            if (executor is null)
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "capability_unavailable",
+                    "The kernel capability executor is not available.").ConfigureAwait(false);
+                return;
+            }
+
+            // Only the catalogued shape is accepted; today that is tools.invoke.
+            var invoke = JsonSerializer.Deserialize(
+                payload.GetRawText(),
+                ReplControlJsonContext.Default.ToolInvokePayload);
+            if (invoke is null ||
+                string.IsNullOrWhiteSpace(invoke.Tool) ||
+                invoke.Arguments.ValueKind != JsonValueKind.Object)
+            {
+                await PushCapabilityErrorAsync(
+                    socket,
+                    envelope.CorrelationId,
+                    "invalid_capability_invoke",
+                    "The tools.invoke payload requires a tool name and object arguments.").ConfigureAwait(false);
+                return;
+            }
+
+            var result = await executor(invoke.Tool, invoke.Arguments, budget.Token).ConfigureAwait(false);
+            await PushCapabilityReplyAsync(
+                socket,
+                new ReplEnvelope(
+                    envelope.Version,
+                    ReplMessageType.CapabilityResult,
+                    envelope.CorrelationId,
+                    JsonSerializer.SerializeToElement(
+                        new CapabilityResultPayload(result),
+                        ReplControlJsonContext.Default.CapabilityResultPayload))).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            logger.LogWarning("Capability invoke '{CorrelationId}' exceeded its budget.", envelope.CorrelationId);
+            await PushCapabilityErrorAsync(
+                socket,
+                envelope.CorrelationId,
+                "capability_timeout",
+                "The capability call did not settle within its budget.").ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Capability invoke '{CorrelationId}' failed.", envelope.CorrelationId);
+            await PushCapabilityErrorAsync(
+                socket,
+                envelope.CorrelationId,
+                "capability_failed",
+                "The capability call failed.").ConfigureAwait(false);
+        }
+    }
+
+    private Task PushCapabilityErrorAsync(
+        WebSocket socket,
+        string correlationId,
+        string code,
+        string message)
+    {
+        return PushCapabilityReplyAsync(
+            socket,
+            new ReplEnvelope(
+                EnvelopeVersion,
+                ReplMessageType.CapabilityError,
+                correlationId,
+                JsonSerializer.SerializeToElement(
+                    new BusErrorPayload(code, message),
+                    ReplControlJsonContext.Default.BusErrorPayload)));
+    }
+
+    /// <summary>Sends one capability reply with a bounded write: a host that stays
+    /// connected but stops reading must not hold the tracked call (and with it the
+    /// shutdown drain) open forever.</summary>
+    private static async Task PushCapabilityReplyAsync(WebSocket socket, ReplEnvelope envelope)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await PushAsync(socket, envelope, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+        {
+            // The host vanished or overran the write budget; the tracked call ends
+            // either way and the reply is not observable by anyone else.
+        }
+    }
+
+    /// <summary>Refreshes the capability-grant snapshot from the kernel-parsed
+    /// descriptors (startup and reload).</summary>
+    private void RecordCapabilityGrants(IEnumerable<PluginDescriptor> descriptors)
+    {
+        lock (gate)
+        {
+            foreach (var descriptor in descriptors)
+            {
+                capabilityGrants[descriptor.Id] = descriptor.Capabilities;
+            }
+        }
+    }
+
+    /// <summary>Replaces one plugin's capability grants (the kernel-parsed manifest
+    /// snapshot is the authority; this seam also lets tests drive the gate without a
+    /// real manifest scan).</summary>
+    internal void SetCapabilityGrants(string pluginId, IReadOnlyList<string> capabilities)
+    {
+        lock (gate)
+        {
+            capabilityGrants[pluginId] = capabilities;
+        }
+    }
+
+    /// <summary>Whether the plugin declared this capability in its manifest. Grants come
+    /// from the kernel-parsed manifest snapshot, never from the host connection.</summary>
+    private bool IsCapabilityGranted(string pluginId, string capability)
+    {
+        lock (gate)
+        {
+            return capabilityGrants.TryGetValue(pluginId, out var grants) &&
+                   grants.Contains(capability);
         }
     }
 
@@ -1424,6 +1695,10 @@ internal sealed class PluginHostManager(
     {
         return typeof(T) switch
         {
+            _ when typeof(T) == typeof(CapabilityInvokePayload) =>
+                ReplControlJsonContext.Default.CapabilityInvokePayload,
+            _ when typeof(T) == typeof(CapabilityResultPayload) =>
+                ReplControlJsonContext.Default.CapabilityResultPayload,
             _ when typeof(T) == typeof(HostInvokeResultPayload) =>
                 ReplControlJsonContext.Default.HostInvokeResultPayload,
             _ when typeof(T) == typeof(HostInvokeErrorPayload) =>

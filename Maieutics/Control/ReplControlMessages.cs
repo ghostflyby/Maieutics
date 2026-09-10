@@ -8,6 +8,8 @@ namespace Maieutics.Control;
     MaxDepth = ReplControlLimits.MaximumJsonDepth)]
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ToolInvokePayload))]
+[JsonSerializable(typeof(CapabilityInvokePayload))]
+[JsonSerializable(typeof(CapabilityResultPayload))]
 [JsonSerializable(typeof(ReplEnvelope))]
 [JsonSerializable(typeof(BusCancelPayload))]
 [JsonSerializable(typeof(BusCommPayload))]
@@ -89,7 +91,29 @@ internal static class ReplMessageType
     public const string HostReplExited = "host.repl.exited";
     public const string HostReplDerive = "host.repl.derive";
     public const string HostReplDeriveFailed = "host.repl.deriveFailed";
+    public const string CapabilityInvoke = "capability.invoke";
+    public const string CapabilityResult = "capability.result";
+    public const string CapabilityError = "capability.error";
     public const string Error = "error";
+}
+
+/// <summary>The core-predefined capability catalog (ADR 0020 §7.2): the closed set of
+/// internal kernel capabilities a plugin may request through the host. A capability the
+/// catalog does not list is refused before any per-plugin grant check, so new capabilities
+/// are always a deliberate kernel-side addition.</summary>
+internal static class ReplCapabilityName
+{
+    public const string ToolsInvoke = "tools.invoke";
+}
+
+internal static class PluginCapabilityCatalog
+{
+    public static readonly IReadOnlyList<string> All = [ReplCapabilityName.ToolsInvoke];
+
+    public static bool Contains(string capability)
+    {
+        return All.Any(entry => entry == capability);
+    }
 }
 
 internal static class ReplExtensionPointName
@@ -140,6 +164,19 @@ internal sealed class ReplToolProgress(Func<ToolProgressPayload, CancellationTok
 ///     worker's <c>Remote&lt;T&gt;</c> surface directly in-process and answers with
 ///     <c>host.invokeResult</c> / <c>host.invokeError</c>, echoing the envelope correlationId.
 /// </summary>
+/// <summary>A plugin worker's request for one core-predefined kernel capability, relayed
+/// by the trusted plugin host (ADR 0018 decision 8) with the worker's plugin identity
+/// derived from the worker→plugin mapping, never from the frame.</summary>
+internal sealed record CapabilityInvokePayload(
+    string PluginId,
+    string Capability,
+    JsonElement? Payload = null);
+
+/// <summary>The kernel's answer to a <see cref="CapabilityInvokePayload" />; the payload is
+/// the capability's own result document (for <c>tools.invoke</c>, the tool result
+/// envelope).</summary>
+internal sealed record CapabilityResultPayload(JsonElement Result);
+
 internal sealed record HostInvokePayload(
     string PluginId,
     string ExportName,

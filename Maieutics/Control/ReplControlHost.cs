@@ -722,6 +722,24 @@ internal sealed partial class ReplControlHost : IDisposable
         }
     }
 
+    /// <summary>Tracks the async flow of a capability-initiated tool invoke: hook chains
+    /// must not re-enter (the plugin explicitly asked the kernel for the tool, and the
+    /// outer hook would otherwise recurse into itself).</summary>
+    private static readonly AsyncLocal<bool> insideCapabilityCall = new();
+
+    /// <summary>Executes one script-callable kernel tool on behalf of a plugin capability
+    /// call. The composition root binds this to the plugin host manager's capability
+    /// executor; plugin-originated calls carry no bus progress connection and skip the
+    /// plugin hook chain.</summary>
+    internal Task<JsonElement> InvokeScriptToolAsync(
+        string tool,
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        insideCapabilityCall.Value = true;
+        return InvokeToolAsync(tool, arguments, correlationId: null, progressConnection: null, cancellationToken);
+    }
+
     private async Task<JsonElement> InvokeToolAsync(
         string tool,
         JsonElement requestArguments,
@@ -755,8 +773,11 @@ internal sealed partial class ReplControlHost : IDisposable
         JsonElement envelope;
         try
         {
-            argumentValues = await RunPreHooksAsync(tool, argumentValues, correlationId, invokeToken)
-                .ConfigureAwait(false);
+            if (!insideCapabilityCall.Value)
+            {
+                argumentValues = await RunPreHooksAsync(tool, argumentValues, correlationId, invokeToken)
+                    .ConfigureAwait(false);
+            }
             var arguments = new AIFunctionArguments(argumentValues);
             if (progressConnection is not null && !string.IsNullOrWhiteSpace(correlationId))
             {
@@ -805,8 +826,12 @@ internal sealed partial class ReplControlHost : IDisposable
             if (!string.IsNullOrWhiteSpace(correlationId)) operations.Remove(correlationId);
         }
 
-        await RunPostHooksAsync(tool, argumentValues, correlationId, envelope, cancellationToken)
-            .ConfigureAwait(false);
+        if (!insideCapabilityCall.Value)
+        {
+            await RunPostHooksAsync(tool, argumentValues, correlationId, envelope, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         return envelope;
     }
 

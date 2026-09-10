@@ -226,6 +226,71 @@ export type ExtensionPointImpl<K extends ExtensionPointName> = ExtensionPointSha
  * reactive contract-identity form (single-argument) lives on the `./reactive`
  * SDK path.
  */
+interface CapabilityPending {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+}
+
+const capabilityPending = new Map<string, CapabilityPending>();
+let capabilitySequence = 0;
+
+/**
+ * Requests one kernel capability on behalf of this plugin worker. The call is
+ * relayed by the plugin host over the authenticated control bus and gated by
+ * the kernel twice: the capability must be in the core catalog, and the
+ * plugin's manifest (`maieutics.json` `capabilities`) must declare it.
+ * Deny-by-default; unknown and undeclared capabilities reject with typed
+ * messages. Workers only — outside a plugin worker realm there is no relay.
+ */
+export function callCapability<T = unknown>(
+  capability: string,
+  payload?: unknown,
+  options?: { timeoutMs?: number },
+): Promise<T> {
+  const id = `capability-${++capabilitySequence}-${Date.now().toString(36)}`;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (capabilityPending.delete(id)) {
+        reject(new Error(`The capability call '${capability}' did not settle within its budget.`));
+      }
+    }, options?.timeoutMs ?? 30_000);
+    capabilityPending.set(id, {
+      resolve: (value: unknown): void => {
+        clearTimeout(timer);
+        resolve(value as T);
+      },
+      reject: (error: Error): void => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
+    scopePostMessage({ type: "capability.request", id, capability, payload });
+  });
+}
+
+/**
+ * The kernel capability surface available to plugin workers. Every entry maps
+ * to one catalogued capability; the kernel remains the sole grant authority.
+ */
+export const capabilities: {
+  invokeTool<T = unknown>(
+    name: string,
+    args?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ): Promise<T>;
+} = {
+  /** Invokes one script-callable kernel tool (the same registry REPL scripts
+   * reach through `maieutics.tools.invoke`) and returns its structured result
+   * envelope (`{status: "ok", value}` / `{status: "error", ...}`). */
+  invokeTool<T = unknown>(
+    name: string,
+    args?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
+    return callCapability<T>("tools.invoke", { tool: name, arguments: args ?? {} }, options);
+  },
+};
+
 export function defineExtensionPoint<K extends ExtensionPointName>(
   name: K,
   impl: ExtensionPointInput<K>,
@@ -566,6 +631,33 @@ export async function initPluginWorker(): Promise<void> {
       });
     } else if (frame?.type === "dispose") {
       disposePlugin();
+    }
+  });
+
+  // Capability answers (worker → host → kernel → back). Only correlated
+  // responses are consumed; the host derives the plugin identity from its own
+  // worker→plugin mapping, so the frame never carries identity.
+  scope.addEventListener("message", (event: MessageEvent): void => {
+    const frame = event.data as {
+      type?: string;
+      id?: string;
+      ok?: boolean;
+      result?: unknown;
+      code?: string;
+      message?: string;
+    };
+    if (frame?.type !== "capability.response" || typeof frame.id !== "string") return;
+    const pending = capabilityPending.get(frame.id);
+    if (pending === undefined) return;
+    capabilityPending.delete(frame.id);
+    if (frame.ok === true) pending.resolve(frame.result);
+    else {
+      const reason = frame.message ?? "The capability call failed.";
+      const error = new Error(
+        frame.code ? `${frame.code}: ${reason}` : reason,
+      ) as Error & { code?: string };
+      error.code = frame.code;
+      pending.reject(error);
     }
   });
 

@@ -86,6 +86,40 @@ async function main(): Promise<void> {
   // refuses to derive a REPL before it is set.
   repls.setReporter((report: HostReplReport) => bus.send(report));
 
+  // Kernel capability calls ride the same bus: the host relays the worker's
+  // request with its derived plugin identity and completes on the correlated
+  // capability.result / capability.error reply. The budget bounds a hung
+  // kernel; the caller never rejects with an unobserved rejection.
+  const capabilityPending = new Map<
+    string,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+  host.setCapabilityCaller((plugin, capability, payload) => {
+    const correlationId = crypto.randomUUID();
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (capabilityPending.delete(correlationId)) {
+          reject(new Error("The capability call did not settle within its budget."));
+        }
+      }, 30_000);
+      capabilityPending.set(correlationId, {
+        resolve: (value: unknown) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      bus.send({
+        type: "capability.invoke",
+        payload: { pluginId: plugin, capability, payload },
+        correlationId,
+      });
+    });
+  });
+
   const shutdown = (): void => {
     // The unload event cannot await: the bounded storage flush runs alongside
     // teardown. The debounce loop has normally persisted long before this, so
@@ -99,6 +133,28 @@ async function main(): Promise<void> {
   globalThis.addEventListener("unload", shutdown);
 
   function handleMessage(envelope: ReplEnvelope): void {
+    if (envelope.type === "capability.result" || envelope.type === "capability.error") {
+      const correlationId = envelope.correlationId;
+      if (correlationId === undefined) return;
+      const pending = capabilityPending.get(correlationId);
+      if (pending === undefined) return;
+      capabilityPending.delete(correlationId);
+      const payload = envelope.payload as
+        | { result?: unknown; code?: string; message?: string }
+        | undefined;
+      if (envelope.type === "capability.result") {
+        pending.resolve(payload?.result);
+      } else {
+        // Carry the kernel's typed code through the rejection so the host relay
+        // can hand it to the worker unchanged.
+        const error = new Error(
+          payload?.message ?? payload?.code ?? "The capability call failed.",
+        ) as Error & { code?: string };
+        error.code = payload?.code;
+        pending.reject(error);
+      }
+      return;
+    }
     if (envelope.type === "plugin.reload") {
       const payload = envelope.payload as {
         pluginId?: string;

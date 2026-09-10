@@ -8,7 +8,7 @@ namespace Maieutics.Jupyter.Tests;
 
 public sealed class FrontendRunStreamTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InputRequestPresentationIsFlattenedOntoTheWireFrame()
     {
         var stream = FrontendRunStream.Create(
@@ -23,7 +23,7 @@ public sealed class FrontendRunStreamTests
             JsonSerializer.SerializeToElement(
                 new FrontendInputRequest("input-abc-1", "Name:", true),
                 FrontendJsonContext.Default.FrontendInputRequest),
-            CancellationToken.None);
+            TestContext.Current.CancellationToken);
 
         var (frames, channel) = stream.Subscribe(sinceSequence: 0);
         var frame = frames.Single(entry => entry.Type == "input.request");
@@ -35,7 +35,7 @@ public sealed class FrontendRunStreamTests
         await Task.CompletedTask;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task OtherPresentationFramesKeepTheDisplayIdAndBundleData()
     {
         var stream = FrontendRunStream.Create(
@@ -49,7 +49,11 @@ public sealed class FrontendRunStreamTests
                 ["text/plain"] = JsonSerializer.SerializeToElement("hi")
             });
 
-        stream.PublishPresentation("repl.display", "display-1", bundle, CancellationToken.None);
+        stream.PublishPresentation(
+            "repl.display",
+            "display-1",
+            bundle,
+            TestContext.Current.CancellationToken);
 
         var (frames, channel) = stream.Subscribe(sinceSequence: 0);
         var frame = frames.Single(entry => entry.Type == "repl.display");

@@ -69,7 +69,7 @@ public sealed class AgentBlobContentTests
         store.Objects.Should().ContainKey(descriptor.Sha256);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TurnsAcceptBlobReferencesAndSnapshotsPreserveThem()
     {
         var store = new InMemoryObjectStore();

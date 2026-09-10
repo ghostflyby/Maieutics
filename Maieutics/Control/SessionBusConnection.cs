@@ -80,12 +80,20 @@ internal sealed class SessionBusConnection : IAsyncDisposable
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        return new ValueTask(CloseAsync(
-            WebSocketCloseStatus.NormalClosure,
-            "closed",
-            CancellationToken.None));
+        // Disposal must stay deterministic even when the writer is stuck on a socket
+        // send: the budget bounds the graceful drain, and its cancellation (registered
+        // in CloseCoreAsync) then releases the writer before the close frame goes out.
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", budget.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+        }
     }
 
     private async Task RunWriterAsync()
@@ -137,7 +145,7 @@ internal sealed class SessionBusConnection : IAsyncDisposable
         string statusDescription,
         CancellationToken cancellationToken)
     {
-        using var cancellation = cancellationToken.Register(static state =>
+        var cancellation = cancellationToken.Register(static state =>
         {
             if (state is CancellationTokenSource source) source.Cancel();
         }, lifetime);
@@ -159,17 +167,24 @@ internal sealed class SessionBusConnection : IAsyncDisposable
         {
             try
             {
+                // One total budget: the close write rides the caller's token (the
+                // disposal budget), not a second stacked timeout.
                 await socket.CloseOutputAsync(
                     closeStatus,
                     statusDescription,
-                    CancellationToken.None).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
             }
-            catch (WebSocketException)
+            catch (Exception exception) when
+                (exception is WebSocketException or OperationCanceledException or InvalidOperationException)
             {
-                // The peer may have closed concurrently.
+                // The peer may have closed concurrently, or the close write overran
+                // its budget on a dead socket.
             }
         }
 
+        // Unregister the budget callback before disposing the lifetime CTS: a budget
+        // expiry in this window would otherwise Cancel a disposed source.
+        await cancellation.DisposeAsync().ConfigureAwait(false);
         lifetime.Dispose();
     }
 

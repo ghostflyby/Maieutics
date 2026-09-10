@@ -18,6 +18,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
 
+[Collection(JupyterSocketIntegrationCollection.Name)]
+
 /// <summary>
 ///     B5b (ADR 0020): the kernel sends <c>host.repl.derive</c> to the plugin host and the
 ///     session factory derives the REPL through it. These tests cover the .NET send side: the

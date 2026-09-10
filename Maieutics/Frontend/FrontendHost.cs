@@ -501,10 +501,50 @@ internal sealed class FrontendHost : IAsyncDisposable
             await peer.CancelAsync().ConfigureAwait(false);
             await drain.ConfigureAwait(false);
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await socket.CloseOutputAsync(
+                await CloseSocketOutputAsync(
+                    socket,
                     WebSocketCloseStatus.NormalClosure,
-                    "stream ended",
-                    CancellationToken.None).ConfigureAwait(false);
+                    "stream ended").ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Sends the close frame with a bounded write: the events endpoint closes
+    /// send-only (it never waits for the peer's handshake), but a dead socket must not
+    /// hold the request's teardown open either.</summary>
+    private static async Task CloseSocketOutputAsync(
+        WebSocket socket,
+        WebSocketCloseStatus closeStatus,
+        string description)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await socket.CloseOutputAsync(closeStatus, description, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when
+            (exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+        {
+        }
+    }
+
+    /// <summary>Closes a frontend WebSocket with a bounded handshake: a vanished or
+    /// suspended peer can stall the close for a TCP-retransmit scale of time, and the
+    /// wait must never consume the host's shutdown budget.</summary>
+    private static async Task CloseSocketAsync(
+        WebSocket socket,
+        WebSocketCloseStatus closeStatus,
+        string description)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await socket.CloseAsync(closeStatus, description, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when
+            (exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+        {
+            // The peer vanished, the close lost the race with a concurrent close, or
+            // the handshake overran its budget; the request ends either way.
         }
     }
 
@@ -526,10 +566,10 @@ internal sealed class FrontendHost : IAsyncDisposable
             (exception.InnerException is FrontendRunStream.FrontendBackpressureException)
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await socket.CloseAsync(
+                await CloseSocketAsync(
+                    socket,
                     (WebSocketCloseStatus)1011,
-                    "backpressure",
-                    CancellationToken.None).ConfigureAwait(false);
+                    "backpressure").ConfigureAwait(false);
         }
         finally
         {
@@ -607,8 +647,18 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         async Task CloseAsyncOutput(WebSocketCloseStatus status, string description)
         {
-            await SendAsync(() => socket.CloseOutputAsync(status, description, CancellationToken.None))
-                .ConfigureAwait(false);
+            // The close frame write is bounded like the events socket close: a dead
+            // peer must not hold the connection's teardown open.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await SendAsync(() => socket.CloseOutputAsync(status, description, timeout.Token))
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when
+                (exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+            {
+            }
         }
 
         // Subscribe before the hello so the snapshot and the replay are one coherent view:
@@ -692,10 +742,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 {
                     // Invariant 17: a malformed frame ends this connection with a typed
                     // close instead of crashing the receive loop.
-                    await send(() => socket.CloseOutputAsync(
+                    await send(() => CloseSocketOutputAsync(
+                        socket,
                         WebSocketCloseStatus.InvalidMessageType,
-                        "comm frame is malformed",
-                        CancellationToken.None)).ConfigureAwait(false);
+                        "comm frame is malformed")).ConfigureAwait(false);
                     return;
                 }
 
@@ -708,10 +758,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 catch (FrontendCommRejectException reject) when
                     (reject.Code == FrontendErrors.InvalidRequest)
                 {
-                    await send(() => socket.CloseOutputAsync(
+                    await send(() => CloseSocketOutputAsync(
+                        socket,
                         WebSocketCloseStatus.PolicyViolation,
-                        reject.Message,
-                        CancellationToken.None)).ConfigureAwait(false);
+                        reject.Message)).ConfigureAwait(false);
                     return;
                 }
                 catch (FrontendCommRejectException reject)

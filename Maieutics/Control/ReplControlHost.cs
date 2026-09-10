@@ -257,9 +257,21 @@ internal sealed partial class ReplControlHost : IDisposable
         var sessionId = identity.Id;
         var connection = new SessionBusConnection(socket);
         if (connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
-            await previous
-                .CloseAsync(WebSocketCloseStatus.NormalClosure, "replaced", CancellationToken.None)
-                .ConfigureAwait(false);
+        {
+            // A replaced connection drains under a bounded budget: a peer that stops
+            // reading must not stall the new connection's registration.
+            using var replacementBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await previous
+                    .CloseAsync(WebSocketCloseStatus.NormalClosure, "replaced", replacementBudget.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when
+                (exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+            {
+            }
+        }
 
         connections[sessionId] = connection;
         using var owner = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);

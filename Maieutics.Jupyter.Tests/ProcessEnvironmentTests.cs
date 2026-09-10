@@ -5,6 +5,8 @@ using Maieutics.Processes;
 
 namespace Maieutics.Jupyter.Tests;
 
+[Collection(JupyterSocketIntegrationCollection.Name)]
+
 public sealed class ProcessEnvironmentTests
 {
     [Fact]

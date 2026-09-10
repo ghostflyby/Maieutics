@@ -66,8 +66,11 @@ public sealed class PluginRegistryDiscoveryTests
         descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");
     }
 
+    // Synchronous on purpose: the probe's subprocess budget lives inside the
+    // PluginRegistryDiscovery deno-info probes (60s/120s process waits), so there
+    // is nothing for a test-side Timeout token to interrupt.
     [Fact]
-    public async Task TryLoadNpmResolvesTheExtractedPackageAndReportsMissingManifests()
+    public void TryLoadNpmResolvesTheExtractedPackageAndReportsMissingManifests()
     {
         var diagnostics = new List<string>();
         // chalk is a real npm package without a maieutics.json: the toolchain
@@ -78,7 +81,6 @@ public sealed class PluginRegistryDiscoveryTests
 
         descriptor.Should().BeNull();
         diagnostics.Should().ContainSingle().Which.Should().Contain("maieutics.json");
-        await Task.CompletedTask;
     }
 
     [Fact]

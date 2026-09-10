@@ -14,6 +14,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Jupyter.Tests;
 
+[Collection(JupyterSocketIntegrationCollection.Name)]
+
 public sealed class PluginHostIntegrationTests
 {
     private static readonly DenoPermissionBroker SharedBroker =

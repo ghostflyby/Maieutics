@@ -1582,7 +1582,19 @@ internal sealed class PluginHostManager(
             hostRegistrations.Clear();
             foreach (var plugin in payload.Plugins)
                 foreach (var extensionPoint in plugin.ExtensionPoints)
+                {
+                    // The kernel dispatches only catalogued names; unknown names are
+                    // registered inertly, and the warning makes the mismatch visible
+                    // instead of leaving a plugin wondering why nothing invokes it.
+                    if (!ReplExtensionPointName.IsKnown(extensionPoint))
+                        logger.LogWarning(
+                            "Plugin '{PluginId}' export '{ExportName}' registered unknown extension point '{Name}'; " +
+                            "this kernel version never dispatches it.",
+                            plugin.PluginId,
+                            plugin.ExportName,
+                            extensionPoint);
                     hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+                }
 
             registrations.Clear();
             registrations.AddRange(hostRegistrations);

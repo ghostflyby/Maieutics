@@ -121,6 +121,11 @@ internal static class ReplExtensionPointName
     public const string McpDiscover = "McpDiscover";
     public const string ToolPreInvoke = "ToolPreInvoke";
     public const string ToolPostInvoke = "ToolPostInvoke";
+
+    public static bool IsKnown(string name)
+    {
+        return name == McpDiscover || name == ToolPreInvoke || name == ToolPostInvoke;
+    }
 }
 
 internal sealed record BusCancelPayload(string CorrelationId);

@@ -341,6 +341,40 @@ Deno.test("capability requests before the caller is wired answer unavailable", a
   }
 });
 
+Deno.test("unknown extension point names are diagnosed instead of silently ignored", async () => {
+  const dir = Deno.makeTempDirSync();
+  // The diagnostic fires at module load, so the plugin itself captures the
+  // worker-realm console.error around its dynamic SDK import and reports the
+  // message through its decision.
+  const plugin = createPlugin(
+    dir,
+    `
+    const messages: string[] = [];
+    const original = console.error;
+    console.error = (message: string) => messages.push(message);
+    const { defineExtensionPoint } = await import("jsr:@maieutics/plugin-sdk@^0.1");
+    export const bogus = defineExtensionPoint("BogusKind", {
+      handler: () => ({ action: "continue" }),
+    });
+    export default defineExtensionPoint("ToolPreInvoke", {
+      handler: () => ({ action: "continue", diagnosed: messages.join("|") }),
+    });
+  `,
+  );
+  const host = makeHost(plugin);
+  try {
+    await host.startAll();
+    const decision = await host.invoke("test", "./main", "ToolPreInvoke", {}) as {
+      diagnosed?: string;
+    };
+    const diagnosed = decision.diagnosed ?? "";
+    assert(diagnosed.includes("BogusKind"), diagnosed);
+    assert(diagnosed.includes("not known to this kernel"), diagnosed);
+  } finally {
+    host.dispose();
+  }
+});
+
 Deno.test("invokes an object handler", async () => {
   const dir = Deno.makeTempDirSync();
   const plugin = createPlugin(

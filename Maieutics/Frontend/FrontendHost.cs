@@ -86,6 +86,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms);
         endpoints.MapPost("/v1/agent/runs/{runId}/cancel", HandleCancel);
+        endpoints.MapPost("/v1/agent/inputs/{requestId}", HandleInput);
         endpoints.MapGet("/v1/model/profiles", HandleModelProfiles);
         endpoints.MapPost("/v1/agent/commands", HandleCommand);
         endpoints.MapPost("/v1/agent/complete", HandleComplete);
@@ -299,6 +300,37 @@ internal sealed class FrontendHost : IAsyncDisposable
             return Results.Json(new FrontendCommandResponse("cancel requested"),
                 FrontendJsonContext.Default.FrontendCommandResponse);
         });
+    }
+
+    /// <summary>Delivers a REPL stdin answer announced by an <c>input.request</c> frame.
+    /// A request that is no longer pending (already answered, run ended, or unknown id)
+    /// is a typed 404, matching docs/web-frontend-protocol.md.</summary>
+    private async Task HandleInput(HttpContext context, string requestId)
+    {
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendInputAnswer)
+            .ConfigureAwait(false);
+        if (request is null) return;
+
+        // The source-generated binder accepts JSON null even for the non-nullable
+        // property; an empty string is the documented dismiss answer, null is not.
+        if (request.Value is null)
+        {
+            await WriteErrorAsync(context, FrontendErrors.InvalidRequest, "The input answer must carry a value.");
+            return;
+        }
+
+        if (!service.TryCompleteInput(requestId, request.Value))
+        {
+            await WriteErrorAsync(
+                context,
+                FrontendErrors.NotFound,
+                $"No pending input request matches '{requestId}'.");
+            return;
+        }
+
+        await context.Response.WriteAsJsonAsync(
+            new Dictionary<string, object?>(),
+            FrontendJsonContext.Default.DictionaryStringObject).ConfigureAwait(false);
     }
 
     private async Task HandleCommand(HttpContext context)

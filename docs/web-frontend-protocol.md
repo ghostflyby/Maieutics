@@ -293,7 +293,7 @@ JSON text:
 {"type": "repl.display", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "repl.updateDisplay", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "run.status", "state": "busy" | "idle"}
-{"type": "input.request", "requestId": "input-1", "prompt": "Name:", "password": false}
+{"type": "input.request", "requestId": "input-<unique>-1", "prompt": "Name:", "password": false}
 ```
 
 Rules:

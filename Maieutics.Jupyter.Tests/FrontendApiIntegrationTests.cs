@@ -7,6 +7,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using Maieutics.Agent;
+using Maieutics.Frontend;
 using Maieutics.Jupyter.Shared;
 using Maieutics.Providers.OpenAI;
 using Microsoft.AspNetCore.Builder;
@@ -278,6 +280,82 @@ public sealed class FrontendApiIntegrationTests
             content: null,
             deadline.Token);
         missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task InputAnswersCompletePendingReplStdinRequests()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        await using var harness = await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        var target = new FakePresentationTarget();
+        await using var scope = harness.AttachPresentation(sessionId, target);
+        using var waitDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        waitDeadline.CancelAfter(TimeSpan.FromSeconds(10));
+        var wait = scope.Sink.RequestInputAsync("Name:", password: false, waitDeadline.Token);
+
+        var published = target.Published.Single(entry => entry.Type == "input.request");
+        var requestId = published.Data.GetProperty("requestId").GetString()!;
+
+        var answer = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/inputs/{requestId}",
+            new { value = "ghost" },
+            deadline.Token);
+        answer.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        (await wait).Should().Be("ghost");
+
+        // A second answer for the same id is a typed 404, and so is an unknown id.
+        var duplicate = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/inputs/{requestId}",
+            new { value = "again" },
+            deadline.Token);
+        duplicate.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var duplicateError = await duplicate.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        duplicateError.GetProperty("code").GetString().Should().Be("not_found");
+
+        var unknown = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/inputs/input-{Guid.NewGuid():N}",
+            new { value = "x" },
+            deadline.Token);
+        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // A run ending (the presentation scope detaching) cancels pending requests
+        // server-side, so the late answer for an outstanding id is a typed 404 too.
+        // A run ending (the presentation scope detaching) cancels pending requests
+        // server-side, so the late answer for an outstanding id is a typed 404 too.
+        var lateTask = scope.Sink.RequestInputAsync("late:", password: false, waitDeadline.Token);
+        target.Published.Should().Contain(entry => entry.Type == "input.request");
+        await scope.DisposeAsync();
+        var lateAct = async () => await lateTask;
+        await lateAct.Should().ThrowAsync<OperationCanceledException>();
+        var lateId = target.Published.Last(entry => entry.Type == "input.request")
+            .Data.GetProperty("requestId").GetString()!;
+        var lateAnswer = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/inputs/{lateId}",
+            new { value = "late" },
+            deadline.Token);
+        lateAnswer.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task InputAnswersWithMissingOrMalformedBodiesAreRejected()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+
+        var empty = await harness.Client.PostAsync(
+            "/v1/agent/inputs/input-unknown",
+            content: null,
+            deadline.Token);
+        empty.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        var malformed = await harness.Client.PostAsync(
+            "/v1/agent/inputs/input-unknown",
+            new StringContent("not json", Encoding.UTF8, "application/json"),
+            deadline.Token);
+        malformed.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact(Timeout = 60_000)]
@@ -1216,6 +1294,17 @@ public sealed class FrontendApiIntegrationTests
             host.Services.GetRequiredService<Maieutics.Control.ReplControlSessionRegistry>()
                 .Register(Environment.ProcessId, sessionId);
 
+        /// <summary>Attaches a test presentation target to the live REPL presentation
+        /// router so tests can drive stdin-style input requests against the real
+        /// input-answer endpoint.</summary>
+        public FrontendDenoReplPresentationRouter.FrontendPresentationScope AttachPresentation(
+            string sessionId,
+            IFrontendPresentationTarget target)
+        {
+            return host.Services.GetRequiredService<FrontendDenoReplPresentationRouter>()
+                .Attach(new AgentSessionId(Guid.ParseExact(sessionId, "N")), target);
+        }
+
         /// <summary>The control host address (the Unix socket path on Unix).</summary>
         public string ControlAddress =>
             host.Services.GetRequiredService<Maieutics.Control.ReplControlHost>().ControlAddress;
@@ -1351,6 +1440,22 @@ public sealed class FrontendApiIntegrationTests
             {
                 socket.Dispose();
             }
+        }
+    }
+
+    /// <summary>Records the presentation frames a test publishes through the live
+    /// REPL presentation router.</summary>
+    private sealed class FakePresentationTarget : IFrontendPresentationTarget
+    {
+        public List<(string Type, string? DisplayId, JsonElement Data)> Published { get; } = [];
+
+        public void PublishPresentation(
+            string type,
+            string? displayId,
+            JsonElement data,
+            CancellationToken cancellationToken)
+        {
+            Published.Add((type, displayId, data.Clone()));
         }
     }
 

@@ -221,6 +221,76 @@ public sealed class AgentTranscriptCodecTests
             .NotContain(static content => content is TextReasoningContent);
     }
 
+    [Fact]
+    public void CachedPublicProjectionMatchesPerContentProjectionForPrivatePayloads()
+    {
+        var text = new TextContent("answer")
+        {
+            RawRepresentation = "raw-content",
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["provider_text"] = ParseJson("{\"kept\":true}")
+            },
+            Annotations =
+            [
+                new CitationAnnotation
+                {
+                    Title = "source",
+                    Url = new Uri("https://example.test/source"),
+                    RawRepresentation = "raw-annotation",
+                    AdditionalProperties = new AdditionalPropertiesDictionary
+                    {
+                        ["provider_annotation"] = ParseJson("1")
+                    }
+                }
+            ]
+        };
+        var reasoning = new TextReasoningContent("private reasoning")
+        {
+            ProtectedData = "protected-token",
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["provider_reasoning"] = ParseJson("42")
+            }
+        };
+        var call = new FunctionCallContent(
+            "provider-call",
+            "lookup",
+            new Dictionary<string, object?> { ["query"] = ParseJson("\"value\"") });
+        var result = new FunctionResultContent("provider-call", ParseJson("{\"status\":\"ok\"}"));
+        var usage = new UsageContent(new UsageDetails { InputTokenCount = 4, OutputTokenCount = 7 });
+        var turn = AgentTranscriptCodec.DetachPrivateTurn(
+            AgentRunId.Create(),
+            null,
+            [
+                new ChatMessage(ChatRole.User, "question"),
+                new ChatMessage(ChatRole.Assistant, [text, reasoning, call, result, usage])
+            ]);
+
+        // The committed-turn cache must produce exactly the projection the naive per-content
+        // path produces, including reasoning removal and private-payload sanitization.
+        var cached = AgentTranscriptCodec.CreatePublicTranscript(
+            new AgentTranscriptState(AgentSessionId.Create(), 1, [turn]));
+        var naive = AgentTranscriptCodec.CreatePublicMessages(turn.Messages);
+
+        cached.Turns.Should().ContainSingle();
+        cached.Turns[0].Messages.Should().BeEquivalentTo(naive, static options => options.WithStrictOrdering());
+        cached.Turns[0].Messages.Should().NotContain(static message =>
+            message.Contents.OfType<TextReasoningContent>().Any());
+        cached.Turns[0].Messages.SelectMany(static message => message.Contents)
+            .Should().OnlyContain(static content =>
+                content.RawRepresentation == null && content.AdditionalProperties == null);
+        var publicText = cached.Turns[0].Messages[1].Contents.OfType<TextContent>().Single();
+        publicText.Annotations.Should().ContainSingle().Which.AdditionalProperties.Should().BeNull();
+        publicText.Annotations.Should().ContainSingle().Which.RawRepresentation.Should().BeNull();
+
+        // Re-projecting the cached state after mutating the first handout stays pristine.
+        cached.Turns[0].Messages[1].Contents.OfType<TextContent>().Single().Text = "mutated";
+        var second = AgentTranscriptCodec.CreatePublicTranscript(
+            new AgentTranscriptState(AgentSessionId.Create(), 1, [turn]));
+        second.Turns[0].Messages.Should().BeEquivalentTo(naive, static options => options.WithStrictOrdering());
+    }
+
     private static AgentTranscriptStateTurn DetachAssistant(params AIContent[] contents)
     {
         return AgentTranscriptCodec.DetachPrivateTurn(

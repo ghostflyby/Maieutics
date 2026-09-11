@@ -29,11 +29,17 @@ internal static class AgentTranscriptCodec
         ArgumentNullException.ThrowIfNull(messages);
         ValidateMessages(messages);
         var serialized = SerializeMessages(messages);
+        var canonical = DeserializeMessages(serialized);
+        // Turns are immutable once committed, so their sanitized public projection is computed
+        // and serialized exactly once here; snapshots and run results later deserialize the
+        // cached bytes into fresh instances instead of re-sanitizing every content item.
+        var publicBytes = SerializeMessages(CreatePublicMessages(canonical));
         return new AgentTranscriptStateTurn(
             runId,
             modelIdentity,
-            DeserializeMessages(serialized).ToImmutableArray(),
-            serialized.Length,
+            canonical.ToImmutableArray(),
+            serialized,
+            publicBytes,
             truncated);
     }
 
@@ -53,19 +59,51 @@ internal static class AgentTranscriptCodec
     internal static ChatMessage CreatePublicMessage(ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        var publicContents = new List<AIContent>(message.Contents.Count);
-        foreach (var content in message.Contents)
+        var contents = message.Contents;
+        ChatMessage? detached = null;
+        if (contents.Count > 0)
         {
-            ValidateContent(content);
-            if (content is TextReasoningContent) continue;
-
+            // One JSON pass per message instead of one per content: detached contents mirror the
+            // source list one-to-one, so the skip and sanitize decisions below are identical to
+            // per-content detachment. A compatibility failure falls back to the per-content path,
+            // which drops only the content that cannot be detached.
             try
             {
-                publicContents.Add(CreatePublicContent(content));
+                detached = DetachPrivateMessages([message])[0];
             }
             catch (AgentContentCompatibilityException)
             {
-                // Compatibility is enforced atomically when the complete private turn is committed.
+            }
+        }
+
+        var publicContents = new List<AIContent>(contents.Count);
+        if (detached is not null && detached.Contents.Count == contents.Count)
+        {
+            for (var index = 0; index < contents.Count; index++)
+            {
+                ValidateContent(contents[index]);
+                if (contents[index] is TextReasoningContent) continue;
+
+                var publicContent = detached.Contents[index];
+                SanitizePublicContent(publicContent);
+                publicContents.Add(publicContent);
+            }
+        }
+        else
+        {
+            foreach (var content in contents)
+            {
+                ValidateContent(content);
+                if (content is TextReasoningContent) continue;
+
+                try
+                {
+                    publicContents.Add(CreatePublicContent(content));
+                }
+                catch (AgentContentCompatibilityException)
+                {
+                    // Compatibility is enforced atomically when the complete private turn is committed.
+                }
             }
         }
 
@@ -75,6 +113,17 @@ internal static class AgentTranscriptCodec
             CreatedAt = message.CreatedAt,
             MessageId = message.MessageId
         };
+    }
+
+    /// <summary>Projects every message onto its sanitized public form; callers that need fresh
+    /// instances deserialize <see cref="AgentTranscriptStateTurn.PublicBytes" /> instead.</summary>
+    internal static ChatMessage[] CreatePublicMessages(IReadOnlyList<ChatMessage> messages)
+    {
+        var publicMessages = new ChatMessage[messages.Count];
+        for (var index = 0; index < messages.Count; index++)
+            publicMessages[index] = CreatePublicMessage(messages[index]);
+
+        return publicMessages;
     }
 
     internal static AIContent CreatePublicContent(AIContent content)
@@ -88,15 +137,16 @@ internal static class AgentTranscriptCodec
 
     internal static AgentTranscript CreatePublicTranscript(AgentTranscriptState state)
     {
+        // Each committed turn caches its sanitized public serialization, so a snapshot or run
+        // result deserializes cached bytes into fresh instances (consumers may mutate what they
+        // receive) without re-sanitizing every content item of the retained history.
         var turns = ImmutableArray.CreateBuilder<AgentTranscriptTurn>(state.Turns.Length);
         foreach (var turn in state.Turns)
-        {
-            var messages = new ChatMessage[turn.Messages.Length];
-            for (var index = 0; index < turn.Messages.Length; index++)
-                messages[index] = CreatePublicMessage(turn.Messages[index]);
-
-            turns.Add(new AgentTranscriptTurn(turn.RunId, messages, turn.ModelIdentity, turn.Truncated));
-        }
+            turns.Add(new AgentTranscriptTurn(
+                turn.RunId,
+                DeserializeMessages(turn.PublicBytes),
+                turn.ModelIdentity,
+                turn.Truncated));
 
         return new AgentTranscript(state.SessionId, state.Version, turns.ToImmutable());
     }
@@ -338,5 +388,11 @@ internal sealed record AgentTranscriptStateTurn(
     AgentRunId RunId,
     AgentModelIdentity? ModelIdentity,
     ImmutableArray<ChatMessage> Messages,
-    int MessageByteCount,
-    bool Truncated);
+    byte[] CanonicalBytes,
+    byte[] PublicBytes,
+    bool Truncated)
+{
+    /// <summary>Gets the compact UTF-8 JSON byte size of the canonical messages; the history
+    /// byte budget counts this per turn.</summary>
+    internal int MessageByteCount => CanonicalBytes.Length;
+}

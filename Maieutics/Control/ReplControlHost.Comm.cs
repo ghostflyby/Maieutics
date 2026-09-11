@@ -56,9 +56,22 @@ internal sealed partial class ReplControlHost
 
         var connection = new CommBusConnection(socket);
         if (commConnections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
-            await previous
-                .CloseAsync(WebSocketCloseStatus.NormalClosure, "replaced", CancellationToken.None)
-                .ConfigureAwait(false);
+        {
+            // A replaced connection closes under a bounded budget: a REPL that stopped
+            // reading must not stall the new connection's registration for a
+            // retransmit-scale time (mirrors the control-bus replacement budget).
+            using var replacementBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await previous
+                    .CloseAsync(WebSocketCloseStatus.NormalClosure, "replaced", replacementBudget.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when
+                (exception is OperationCanceledException or WebSocketException or InvalidOperationException)
+            {
+            }
+        }
 
         commConnections[sessionId] = connection;
         try

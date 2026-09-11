@@ -106,6 +106,21 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task DiscoveryFileIsOwnerOnly()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+
+        // The discovery file carries the bearer token; on Unix it must be readable and
+        // writable by the owner only (Windows relies on the user-scoped temp ACLs).
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = File.GetUnixFileMode(harness.DiscoveryPath);
+            mode.Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task FrontendEndpointsRejectMissingOrWrongBearerTokens()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
@@ -1175,6 +1190,46 @@ public sealed class FrontendApiIntegrationTests
         switchedBody.GetProperty("sessionId").GetString().Should().NotBe(first);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task ObjectRouteNormalizesUppercaseIdsAndTypesInvalidIds()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
+        // The object store (and the /v1/objects route) only exists when Agent persistence
+        // is enabled; the transform turns it on for this host.
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token,
+            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer),
+            hanging: false,
+            transformConfiguration: body => body.Replace(
+                "\"Maieutics\": {",
+                """
+                "Maieutics": {
+                    "Agent": { "Persistence": { "Enabled": true } },
+                """,
+                StringComparison.Ordinal));
+        using var client = harness.CreateClient();
+
+        // The route accepts uppercase hex but the content-addressed store is lowercase:
+        // the id must be normalized instead of surfacing as an untyped 500.
+        var payload = new byte[] { 1, 2, 3 };
+        var sha256 = harness.ObjectStore.Ingest(new MemoryStream(payload)).Sha256;
+        var served = await client.GetAsync($"/v1/objects/{sha256.ToUpperInvariant()}", deadline.Token);
+        served.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await served.Content.ReadAsByteArrayAsync(deadline.Token)).Should().Equal(payload);
+
+        // A well-formed but unknown id is a typed not_found, and a non-hex id is a typed
+        // invalid_request — never an unhandled 500.
+        var missing = await client.GetAsync($"/v1/objects/{new string('a', 63)}A", deadline.Token);
+        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var missingError = await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        missingError.GetProperty("code").GetString().Should().Be("not_found");
+
+        var invalid = await client.GetAsync($"/v1/objects/{new string('z', 64)}", deadline.Token);
+        invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var invalidError = await invalid.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        invalidError.GetProperty("code").GetString().Should().Be("invalid_request");
+    }
+
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1239,6 +1294,11 @@ public sealed class FrontendApiIntegrationTests
         public string Url => Discovery.GetProperty("url").GetString()!;
 
         public string Token => Discovery.GetProperty("token").GetString()!;
+
+        /// <summary>The content-addressed object store backing <c>/v1/objects</c>, so tests
+        /// can ingest real objects without driving a full turn.</summary>
+        public Maieutics.Persistence.ObjectStore ObjectStore =>
+            host.Services.GetRequiredService<Maieutics.Persistence.ObjectStore>();
 
         public static async Task<FrontendHarness> StartAsync(
             CancellationToken cancellationToken,

@@ -68,7 +68,21 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
                 return;
             }
 
-            await ServeConnectionAsync(pipe).ConfigureAwait(false);
+            try
+            {
+                await ServeConnectionAsync(pipe).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                // One client vanishing mid-bootstrap must not fault the accept loop: later
+                // REPL children would never receive a control credential. The pipe instance
+                // is disposed by the await using above; keep serving.
+                logger.LogWarning(exception, "Named-pipe bootstrap of a control credential failed.");
+            }
         }
     }
 

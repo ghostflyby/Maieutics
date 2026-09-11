@@ -136,7 +136,11 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                 seq.Transaction = transaction;
                 seq.CommandText = "SELECT COALESCE(MAX(seq), -1) FROM turns WHERE session_id = $id;";
                 seq.Parameters.AddWithValue("$id", familyId);
-                var turnSeq = Convert.ToInt64(seq.ExecuteScalar()!);
+                if (seq.ExecuteScalar() is not { } rawTurnSeq)
+                    throw new InvalidOperationException(
+                        $"The turn sequence lookup for session '{familyId}' returned no row.");
+
+                var turnSeq = Convert.ToInt64(rawTurnSeq);
 
                 foreach (var sha256 in objectReferences.Distinct(StringComparer.Ordinal))
                 {

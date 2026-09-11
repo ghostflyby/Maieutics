@@ -21,7 +21,9 @@ internal static class PermissionLayerStore
 {
     /// <summary>Builds the effective policy from <paramref name="layers"/> (already ordered from
     /// most general to most specific). All patterns in all layers are expanded against the
-    /// variable table here; a malformed or unresolvable token throws <see cref="PermissionException"/>.</summary>
+    /// variable table here; a malformed or unresolvable token throws <see cref="PermissionException"/>.
+    /// A pattern that is empty (or expands to empty) also fails the build: an empty path prefix
+    /// would silently match everything, so the gap must be surfaced before any launch.</summary>
     internal static EffectivePolicy Build(
         IReadOnlyList<PermissionLayer> layers,
         VariableTable variables)
@@ -68,7 +70,13 @@ internal static class PermissionLayerStore
 
         string Expand(string pattern)
         {
-            return variables.Expand(pattern);
+            var expanded = variables.Expand(pattern);
+            if (expanded.Length == 0)
+                throw new PermissionException(
+                    "permission_pattern_empty",
+                    $"The permission pattern '{pattern}' expands to an empty value; " +
+                    "an empty pattern would match everything and is rejected.");
+            return expanded;
         }
     }
 }

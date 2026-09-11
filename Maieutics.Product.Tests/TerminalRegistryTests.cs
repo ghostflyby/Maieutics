@@ -22,6 +22,61 @@ public sealed class TerminalRegistryTests
             EffectivePolicy.Default);
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotSessionsReleaseTheirSlotAndDisposeAfterCompletion()
+    {
+        var process = new FakeTerminalProcess();
+        // MaxSessionsPerAgent is 2 here: before the fix, two completed one-shot runs exhausted
+        // the cap permanently; five sequential runs must now succeed.
+        await using var registry = CreateRegistry(process);
+        var owner = AgentSessionId.Create();
+
+        for (var run = 0; run < 5; run++)
+        {
+            var runTask = registry.RunOnceAsync(
+                owner,
+                "sh",
+                ["-c", "echo done"],
+                TimeSpan.FromSeconds(5),
+                new TerminalSnapshotRequest(),
+                TestContext.Current.CancellationToken);
+
+            // The fake child exits as soon as the one-shot run is waiting on it.
+            process.EndOfOutput();
+            process.RaiseExited(0);
+
+            var result = await runTask;
+            result.Settled.Should().BeTrue($"run {run} must complete");
+            result.ExitCode.Should().Be(0);
+            process.Disposed.Should().BeTrue($"run {run} must dispose its session");
+            registry.List(owner).Should().BeEmpty($"run {run} must release its registry slot");
+        }
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task TimedOutOneShotStaysRegisteredAsThePollableHandle()
+    {
+        var process = new FakeTerminalProcess();
+        await using var registry = CreateRegistry(process);
+        var owner = AgentSessionId.Create();
+
+        var runTask = registry.RunOnceAsync(
+            owner,
+            "sh",
+            ["-c", "sleep 60"],
+            TimeSpan.FromMilliseconds(200),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+
+        // The child never exits; the deadline turns the run into a pollable handle.
+        var result = await runTask;
+        result.Settled.Should().BeFalse();
+        registry.List(owner).Should().ContainSingle().Which.SessionId.Should().Be(result.SessionId);
+
+        await registry.CloseAsync(owner, result.SessionId, TestContext.Current.CancellationToken);
+        registry.List(owner).Should().BeEmpty();
+    }
+
     private static async Task<TerminalRunResult> RunAsync(
         TerminalRegistry registry,
         AgentSessionId owner,

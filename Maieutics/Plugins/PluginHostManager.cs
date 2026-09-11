@@ -177,6 +177,11 @@ internal sealed class PluginHostManager(
     private FileSystemWatcher? pluginWatcher;
     private CancellationTokenSource? watcherDebounce;
 
+    /// <summary>Tracked debounce/reload tasks spawned by the plugin watcher, pruned the same way
+    /// as <see cref="capabilityCalls"/> so stop can observe them instead of leaving unobserved
+    /// task exceptions behind.</summary>
+    private readonly List<Task> watcherReloads = [];
+
     /// <summary>Paths of watched changes awaiting an explicit reload apply
     /// (the automatic-reload option is off).</summary>
     private readonly HashSet<string> pendingReloadPaths = new(StringComparer.Ordinal);
@@ -579,6 +584,7 @@ internal sealed class PluginHostManager(
         lock (gate)
         {
             watcherDebounce?.Cancel();
+            watcherDebounce?.Dispose();
             watcherDebounce = null;
             pluginWatcher?.Dispose();
             pluginWatcher = null;
@@ -596,21 +602,24 @@ internal sealed class PluginHostManager(
             watcherDebounce = debounce = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         }
 
-        _ = Task.Run(async () =>
+        // Tracked like the capability calls so stop can observe the reloads; the body catches
+        // every exception (the known transient cases and anything unexpected) so the
+        // fire-and-forget task never surfaces as an unobserved task exception.
+        TrackWatcherReload(Task.Run(async () =>
         {
-            if (lifetime.IsCancellationRequested) return;
-
             try
             {
-                await Task.Delay(PluginReloadDebounce, debounce.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
+                if (lifetime.IsCancellationRequested) return;
 
-            try
-            {
+                try
+                {
+                    await Task.Delay(PluginReloadDebounce, debounce.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
                 if (AutomaticReload)
                 {
                     await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
@@ -620,19 +629,35 @@ internal sealed class PluginHostManager(
                     lock (gate) pendingReloadPaths.Add(args.FullPath);
                 }
             }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException or OperationCanceledException
-                    or WebSocketException or ObjectDisposedException)
+            catch (Exception exception)
             {
                 // A deleted plugin directory, an unreadable manifest, a host socket that closed
                 // mid-send, or a shutdown-during-reload must not crash the watcher; the next
-                // change (or the next startup) re-resolves.
+                // change (or the next startup) re-resolves. Unknown failures are observed here
+                // too instead of escaping as unobserved task exceptions.
                 logger.LogDebug(
                     exception,
                     "Plugin reload for '{Path}' did not complete.",
                     args.FullPath);
             }
-        });
+        }));
+    }
+
+    /// <summary>Tracks one watcher-spawned reload task so shutdown can observe it; completed
+    /// entries are pruned as new tasks arrive to keep the list bounded (the body handles its own
+    /// failures, so a fault here is only observed, never rethrown).</summary>
+    private void TrackWatcherReload(Task reload)
+    {
+        lock (gate)
+        {
+            watcherReloads.RemoveAll(tracked =>
+            {
+                if (!tracked.IsCompleted) return false;
+                if (tracked.IsFaulted) _ = tracked.Exception;
+                return true;
+            });
+            watcherReloads.Add(reload);
+        }
     }
 
     /// <summary>Locates the plugin owning a changed path and ships its fresh config to the host
@@ -889,24 +914,39 @@ internal sealed class PluginHostManager(
         return $"{sessionId}\u0000{generation.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
     }
 
-    /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.</summary>
+    /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.
+    /// One host connection is live at a time: a second attach while one is live is refused with a
+    /// policy-violation close (mirroring how the REPL session hosts reject a second attach) so it
+    /// can never overwrite the live socket, outbound queue, or writer.</summary>
     public async Task AttachHostAsync(WebSocket socket, CancellationToken cancellationToken)
     {
         await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
+        bool refused;
         lock (gate)
         {
-            Socket = socket;
-            // A WebSocket permits one outstanding send: every C#→host frame is
-            // serialized through this bounded channel instead of concurrent direct
-            // sends, which would fault with "already one outstanding send" the
-            // moment a capability reply raced a hook request.
-            outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(OutboundCapacity)
+            refused = Socket is not null;
+            if (!refused)
             {
-                SingleReader = true,
-                SingleWriter = false,
-                FullMode = BoundedChannelFullMode.Wait,
-            });
-            outboundWriter = WriteOutboundAsync(socket, outbound, cancellationToken);
+                Socket = socket;
+                // A WebSocket permits one outstanding send: every C#→host frame is
+                // serialized through this bounded channel instead of concurrent direct
+                // sends, which would fault with "already one outstanding send" the
+                // moment a capability reply raced a hook request.
+                outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(OutboundCapacity)
+                {
+                    SingleReader = true,
+                    SingleWriter = false,
+                    FullMode = BoundedChannelFullMode.Wait,
+                });
+                outboundWriter = WriteOutboundAsync(socket, outbound, cancellationToken);
+            }
+        }
+
+        if (refused)
+        {
+            logger.LogWarning("Refused a second plugin host attach while one is already live.");
+            await RejectSecondAttachAsync(socket).ConfigureAwait(false);
+            return;
         }
 
         try
@@ -926,17 +966,21 @@ internal sealed class PluginHostManager(
             Task? writer;
             lock (gate)
             {
-                // Guarded by the same identity check as Socket: a successor attach
-                // must never have its channel completed by the old detach.
-                if (ReferenceEquals(socket, Socket))
+                // Guarded by the same identity check as Socket: when a successor owns the
+                // connection, the old detach must not complete the successor's channel, clear
+                // its writer, or await it.
+                if (!ReferenceEquals(socket, Socket))
+                {
+                    writer = null;
+                }
+                else
                 {
                     Socket = null;
                     outbound?.Writer.TryComplete();
                     outbound = null;
+                    writer = outboundWriter;
+                    outboundWriter = null;
                 }
-
-                writer = outboundWriter;
-                outboundWriter = null;
             }
 
             // Fail dependents BEFORE draining the pump: a stuck send must not delay
@@ -961,6 +1005,25 @@ internal sealed class PluginHostManager(
             // session identities and broker policies here (the host's own exited reports never
             // arrive). Idempotent with the exited-report path.
             ReleaseHostReplRegistrations();
+        }
+    }
+
+    /// <summary>Closes a refused second host attach with a policy-violation status so the
+    /// connecting side learns why it was rejected (mirrors the REPL session hosts).</summary>
+    private static async Task RejectSecondAttachAsync(WebSocket socket)
+    {
+        try
+        {
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                await socket.CloseOutputAsync(
+                    WebSocketCloseStatus.PolicyViolation,
+                    "A plugin host connection is already attached.",
+                    CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is WebSocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            // The rejected socket was already gone; the refusal needs no further delivery.
         }
     }
 
@@ -1041,6 +1104,32 @@ internal sealed class PluginHostManager(
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
         RegistryChanges.Writer.TryComplete();
         StopPluginWatcher();
+
+        Task[] reloading;
+        lock (gate)
+        {
+            reloading = [.. watcherReloads];
+            watcherReloads.Clear();
+        }
+
+        if (reloading.Length > 0)
+        {
+            // The watcher is stopped; one total budget observes the in-flight debounced reloads
+            // so their completion is never an unobserved task exception after stop.
+            using var reloadBudget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await Task.WhenAll(reloading).WaitAsync(reloadBudget.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is OperationCanceledException or AggregateException)
+            {
+                logger.LogDebug(
+                    exception,
+                    "{Count} plugin watcher reload(s) were still running at host stop.",
+                    reloading.Length);
+            }
+        }
 
         if (process is not null)
         {
@@ -1474,7 +1563,8 @@ internal sealed class PluginHostManager(
                     socket,
                     envelope.CorrelationId,
                     "invalid_capability_invoke",
-                    "The capability.invoke payload requires a pluginId, a capability, and a payload.").ConfigureAwait(false);
+                    "The capability.invoke payload requires a pluginId, a capability, and a payload.",
+                    budget.Token).ConfigureAwait(false);
                 return;
             }
 
@@ -1484,7 +1574,8 @@ internal sealed class PluginHostManager(
                     socket,
                     envelope.CorrelationId,
                     "capability_unknown",
-                    $"Capability '{request.Capability}' is not in the kernel capability catalog.").ConfigureAwait(false);
+                    $"Capability '{request.Capability}' is not in the kernel capability catalog.",
+                    budget.Token).ConfigureAwait(false);
                 return;
             }
 
@@ -1494,7 +1585,8 @@ internal sealed class PluginHostManager(
                     socket,
                     envelope.CorrelationId,
                     "capability_denied",
-                    $"Plugin '{request.PluginId}' has not declared capability '{request.Capability}'.").ConfigureAwait(false);
+                    $"Plugin '{request.PluginId}' has not declared capability '{request.Capability}'.",
+                    budget.Token).ConfigureAwait(false);
                 return;
             }
 
@@ -1504,7 +1596,8 @@ internal sealed class PluginHostManager(
                     socket,
                     envelope.CorrelationId,
                     "invalid_capability_invoke",
-                    "The capability.invoke payload requires a capability payload object.").ConfigureAwait(false);
+                    "The capability.invoke payload requires a capability payload object.",
+                    budget.Token).ConfigureAwait(false);
                 return;
             }
 
@@ -1515,7 +1608,8 @@ internal sealed class PluginHostManager(
                     socket,
                     envelope.CorrelationId,
                     "capability_unavailable",
-                    "The kernel capability executor is not available.").ConfigureAwait(false);
+                    "The kernel capability executor is not available.",
+                    budget.Token).ConfigureAwait(false);
                 return;
             }
 
@@ -1531,7 +1625,8 @@ internal sealed class PluginHostManager(
                     socket,
                     envelope.CorrelationId,
                     "invalid_capability_invoke",
-                    "The tools.invoke payload requires a tool name and object arguments.").ConfigureAwait(false);
+                    "The tools.invoke payload requires a tool name and object arguments.",
+                    budget.Token).ConfigureAwait(false);
                 return;
             }
 
@@ -1544,16 +1639,20 @@ internal sealed class PluginHostManager(
                     envelope.CorrelationId,
                     JsonSerializer.SerializeToElement(
                         new CapabilityResultPayload(result),
-                        ReplControlJsonContext.Default.CapabilityResultPayload))).ConfigureAwait(false);
+                        ReplControlJsonContext.Default.CapabilityResultPayload)),
+                budget.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (budget.IsCancellationRequested)
         {
             logger.LogWarning("Capability invoke '{CorrelationId}' exceeded its budget.", envelope.CorrelationId);
+            // The budget is spent, so the timeout reply rides the host lifetime only (still
+            // bounded: StopCoreAsync drains tracked calls under one total budget).
             await PushCapabilityErrorAsync(
                 socket,
                 envelope.CorrelationId,
                 "capability_timeout",
-                "The capability call did not settle within its budget.").ConfigureAwait(false);
+                "The capability call did not settle within its budget.",
+                lifetime.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -1564,7 +1663,8 @@ internal sealed class PluginHostManager(
                 socket,
                 envelope.CorrelationId,
                 "capability_failed",
-                "The capability call failed.").ConfigureAwait(false);
+                "The capability call failed.",
+                budget.Token).ConfigureAwait(false);
         }
     }
 
@@ -1572,7 +1672,8 @@ internal sealed class PluginHostManager(
         WebSocket socket,
         string correlationId,
         string code,
-        string message)
+        string message,
+        CancellationToken cancellationToken)
     {
         return PushCapabilityReplyAsync(
             socket,
@@ -1582,15 +1683,22 @@ internal sealed class PluginHostManager(
                 correlationId,
                 JsonSerializer.SerializeToElement(
                     new BusErrorPayload(code, message),
-                    ReplControlJsonContext.Default.BusErrorPayload)));
+                    ReplControlJsonContext.Default.BusErrorPayload)),
+            cancellationToken);
     }
 
-    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue;
-    /// a reply to a detached host is dropped (the tracked call ends with the socket).</summary>
-    private async Task PushCapabilityReplyAsync(WebSocket socket, ReplEnvelope envelope)
+    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue under the
+    /// caller's budget linked with the host lifetime, so a full queue can never block past the
+    /// budget (or past host stop); a reply to a detached host is dropped (the tracked call ends
+    /// with the socket).</summary>
+    private async Task PushCapabilityReplyAsync(
+        WebSocket socket,
+        ReplEnvelope envelope,
+        CancellationToken cancellationToken)
     {
-        // The enqueue rides the caller's budget; the bounded writer owns the write.
-        await PushAsync(socket, envelope, CancellationToken.None).ConfigureAwait(false);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        // The enqueue rides the linked budget; the bounded writer owns the write.
+        await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
     }
 
     /// <summary>Refreshes the capability-grant snapshot from the kernel-parsed

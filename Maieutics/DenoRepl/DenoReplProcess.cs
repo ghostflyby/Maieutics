@@ -151,18 +151,16 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         startInfo.ArgumentList.Add($"--lock={options.LockFile}");
         startInfo.ArgumentList.Add(options.MainUrl);
 
-        using var process = Process.Start(startInfo)
-                            ?? throw new InvalidOperationException(
-                                $"Could not start '{options.Executable}' to install the Deno REPL module graph.");
-        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        var error = await standardError.ConfigureAwait(false);
-        _ = await standardOutput.ConfigureAwait(false);
-        if (process.ExitCode != 0)
+        // Kill-on-cancellation: a cancelled session start must not orphan the cache child.
+        var run = await DenoHelperProcess.RunAsync(
+                startInfo,
+                "to install the Deno REPL module graph.",
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (run.ExitCode != 0)
             throw new InvalidOperationException(
-                $"Installing the Deno REPL module graph failed with exit code {process.ExitCode}. " +
-                $"stderr: {error.Trim()}");
+                $"Installing the Deno REPL module graph failed with exit code {run.ExitCode}. " +
+                $"stderr: {run.StandardError.Trim()}");
     }
 }
 

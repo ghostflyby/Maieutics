@@ -37,6 +37,8 @@ internal static class ProcessEnvironment
 
     /// <summary>Captures the child environment from <paramref name="policy"/>: every name granted by
     /// the <c>env</c> kind (when the kind has explicit grants), otherwise the default allowlist.
+    /// Denials always win (AGENTS.md invariant 20): names matching an <c>env</c> deny pattern are
+    /// removed from the candidate set regardless of the grant that carried them.
     /// <c>TERM</c> is always pinned to the VT terminal name so PTY children render correctly
     /// regardless of the policy.</summary>
     internal static IReadOnlyDictionary<string, string?> Capture(EffectivePolicy policy)
@@ -58,9 +60,15 @@ internal static class ProcessEnvironment
     private static IReadOnlyList<string> AllowedNames(EffectivePolicy policy)
     {
         var rules = policy.For(PermissionKind.Env);
-        if (rules.AllowAll) return DefaultAllowedEnvironmentNames;
-        if (rules.Allow.Count > 0) return rules.Allow;
+        if (rules.DenyAll) return [];
 
-        return DefaultAllowedEnvironmentNames;
+        var candidates = rules.Allow.Count > 0 && !rules.AllowAll
+            ? rules.Allow
+            : DefaultAllowedEnvironmentNames;
+        // The same prefix semantics the Deno permission resolver applies to env values, so a
+        // profile deny cannot be widened or narrowed by a second matcher here.
+        return candidates
+            .Where(name => !PermissionMatching.MatchesAny(PermissionKind.Env, rules.Deny, name))
+            .ToArray();
     }
 }

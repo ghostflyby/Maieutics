@@ -384,6 +384,59 @@ public sealed class PluginHostInvokeTests
         manager.HandleHostMessage("not-json");
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task SecondAttachIsRefusedWhileOneIsLiveAndReattachWorksAfterDetach()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+
+        // A second live host connection must be refused (policy-violation close), never silently
+        // overwrite the first socket's outbound queue and writer.
+        var second = new FakeHostWebSocket();
+        await harness.Manager.AttachHostAsync(second, deadline.Token);
+        second.CloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
+        second.State.Should().Be(WebSocketState.Closed);
+
+        // The first connection still owns the surface: a capability invoke is answered on it.
+        harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
+        harness.Manager.CapabilityExecutor = (_, _, _) =>
+            Task.FromResult(JsonSerializer.SerializeToElement(new { status = "ok" }));
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-after-refusal\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
+            "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
+        var stillFirst = await harness.Host!.ReadSentAsync(deadline.Token);
+        stillFirst.Should().Contain("cap-after-refusal");
+
+        // After the live host detaches, a fresh attach is accepted again. The old detach finishes
+        // asynchronously (the receive loop unwinds on its own path), so retry until the manager
+        // has released the first connection; a refusal completes synchronously with the close
+        // status set, an accepted attach keeps running its receive loop.
+        harness.Host!.Dispose();
+        for (var attempt = 0; ; attempt++)
+        {
+            var third = new FakeHostWebSocket();
+            var thirdAttach = harness.Manager.AttachHostAsync(third, deadline.Token);
+            await Task.WhenAny(thirdAttach, Task.Delay(200, deadline.Token));
+            if (!thirdAttach.IsCompleted && third.CloseStatus is null)
+            {
+                third.CloseStatus.Should().BeNull("a fresh attach after the detach must not be refused");
+                harness.Manager.GetStatus().ControlConnected.Should().BeTrue();
+                third.Dispose();
+                await thirdAttach;
+                break;
+            }
+
+            third.Dispose();
+            if (attempt >= 100)
+                throw new TimeoutException("the manager never released the first host connection for re-attach");
+        }
+    }
+
     private static ReplEnvelope EnvelopeOf(string json)
     {
         return JsonSerializer.Deserialize(json, ReplControlJsonContext.Default.ReplEnvelope)!;

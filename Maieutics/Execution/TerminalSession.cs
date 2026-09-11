@@ -855,9 +855,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
 
         foreach (var allowed in run.Allow)
-            if (allowed.Length > 0 &&
-                executable.StartsWith(allowed, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal))
+            if (PermissionMatching.MatchesPath(allowed, executable))
                 return;
 
         throw new AgentToolException(

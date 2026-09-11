@@ -74,7 +74,29 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
             executable,
             arguments);
         if (timeout is { } deadline)
-            return await session.RunOnceAsync(deadline, snapshotRequest, cancellationToken).ConfigureAwait(false);
+        {
+            TerminalRunResult result;
+            try
+            {
+                result = await session.RunOnceAsync(deadline, snapshotRequest, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // A cancelled or failed one-shot is dead (its child was already terminated on the
+                // cancellation path): release the slot and dispose outside the registry lock.
+                await RemoveFinishedOneShotAsync(ownerSessionId, session).ConfigureAwait(false);
+                throw;
+            }
+
+            // A timed-out one-shot stays registered: the result carries the session id as the
+            // pollable handle. A settled one-shot has exited and captured its result, so nothing
+            // else can ever use the session again — remove it instead of leaking a dead PTY
+            // against MaxSessionsPerAgent.
+            if (result.Settled)
+                await RemoveFinishedOneShotAsync(ownerSessionId, session).ConfigureAwait(false);
+
+            return result;
+        }
 
         await session.StartAsync(cancellationToken).ConfigureAwait(false);
         var snapshot = session.GetSnapshot();
@@ -175,6 +197,25 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
         }
 
         return new TerminalCloseResult();
+    }
+
+    /// <summary>Releases a finished one-shot session: removed under the lock, then disposed
+    /// outside it (the same order CloseAsync uses). A completed run's PTY is dead, so keeping it
+    /// registered would permanently consume one of the agent's session slots.</summary>
+    private async Task RemoveFinishedOneShotAsync(AgentSessionId ownerSessionId, TerminalSession session)
+    {
+        Remove(ownerSessionId, session.SessionId, session);
+        try
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not dispose finished one-shot terminal session {SessionId}.",
+                session.SessionId);
+        }
     }
 
     private TerminalSession GetOrReserveDefault(AgentSessionId ownerSessionId, string? sessionId)

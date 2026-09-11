@@ -97,6 +97,33 @@ public sealed class PermissionLayerTests
             .Which.Code.Should().Be("permission_variable_unknown");
     }
 
+    [Fact]
+    public void EmptyPatternFailsBuildWithTypedError()
+    {
+        // An empty path pattern would prefix-match everything, so it must fail the build
+        // instead of silently widening the grant.
+        var layer = Layer(
+            (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp"], Deny = [""] }));
+
+        var build = () => PermissionLayerStore.Build([layer], CreateVariables());
+
+        build.Should().Throw<PermissionException>()
+            .Which.Code.Should().Be("permission_pattern_empty");
+    }
+
+    [Fact]
+    public void PatternExpandingToEmptyFailsBuildWithTypedError()
+    {
+        var layer = Layer(
+            (PermissionKind.Write, new PermissionKindRules { Allow = ["${var.workspace}"] }));
+
+        // The variable resolves, but to an empty value: an empty pattern would match everything.
+        var build = () => PermissionLayerStore.Build([layer], CreateVariables(workspace: string.Empty));
+
+        build.Should().Throw<PermissionException>()
+            .Which.Code.Should().Be("permission_pattern_empty");
+    }
+
     private static PermissionLayer Layer(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
     {
         return new PermissionLayer

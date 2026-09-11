@@ -151,9 +151,10 @@ public sealed class TerminalRegistryTests
         process.Disposed.Should().BeTrue();
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task SnapshotOfMissingSessionFailsWithoutStartingOne()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var process = new FakeTerminalProcess();
         await using var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();

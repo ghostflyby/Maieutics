@@ -130,7 +130,7 @@ public sealed class DenoRunProcessTests
     public async Task StopReturnsWithinItsBudgetWhenAReparentedGrandchildHoldsTheDrain()
     {
         if (OperatingSystem.IsWindows())
-            return; // Uses `sleep` as the grandchild and a pid file under the temp path.
+            Assert.Skip("Uses `sleep` as the grandchild and a pid file under the temp path.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(50));

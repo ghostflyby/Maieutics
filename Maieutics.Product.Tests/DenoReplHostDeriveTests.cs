@@ -171,7 +171,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task DeriveFailedReportCompletesThePendingDeriveWithTheFailure()
     {
         if (OperatingSystem.IsWindows())
-            return; // The host harness attaches over a Unix socket (control + eval channels).
+            Assert.Skip("The host harness attaches over a Unix socket (control + eval channels).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -194,7 +194,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task SpawnedReportCompletesThePendingDeriveAsSpawned()
     {
         if (OperatingSystem.IsWindows())
-            return; // The host harness attaches over a Unix socket (control + eval channels).
+            Assert.Skip("The host harness attaches over a Unix socket (control + eval channels).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -218,7 +218,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task StaleReportsForAnotherSessionDoNotCompleteTheDerive()
     {
         if (OperatingSystem.IsWindows())
-            return; // The host harness attaches over a Unix socket (control + eval channels).
+            Assert.Skip("The host harness attaches over a Unix socket (control + eval channels).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -243,7 +243,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task DuplicateDeriveForTheSameSessionIsRejected()
     {
         if (OperatingSystem.IsWindows())
-            return; // The host harness attaches over a Unix socket (control + eval channels).
+            Assert.Skip("The host harness attaches over a Unix socket (control + eval channels).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -266,7 +266,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task FactoryDerivesThroughAHostSpawnedReportThenWaitsForTheEvalChannel()
     {
         if (OperatingSystem.IsWindows())
-            return; // The host harness attaches over a Unix socket (control + eval channels).
+            Assert.Skip("The host harness attaches over a Unix socket (control + eval channels).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(90));
@@ -332,7 +332,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task FactoryFallsBackToKernelDerivationWhenTheHostRejectsTheDerive()
     {
         if (OperatingSystem.IsWindows())
-            return; // The host harness attaches over a Unix socket (control + eval channels).
+            Assert.Skip("The host harness attaches over a Unix socket (control + eval channels).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(90));
@@ -368,25 +368,48 @@ public sealed class DenoReplHostDeriveTests
 
         // The host rejects the derive before any pid exists; the factory must fall back to the
         // kernel-derived path instead of surfacing the host's rejection.
-        var deriveJson = await harness.Host!.ReadSentAsync(deadline.Token);
+        if (harness.Host is not { } simulatedHost)
+            throw new InvalidOperationException("The factory harness must attach a simulated host.");
+        var deriveJson = await simulatedHost.ReadSentAsync(deadline.Token);
         deriveJson.Should().Contain("\"host.repl.derive\"");
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.deriveFailed","payload":{"sessionId":"fallback-session","generation":1,"message":"no module graph"}}""");
 
+        IDenoReplGeneration? generation = null;
         try
         {
-            var generation = await start;
-            // The kernel fallback produced a real kernel-derived REPL, never the host's failure.
-            await using (generation)
-            {
-                await generation.ShutdownAsync(deadline.Token);
-            }
+            generation = await start;
         }
-        catch (Exception exception)
+        catch (InvalidOperationException exception) when (exception.Message.Contains("esbuild-wasm"))
         {
-            // The kernel fallback itself may fail when the esbuild-wasm module graph is absent
-            // (no network/cache): that is the kernel path's own error, never the host rejection.
-            exception.Message.Should().NotContain("no module graph");
+            // The one documented transient: with AutoInstallModuleGraph off, the kernel fallback's
+            // own graph resolution throws before any session state exists on a cold DENO_DIR.
+            // Note the filter matches the kernel path's wording, never the host's "no module
+            // graph" rejection, which must stay unsurfaced; any other exception fails the test.
+            Assert.Skip("The esbuild-wasm module graph is not cached, so the kernel-derived fallback cannot start.");
+        }
+
+        if (generation is not { } kernelGeneration)
+        {
+            // Assert.Skip above always throws for the filtered transient, so this is unreachable
+            // in practice; the typed failure keeps the compiler provable if that ever changes.
+            throw new InvalidOperationException("The kernel-derived fallback did not produce a generation.");
+        }
+
+        await using (kernelGeneration)
+        {
+            // The fallback produced a kernel-owned generation — a real kernel-derived REPL —
+            // and it executes: one eval round-trip proves the child is live and serving.
+            kernelGeneration.Should().BeOfType<LocalDenoReplGeneration>();
+            var execution = await kernelGeneration.Connection.ExecuteAsync("1 + 1", deadline.Token);
+            await foreach (var _ in execution.Events.WithCancellation(deadline.Token))
+            {
+            }
+
+            var terminal = await execution.Completion.WaitAsync(deadline.Token);
+            terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetRawText().Should().Contain("2");
+            // Cleanup rides the awaited dispose (force-stop, no rethrow) like the other
+            // kernel-derived-generation tests; graceful shutdown is covered elsewhere.
         }
     }
 
@@ -404,7 +427,7 @@ public sealed class DenoReplHostDeriveTests
     public async Task FactoryStartsARealHostDerivedReplAndExecutesAvesCode()
     {
         if (OperatingSystem.IsWindows())
-            return; // The real-host harness attaches over a Unix socket (peer identity).
+            Assert.Skip("The real-host harness attaches over a Unix socket (peer identity).");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(150));

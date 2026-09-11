@@ -119,9 +119,10 @@ public sealed class DenoPermissionBrokerTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task ResolverMatchesExactDenyOverAllow()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp"], Deny = ["/tmp/secret"] }));
 
@@ -131,9 +132,10 @@ public sealed class DenoPermissionBrokerTests
         decision.Reason.Should().Contain("read access");
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task ResolverAllowsExactGrantAndDeniesUnknownKind()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Env, new PermissionKindRules { Allow = ["HOME"] }));
 
@@ -142,9 +144,10 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionResolver.Resolve(policy, "unknown", "x").IsAllowed.Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task PathGrantsMatchInsideButNotSiblingPaths()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp"] }));
 
@@ -155,9 +158,10 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionResolver.Resolve(policy, "read", "/tmp-evil").IsAllowed.Should().BeFalse();
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task PathDeniesMatchInsideButNotSiblingPaths()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Read, new PermissionKindRules
             {
@@ -169,9 +173,10 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionResolver.Resolve(policy, "read", "/data/secret-appended").IsAllowed.Should().BeTrue();
     }
 
-    [Fact]
+    [Fact(Timeout = 10_000)]
     public async Task NonPathKindsKeepPrefixMatching()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Env, new PermissionKindRules { Allow = ["MAIEUTICS_TEST"] }),
             (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost"] }));
@@ -220,13 +225,26 @@ public sealed class DenoPermissionBrokerTests
         if (register) broker.RegisterPolicy(process.Id, policy);
         try
         {
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            var stderr = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+            // Drain both pipes concurrently: completing the stdout read before starting the
+            // stderr read can deadlock once the child fills the stderr buffer. A cancelled or
+            // failed drain still kills the tree so no probe child outlives the test.
+            var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+            var outputs = await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return stdout + stderr;
+            return outputs[0] + outputs[1];
         }
         finally
         {
+            try
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+                // The process already exited.
+            }
+
             if (register) broker.UnregisterProcess(process.Id);
         }
     }

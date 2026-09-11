@@ -59,7 +59,7 @@ public sealed class PluginHostInvokeTests
     public async Task InvokeSendsHostInvokeAndCompletesWithTheResult()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -98,7 +98,7 @@ public sealed class PluginHostInvokeTests
     public async Task InvokeErrorResponseCompletesWithTheTypedFailure()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -127,7 +127,7 @@ public sealed class PluginHostInvokeTests
     public async Task ConcurrentSendsAreSerializedThroughTheOutboundQueue()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -167,7 +167,7 @@ public sealed class PluginHostInvokeTests
     public async Task CapabilityInvokeServesTheCataloguedCapability()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -202,7 +202,7 @@ public sealed class PluginHostInvokeTests
     public async Task CapabilityInvokeRefusesUnknownCapabilitiesBeforeAnyGrantCheck()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -235,7 +235,7 @@ public sealed class PluginHostInvokeTests
     public async Task CapabilityInvokeDeniesUndeclaredCapabilities()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -262,7 +262,7 @@ public sealed class PluginHostInvokeTests
     public async Task CapabilityInvokeAnswersUnavailableWithoutABoundExecutor()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -287,7 +287,7 @@ public sealed class PluginHostInvokeTests
     public async Task InvokeTimesOutWhenTheHostNeverAnswers()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -312,7 +312,7 @@ public sealed class PluginHostInvokeTests
     public async Task InvokeCancelsPromptlyWhenTheCallerCancels()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -337,7 +337,7 @@ public sealed class PluginHostInvokeTests
     public async Task HostDisconnectFailsPendingInvokes()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);
@@ -388,7 +388,7 @@ public sealed class PluginHostInvokeTests
     public async Task SecondAttachIsRefusedWhileOneIsLiveAndReattachWorksAfterDetach()
     {
         if (OperatingSystem.IsWindows())
-            return; // The simulated host attaches over a Unix-socket Kestrel harness.
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(Deadline);

@@ -164,7 +164,8 @@ public sealed class PluginHostIntegrationTests
     [Fact(Timeout = 120_000)]
     public async Task DiscoversAndInvokesExtensionPointsInARealDenoHost()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
@@ -228,7 +229,8 @@ public sealed class PluginHostIntegrationTests
     [InlineData("sdk-direct-jsr")]
     public async Task WorkerReadinessAcrossImportForms(string variant)
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(40));
@@ -282,7 +284,8 @@ public sealed class PluginHostIntegrationTests
     [Fact(Timeout = 120_000)]
     public async Task RejectsToolCallsThroughThePreInvokeHookChain()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
@@ -371,7 +374,8 @@ public sealed class PluginHostIntegrationTests
         // script tool, and returns the result. The hook observes the answer by
         // replacing the outer tool's arguments — so the outer result proves whether
         // the callback succeeded.
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
@@ -517,7 +521,8 @@ public sealed class PluginHostIntegrationTests
         // manifest data: no entrypoint, no worker, just a declarative mcp.discover
         // section. The kernel publishes its synthetic registration into the same
         // registry the host's own worker registrations land in.
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
@@ -650,7 +655,8 @@ public sealed class PluginHostIntegrationTests
     [Fact(Timeout = 120_000)]
     public async Task CrossPluginActorCallsResolveThroughDeclaredDependencies()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
@@ -772,12 +778,18 @@ public sealed class PluginHostIntegrationTests
             var updated = File.ReadAllText(denoJsonPath).Replace(
                 "\"imports\":",
                 "\"imports\": { \"@std/bytes\": \"jsr:@std/bytes@1\", \"@std/path\": \"jsr:@std/path@^1\" },\n    \"imports-old\":");
-            File.WriteAllText(denoJsonPath, updated);
 
             // No automatic reload: the change is recorded as pending, and no
-            // restart-required warning is emitted.
-            await Task.Delay(1500, timeout.Token);
+            // restart-required warning is emitted. The seam completes on the same
+            // transition that increments PendingReloadCount, so the positive
+            // assertion needs no fixed grace period; it is captured before the
+            // write so the record cannot race the subscribe. The negative warning
+            // check keeps a bounded observation window past the record.
+            var recorded = manager.PendingReloadRecorded;
+            File.WriteAllText(denoJsonPath, updated);
+            await recorded.WaitAsync(TimeSpan.FromSeconds(20), timeout.Token);
             manager.PendingReloadCount.Should().BeGreaterThan(0);
+            await Task.Delay(TimeSpan.FromMilliseconds(500), timeout.Token);
             logger.Lines.Should().NotContain(line => line.Contains("Restart the host process"));
 
             // The explicit apply runs the reload path (which emits the warning).

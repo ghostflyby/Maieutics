@@ -8,6 +8,24 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
 
+/// <summary>
+///     Declares the process-wide polling file-watcher flag once per test process, before any
+///     test builds a configuration provider. The default JSON configuration sources use
+///     FSEvents-backed file watching, which can block in constrained sandboxes; polling is
+///     deterministic and matches the executable's config provider. It lives in a module
+///     initializer (not a collection fixture) because some <see cref="ReplControlTestHost"/>
+///     consumers (unit-style control-host tests) run outside
+///     <see cref="ProductIntegrationCollection"/>.
+/// </summary>
+internal static class ReplControlTestHostInit
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Initialize()
+    {
+        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
+    }
+}
+
 internal static class ReplControlTestHost
 {
     public static async Task<(WebApplication Application, ReplControlHost Host)> StartAsync(
@@ -30,9 +48,7 @@ internal static class ReplControlTestHost
         ReplControlHost controlHost,
         CancellationToken cancellationToken)
     {
-        // The default JSON configuration sources use FSEvents-backed file watching, which can block
-        // in constrained sandboxes. Polling is deterministic and matches the executable's config provider.
-        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1");
+        // The polling flag is declared once by <see cref="ReplControlTestHostInit"/>.
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
         {
             ApplicationName = "maieutics-control-test"

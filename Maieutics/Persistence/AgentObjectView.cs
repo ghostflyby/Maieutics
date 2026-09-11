@@ -49,7 +49,11 @@ internal static class AgentObjectView
         {
             if (File.Exists(linkPath)) return false; // a regular file occupies the path; leave it alone
 
-            File.CreateSymbolicLink(linkPath, Path.GetRelativePath(Path.GetDirectoryName(linkPath)!, targetPath));
+            // A link path without a directory component cannot host the view; degrade like
+            // the unsupported-filesystem case instead of forcing a null through.
+            if (Path.GetDirectoryName(linkPath) is not { } linkDirectory) return false;
+
+            File.CreateSymbolicLink(linkPath, Path.GetRelativePath(linkDirectory, targetPath));
             return true;
         }
         catch (Exception exception) when (

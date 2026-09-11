@@ -16,7 +16,7 @@ namespace Maieutics.Frontend;
 /// </summary>
 internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentationTarget
 {
-    private const int ReplayRetention = 4096;
+    internal const int ReplayRetention = 4096;
     internal const int SubscriberQueueCapacity = 1024;
     private static readonly TimeSpan ShutdownCancelTimeout = TimeSpan.FromSeconds(15);
 
@@ -31,8 +31,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task pump = Task.CompletedTask;
     private IAsyncDisposable? presentationScope;
-    private long firstSequence;
+    private long oldestSequence;
+    private long latestSequence;
     private int startState;
+    private int settleState;
     private int disposeState;
     private bool completed;
 
@@ -88,8 +90,11 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     ///     <paramref name="sinceSequence" /> and the live queue that continues from the
     ///     snapshot. Both are taken under one lock, so the concatenation of the snapshot and
     ///     the queue is exactly once and in order. When the requested sequence precedes
-    ///     retained history the snapshot is a single <c>run.missing</c> frame instead of a
-    ///     partial replay.
+    ///     retained history the snapshot opens with a single <c>run.missing</c> frame
+    ///     followed by whatever the buffer still holds. For a completed run the entire
+    ///     replay travels as the snapshot — the bounded queue has no reader yet, so writing
+    ///     retained frames into it would silently drop everything past its capacity — and
+    ///     the queue completes immediately.
     /// </summary>
     internal (IReadOnlyList<FrontendEventFrame> Initial, Channel<FrontendEventFrame> Channel) Subscribe(
         long sinceSequence)
@@ -98,32 +103,32 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         var subscriber = new Subscriber(channel);
         lock (gate)
         {
+            subscribers.Add(subscriber);
             if (completed)
             {
-                // The pump already published its terminal frame; complete the queue after the
-                // snapshot so the subscriber's drain loop ends instead of waiting forever.
-                subscribers.Add(subscriber);
-                if (firstSequence > 0 && sinceSequence + 1 < firstSequence)
-                {
-                    channel.Writer.TryWrite(MissingFrame());
-                }
-                else
-                {
-                    foreach (var frame in replay)
-                        if (IsReplayable(frame, sinceSequence))
-                            channel.Writer.TryWrite(frame);
-                }
-
+                // The pump already published its terminal frame; complete the queue so the
+                // subscriber's drain loop ends instead of waiting forever.
                 channel.Writer.TryComplete();
-                return ([], channel);
             }
 
-            subscribers.Add(subscriber);
-            return (replay
-                    .Where(frame => IsReplayable(frame, sinceSequence))
-                    .ToArray(),
-                channel);
+            return (BuildSnapshot(sinceSequence), channel);
         }
+    }
+
+    /// <summary>Builds the replay snapshot for a subscriber resuming from
+    /// <paramref name="sinceSequence" /> under the gate.</summary>
+    private List<FrontendEventFrame> BuildSnapshot(long sinceSequence)
+    {
+        List<FrontendEventFrame> snapshot = [];
+        // A resuming client whose next expected frame precedes the oldest retained sequence
+        // cannot rebuild the run from the buffer; run.missing tells it to refetch from the
+        // transcript endpoint instead of silently rendering a truncated run.
+        if (sinceSequence > 0 && latestSequence > sinceSequence &&
+            (oldestSequence == 0 || sinceSequence + 1 < oldestSequence))
+            snapshot.Add(MissingFrame());
+
+        snapshot.AddRange(replay.Where(frame => IsReplayable(frame, sinceSequence)));
+        return snapshot;
     }
 
     /// <summary>Removes a subscriber when its WebSocket closes.</summary>
@@ -180,10 +185,24 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         lifetime.Dispose();
     }
 
-    /// <summary>Cancels the run so shutdown does not wait on a provider stream.</summary>
+    /// <summary>Cancels the run so shutdown does not wait on a provider stream. The host's
+    /// shutdown hook is synchronous, so the cancellation request is observed here rather
+    /// than awaited by the caller.</summary>
     internal void BeginShutdown()
     {
-        _ = lifetime.CancelAsync();
+        _ = ObserveShutdownCancelAsync();
+    }
+
+    private async Task ObserveShutdownCancelAsync()
+    {
+        try
+        {
+            await lifetime.CancelAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Cancelling run {RunId} for shutdown faulted.", run.Id);
+        }
     }
 
     private async Task RunPumpAsync()
@@ -265,7 +284,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 Code: "run_cancelled",
                 Message: exception.Message));
             Publish(new FrontendEventFrame("run.status", State: "idle"));
-            await ObserveCompletionAsync().ConfigureAwait(false);
+            await SettleRunAsync().ConfigureAwait(false);
         }
         catch (AgentException exception)
         {
@@ -275,7 +294,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 Code: FrontendErrors.MapAgentException(exception),
                 Message: exception.Message));
             Publish(new FrontendEventFrame("run.status", State: "idle"));
-            await ObserveCompletionAsync().ConfigureAwait(false);
+            await SettleRunAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -286,13 +305,59 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 Code: "agent_error",
                 Message: "The agent turn failed."));
             Publish(new FrontendEventFrame("run.status", State: "idle"));
-            await ObserveCompletionAsync().ConfigureAwait(false);
+            await SettleRunAsync().ConfigureAwait(false);
         }
         finally
         {
+            // Safety net for every exit path: the pump owns the run's settlement, so a run
+            // that never completed (its producer parked in the bounded events channel)
+            // would hold the session's turn gate and this stream's disposal forever.
+            await SettleRunAsync().ConfigureAwait(false);
             MarkCompleted();
             if (presentationScope is not null) await presentationScope.DisposeAsync().ConfigureAwait(false);
             disposal.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    ///     Settles and disposes the owned run exactly once. The producer parks in the run's
+    ///     bounded events channel and can only unblock through cancellation, so a pump that
+    ///     exits before the run completed — an unanticipated failure, or shutdown racing a
+    ///     wedged provider — cancels it under the teardown budget and disposes it; otherwise
+    ///     the producer, the completion task, and the session's turn gate leak forever.
+    ///     Idempotent: concurrent and repeated calls fall through to the same single
+    ///     settlement.
+    /// </summary>
+    private async Task SettleRunAsync()
+    {
+        if (Interlocked.Exchange(ref settleState, 1) != 0) return;
+        if (!run.Completion.IsCompleted)
+        {
+            try
+            {
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+                budget.CancelAfter(ShutdownCancelTimeout);
+                await run.CancelAsync(budget.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Cancelling run {RunId} after the pump stopped draining it did not settle.",
+                    run.Id);
+            }
+        }
+
+        await ObserveCompletionAsync().ConfigureAwait(false);
+        try
+        {
+            await run.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // The run's terminal outcome already reached subscribers; disposal observation
+            // must not escape the pump's finally.
+            logger.LogWarning(exception, "Disposing run {RunId} after the pump completed failed.", run.Id);
         }
     }
 
@@ -383,10 +448,32 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         lock (gate)
         {
             if (frame.Sequence is { } sequence)
-                firstSequence = firstSequence == 0 ? sequence : Math.Min(firstSequence, sequence);
+            {
+                if (oldestSequence == 0) oldestSequence = sequence;
+                if (sequence > latestSequence) latestSequence = sequence;
+            }
 
             replay.Add(frame);
-            if (replay.Count > ReplayRetention) replay.RemoveAt(0);
+            if (replay.Count > ReplayRetention)
+            {
+                var evicted = replay[0];
+                replay.RemoveAt(0);
+                // Retention evicts from the front of the buffer, so the oldest retained
+                // sequence must follow the eviction: if it kept the all-time minimum,
+                // resumed clients behind the eviction would look current and silently
+                // receive a truncated replay (invariant 16's only permitted loss must
+                // surface as run.missing).
+                if (evicted.Sequence is { } evictedSequence && evictedSequence == oldestSequence)
+                {
+                    oldestSequence = 0;
+                    foreach (var retained in replay)
+                        if (retained.Sequence is { } retainedSequence)
+                        {
+                            oldestSequence = retainedSequence;
+                            break;
+                        }
+                }
+            }
 
             foreach (var subscriber in subscribers)
                 if (!subscriber.Channel.Writer.TryWrite(frame))

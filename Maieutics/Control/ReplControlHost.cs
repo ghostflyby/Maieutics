@@ -25,8 +25,6 @@ internal sealed partial class ReplControlHost : IDisposable
 {
     private const int EnvelopeVersion = 1;
     private const string AuthorizedIdentityItem = "Maieutics.Control.AuthorizedIdentity";
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> comms =
-        new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, SessionBusConnection> connections = new(StringComparer.Ordinal);
     private readonly Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink;
@@ -288,7 +286,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     .ConfigureAwait(false);
                 if (text is null) break;
 
-                ObserveCompleted(toolInvocations);
+                await ObserveCompletedAsync(toolInvocations).ConfigureAwait(false);
                 logger.LogDebug("Control message received: {Message}.", text);
                 await HandleBusMessageAsync(
                     sessionId,
@@ -301,21 +299,47 @@ internal sealed partial class ReplControlHost : IDisposable
         finally
         {
             await owner.CancelAsync().ConfigureAwait(false);
-            await Task.WhenAll(toolInvocations).ConfigureAwait(false);
+            // Registry removals are synchronous and run before the tool drain: a faulted
+            // tool invocation rethrown below must not skip them, or pushes keep routing to
+            // this dead socket until the child reconnects. The conditional removal keeps a
+            // replaced connection from dropping its successor's registration.
             connections.TryRemove(KeyValuePair.Create(sessionId, connection));
 
-            comms.TryRemove(sessionId, out _);
+            // Each connection owns its open-comm registry, so nothing session-scoped is
+            // removed here: a successor connection keeps its own registry.
+            try
+            {
+                await Task.WhenAll(toolInvocations).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Control-bus tool invocations for session {SessionId} ended faulted.",
+                    sessionId);
+            }
         }
     }
 
-    private static void ObserveCompleted(List<Task> tasks)
+    /// <summary>Observes completed tool invocations, logging instead of rethrowing: a
+    /// faulted invocation must not escape into the receive loop or its finally.</summary>
+    private async Task ObserveCompletedAsync(List<Task> toolInvocations)
     {
-        for (var index = tasks.Count - 1; index >= 0; index--)
-            if (tasks[index].IsCompleted)
+        for (var index = toolInvocations.Count - 1; index >= 0; index--)
+        {
+            if (!toolInvocations[index].IsCompleted) continue;
+
+            try
             {
-                tasks[index].GetAwaiter().GetResult();
-                tasks.RemoveAt(index);
+                await toolInvocations[index].ConfigureAwait(false);
             }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "A control-bus tool invocation failed.");
+            }
+
+            toolInvocations.RemoveAt(index);
+        }
     }
 
     private string? ResolveRequestSessionId(HttpContext context, string? sessionId)
@@ -460,12 +484,12 @@ internal sealed partial class ReplControlHost : IDisposable
                     break;
                 }
 
-                GetComms(sessionId).TryAdd(open.CommId, 0);
+                connection.OpenComms.TryAdd(open.CommId, 0);
                 await PushAckAsync(connection, open.CommId, true, envelope.CorrelationId, ct).ConfigureAwait(false);
                 break;
             case ReplMessageType.CommMsg:
                 var message = ParsePayload<BusCommPayload>(envelope);
-                if (message is null || !GetComms(sessionId).ContainsKey(message.CommId))
+                if (message is null || !connection.OpenComms.ContainsKey(message.CommId))
                 {
                     await PushErrorAsync(
                         connection,
@@ -481,7 +505,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 break;
             case ReplMessageType.CommClose:
                 var close = ParsePayload<BusCommPayload>(envelope);
-                if (close is not null) GetComms(sessionId).TryRemove(close.CommId, out _);
+                if (close is not null) connection.OpenComms.TryRemove(close.CommId, out _);
 
                 await PushAckAsync(
                     connection,
@@ -513,11 +537,6 @@ internal sealed partial class ReplControlHost : IDisposable
                     ct).ConfigureAwait(false);
                 break;
         }
-    }
-
-    private ConcurrentDictionary<string, byte> GetComms(string sessionId)
-    {
-        return comms.GetOrAdd(sessionId, static _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
     }
 
     private async Task PushAckAsync(
@@ -731,13 +750,27 @@ internal sealed partial class ReplControlHost : IDisposable
     /// call. The composition root binds this to the plugin host manager's capability
     /// executor; plugin-originated calls carry no bus progress connection and skip the
     /// plugin hook chain.</summary>
-    internal Task<JsonElement> InvokeScriptToolAsync(
+    internal async Task<JsonElement> InvokeScriptToolAsync(
         string tool,
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
         insideCapabilityCall.Value = true;
-        return InvokeToolAsync(tool, arguments, correlationId: null, progressConnection: null, cancellationToken);
+        try
+        {
+            return await InvokeToolAsync(
+                tool,
+                arguments,
+                correlationId: null,
+                progressConnection: null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // The flag flows through ExecutionContext: leaving it set would leak into the
+            // caller's continuations and silently skip hook chains for unrelated calls.
+            insideCapabilityCall.Value = false;
+        }
     }
 
     private async Task<JsonElement> InvokeToolAsync(

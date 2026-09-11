@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace Maieutics.Frontend;
@@ -50,7 +51,11 @@ internal sealed class FrontendOptions
     }
 
     /// <summary>Publishes the discovery file. The file's appearance is the readiness signal:
-    /// it is written only after Kestrel has bound the reserved port.</summary>
+    /// it is written only after Kestrel has bound the reserved port. The file carries the
+    /// bearer token, so it is created owner-only before any bytes are written; the atomic
+    /// rename preserves that mode on the published name. (Windows: no explicit ACL is set —
+    /// the file lands in the user-scoped temp directory whose default ACLs already exclude
+    /// other principals.)</summary>
     public void WriteDiscoveryFile()
     {
         if (DiscoveryFile is null) return;
@@ -64,7 +69,14 @@ internal sealed class FrontendOptions
         if (directory is { Length: > 0 }) Directory.CreateDirectory(directory);
         var json = JsonSerializer.Serialize(file, FrontendJsonContext.Default.FrontendDiscoveryFile);
         var temporary = $"{DiscoveryFile}.tmp-{Environment.ProcessId}";
-        File.WriteAllText(temporary, json);
+        using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            stream.Write(Encoding.UTF8.GetBytes(json));
+        }
+
         File.Move(temporary, DiscoveryFile, overwrite: true);
     }
 

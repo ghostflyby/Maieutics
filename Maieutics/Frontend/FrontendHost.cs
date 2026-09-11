@@ -59,10 +59,24 @@ internal sealed class FrontendHost : IAsyncDisposable
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
-    /// <summary>Terminates every WebSocket so Kestrel shutdown does not wait on upgrades.</summary>
+    /// <summary>Terminates every WebSocket so Kestrel shutdown does not wait on upgrades.
+    /// The host-lifetime callback is synchronous, so the cancellation request is observed
+    /// here instead of awaited by the caller.</summary>
     internal void BeginShutdown()
     {
-        _ = lifetime.CancelAsync();
+        _ = ObserveShutdownCancelAsync();
+    }
+
+    private async Task ObserveShutdownCancelAsync()
+    {
+        try
+        {
+            await lifetime.CancelAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "The frontend host shutdown cancellation faulted.");
+        }
     }
 
     /// <summary>Maps the frontend middleware and endpoints. Call before the control bus maps
@@ -392,6 +406,10 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private async Task HandleObject(HttpContext context, string objectId)
     {
+        // Object ids are content addresses in canonical lowercase hex; the store's paths are
+        // case-sensitive, so normalize here instead of failing with an untyped 500 on the
+        // uppercase form the route happily accepts.
+        objectId = objectId.ToLowerInvariant();
         if (objectId.Length != 64 || objectId.Any(character => !Uri.IsHexDigit(character)))
         {
             await WriteErrorAsync(context, FrontendErrors.InvalidRequest, "The object id is not valid.");

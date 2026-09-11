@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Threading.Channels;
 
@@ -18,6 +19,12 @@ internal sealed class SessionBusConnection : IAsyncDisposable
     private Task? closeTask;
     private int closeState;
     private Exception? terminalError;
+
+    /// <summary>Gets the open-comm registry this connection owns. Scoping it to the
+    /// connection instance keeps a replaced connection's teardown from deleting a
+    /// successor's freshly registered comm ids.</summary>
+    internal ConcurrentDictionary<string, byte> OpenComms { get; } =
+        new(StringComparer.Ordinal);
 
     internal SessionBusConnection(WebSocket socket)
     {

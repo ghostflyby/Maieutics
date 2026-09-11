@@ -67,7 +67,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task HealthEndpointRespondsOverUnixSocket()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -85,7 +86,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task BusHandshakeBindsSessionAndPings()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -115,7 +117,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task BusValidatesCommOrderingAndRejectsUnknownTypes()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -160,7 +163,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task FragmentedWebSocketMessageAtLimitIsAccepted()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -190,7 +194,8 @@ public sealed class ReplControlHostTests
     [InlineData(1024 * 1024)]
     public async Task OversizedFragmentedWebSocketMessageClosesWithoutDispatch(int bytesOverLimit)
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -220,7 +225,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ControlCancelCancelsInFlightToolCall()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -265,7 +271,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ToolProgressIsPushedOverTheBus()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -307,7 +314,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task LinuxRejectsPeerNotInRegistry()
     {
-        if (!OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsLinux())
+            Assert.Skip("Peer-process identity (SO_PEERCRED) is only resolvable on Linux.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -324,7 +332,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task LinuxRegistryRebindChangesAcceptedPeer()
     {
-        if (!OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsLinux())
+            Assert.Skip("Peer-process identity (SO_PEERCRED) is only resolvable on Linux.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -346,7 +355,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task DisposeRemovesSocketFile()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -364,7 +374,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ToolInvokeEndpointRunsWorkspaceFunctions()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -408,7 +419,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ToolInvokeAcceptsBodyAtLimitAndRejectsOneByteOver()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -443,7 +455,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ChunkedToolInvokeOverLimitIsRejectedBeforeInvocation()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -482,7 +495,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 30_000)]
     public async Task ToolInvokeRejectsJsonBeyondTheDepthLimit()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -511,7 +525,8 @@ public sealed class ReplControlHostTests
     [Fact(Timeout = 90_000)]
     public async Task RealDenoClientTalksToControlChannelOverUnixSocket()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(60));
@@ -543,8 +558,28 @@ public sealed class ReplControlHostTests
                                         "Could not start the deno control channel client.");
                 registry.Register(process.Id, "test-session");
 
-                await process.WaitForExitAsync(timeout.Token);
-                process.ExitCode.Should().Be(0, await GetProcessOutputAsync(process));
+                try
+                {
+                    // Drain both pipes concurrently while the child runs: reading them only
+                    // after exit can deadlock once a full pipe blocks the child. A hung child
+                    // is killed by the finally so it never outlives the test.
+                    var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                    var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+                    await process.WaitForExitAsync(timeout.Token);
+                    var outputs = await Task.WhenAll(stdout, stderr);
+                    process.ExitCode.Should().Be(0, $"stdout: {outputs[0]}\nstderr: {outputs[1]}");
+                }
+                finally
+                {
+                    try
+                    {
+                        if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // The process already exited.
+                    }
+                }
             }
             finally
             {
@@ -965,12 +1000,5 @@ public sealed class ReplControlHostTests
         }
 
         return result;
-    }
-
-    private static async Task<string> GetProcessOutputAsync(Process process)
-    {
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-        return $"stdout: {stdout}\nstderr: {stderr}";
     }
 }

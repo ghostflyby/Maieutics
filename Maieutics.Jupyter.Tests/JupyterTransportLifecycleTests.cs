@@ -115,10 +115,13 @@ public sealed class JupyterTransportLifecycleTests
         // The stream must keep running (a clean EOF does not terminate the
         // transport) or end without an EOF error; a TimeoutException here
         // means "still open, no error" - exactly the desired state. Without
-        // the fix the first clean EOF terminates the transport and the
-        // enumeration throws IOException("The Jupyter ... connection ended.").
+        // the fix the first clean EOF terminates the transport immediately
+        // and the enumeration throws IOException("The Jupyter ... connection
+        // ended."). The observation window is generous relative to the EOF
+        // delivery so a clean EOF that arrives late is still caught (it would
+        // surface as a protocol/IO error, never as the timeout).
         var outcome = await Record.ExceptionAsync(async () =>
-            await enumeration.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromMilliseconds(300), cancellationToken));
+            await enumeration.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken));
         var failedByCleanEof = outcome is JupyterProtocolException or IOException;
         failedByCleanEof.Should().BeFalse($"a clean EOF must not terminate the transport; actual outcome: {outcome}");
 

@@ -11,7 +11,8 @@ public sealed class ReplCommChannelTests
     [Fact(Timeout = 30_000)]
     public async Task CommEndpointHandshakesAndReceivesPush()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The comm endpoints are exercised over the control host's Unix socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -47,7 +48,8 @@ public sealed class ReplCommChannelTests
     [Fact(Timeout = 30_000)]
     public async Task CommEndpointRejectsUnknownSession()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The comm endpoints are exercised over the control host's Unix socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));

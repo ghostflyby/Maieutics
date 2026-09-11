@@ -21,7 +21,7 @@ public sealed class PluginDeclarativeExtensionsTests
     public async Task DeclarativeOnlyPluginsPublishSyntheticRegistrations()
     {
         if (OperatingSystem.IsWindows())
-            return; // The fake deno executable is a shell script.
+            Assert.Skip("The fake deno executable is a shell script.");
 
         var root = CreateDeclarativePluginsRoot("declarative");
         var pluginName = Path.GetFileName(root);
@@ -67,7 +67,7 @@ public sealed class PluginDeclarativeExtensionsTests
     public async Task UndeclaredCapabilityStyleEntriesAndUnknownKindsStayInert()
     {
         if (OperatingSystem.IsWindows())
-            return; // The fake deno executable is a shell script.
+            Assert.Skip("The fake deno executable is a shell script.");
 
         var root = CreateDeclarativePluginsRoot("declarative-unknown", includeUnknownKind: true);
         var pluginName = Path.GetFileName(root);
@@ -110,7 +110,7 @@ public sealed class PluginDeclarativeExtensionsTests
     public async Task DeclarativeSectionRemovalTakesEffectOnReload()
     {
         if (OperatingSystem.IsWindows())
-            return; // The fake deno executable is a shell script.
+            Assert.Skip("The fake deno executable is a shell script.");
 
         var root = CreateDeclarativePluginsRoot("declarative-reload");
         var pluginId = Path.GetFileName(root);
@@ -161,10 +161,9 @@ public sealed class PluginDeclarativeExtensionsTests
     public async Task DeclarativeSectionAdditionTakesEffectOnReload()
     {
         if (OperatingSystem.IsWindows())
-            return; // The fake deno executable is a shell script.
+            Assert.Skip("The fake deno executable is a shell script.");
 
-        var root = Path.Combine(Path.GetTempPath(), "declarative-add-reload");
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        var root = Path.Combine(Path.GetTempPath(), $"declarative-add-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         File.WriteAllText(
             Path.Combine(root, "deno.json"),

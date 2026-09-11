@@ -157,7 +157,8 @@ public sealed class WorkspaceToolsTests
     [Fact]
     public void UnixSafeOpenRejectsPathComponentsReplacedWithSymbolicLinks()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("Unix safe-open rejects symbolic-link-swapped path components; the contract is Unix-only.");
 
         using var workspace = TemporaryWorkspace.Create();
         var outside = Path.Combine(workspace.ParentPath, "outside.txt");
@@ -392,7 +393,8 @@ public sealed class WorkspaceToolsTests
     [Fact(Timeout = 10_000)]
     public async Task TextToolsRejectNonRegularFilesWithoutBlocking()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("Creates a fifo with mkfifo to prove text tools reject non-regular files; mkfifo is Unix-only.");
 
         using var workspace = TemporaryWorkspace.Create();
         var fifo = Path.Combine(workspace.Path, "input.fifo");

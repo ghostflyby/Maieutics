@@ -186,6 +186,11 @@ internal sealed class PluginHostManager(
     /// (the automatic-reload option is off).</summary>
     private readonly HashSet<string> pendingReloadPaths = new(StringComparer.Ordinal);
 
+    /// <summary>Internal test observability: completed by the transition that records a pending
+    /// reload (see <see cref="PendingReloadRecorded"/>); replaced with a fresh source after each
+    /// completion so the property stays safe to await repeatedly.</summary>
+    private TaskCompletionSource pendingReloadRecorded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>Whether watcher-detected plugin changes reload automatically.
     /// Default off (docs/plugin-import-resolution.md §4.3): changes are recorded
     /// as pending and applied by <see cref="ApplyPendingReloadsAsync"/>. Opting in
@@ -195,6 +200,25 @@ internal sealed class PluginHostManager(
 
     /// <summary>Number of watched changes awaiting an explicit apply.</summary>
     public int PendingReloadCount { get { lock (gate) return pendingReloadPaths.Count; } }
+
+    /// <summary>Internal test observability: completes when a watched plugin change is recorded
+    /// as a pending reload — the same transition that increments <see cref="PendingReloadCount"/>
+    /// — so tests can await the record deterministically instead of sleeping past the debounce.
+    /// A completed task is replaced on the next read, so the property is safe to await repeatedly
+    /// (one await observes one recorded change). Await it under the caller's deadline.</summary>
+    internal Task PendingReloadRecorded
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (pendingReloadRecorded.Task.IsCompleted)
+                    pendingReloadRecorded = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                return pendingReloadRecorded.Task;
+            }
+        }
+    }
 
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
@@ -626,7 +650,12 @@ internal sealed class PluginHostManager(
                 }
                 else
                 {
-                    lock (gate) pendingReloadPaths.Add(args.FullPath);
+                    lock (gate)
+                    {
+                        pendingReloadPaths.Add(args.FullPath);
+                        // RunContinuationsAsynchronously keeps awaiters off this lock.
+                        pendingReloadRecorded.TrySetResult();
+                    }
                 }
             }
             catch (Exception exception)

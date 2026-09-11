@@ -11,9 +11,10 @@ namespace Maieutics.Product.Tests;
 
 public sealed class DenoReplRegistryTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FunctionsExposeFiveStrictReplSchemas()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var workspace = Workspace.Create(Directory.GetCurrentDirectory(), Directory.GetCurrentDirectory());
         await using var registry = new DenoReplRegistry(
             workspace,

@@ -37,9 +37,12 @@ public sealed class FrontendCommIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task DownlinkReachesTheSocketAndUplinkReachesTheChild()
     {
-        // The child stub rides the control host's Unix socket; Windows CI
-        // covers the control channel with its own credential bootstrap instead.
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip(
+                "The child stub rides the control host's Unix socket; Windows CI "
+                + "covers the control channel with its own credential bootstrap instead.");
+        }
 
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
@@ -90,9 +93,12 @@ public sealed class FrontendCommIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task HelloCarriesLiveCommsAndSinceReplay()
     {
-        // The child stub rides the control host's Unix socket; Windows CI
-        // covers the control channel with its own credential bootstrap instead.
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip(
+                "The child stub rides the control host's Unix socket; Windows CI "
+                + "covers the control channel with its own credential bootstrap instead.");
+        }
 
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
@@ -181,9 +187,12 @@ public sealed class FrontendCommIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task UplinkAfterChildDetachIsReplUnavailable()
     {
-        // The child stub rides the control host's Unix socket; Windows CI
-        // covers the control channel with its own credential bootstrap instead.
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip(
+                "The child stub rides the control host's Unix socket; Windows CI "
+                + "covers the control channel with its own credential bootstrap instead.");
+        }
 
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
@@ -203,11 +212,29 @@ public sealed class FrontendCommIntegrationTests
         opened.CommId.Should().Be("w9");
 
         child.Dispose();
-        await Task.Delay(300, deadline.Token);
 
-        await SendCommAsync(comms, Message("w9"), deadline.Token);
-        var error = await ReceiveCommErrorAsync(comms, deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("repl_unavailable");
+        // The detach is observed by the control host's own receive loop, so instead of a fixed
+        // grace period the uplink is repeated until the detach is processed and the typed
+        // repl_unavailable rejection arrives. Each attempt's receive is bounded; the whole loop
+        // stays under the test deadline (a deadline cancellation propagates and fails the test).
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        while (true)
+        {
+            attempt.CancelAfter(TimeSpan.FromSeconds(2));
+            await SendCommAsync(comms, Message("w9"), attempt.Token);
+            try
+            {
+                var error = await ReceiveCommErrorAsync(comms, attempt.Token);
+                error.GetProperty("code").GetString().Should().Be("repl_unavailable");
+                error.GetProperty("commId").GetString().Should().Be("w9");
+                break;
+            }
+            catch (OperationCanceledException) when (!deadline.Token.IsCancellationRequested)
+            {
+                // The detach has not been observed yet (the send may still have been accepted);
+                // retry the uplink until the rejection is typed.
+            }
+        }
     }
 
     [Fact(Timeout = 60_000)]

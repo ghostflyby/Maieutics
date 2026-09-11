@@ -1024,10 +1024,12 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 90_000)]
     public async Task McpToolLoopRunsThroughTheFrontendWhenTestServerIsConfigured()
     {
-        // Requires an external stdio MCP test server; skipped otherwise (mirrors the
-        // retired kernel-driver test's opt-in semantics).
+        // Mirrors the retired kernel-driver test's opt-in semantics: the run needs
+        // an external stdio MCP test server, provided through the environment.
         var mcpServer = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE");
-        if (string.IsNullOrWhiteSpace(mcpServer)) return;
+        Assert.SkipUnless(
+            !string.IsNullOrWhiteSpace(mcpServer),
+            "Requires an external stdio MCP test server; set MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE.");
 
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(80));
         var provider = new FakeOpenAiServer(

@@ -42,7 +42,8 @@ public sealed class ReplControlChannelIntegrationTests
     [Fact(Timeout = 120_000)]
     public async Task BootstrapBindingIsUsableFromUserCells()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The real Deno REPL child attaches to the control channel over a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
@@ -99,8 +100,7 @@ public sealed class ReplControlChannelIntegrationTests
     public async Task RealDenoChildTalksToItsOwnControlChannel()
     {
         if (OperatingSystem.IsWindows())
-            // Windows fails explicitly until the named-pipe bootstrap milestone.
-            return;
+            Assert.Skip("Windows fails explicitly until the named-pipe bootstrap milestone.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
@@ -155,7 +155,8 @@ public sealed class ReplControlChannelIntegrationTests
     [Fact(Timeout = 120_000)]
     public async Task RealDenoChildPromptInputRoundTrips()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The real Deno REPL child attaches to the control channel over a Unix domain socket.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));

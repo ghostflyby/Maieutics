@@ -11,7 +11,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Primitives;
 
 using System.Threading;
 
@@ -1661,20 +1660,19 @@ internal static void DeleteDirectoryWithRetry(string path)
         // observed 50s TaskCanceled timeout). After the write, wait briefly for the change; if it
         // does not arrive, touch the file to force a stamp change the poller will observe. This
         // avoids depending on the token's stamp-capture timing while still asserting that the
-        // reload pipeline delivers the change.
-        IChangeToken token;
-        do
-        {
-            token = configuration.GetReloadToken();
-            if (!token.HasChanged) break;
-        }
-        while (!cancellationToken.IsCancellationRequested);
-
+        // reload pipeline delivers the change. A token that has already fired (a previous reload
+        // still mid-flight) is skipped: registering on it would complete immediately and mask the
+        // race. Its reload either reads this write directly or re-arms a token whose stamp the
+        // write then changes, so the caller's reload-completion wait observes the write either way.
+        var token = configuration.GetReloadToken();
         var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = token.RegisterChangeCallback(
-            static state => (state as TaskCompletionSource)?.TrySetResult(),
-            changed);
+        using IDisposable? registration = token.HasChanged
+            ? null
+            : token.RegisterChangeCallback(
+                static state => (state as TaskCompletionSource)?.TrySetResult(),
+                changed);
         await File.WriteAllTextAsync(path, contents, cancellationToken);
+        if (registration is null) return;
         if (!changed.Task.IsCompleted)
         {
             try

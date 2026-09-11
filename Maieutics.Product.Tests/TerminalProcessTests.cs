@@ -11,7 +11,8 @@ public sealed class TerminalProcessTests
     [Fact(Timeout = 10_000)]
     public async Task RealProcessReportsNormalExitCode()
     {
-        if (OperatingSystem.IsWindows()) return; // TerminationSignal is Unix-only by contract.
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("TerminationSignal is Unix-only by contract.");
 
         await using var process = Start(["sleep 0.2; exit 7"]);
 
@@ -24,7 +25,8 @@ public sealed class TerminalProcessTests
     [Fact(Timeout = 10_000)]
     public async Task RealProcessReportsSignalTerminationWithoutAnExitCode()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("Signal termination (TerminationSignal) is Unix-only by contract.");
 
         await using var process = Start(["sleep 0.2; kill -9 $$"]);
 

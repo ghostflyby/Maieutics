@@ -16,7 +16,7 @@ public sealed class DenoHelperProcessTests
     public async Task CancelKillsTheChildWithinTheBudget()
     {
         if (OperatingSystem.IsWindows())
-            return; // The stamp-polling helper child is a deno eval writing under the temp path.
+            Assert.Skip("The stamp-polling helper child is a deno eval writing under the temp path.");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(50));

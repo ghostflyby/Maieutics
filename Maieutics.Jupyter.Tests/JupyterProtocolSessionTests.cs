@@ -615,6 +615,72 @@ public sealed class JupyterProtocolSessionTests
             .OfType<JupyterMalformedOutput>().Should().BeEmpty();
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData("stream")]
+    [InlineData("execute_result")]
+    public async Task MalformedKnownOutputContentBecomesMalformedOutputAndSessionStaysUsable(
+        string messageType)
+    {
+        var transport = new FakeJupyterTransport();
+        await using var session = new JupyterProtocolSession(transport);
+        var execution = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("malformed()"),
+            TestContext.Current.CancellationToken);
+        var request = transport.SentMessages.Single().Message;
+        var outputsTask = ReadOutputsAsync(execution, TestContext.Current.CancellationToken);
+
+        // Well-formed JSON whose values have the wrong type for the declared output
+        // content: routing must surface a typed malformed output, not kill the session.
+        var malformedContent = messageType == "stream"
+            ? JsonSerializer.SerializeToElement(new { name = 42, text = "oops" })
+            : JsonSerializer.SerializeToElement(new { data = "not-a-bundle", execution_count = 1 });
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            JupyterMessage.Create(
+                messageType,
+                malformedContent,
+                JupyterJsonContext.Default.JsonElement,
+                KernelSession,
+                request.Header));
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 1),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                request));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, request));
+
+        (await execution.Completion.WaitAsync(TestContext.Current.CancellationToken)).Reply.Status.Should()
+            .Be("ok");
+        var malformed = (await outputsTask.WaitAsync(TestContext.Current.CancellationToken))
+            .OfType<JupyterMalformedOutput>().Should().ContainSingle().Which;
+        malformed.MessageType.Should().Be(messageType);
+        malformed.ErrorCode.Should().Be("malformed_content");
+
+        var followUp = await session.StartExecutionAsync(
+            new JupyterExecuteRequest("1 + 1"),
+            TestContext.Current.CancellationToken);
+        var followUpRequest = transport.SentMessages.Last().Message;
+        var followUpOutputs = ReadOutputsAsync(followUp, TestContext.Current.CancellationToken);
+        transport.Receive(
+            JupyterTransportChannel.Shell,
+            Reply(
+                "execute_reply",
+                new JupyterExecuteReply("ok", 2),
+                JupyterJsonContext.Default.JupyterExecuteReply,
+                followUpRequest));
+        transport.Receive(
+            JupyterTransportChannel.Iopub,
+            Reply("status", new JupyterStatus("idle"), JupyterJsonContext.Default.JupyterStatus, followUpRequest));
+
+        (await followUp.Completion.WaitAsync(TestContext.Current.CancellationToken)).Reply.Status.Should().Be("ok");
+        (await followUpOutputs.WaitAsync(TestContext.Current.CancellationToken))
+            .OfType<JupyterMalformedOutput>().Should().BeEmpty();
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task MalformedOptionalDisplayIdFallsBackToUntrackedDisplay()
     {

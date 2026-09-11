@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Client.Transport;
@@ -428,7 +429,8 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         if (transportMessage.Channel == JupyterTransportChannel.Iopub &&
             message is { MessageType: "status", ParentHeader: { } readinessParent } &&
             readinessProbes.TryGetValue(readinessParent.MessageId, out var readiness) &&
-            message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState == "idle")
+            TryGetKernelStatus(message, out var readinessState) &&
+            readinessState == JupyterKernelState.Idle)
             readiness.TrySetResult(true);
 
         if (message.ParentHeader is { } parent &&
@@ -474,8 +476,23 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         var message = transportMessage.Message;
         if (transportMessage.Channel == JupyterTransportChannel.Shell && message.MessageType == "execute_reply")
         {
+            JupyterExecuteReply reply;
+            try
+            {
+                reply = message.GetContent(JupyterJsonContext.Default.JupyterExecuteReply);
+            }
+            catch (Exception exception) when (exception is JsonException or JupyterProtocolException)
+            {
+                // A malformed reply can never satisfy completion: fail only this execution
+                // with a typed error and keep the session serving subsequent requests.
+                FailExecution(execution, new JupyterProtocolException(
+                    "Jupyter 'execute_reply' contained malformed content.",
+                    exception));
+                return;
+            }
+
             execution.ReplyMessage = message;
-            execution.Reply = message.GetContent(JupyterJsonContext.Default.JupyterExecuteReply);
+            execution.Reply = reply;
             CompleteExecutionIfReady(execution);
             return;
         }
@@ -496,7 +513,9 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         }
 
         if (message.MessageType != "status" ||
-            message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState != "idle") return;
+            !TryGetKernelStatus(message, out var status) ||
+            status != JupyterKernelState.Idle)
+            return;
         execution.IdleSeen = true;
         CompleteExecutionIfReady(execution);
     }
@@ -544,22 +563,50 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
     private static bool TryCreateOutput(JupyterMessageId requestId, JupyterMessage message,
         [NotNullWhen(true)] out JupyterOutput? output)
     {
-        output = message.MessageType switch
+        try
         {
-            "stream" => CreateStreamOutput(requestId, message),
-            "execute_input" => CreateExecuteInputOutput(requestId, message),
-            "display_data" => CreateDisplayOutput(requestId, message),
-            "update_display_data" => CreateDisplayUpdateOutput(requestId, message),
-            "clear_output" => CreateClearOutput(requestId, message),
-            "execute_result" => CreateExecuteResultOutput(requestId, message),
-            "error" => CreateErrorOutput(requestId, message),
-            "input_request" => CreateInputRequest(requestId, message),
-            "status" => new JupyterExecutionStatusChanged(
-                requestId,
-                ParseKernelState(message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState)),
-            _ => null
-        };
+            output = message.MessageType switch
+            {
+                "stream" => CreateStreamOutput(requestId, message),
+                "execute_input" => CreateExecuteInputOutput(requestId, message),
+                "display_data" => CreateDisplayOutput(requestId, message),
+                "update_display_data" => CreateDisplayUpdateOutput(requestId, message),
+                "clear_output" => CreateClearOutput(requestId, message),
+                "execute_result" => CreateExecuteResultOutput(requestId, message),
+                "error" => CreateErrorOutput(requestId, message),
+                "input_request" => CreateInputRequest(requestId, message),
+                "status" => new JupyterExecutionStatusChanged(
+                    requestId,
+                    ParseKernelState(message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState)),
+                _ => null
+            };
+        }
+        catch (Exception exception) when (exception is JsonException or JupyterProtocolException)
+        {
+            // Malformed content on a known output type stays observable as a typed malformed
+            // output (preserving wire order) instead of faulting the receive loop; unknown
+            // message types are handled by the default arm above.
+            output = new JupyterMalformedOutput(requestId, message.MessageType, "malformed_content");
+        }
+
         return output is not null;
+    }
+
+    private static bool TryGetKernelStatus(JupyterMessage message, out JupyterKernelState state)
+    {
+        try
+        {
+            state = ParseKernelState(
+                message.GetContent(JupyterJsonContext.Default.JupyterStatus).ExecutionState);
+            return true;
+        }
+        catch (Exception exception) when (exception is JsonException or JupyterProtocolException)
+        {
+            // Malformed status content carries no usable state; the caller keeps its
+            // current view instead of terminating the session.
+            state = JupyterKernelState.Unknown;
+            return false;
+        }
     }
 
     private static JupyterOutput CreateStreamOutput(JupyterMessageId requestId, JupyterMessage message)
@@ -660,11 +707,10 @@ internal sealed class JupyterProtocolSession : IJupyterProtocolSession
         switch (message.MessageType)
         {
             case "status":
-                {
-                    var status = message.GetContent(JupyterJsonContext.Default.JupyterStatus);
-                    events.Publish(new JupyterKernelStatusChanged(ParseKernelState(status.ExecutionState)));
-                    return;
-                }
+                if (TryGetKernelStatus(message, out var kernelState))
+                    events.Publish(new JupyterKernelStatusChanged(kernelState));
+
+                return;
             case "iopub_welcome":
                 return;
             default:

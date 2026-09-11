@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Jupyter.Shared;
 using ZmqSharp;
@@ -52,6 +53,15 @@ internal sealed class ZmqSharpJupyterKernelTransport : IJupyterKernelTransport
         });
         heartbeat = new ZRepSocket();
         heartbeat.BindRequestHandler(EchoHeartbeatAsync);
+
+        // Abnormal peer ends must be observable: without these subscriptions ZmqSharp removes
+        // and disposes the peer connection silently, leaving the kernel heartbeating on a
+        // connection that can no longer carry protocol traffic.
+        shell.PeerEnded += OnShellPeerEnded;
+        control.PeerEnded += OnControlPeerEnded;
+        stdin.PeerEnded += OnStdinPeerEnded;
+        iopub.PeerEnded += OnIopubPeerEnded;
+        heartbeat.PeerEnded += OnHeartbeatPeerEnded;
     }
 
     public IAsyncEnumerable<JupyterKernelTransportEvent> IncomingEvents => incomingEvents.Reader.ReadAllAsync();
@@ -271,8 +281,52 @@ internal sealed class ZmqSharpJupyterKernelTransport : IJupyterKernelTransport
             throw new JupyterProtocolException("The Jupyter kernel transport has terminated.", exception);
     }
 
+    private void OnPeerEnded(string channel, IZConnection peer, Exception? failure)
+    {
+        if (failure is null || lifetime.IsCancellationRequested) return;
+
+        // Unlike the client transport (one dedicated peer per socket, where an abnormal end
+        // is terminal), the server-side ROUTER/XPUB/REP sockets serve many peers: one peer
+        // ending abnormally - typically a client closing while kernel replies are still in
+        // flight, which surfaces as a connection reset - is routine and must not terminate
+        // the transport for the remaining peers. The teardown is made observable instead of
+        // silently removing the peer; events may be dropped when the queue is saturated.
+        incomingEvents.Writer.TryWrite(new JupyterKernelPeerEnded(channel, failure));
+    }
+
+    private void OnShellPeerEnded(IZConnection peer, Exception? failure)
+    {
+        OnPeerEnded("shell", peer, failure);
+    }
+
+    private void OnControlPeerEnded(IZConnection peer, Exception? failure)
+    {
+        OnPeerEnded("control", peer, failure);
+    }
+
+    private void OnStdinPeerEnded(IZConnection peer, Exception? failure)
+    {
+        OnPeerEnded("stdin", peer, failure);
+    }
+
+    private void OnIopubPeerEnded(IZConnection peer, Exception? failure)
+    {
+        OnPeerEnded("IOPub", peer, failure);
+    }
+
+    private void OnHeartbeatPeerEnded(IZConnection peer, Exception? failure)
+    {
+        OnPeerEnded("heartbeat", peer, failure);
+    }
+
     private async Task DisposeSocketsAsync()
     {
+        shell.PeerEnded -= OnShellPeerEnded;
+        control.PeerEnded -= OnControlPeerEnded;
+        stdin.PeerEnded -= OnStdinPeerEnded;
+        iopub.PeerEnded -= OnIopubPeerEnded;
+        heartbeat.PeerEnded -= OnHeartbeatPeerEnded;
+
         List<Exception>? failures = null;
         // Shutdown travels over control. Closing that ROUTER first preserves the
         // reply-before-EOF order on one connection before unrelated peers end.
@@ -310,7 +364,26 @@ internal sealed class ZmqSharpJupyterKernelTransport : IJupyterKernelTransport
                 for (var index = 0; index < message.Count; index++)
                     frames[index] = message[index].ToSequence().ToArray();
 
-                var wireMessage = owner.serializer.Deserialize(frames);
+                JupyterWireMessage wireMessage;
+                try
+                {
+                    wireMessage = owner.serializer.Deserialize(frames);
+                }
+                catch (JupyterSignatureException exception)
+                {
+                    // Frames that fail HMAC verification cannot be trusted as protocol
+                    // traffic: terminate instead of interpreting them further.
+                    await owner.TerminateAsync(exception).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception exception) when (exception is JsonException or JupyterProtocolException)
+                {
+                    // One malformed payload must not remove the peer or fault ZmqSharp's
+                    // receive pump for the channel; the message is dropped and the
+                    // connection stays usable for well-formed traffic.
+                    return;
+                }
+
                 await owner.EnqueueAsync(new JupyterKernelMessageReceived(channel, wireMessage)).ConfigureAwait(false);
             }
             finally

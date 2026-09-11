@@ -68,8 +68,19 @@ public sealed record JupyterConnectionInfo(
         var temporary = $"{path}.tmp-{Guid.NewGuid():N}";
         try
         {
-            await using (var stream = File.Create(temporary))
+            // The file carries the connection HMAC key, so the restrictive mode is applied
+            // to the empty temp file BEFORE any content is written and survives the rename.
+            // Windows ACLs are not narrowed here; the file remains protected only by the
+            // user profile defaults on that platform.
+            await using (var stream = new FileStream(
+                             temporary,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.None))
             {
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
                 await JsonSerializer.SerializeAsync(
                     stream,
                     ToConnectionFile(),

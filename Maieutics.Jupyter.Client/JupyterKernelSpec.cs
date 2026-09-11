@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Maieutics.Jupyter.Shared;
 
 namespace Maieutics.Jupyter.Client;
@@ -16,7 +17,10 @@ public sealed record JupyterKernelSpec(
         CancellationToken cancellationToken = default)
     {
         await using var stream = File.OpenRead(path);
-        var file = await JsonSerializer.DeserializeAsync<KernelSpecFile>(stream, Json.Options, cancellationToken)
+        var file = await JsonSerializer.DeserializeAsync(
+                       stream,
+                       KernelSpecJsonContext.Default.KernelSpecFile,
+                       cancellationToken)
                    ?? throw new JupyterProtocolException($"Kernel spec '{path}' did not contain valid JSON.");
 
         if (file.Argv.Count == 0 || string.IsNullOrWhiteSpace(file.Argv[0]))
@@ -29,22 +33,26 @@ public sealed record JupyterKernelSpec(
             file.InterruptMode,
             file.Environment);
     }
-
-    private sealed class KernelSpecFile
-    {
-        [JsonPropertyName("argv")] public List<string> Argv { get; init; } = [];
-
-        [JsonPropertyName("display_name")] public string DisplayName { get; init; } = string.Empty;
-
-        [JsonPropertyName("language")] public string Language { get; init; } = string.Empty;
-
-        [JsonPropertyName("interrupt_mode")] public string InterruptMode { get; init; } = "signal";
-
-        [JsonPropertyName("env")] public Dictionary<string, string> Environment { get; init; } = [];
-    }
-
-    private static class Json
-    {
-        public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
-    }
 }
+
+internal sealed class KernelSpecFile
+{
+    [JsonPropertyName("argv")] public List<string> Argv { get; init; } = [];
+
+    [JsonPropertyName("display_name")] public string DisplayName { get; init; } = string.Empty;
+
+    [JsonPropertyName("language")] public string Language { get; init; } = string.Empty;
+
+    [JsonPropertyName("interrupt_mode")] public string InterruptMode { get; init; } = "signal";
+
+    [JsonPropertyName("env")] public Dictionary<string, string> Environment { get; init; } = [];
+}
+
+// Preserves the previous JsonSerializerDefaults.Web matching behavior (camelCase names,
+// case-insensitive keys) while replacing reflection metadata with source generation.
+[JsonSourceGenerationOptions(
+    GenerationMode = JsonSourceGenerationMode.Metadata,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    PropertyNameCaseInsensitive = true)]
+[JsonSerializable(typeof(KernelSpecFile))]
+internal sealed partial class KernelSpecJsonContext : JsonSerializerContext;

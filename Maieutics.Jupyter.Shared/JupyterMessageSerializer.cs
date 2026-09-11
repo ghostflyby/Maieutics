@@ -72,7 +72,7 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
         var expected = Encoding.ASCII.GetBytes(Sign(headerFrame, parentHeaderFrame, metadataFrame, contentFrame));
 
         if (!CryptographicOperations.FixedTimeEquals(signatureFrame, expected))
-            throw new JupyterProtocolException("Jupyter wire message signature verification failed.");
+            throw new JupyterSignatureException("Jupyter wire message signature verification failed.");
 
         var header = JsonSerializer.Deserialize(headerFrame, JupyterJsonContext.Default.JupyterMessageHeader)
                      ?? throw new JupyterProtocolException("Jupyter message header was empty.");
@@ -132,7 +132,14 @@ public sealed class JupyterMessageSerializer : IJupyterMessageSerializer
     }
 }
 
-public sealed class JupyterProtocolException : Exception
+/// <summary>
+///     Signals a Jupyter protocol violation detected at the wire boundary.
+/// </summary>
+/// <remarks>
+///     Unsealed so that specific violations (<see cref="JupyterSignatureException" />) can
+///     extend the hierarchy while remaining catchable as protocol failures.
+/// </remarks>
+public class JupyterProtocolException : Exception
 {
     public JupyterProtocolException(string message)
         : base(message)
@@ -141,6 +148,19 @@ public sealed class JupyterProtocolException : Exception
 
     public JupyterProtocolException(string message, Exception innerException)
         : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
+///     Signals that a Jupyter wire message failed HMAC signature verification. Unlike other
+///     malformed-payload failures this is terminal for the receiving connection: frames that
+///     do not authenticate cannot be trusted as protocol traffic and must not be interpreted.
+/// </summary>
+public sealed class JupyterSignatureException : JupyterProtocolException
+{
+    public JupyterSignatureException(string message)
+        : base(message)
     {
     }
 }

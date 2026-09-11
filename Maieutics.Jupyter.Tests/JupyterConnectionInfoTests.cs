@@ -59,4 +59,30 @@ public sealed class JupyterConnectionInfoTests
             File.Delete(path);
         }
     }
+
+    [Fact(Timeout = 30_000)]
+    public async Task WriteFileAsyncRestrictsUnixFileModeToOwnerReadWrite()
+    {
+        var info = JupyterConnectionInfo.CreateLocalTcp();
+        var path = Path.Combine(Path.GetTempPath(), $"conn-{Guid.NewGuid():N}.json");
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                // The file carries the connection HMAC key; the restrictive mode must
+                // survive the atomic temp+rename publication.
+                await info.WriteFileAsync(path, TestContext.Current.CancellationToken);
+
+                File.GetUnixFileMode(path).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            else
+            {
+                Assert.Skip("Unix file modes do not apply on Windows.");
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

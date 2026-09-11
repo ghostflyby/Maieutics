@@ -1,6 +1,6 @@
 /// <reference lib="deno.window" />
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { FrontendClient } from "./client.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
 import {
@@ -9,6 +9,20 @@ import {
   decodeCommEnvelope,
   encodeCommEnvelope,
 } from "../shared/comm_codec.ts";
+
+/** One events connection observed by the mock: its requested resume offset, a
+ * sender for scripted frames, and a server-side close. */
+interface MockEventsConnection {
+  sinceSequence: number;
+  send(frame: unknown): void;
+  close(): void;
+}
+
+/** Immutable display objects served by the mock (content-addressed stand-ins). */
+const objectBodies: Record<string, number[]> = {
+  "/v1/objects/one": [1, 2, 3],
+  "/v1/objects/two": [4, 5, 6],
+};
 
 /** A stand-in for the Maieutics frontend API: discovery + REST + one events
  * WebSocket session, implemented over `Deno.serve`. */
@@ -20,11 +34,20 @@ function startMockServer(): Promise<{
   sendComm(message: CommMessage, sequence: number): void;
   /** The uplink comm frames clients sent, decoded. */
   receivedComms(): Promise<{ sequence: number; message: CommMessage }[]>;
+  /** The events connections so far, in accept order. */
+  eventConnections(): MockEventsConnection[];
+  /** Scripts each events connection (invoked on open, after the hello). */
+  onEventsConnection(handler: (connection: MockEventsConnection) => void): void;
+  /** Object fetch counts by path. */
+  objectHits(): Record<string, number>;
 }> {
   let sockets: WebSocket[] = [];
   let broadcast: ((frame: unknown) => void) | null = null;
   let commsSockets: WebSocket[] = [];
   const commsReceived: { sequence: number; message: CommMessage }[] = [];
+  const eventConnections: MockEventsConnection[] = [];
+  let onEventsConnection: ((connection: MockEventsConnection) => void) | undefined;
+  const objectFetches = new Map<string, number>();
   const abort = new AbortController();
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", signal: abort.signal },
@@ -34,6 +57,17 @@ function startMockServer(): Promise<{
       const tokenInQuery = url.searchParams.get("token");
       const authorized = authorization === "Bearer test-token" || tokenInQuery === "test-token";
       if (!authorized) return json(401, { code: "unauthorized", message: "no" });
+
+      if (url.pathname.startsWith("/v1/objects/")) {
+        objectFetches.set(url.pathname, (objectFetches.get(url.pathname) ?? 0) + 1);
+        const bytes = objectBodies[url.pathname];
+        if (bytes === undefined) {
+          return json(404, { code: "not_found", message: url.pathname });
+        }
+        return new Response(new Uint8Array(bytes), {
+          headers: { "content-type": "application/octet-stream" },
+        });
+      }
 
       if (url.pathname === "/v1/model/profiles") {
         return json(200, [
@@ -130,12 +164,20 @@ function startMockServer(): Promise<{
 
       if (url.pathname.endsWith("/events") && request.headers.get("upgrade") === "websocket") {
         const { response, socket } = Deno.upgradeWebSocket(request);
+        const sinceSequence = Number(url.searchParams.get("sinceSequence") ?? "0");
         socket.onopen = () => {
           sockets.push(socket);
           broadcast ??= (frame) => {
             for (const target of sockets) target.send(JSON.stringify(frame));
           };
           broadcast({ type: "hello", session: { id: "a".repeat(32), turns: 0 } });
+          const connection: MockEventsConnection = {
+            sinceSequence,
+            send: (frame) => socket.send(JSON.stringify(frame)),
+            close: () => socket.close(),
+          };
+          eventConnections.push(connection);
+          onEventsConnection?.(connection);
         };
         socket.onclose = () => {
           sockets = sockets.filter((target) => target !== socket);
@@ -156,6 +198,11 @@ function startMockServer(): Promise<{
       for (const target of commsSockets) target.send(payload);
     },
     receivedComms: () => Promise.resolve(commsReceived),
+    eventConnections: () => [...eventConnections],
+    onEventsConnection: (handler) => {
+      onEventsConnection = handler;
+    },
+    objectHits: () => Object.fromEntries(objectFetches),
     shutdown: async () => {
       // Upgraded WebSocket requests and keep-alive connections are long-lived: on Linux,
       // shutdown() waits for them. Close every open socket and abort the serve signal so
@@ -274,6 +321,157 @@ Deno.test("events stream yields frames and requires the bearer token", async () 
     controller.abort();
     const rest = await iterator.next();
     assert(rest.done ?? true);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("events resume passes the live run's last sequence, not an earlier run's", async () => {
+  const { discovery, shutdown, eventConnections } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const iterator = client.events("a".repeat(32), { signal: controller.signal })
+      [Symbol.asyncIterator]();
+    assertEquals((await iterator.next()).value?.type, "hello");
+
+    // Run A streamed to sequence 60, then run B replaced it and is at
+    // sequence 5 (the session's single-run gate keeps one run in flight).
+    const runA = "1".repeat(32);
+    const runB = "2".repeat(32);
+    eventConnections()[0].send({ type: "run.started", runId: runA });
+    for (let sequence = 58; sequence <= 60; sequence++) {
+      eventConnections()[0].send({ type: "text.delta", runId: runA, sequence, text: "x" });
+    }
+    eventConnections()[0].send({ type: "run.started", runId: runB });
+    for (let sequence = 1; sequence <= 5; sequence++) {
+      eventConnections()[0].send({ type: "text.delta", runId: runB, sequence, text: "y" });
+    }
+    for (let i = 0; i < 10; i++) await iterator.next();
+
+    // The server drops the connection; pulling drives the reconnect and the
+    // next frame is the new connection's hello.
+    eventConnections()[0].close();
+    assertEquals((await iterator.next()).value?.type, "hello");
+    assertEquals(eventConnections().length, 2);
+    // The offset is run B's mark (5), never run A's high-water (60): one
+    // monotonic offset would filter every remaining frame of the live run.
+    assertEquals(eventConnections()[1].sinceSequence, 5);
+    controller.abort();
+    await iterator.next();
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("events resume starts from zero when no run is still live", async () => {
+  const { discovery, shutdown, eventConnections } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const iterator = client.events("a".repeat(32), { signal: controller.signal })
+      [Symbol.asyncIterator]();
+    assertEquals((await iterator.next()).value?.type, "hello");
+
+    // Run A settled: its terminal frame ends its sequence space, so nothing
+    // observed for it is a meaningful offset for the next connection.
+    const runA = "1".repeat(32);
+    eventConnections()[0].send({ type: "run.started", runId: runA });
+    eventConnections()[0].send({ type: "text.delta", runId: runA, sequence: 1, text: "x" });
+    eventConnections()[0].send({ type: "text.delta", runId: runA, sequence: 2, text: "y" });
+    eventConnections()[0].send({ type: "run.completed", runId: runA, sequence: 3 });
+    for (let i = 0; i < 4; i++) await iterator.next();
+
+    eventConnections()[0].close();
+    assertEquals((await iterator.next()).value?.type, "hello");
+    assertEquals(eventConnections().length, 2);
+    assertEquals(eventConnections()[1].sinceSequence, 0);
+    controller.abort();
+    await iterator.next();
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("replayed frames within a run are delivered exactly once", async () => {
+  const { discovery, shutdown, onEventsConnection } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const runB = "2".repeat(32);
+    // The first connection streams the run to sequence 3 and drops; the
+    // reconnect's replay window overlaps (2 and 3 again) before continuing.
+    onEventsConnection((connection) => {
+      if (connection.sinceSequence === 0) {
+        connection.send({ type: "run.started", runId: runB });
+        for (let sequence = 1; sequence <= 3; sequence++) {
+          connection.send({ type: "text.delta", runId: runB, sequence, text: "x" });
+        }
+        setTimeout(() => connection.close(), 25);
+        return;
+      }
+      for (let sequence = 2; sequence <= 4; sequence++) {
+        connection.send({ type: "text.delta", runId: runB, sequence, text: "x" });
+      }
+    });
+
+    const sequences: number[] = [];
+    for await (const frame of client.events("a".repeat(32))) {
+      if (typeof frame.sequence !== "number") continue;
+      sequences.push(frame.sequence);
+      if (frame.sequence === 4) break;
+    }
+    // The overlap (2, 3) is deduplicated against the run's high-water mark.
+    assertEquals(sequences, [1, 2, 3, 4]);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("events tolerate a failed open without unhandled rejections", async () => {
+  const { discovery, shutdown } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  // The server is gone: every open attempt fails. The open promise's
+  // rejection is consumed by the generator (reconnect is driven by the
+  // message loop ending), so nothing escapes as an unhandled rejection.
+  await shutdown();
+  const controller = new AbortController();
+  const iterator = client.events("a".repeat(32), { signal: controller.signal })
+    [Symbol.asyncIterator]();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  controller.abort();
+  const rest = await iterator.next();
+  assert(rest.done ?? true);
+});
+
+Deno.test("immutable object fetches are cached per URL", async () => {
+  const { discovery, shutdown, objectHits } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const first = await client.fetchObject("/v1/objects/one");
+    assertEquals(first, new Uint8Array([1, 2, 3]));
+    assertEquals(await client.fetchObject("/v1/objects/one"), first);
+
+    // Concurrent paints of the same object collapse into one fetch.
+    const [a, b] = await Promise.all([
+      client.fetchObject("/v1/objects/two"),
+      client.fetchObject("/v1/objects/two"),
+    ]);
+    assertEquals(a, new Uint8Array([4, 5, 6]));
+    assertEquals(b, a);
+
+    // A failed fetch is not pinned: the next call retries against the server.
+    const failure = await client.fetchObject("/v1/objects/missing")
+      .then(() => null, (error: unknown) => error);
+    assert(failure instanceof FrontendError);
+    await assertRejects(
+      () => client.fetchObject("/v1/objects/missing"),
+      FrontendError,
+    );
+
+    const hits = objectHits();
+    assertEquals(hits["/v1/objects/one"], 1);
+    assertEquals(hits["/v1/objects/two"], 1);
+    assertEquals(hits["/v1/objects/missing"], 2);
   } finally {
     await shutdown();
   }

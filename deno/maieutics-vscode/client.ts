@@ -3,11 +3,13 @@
  * Web platform standards only — `fetch` and `WebSocket` — so the module runs
  * in the VSCode extension host and under `deno test` unchanged.
  *
- * Reconnect semantics: the events socket reconnects with `sinceSequence` set
- * to the last sequence observed for the server's current run; sequenced frames
- * are additionally deduplicated by (runId, sequence) so replay overlap is
- * harmless. Terminal frames may repeat across reconnects and consumers must
- * treat them idempotently.
+ * Reconnect semantics: run event sequences are strictly run-local, so the
+ * events socket reconnects with `sinceSequence` set to the last sequence
+ * observed for the run that is still live (0 when no run is live — a settled
+ * run's numbers say nothing about the next one); sequenced frames are
+ * deduplicated against each run's high-water mark, so replay overlap is
+ * harmless without keeping a key per delivered frame. Terminal frames may
+ * repeat across reconnects and consumers must treat them idempotently.
  */
 
 import { decodeCommEnvelope, encodeCommEnvelope } from "../shared/comm_codec.ts";
@@ -69,6 +71,10 @@ export class FrontendClient {
     readonly baseUrl: string,
     private readonly token: string,
   ) {}
+
+  /** Content-addressed object fetches (see {@link fetchObject}); FIFO-capped
+   * so a long-lived extension host stays bounded. */
+  private readonly objectCache = new Map<string, Promise<Uint8Array>>();
 
   static fromDiscovery(value: unknown): FrontendClient {
     if (typeof value !== "object" || value === null) {
@@ -212,15 +218,34 @@ export class FrontendClient {
   }
 
   /** Fetches an immutable display object at its relative URL. The URL is
-   * content-addressed (same URL = same bytes forever), so callers may cache
-   * aggressively and share entries across displays, runs, and notebooks. */
+   * content-addressed (same URL = same bytes forever) and served immutable,
+   * so entries are cached for the client's lifetime and shared across
+   * displays, runs, and notebooks; the promise cache also collapses
+   * concurrent paints of the same object. */
   async fetchObject(relativeUrl: string, signal?: AbortSignal): Promise<Uint8Array> {
-    const response = await fetch(`${this.baseUrl}${relativeUrl}`, {
-      headers: { "Authorization": `Bearer ${this.token}` },
-      signal,
+    const cached = this.objectCache.get(relativeUrl);
+    if (cached !== undefined) return await cached;
+
+    const fetched = (async () => {
+      const response = await fetch(`${this.baseUrl}${relativeUrl}`, {
+        headers: { "Authorization": `Bearer ${this.token}` },
+        signal,
+      });
+      if (!response.ok) throw await this.errorOf(response);
+      return new Uint8Array(await response.arrayBuffer());
+    })();
+    this.objectCache.set(relativeUrl, fetched);
+    // A failed fetch must not pin its rejection: drop the entry so the next
+    // paint retries instead of replaying a transient error forever.
+    fetched.catch(() => {
+      if (this.objectCache.get(relativeUrl) === fetched) this.objectCache.delete(relativeUrl);
     });
-    if (!response.ok) throw await this.errorOf(response);
-    return new Uint8Array(await response.arrayBuffer());
+    while (this.objectCache.size > ObjectCacheCapacity) {
+      const oldest = this.objectCache.keys().next();
+      if (oldest.done === true) break;
+      this.objectCache.delete(oldest.value);
+    }
+    return await fetched;
   }
 
   /** Answers a pending input request announced by an `input.request` frame. */
@@ -263,23 +288,33 @@ export class FrontendClient {
   /**
    * Opens the session events socket and yields frames until aborted or closed
    * by the server. Reconnects with exponential backoff while the signal lives;
-   * every connected frame sequence is delivered in order and deduplicated.
+   * the reconnect offset is the last sequence observed for the run that is
+   * still live (sequences are strictly run-local), and sequenced frames are
+   * deduplicated against each run's high-water mark, so replay overlap is
+   * harmless.
    */
   async *events(sessionId: string, options: EventsOptions = {}): AsyncGenerator<EventFrame> {
-    const seen = new Set<string>();
-    let sinceSequence = options.sinceSequence ?? 0;
-    let backoffMs = 250;
+    const lastSeenByRun = new Map<string, number>();
+    let backoffMs = InitialBackoffMs;
+    let firstConnect = true;
     while (!options.signal?.aborted) {
+      // One monotonic offset would mix run-local sequence spaces and hide
+      // every frame of the next run; only a still-live run's mark is a
+      // meaningful resume point (see resumeOffset).
+      const sinceSequence = firstConnect ? options.sinceSequence ?? 0 : resumeOffset(lastSeenByRun);
+      firstConnect = false;
+      const connectedAt = Date.now();
       const handle = this.openSocket(sessionId, sinceSequence, options.signal);
 
+      // Open failures are consumed here: reconnect is driven by the message
+      // loop ending (onclose/onerror), not by the open promise.
+      handle.opened.catch(() => {});
+
+      let delivered = 0;
       try {
         for await (const frame of handle.messages) {
-          if (frame.sequence !== undefined && typeof frame.sequence === "number") {
-            const key = `${frame.runId ?? ""}:${frame.sequence}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            if (frame.runId !== undefined) sinceSequence = Math.max(sinceSequence, frame.sequence);
-          }
+          if (markDelivered(frame, lastSeenByRun)) continue;
+          delivered++;
           yield frame;
         }
       } finally {
@@ -290,9 +325,15 @@ export class FrontendClient {
         }
       }
 
+      // A connection that delivered frames and stayed up for a while was
+      // healthy: the outage that ended it retries from the shortest backoff
+      // again instead of inheriting a peak reached by earlier flaps.
+      if (delivered > 0 && Date.now() - connectedAt >= HealthyConnectionMs) {
+        backoffMs = InitialBackoffMs;
+      }
       if (options.signal?.aborted) return;
       await sleep(backoffMs);
-      backoffMs = Math.min(backoffMs * 2, 8000);
+      backoffMs = Math.min(backoffMs * 2, MaxBackoffMs);
     }
   }
 
@@ -442,7 +483,6 @@ export class FrontendClient {
       wake = null;
     };
     socket.onclose = () => enqueue();
-    socket.onerror = () => enqueue();
     signal?.addEventListener("abort", () => {
       try {
         socket.close();
@@ -466,7 +506,10 @@ export class FrontendClient {
 
     const opened = new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
+      // The single error handler both ends the message loop (reconnect) and
+      // settles the open promise; after open, reject() is a no-op.
       socket.onerror = () => {
+        enqueue();
         reject(new FrontendError("unreachable", 0, "The events socket failed to open."));
       };
     });
@@ -528,6 +571,57 @@ export class FrontendClient {
     return new FrontendError(code, response.status, message);
   }
 }
+/** Reconnect backoff bounds, in milliseconds. */
+const InitialBackoffMs = 250;
+const MaxBackoffMs = 8000;
+/** A connection that delivered frames and stayed up at least this long counts
+ * as healthy: the next outage retries from the shortest backoff again. */
+const HealthyConnectionMs = 10_000;
+/** Cached immutable object fetches per client (see {@link FrontendClient.fetchObject}). */
+const ObjectCacheCapacity = 64;
+
+/** The reconnect offset: the last sequence of a run that is still live — a
+ * run that produced no terminal frame. Settled runs drop out of the map, so
+ * their numbers cannot leak into the next run's replay request (sequences are
+ * strictly run-local); 0 means "no run is live". Run-less sequenced frames
+ * (keyed "") never claim the offset. */
+function resumeOffset(lastSeenByRun: Map<string, number>): number {
+  let offset = 0;
+  for (const [runId, mark] of lastSeenByRun) {
+    if (runId !== "" && mark > offset) offset = mark;
+  }
+  return offset;
+}
+
+/** Records one frame against its run's high-water mark; returns whether the
+ * frame was already delivered on this connection (replay overlap) and must be
+ * skipped — sequences are strictly increasing run-local, so a frame at or
+ * below the mark is a repeat. Terminal frames settle their run (the entry
+ * goes) and a new run replaces the previous one, keeping the map bounded. */
+function markDelivered(frame: EventFrame, lastSeenByRun: Map<string, number>): boolean {
+  const runId = typeof frame.runId === "string" ? frame.runId : "";
+  if (typeof frame.sequence === "number") {
+    const mark = lastSeenByRun.get(runId);
+    if (mark !== undefined && frame.sequence <= mark) return true;
+    lastSeenByRun.set(runId, frame.sequence);
+  }
+
+  if (frame.type === "run.started") {
+    // The session's single-run gate keeps one run in flight: a new run's
+    // sequence space starts over, so earlier runs' marks are stale. Run-less
+    // frames ("") stay — their numbers are not a run's and still dedupe.
+    for (const key of [...lastSeenByRun.keys()]) {
+      if (key !== runId && key !== "") lastSeenByRun.delete(key);
+    }
+  } else if (
+    frame.type === "run.completed" || frame.type === "run.failed" ||
+    frame.type === "run.missing"
+  ) {
+    lastSeenByRun.delete(runId);
+  }
+  return false;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

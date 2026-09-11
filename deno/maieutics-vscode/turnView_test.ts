@@ -245,3 +245,95 @@ Deno.test("tool lines carry argument previews and durations", () => {
   // name's own span.
   assertEquals(hostileLine.split("`").length, 5);
 });
+
+Deno.test("message.completed replaces the folded text with the authoritative parts", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "run.started", runId: "run-1" });
+  view.apply({ type: "text.delta", runId: "run-1", sequence: 1, text: "drif" });
+  view.apply({ type: "text.delta", runId: "run-1", sequence: 2, text: "t" });
+  assertEquals(view.markdown(), "drift");
+
+  view.apply({
+    type: "message.completed",
+    runId: "run-1",
+    sequence: 3,
+    messageId: "m1",
+    agentMessage: {
+      role: "assistant",
+      parts: [
+        { kind: "text", text: "The answer" },
+        { kind: "tool_call", callId: "c1", name: "workspace_read" },
+        { kind: "text", text: " is 42." },
+      ],
+    },
+  });
+  // Text parts fold in order; non-text parts contribute nothing.
+  assertEquals(view.markdown(), "The answer is 42.");
+  // The repaint is requested through the same dirty segment as the deltas.
+  const dirty = view.takeDirty();
+  assertEquals([...dirty].includes("answer:run-1"), true);
+});
+
+Deno.test("message.completed without a message leaves the streamed text alone", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "text.delta", runId: "run-1", sequence: 1, text: "partial" });
+  view.apply({ type: "message.completed", runId: "run-1", sequence: 2, messageId: "m1" });
+  assertEquals(view.markdown(), "partial");
+});
+
+Deno.test("tool.progress updates the matching call's line", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c1", tool: "repl_execute" });
+  view.apply({
+    type: "tool.progress",
+    runId: "run-1",
+    sequence: 2,
+    callId: "c1",
+    content: { kind: "text", text: "executing cell 1/3" },
+  });
+  const line = view.toolLines()[0];
+  assertEquals(line.includes("executing cell 1/3"), true);
+  const dirty = view.takeDirty();
+  assertEquals([...dirty].includes("tools:run-1"), true);
+
+  // Last progress wins, so chatty tools stay on one bounded line; the
+  // preview is untrusted output and cannot break the code span.
+  view.apply({
+    type: "tool.progress",
+    runId: "run-1",
+    sequence: 3,
+    callId: "c1",
+    content: { kind: "text", text: "executing cell 2/3 `quoted`" },
+  });
+  const updated = view.toolLines()[0];
+  assertEquals(updated.includes("cell 1/3"), false);
+  assertEquals(updated.includes("cell 2/3"), true);
+  assertEquals(updated.includes("`quoted`"), false);
+});
+
+Deno.test("tool.progress for unknown calls or non-text content is ignored", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c1", tool: "repl_execute" });
+  view.takeDirty(); // drain the started mark
+
+  // A progress frame for a call that never started has no line to update.
+  view.apply({
+    type: "tool.progress",
+    runId: "run-1",
+    sequence: 1,
+    callId: "ghost",
+    content: { kind: "text", text: "no such call" },
+  });
+  assertEquals(view.toolLines(), ["- ⏳ `repl_execute`"]);
+
+  // Non-text progress content contributes nothing.
+  view.apply({
+    type: "tool.progress",
+    runId: "run-1",
+    sequence: 2,
+    callId: "c1",
+    content: { kind: "data", value: { step: 2 } },
+  });
+  assertEquals(view.toolLines(), ["- ⏳ `repl_execute`"]);
+  assertEquals(view.takeDirty().size, 0);
+});

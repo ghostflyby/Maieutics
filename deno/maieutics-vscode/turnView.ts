@@ -34,6 +34,9 @@ export interface ToolEntry {
   status: "running" | "ok" | "error";
   /** Compact argument preview captured from tool.started. */
   args?: string;
+  /** Latest progress text captured from tool.progress (last wins, so the
+   * line stays bounded however chatty the tool is). */
+  progress?: string;
   /** Wall-clock duration measured between the start and finish frames
    * (receipt time, so replayed streams under-report). */
   startedAt?: number;
@@ -183,6 +186,33 @@ export class TurnView {
         }
         return true;
       }
+      case "tool.progress": {
+        // Progress rides the matching call's line; a call that never started
+        // has no line to update and is ignored.
+        if (typeof frame.callId === "string") {
+          const entry = this.tools.get(frame.callId);
+          const text = frame.content?.text;
+          if (entry && typeof text === "string" && text.length > 0) {
+            entry.progress = summarize(text);
+            this.dirty.add(`tools:${this.runId}`);
+          }
+        }
+        return true;
+      }
+      case "message.completed": {
+        // The completed message is authoritative over the eagerly folded
+        // deltas: replace the accumulated text with its text parts. A frame
+        // without a message leaves the streamed text alone.
+        const parts = frame.agentMessage?.parts;
+        if (Array.isArray(parts)) {
+          this.text = parts
+            .filter((part) => part.kind === "text")
+            .map((part) => part.text ?? "")
+            .join("");
+          this.dirty.add(`answer:${this.runId}`);
+        }
+        return true;
+      }
       case "turn.truncated": {
         this.truncated = true;
         return true;
@@ -219,7 +249,7 @@ export class TurnView {
   }
 
   /** Markdown lines summarizing tool activity, in call order, with argument
-   * previews and durations (receipt-time measured). */
+   * previews, the latest progress text, and durations (receipt-time measured). */
   toolLines(): string[] {
     return this.toolOrder
       .map((callId) => this.tools.get(callId))
@@ -227,6 +257,7 @@ export class TurnView {
       .map((entry) => {
         const detail = [
           entry.args === undefined ? undefined : `\`${entry.args}\``,
+          entry.progress === undefined ? undefined : `\`${entry.progress}\``,
           entry.durationMs === undefined ? undefined : formatDuration(entry.durationMs),
         ].filter((part) => part !== undefined).join(" · ");
         const mark = entry.status === "running" ? "⏳" : entry.status === "error" ? "❌" : "✅";

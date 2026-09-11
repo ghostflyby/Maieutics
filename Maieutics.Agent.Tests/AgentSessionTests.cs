@@ -895,6 +895,74 @@ public sealed class AgentSessionTests
         completed[0].AgentMessageId.Should().NotBe(completed[^1].AgentMessageId);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ConcurrentToolProgressKeepsWireOrderEqualToSequenceOrder()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        const int reporterCount = 8;
+        var tool = CreateTool(
+            "burst",
+            async (context, _, cancellationToken) =>
+            {
+                var reporters = Enumerable.Range(0, reporterCount).Select(index => Task.Run(
+                    async () => await context.ReportProgressAsync(new TextContent($"p{index}"), cancellationToken),
+                    cancellationToken));
+                await Task.WhenAll(reporters);
+                return JsonSerializer.SerializeToElement("done", AgentTestJsonContext.Default.String);
+            });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "burst")),
+            (_, _) => StreamAsync("completed"));
+        var session = new AgentSession(client, tools: [tool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Burst"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        var progresses = events.OfType<AgentToolProgress>().ToArray();
+        progresses.Should().HaveCount(reporterCount);
+        progresses.Select(progress => progress.Content).Should().OnlyHaveUniqueItems();
+        // Sequence numbers are allocated and enqueued atomically, so the wire order is exactly
+        // the strictly increasing sequence order across all producers.
+        events.Select(agentEvent => agentEvent.Sequence).Should()
+            .Equal(Enumerable.Range(1, events.Count).Select(static value => (long)value));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ProgressReportedAfterRunCompletionFailsWithTypeSignal()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var contexts = new List<AgentToolContext>();
+        var tool = CreateTool(
+            "late",
+            (context, _, _) =>
+            {
+                contexts.Add(context);
+                return ValueTask.FromResult<JsonElement?>(null);
+            });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "late")),
+            (_, _) => StreamAsync("done"),
+            (_, _) => StreamAsync("next"));
+        var session = new AgentSession(client, tools: [tool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Late"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+        contexts.Should().ContainSingle();
+        var context = contexts[0];
+
+        // The run completed and closed its event writer; a straggler reporter observes the
+        // typed recoverable failure instead of ChannelClosedException.
+        await FluentActions.Awaiting(() => context
+                .ReportProgressAsync(new TextContent("late"), deadline.Token).AsTask())
+            .Should().ThrowAsync<AgentRunCompletedException>();
+
+        await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
+        await ReadEventsAsync(next, deadline.Token);
+        (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("next");
+    }
+
     [Fact]
     public void PublicResultModelsRejectDefaultIdentifiersAndInvalidSequences()
     {

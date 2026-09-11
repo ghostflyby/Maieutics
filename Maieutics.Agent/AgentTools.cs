@@ -68,7 +68,10 @@ public sealed class AgentToolContext
         throw new InvalidOperationException("The AI function is not running inside a Maieutics Agent tool call.");
     }
 
-    /// <summary>Reports one bounded progress item in call order.</summary>
+    /// <summary>Reports one bounded progress item in call order. Progress writes are serialized
+    /// per run together with their run-local sequence allocation, so a tool may report from
+    /// multiple threads and event frames still reach the wire in sequence order. Reporting after
+    /// the run completed throws <see cref="AgentRunCompletedException" />.</summary>
     public ValueTask ReportProgressAsync(
         AIContent content,
         CancellationToken cancellationToken = default)

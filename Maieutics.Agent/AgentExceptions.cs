@@ -7,6 +7,11 @@ public abstract class AgentException(string message, Exception? innerException =
 /// <summary>Indicates that a session already owns an active run.</summary>
 public sealed class AgentTurnInProgressException() : AgentException("An agent turn is already in progress.");
 
+/// <summary>Indicates that a run already completed, so it cannot accept further events; a tool
+/// still reporting progress observes this typed failure instead of a channel error.</summary>
+public sealed class AgentRunCompletedException(Exception? innerException = null)
+    : AgentException("The agent run has already completed and cannot accept further events.", innerException);
+
 /// <summary>Indicates that submitted input exceeded the configured character limit.</summary>
 public sealed class AgentInputLimitExceededException(int actualCharacters, int maximumCharacters)
     : AgentException(

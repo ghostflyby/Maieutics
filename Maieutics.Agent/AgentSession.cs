@@ -293,7 +293,7 @@ public sealed class AgentSession : IAgentSession
             .ConfigureAwait(false);
         if (truncated)
             await run.WriteEventAsync(
-                new AgentTurnTruncated(run.Id, run.NextSequence()),
+                sequence => new AgentTurnTruncated(run.Id, sequence),
                 cancellationToken).ConfigureAwait(false);
 
         return new PreparedRunResult(turnMessages, turnMessages[^1], truncated, toolState.BuildUsage());
@@ -364,12 +364,21 @@ public sealed class AgentSession : IAgentSession
             snapshot = canonicalState;
         }
 
+        // Committed turns are immutable and cache their detached serialization, so replay
+        // deserializes each turn into fresh instances (the provider may mutate what it receives)
+        // instead of re-serializing the whole history per request. The cached bytes were
+        // validated at commit time and deserialize products cannot reintroduce inline binary
+        // content, so re-validation is unnecessary.
         var messages = new List<ChatMessage>();
         foreach (var turn in snapshot.Turns)
-            messages.AddRange(turn.Truncated ? TrimTruncatedTurn(turn.Messages) : turn.Messages);
+        {
+            IReadOnlyList<ChatMessage> turnMessages = AgentTranscriptCodec.DeserializeMessages(turn.CanonicalBytes);
+            if (turn.Truncated) turnMessages = TrimTruncatedTurn(turnMessages);
 
-        return AgentTranscriptCodec.DetachPrivateMessages(
-            messages);
+            messages.AddRange(turnMessages);
+        }
+
+        return messages;
     }
 
     // A truncated turn ends with assistant tool calls that were never answered. Replaying them
@@ -581,9 +590,9 @@ public sealed class AgentSession : IAgentSession
                     "The function invoker could not correlate the requested Agent tool.");
 
             await run.WriteEventAsync(
-                new AgentToolStarted(
+                sequence => new AgentToolStarted(
                     run.Id,
-                    run.NextSequence(),
+                    sequence,
                     record.CallId,
                     function.Name,
                     record.Arguments),
@@ -602,9 +611,9 @@ public sealed class AgentSession : IAgentSession
                             options.MaxToolProgressEventsPerCall);
 
                     await run.WriteEventAsync(
-                        new AgentToolProgress(
+                        sequence => new AgentToolProgress(
                             run.Id,
-                            run.NextSequence(),
+                            sequence,
                             record.CallId,
                             AgentTranscriptCodec.CreatePublicContent(content)),
                         token).ConfigureAwait(false);
@@ -673,25 +682,33 @@ public sealed class AgentSession : IAgentSession
                     new FunctionResultContent(record.ProviderCallId, envelope)
                 ]));
             await run.WriteEventAsync(
-                new AgentToolFinished(run.Id, run.NextSequence(), record.CallId, envelope),
+                sequence => new AgentToolFinished(run.Id, sequence, record.CallId, envelope),
                 cancellationToken).ConfigureAwait(false);
 
             return envelope;
         }
 
-        private ValueTask PublishTerminalFailureAsync(
+        private async ValueTask PublishTerminalFailureAsync(
             AgentToolCallId callId,
             CancellationToken cancellationToken)
         {
-            return run.WriteEventAsync(
-                new AgentToolFinished(
-                    run.Id,
-                    run.NextSequence(),
-                    callId,
-                    ToolJson.CreateFailureEnvelope(
-                        "tool_execution_failed",
-                        "The tool failed unexpectedly.")),
-                cancellationToken);
+            try
+            {
+                await run.WriteEventAsync(
+                    sequence => new AgentToolFinished(
+                        run.Id,
+                        sequence,
+                        callId,
+                        ToolJson.CreateFailureEnvelope(
+                            "tool_execution_failed",
+                            "The tool failed unexpectedly.")),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (AgentRunCompletedException)
+            {
+                // The run already terminated, so no failure envelope can be delivered; the
+                // terminal cause in flight must not be replaced by a delivery failure.
+            }
         }
 
         internal async ValueTask ObserveProviderUpdateAsync(
@@ -708,9 +725,9 @@ public sealed class AgentSession : IAgentSession
                 throw new AgentResponseLimitExceededException(options.MaxResponseCharacters);
 
             await run.WriteEventAsync(
-                new AgentTextDelta(
+                sequence => new AgentTextDelta(
                     run.Id,
-                    run.NextSequence(),
+                    sequence,
                     GetMessageId(iteration, update.MessageId),
                     text),
                 cancellationToken).ConfigureAwait(false);
@@ -769,9 +786,9 @@ public sealed class AgentSession : IAgentSession
                 intermediateMessages.Add(assistant);
                 var messageId = GetMessageId(iteration, responseMessage.MessageId);
                 await run.WriteEventAsync(
-                    new AgentMessageCompleted(
+                    sequence => new AgentMessageCompleted(
                         run.Id,
-                        run.NextSequence(),
+                        sequence,
                         messageId,
                         AgentTranscriptCodec.CreatePublicMessage(assistant)),
                     cancellationToken).ConfigureAwait(false);
@@ -853,12 +870,13 @@ public sealed class AgentSession : IAgentSession
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            var iteration = Interlocked.Increment(ref iterationCount);
             var request = messages.Select(static message => message.Clone()).ToArray();
             var response = await innerClient
                 .GetResponseAsync(request, options, cancellationToken)
                 .ConfigureAwait(false);
             ValidateConversationId(response.ConversationId);
-            AddIteration(request, response.Messages);
+            AddIteration(iteration, request, response.Messages);
             return response;
         }
 
@@ -930,7 +948,7 @@ public sealed class AgentSession : IAgentSession
                 yield return update;
             }
 
-            AddIteration(request, updates.ToChatResponse().Messages);
+            AddIteration(iteration, request, updates.ToChatResponse().Messages);
         }
 
         private static void ValidateConversationId(string? conversationId)
@@ -941,15 +959,25 @@ public sealed class AgentSession : IAgentSession
         }
 
         private void AddIteration(
+            int iteration,
             IReadOnlyList<ChatMessage> requestMessages,
             IEnumerable<ChatMessage> responseMessages)
         {
-            var iteration = new RecordedIteration(
+            var iterationRecord = new RecordedIteration(
                 requestMessages.Select(static message => message.Clone()).ToArray(),
                 responseMessages.Select(static message => message.Clone()).ToArray());
             lock (gate)
             {
-                iterations.Add(iteration);
+                // The recorded iteration number is the index the function loop uses for tool
+                // correlation (iterations[iteration - 1]), so recording must stay dense and in
+                // call order. A stream that was started but never enumerated to completion would
+                // otherwise shift every later index silently; fail loudly instead.
+                if (iteration != iterations.Count + 1)
+                    throw new AgentUnsupportedResponseException(
+                        $"The model provider recorded model iteration {iteration} out of order " +
+                        $"after {iterations.Count} completed iterations.");
+
+                iterations.Add(iterationRecord);
             }
         }
 
@@ -991,6 +1019,15 @@ public sealed class AgentSession : IAgentSession
         private int enumerationStarted;
         private long sequence;
         private int started;
+
+        // Serializes every event write: sequence allocation and enqueue happen as one atomic
+        // step, so concurrent producers (a tool reporting progress from several threads) cannot
+        // emit sequence numbers out of wire order. The gate is held while waiting for bounded
+        // channel capacity — writers queue instead of racing, and cancellation releases them.
+        // It is deliberately not disposed: it never exposes a wait handle, and a stray tool
+        // reporter that races disposal must observe the typed run-completed failure rather than
+        // ObjectDisposedException.
+        private readonly SemaphoreSlim writeGate = new(1, 1);
 
         internal ChatMessage UserMessage { get; } = userMessage;
 
@@ -1040,14 +1077,36 @@ public sealed class AgentSession : IAgentSession
             backgroundTask = Task.Run(ExecuteAsync);
         }
 
-        internal long NextSequence()
+        // Sequence numbers are allocated inside the write gate; keeping this private keeps
+        // allocation and enqueue atomic by construction.
+        private long NextSequence()
         {
             return Interlocked.Increment(ref sequence);
         }
 
-        internal ValueTask WriteEventAsync(AgentEvent agentEvent, CancellationToken cancellationToken)
+        /// <summary>Allocates the event's run-local sequence number and enqueues it as one
+        /// atomic step. All writers share one async gate, so wire order always matches sequence
+        /// order even when producers run concurrently. Events attempted after the run completed
+        /// surface as <see cref="AgentRunCompletedException" /> rather than ChannelClosedException.</summary>
+        internal async ValueTask WriteEventAsync(Func<long, AgentEvent> createEvent, CancellationToken cancellationToken)
         {
-            return events.Writer.WriteAsync(agentEvent, cancellationToken);
+            await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var agentEvent = createEvent(NextSequence());
+                try
+                {
+                    await events.Writer.WriteAsync(agentEvent, cancellationToken).ConfigureAwait(false);
+                }
+                catch (ChannelClosedException exception)
+                {
+                    throw new AgentRunCompletedException(exception);
+                }
+            }
+            finally
+            {
+                writeGate.Release();
+            }
         }
 
         private async Task ExecuteAsync()

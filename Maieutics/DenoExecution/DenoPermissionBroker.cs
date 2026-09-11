@@ -194,7 +194,8 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                 return;
             }
 
-            var listener = unixListener!;
+            var listener = unixListener;
+            if (listener is null) return;
             while (!lifetime.IsCancellationRequested)
             {
                 var connection = await listener.AcceptAsync(lifetime.Token).ConfigureAwait(false);
@@ -264,7 +265,8 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             await ServeConnectionAsync(new NetworkStream(connection, ownsSocket: false), policy, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException or SocketException)
+        catch (Exception exception) when (
+            exception is IOException or ObjectDisposedException or SocketException or OperationCanceledException)
         {
             logger.LogDebug(exception, "Permission broker connection ended before EOF.");
         }
@@ -288,7 +290,8 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             var policy = await GetPolicyAsync(processId, cancellationToken).ConfigureAwait(false);
             await ServeConnectionAsync(pipe, policy, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        catch (Exception exception) when (
+            exception is IOException or ObjectDisposedException or OperationCanceledException)
         {
             logger.LogDebug(exception, "Permission broker named-pipe connection ended before EOF.");
         }

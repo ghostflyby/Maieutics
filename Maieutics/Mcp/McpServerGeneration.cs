@@ -511,9 +511,7 @@ internal sealed class McpServerGeneration
         if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
 
         foreach (var allowed in run.Allow)
-            if (allowed.Length > 0 &&
-                command.StartsWith(allowed, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal))
+            if (PermissionMatching.MatchesPath(allowed, command))
                 return;
 
         throw new ArgumentException(

@@ -104,17 +104,19 @@ internal static class DenoReplPolicyBuilder
         startInfo.ArgumentList.Add($"--config={configFile}");
         startInfo.ArgumentList.Add($"--lock={lockFile}");
         startInfo.ArgumentList.Add("console.log(import.meta.resolve('npm:esbuild-wasm/esbuild.wasm'))");
-        using var process = Process.Start(startInfo)
-                            ?? throw new InvalidOperationException(
-                                $"Could not start '{executable}' to locate esbuild-wasm.");
-        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        var error = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        if (process.ExitCode != 0)
+        // Kill-on-cancellation: a cancelled policy build must not orphan the eval child.
+        var run = await DenoHelperProcess.RunAsync(
+                startInfo,
+                "to locate esbuild-wasm.",
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (run.ExitCode != 0)
         {
-            logger.LogDebug("esbuild-wasm resolution failed ({ExitCode}): {Error}", process.ExitCode, error.Trim());
+            logger.LogDebug("esbuild-wasm resolution failed ({ExitCode}): {Error}", run.ExitCode, run.StandardError.Trim());
             return null;
         }
+
+        var output = run.StandardOutput;
 
         if (!Uri.TryCreate(output.Trim(), UriKind.Absolute, out var wasmUrl) ||
             !string.Equals(wasmUrl.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))

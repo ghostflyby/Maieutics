@@ -15,10 +15,10 @@ internal static class DenoPermissionResolver
             return DenoBrokerDecision.Deny($"Unknown permission kind '{permission}'.");
 
         var rules = policy.For(kind.Value);
-        if (MatchesAny(rules.Deny, value) || rules.DenyAll)
+        if (MatchesAny(kind.Value, rules.Deny, value) || rules.DenyAll)
             return DenoBrokerDecision.Deny(DenyReason(kind.Value, value));
 
-        if (MatchesAny(rules.Allow, value) || rules.AllowAll)
+        if (MatchesAny(kind.Value, rules.Allow, value) || rules.AllowAll)
             return DenoBrokerDecision.Allow();
 
         return DenoBrokerDecision.Deny(DenyReason(kind.Value, value));
@@ -40,14 +40,12 @@ internal static class DenoPermissionResolver
         };
     }
 
-    private static bool MatchesAny(IReadOnlyList<string> patterns, string value)
+    private static bool MatchesAny(PermissionKind kind, IReadOnlyList<string> patterns, string value)
     {
-        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        foreach (var pattern in patterns)
-            if (pattern.Length == 0 || value.StartsWith(pattern, comparison))
-                return true;
-
-        return false;
+        // Canonical semantics live in the permission layer so the broker and the launch
+        // enforcement seams cannot drift: path kinds match on a directory boundary, the
+        // remaining kinds keep Deno's prefix matching.
+        return PermissionMatching.MatchesAny(kind, patterns, value);
     }
 
     private static string DenyReason(PermissionKind kind, string value)

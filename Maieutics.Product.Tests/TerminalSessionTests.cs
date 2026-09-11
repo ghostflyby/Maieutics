@@ -90,6 +90,39 @@ public sealed class TerminalSessionTests
         session.GetSnapshot().State.Should().Be("idle");
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task RunGrantDoesNotAdmitASiblingExecutable()
+    {
+        var fake = new FakeTerminalProcess();
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-shell"] }));
+        // The sibling name merely shares the grant's prefix; the boundary rule keeps it out.
+        await using var session = CreateSession(fake, "/usr/bin/safe-shell-evil", [], restricted);
+
+        var start = () => session.StartAsync(TestContext.Current.CancellationToken);
+
+        await start.Should().ThrowAsync<AgentToolException>()
+            .Where(static exception => exception.Code == "terminal_start_failed");
+        session.GetSnapshot().State.Should().Be("faulted");
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task RunGrantAdmitsTheExactExecutableAndDirectoryChildren()
+    {
+        var fake = new FakeTerminalProcess();
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/opt/shells"] }));
+
+        await using var exact = CreateSession(fake, "/opt/shells", [], restricted);
+        await exact.StartAsync(TestContext.Current.CancellationToken);
+        exact.GetSnapshot().State.Should().Be("idle");
+
+        var nestedFake = new FakeTerminalProcess();
+        await using var nested = CreateSession(nestedFake, "/opt/shells/nested/sh", [], restricted);
+        await nested.StartAsync(TestContext.Current.CancellationToken);
+        nested.GetSnapshot().State.Should().Be("idle");
+    }
+
     private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
     {
         return PermissionLayerStore.Build(

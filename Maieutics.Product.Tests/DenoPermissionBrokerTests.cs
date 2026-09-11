@@ -142,6 +142,46 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionResolver.Resolve(policy, "unknown", "x").IsAllowed.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task PathGrantsMatchInsideButNotSiblingPaths()
+    {
+        var policy = Build(
+            (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp"] }));
+
+        // Inside the granted directory: allowed; the grant root itself: allowed.
+        DenoPermissionResolver.Resolve(policy, "read", "/tmp/x").IsAllowed.Should().BeTrue();
+        DenoPermissionResolver.Resolve(policy, "read", "/tmp").IsAllowed.Should().BeTrue();
+        // A sibling whose name merely starts with the pattern: not covered by the grant.
+        DenoPermissionResolver.Resolve(policy, "read", "/tmp-evil").IsAllowed.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PathDeniesMatchInsideButNotSiblingPaths()
+    {
+        var policy = Build(
+            (PermissionKind.Read, new PermissionKindRules
+            {
+                Allow = ["/data"],
+                Deny = ["/data/secret"]
+            }));
+
+        DenoPermissionResolver.Resolve(policy, "read", "/data/secret/key").IsAllowed.Should().BeFalse();
+        DenoPermissionResolver.Resolve(policy, "read", "/data/secret-appended").IsAllowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task NonPathKindsKeepPrefixMatching()
+    {
+        var policy = Build(
+            (PermissionKind.Env, new PermissionKindRules { Allow = ["MAIEUTICS_TEST"] }),
+            (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost"] }));
+
+        // env names and net hosts stay prefix-matched (Deno semantics); only filesystem path
+        // kinds gain the directory-boundary rule.
+        DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed.Should().BeTrue();
+        DenoPermissionResolver.Resolve(policy, "net", "localhost:8080").IsAllowed.Should().BeTrue();
+    }
+
     private static EffectivePolicy CreatePolicy(string readableRoot)
     {
         return Build(

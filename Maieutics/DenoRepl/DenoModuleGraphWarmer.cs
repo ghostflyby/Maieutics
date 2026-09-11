@@ -51,7 +51,6 @@ internal sealed class DenoModuleGraphWarmer(
 
     private async Task WarmAsync()
     {
-        Process? process = null;
         try
         {
             var startInfo = new ProcessStartInfo
@@ -68,61 +67,29 @@ internal sealed class DenoModuleGraphWarmer(
             startInfo.ArgumentList.Add($"--lock={modules.LockFile}");
             startInfo.ArgumentList.Add(modules.MainUrl);
 
-            process = Process.Start(startInfo)
-                      ?? throw new InvalidOperationException(
-                          $"Could not start '{options.Executable}' to warm the Deno REPL module graph.");
-            var standardOutput = process.StandardOutput.ReadToEndAsync(lifetime.Token);
-            var standardError = process.StandardError.ReadToEndAsync(lifetime.Token);
-            ObserveDrain(standardOutput);
-            ObserveDrain(standardError);
-            await process.WaitForExitAsync(lifetime.Token).ConfigureAwait(false);
-            var error = await standardError.ConfigureAwait(false);
-            _ = await standardOutput.ConfigureAwait(false);
-            if (process.ExitCode != 0)
+            // Kill-on-cancellation: the helper kills the `deno cache` tree when shutdown cancels
+            // the warm, so disposal below can never orphan a still-running child.
+            var run = await DenoHelperProcess.RunAsync(
+                    startInfo,
+                    "to warm the Deno REPL module graph.",
+                    lifetime.Token)
+                .ConfigureAwait(false);
+            if (run.ExitCode != 0)
                 logger.LogDebug(
                     "Deno REPL module-graph warm failed with exit code {ExitCode}: {Error}",
-                    process.ExitCode,
-                    error.Trim());
+                    run.ExitCode,
+                    run.StandardError.Trim());
             else
                 logger.LogInformation("Deno REPL module graph warmed successfully.");
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
-            // Shutdown cancelled the warm: kill the child so `using` disposal below
-            // cannot orphan a still-running `deno cache`.
-            TryKill(process);
+            // Shutdown cancelled the warm; the helper already killed the child tree.
         }
         catch (Exception exception)
         {
             // A failed warm must not take down the host; the REPL session re-installs on demand.
             logger.LogDebug(exception, "Deno REPL module-graph warm failed; the REPL will install on demand.");
         }
-        finally
-        {
-            process?.Dispose();
-        }
-    }
-
-    private static void TryKill(Process? process)
-    {
-        try
-        {
-            if (process is not null && !process.HasExited) process.Kill(entireProcessTree: true);
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            // The child already exited or the OS refused the kill; nothing further to do.
-        }
-    }
-
-    private static void ObserveDrain(Task<string> drain)
-    {
-        // The cancellation path abandons these drains; the kill closes the pipes, and
-        // only faults are observed so they never surface as unobserved exceptions.
-        drain.ContinueWith(
-            static completed => _ = completed.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default);
     }
 }

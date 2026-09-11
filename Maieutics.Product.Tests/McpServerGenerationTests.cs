@@ -42,6 +42,29 @@ public sealed class McpServerGenerationTests
         McpServerGeneration.EnsureCommandAllowed("/usr/bin/anything", EffectivePolicy.Default);
     }
 
+    [Fact]
+    public void RunGrantDoesNotAdmitSiblingCommands()
+    {
+        // Prefix matching would let a grant of /usr/bin/safe admit /usr/bin/safe-evil; the
+        // path-boundary rule keeps sibling names out.
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe"] }));
+
+        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-evil", restricted);
+
+        check.Should().Throw<ArgumentException>()
+            .WithMessage("*not permitted by the effective policy*");
+    }
+
+    [Fact]
+    public void RunGrantAdmitsCommandsInsideTheGrantedDirectory()
+    {
+        var restricted = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = ["/opt/servers"] }));
+
+        McpServerGeneration.EnsureCommandAllowed("/opt/servers/safe-server", restricted);
+    }
+
     private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
     {
         return PermissionLayerStore.Build(

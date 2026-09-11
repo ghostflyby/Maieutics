@@ -14,10 +14,18 @@ internal sealed class DenoRunProcess : IAsyncDisposable
 {
     private const int DrainBufferCharacters = 4096;
     private const int MaximumLoggedCharactersPerStream = 32 * 1024;
+
+    /// <summary>The default total stop budget: the kill is immediate, so the budget bounds the
+    /// final completion drain. Callers that need a different budget pass one to
+    /// <see cref="Start"/>; layered shutdown paths compose their own total budget on top.</summary>
+    internal static readonly TimeSpan DefaultStopBudget = TimeSpan.FromSeconds(10);
+
     private readonly Lock gate = new();
     private readonly Process process;
     private readonly string processDescription;
     private readonly int processId;
+    private readonly ILogger logger;
+    private readonly TimeSpan stopBudget;
     private readonly TaskCompletionSource<string>? standardError;
     private int exitCode = int.MinValue;
     private Task? stopping;
@@ -26,9 +34,12 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         Process process,
         InternalDenoProcessKind kind,
         ILogger logger,
+        TimeSpan stopBudget,
         TaskCompletionSource<string>? standardError)
     {
         this.process = process;
+        this.logger = logger;
+        this.stopBudget = stopBudget;
         processDescription = Describe(kind);
         processId = process.Id;
         this.standardError = standardError;
@@ -65,7 +76,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         ILogger logger,
         DenoPermissionBroker? broker = null,
         EffectivePolicy? policy = null,
-        bool captureStandardError = false)
+        bool captureStandardError = false,
+        TimeSpan? stopBudget = null)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentNullException.ThrowIfNull(logger);
@@ -86,6 +98,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
             process,
             kind,
             logger,
+            stopBudget ?? DefaultStopBudget,
             captureStandardError
                 ? new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
                 : null);
@@ -113,7 +126,28 @@ internal sealed class DenoRunProcess : IAsyncDisposable
 
         try
         {
-            await Completion.ConfigureAwait(false);
+            // One total budget for the stop: the kill already happened, so the budget bounds the
+            // exit/drain observation. A re-parented grandchild holding an inherited stdout pipe
+            // keeps the drain open forever; without the bound every StopAsync caller (plugin host
+            // stop, REPL shutdown, session factory, DisposeAsync) would block indefinitely.
+            await Completion.WaitAsync(stopBudget).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Abandon the completion deterministically: observe its eventual failure so nothing
+            // surfaces as an unobserved task exception, log through the diagnostics channel, and
+            // still dispose below so StopAsync always returns within its budget. ExitCode stays
+            // unknown; the process object is the only resource this class owes a dispose.
+            _ = Completion.ContinueWith(
+                static completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            logger.LogWarning(
+                "{ProcessDescription} {ProcessId} did not drain within {Budget}; abandoning its completion.",
+                processDescription,
+                processId,
+                stopBudget);
         }
         catch
         {

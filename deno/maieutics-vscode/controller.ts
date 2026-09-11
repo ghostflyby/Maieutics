@@ -74,6 +74,10 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   private readonly warnedPins = new Set<string>();
   /** Run ids of each notebook's in-flight turn, for the interrupt handler. */
   private readonly activeRuns = new Map<string, string>();
+  /** Notebooks closed with work queued or running: their remaining queued
+   * cells must not submit and their streams must not be silently recreated.
+   * Cleared when the document is submitted again (reopened). */
+  private readonly closedNotebooks = new Set<string>();
 
   constructor(
     private readonly bridge: NotebookBridge,
@@ -108,14 +112,29 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   }
 
   /** Cancels the notebook's in-flight runs when its document closes (best
-   * effort: attach-mode servers keep running, so the runs must be told). */
+   * effort: attach-mode servers keep running, so the runs must be told). The
+   * stream map is keyed by session id, so the notebook's pinned session — the
+   * same pin ensureSessionAsync executes against — resolves the stream. */
   handleNotebookClosed(document: vscode.NotebookDocument): void {
-    const stream = this.streams.get(document.uri.toString());
-    if (stream === undefined) return;
+    const queueKey = document.uri.toString();
+    // Remaining queued cells of a closed notebook never submit.
+    this.closedNotebooks.add(queueKey);
+    this.queues.delete(queueKey);
 
+    const sessionId = readStoredSessionId(document.metadata);
+    if (sessionId === undefined) return;
+    // Another open notebook pinned to the same session still owns the stream.
+    const shared = vscode.workspace.notebookDocuments.some((other) =>
+      other !== document && other.notebookType === NotebookType &&
+      readStoredSessionId(other.metadata) === sessionId
+    );
+    if (shared) return;
+
+    const stream = this.streams.get(sessionId);
+    if (stream === undefined) return;
     stream.cancelAll();
-    this.streams.delete(document.uri.toString());
-    this.queues.delete(document.uri.toString());
+    stream.dispose();
+    this.streams.delete(sessionId);
   }
 
   /** Runs cells through the notebook's execution queue (commands that submit
@@ -129,8 +148,12 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     document: vscode.NotebookDocument,
   ): Promise<void> {
     const queueKey = document.uri.toString();
+    // A fresh submission (the document was reopened) revives the notebook;
+    // batches that were already queued when it closed stay gated below.
+    this.closedNotebooks.delete(queueKey);
     const previous = this.queues.get(queueKey) ?? Promise.resolve();
     const run = previous.then(async () => {
+      if (this.closedNotebooks.has(queueKey)) return;
       const sessionId = await this.ensureSessionAsync(document);
       // The history gate: committed cells never re-submit silently.
       const { pending, committed } = partitionByHistory(cells.map(taggedCell));
@@ -174,8 +197,10 @@ export class MaieuticsNotebookController implements vscode.Disposable {
       }
 
       // One cell at a time, in document order: the session's single-run gate
-      // makes concurrent submissions typed busy errors, not a queue.
+      // makes concurrent submissions typed busy errors, not a queue. A close
+      // mid-batch stops the remaining cells (no stream is recreated).
       for (const target of targets) {
+        if (this.closedNotebooks.has(queueKey)) return;
         await this.executeCellAsync(target.cell, activeSession);
       }
     });
@@ -302,9 +327,13 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   private async executeCellAsync(cell: vscode.NotebookCell, sessionId: string): Promise<void> {
     const text = cell.document.getText();
     const execution = this.controller.createNotebookCellExecution(cell);
+    // The failure path only starts the execution when it has not started yet:
+    // a second start() can leave the matching end() ignored (spinner forever).
+    let started = false;
     try {
       const stream = await this.ensureStreamAsync(sessionId);
       execution.start(Date.now());
+      started = true;
       execution.clearOutput();
 
       // An empty cell mirrors the kernel contract: a successful no-op turn.
@@ -344,9 +373,16 @@ export class MaieuticsNotebookController implements vscode.Disposable {
         this.activeRuns.delete(runKey);
       }
     } catch (error) {
-      execution.start(Date.now());
-      execution.clearOutput();
-      execution.replaceOutput([errorOutput(error)]);
+      if (!started) {
+        execution.start(Date.now());
+        execution.clearOutput();
+        execution.replaceOutput([errorOutput(error)]);
+      } else {
+        // A failure after streaming began (or even after the run painted its
+        // answer) keeps what the cell already shows: append the failure, never
+        // replace the streamed partial (paintFailure semantics).
+        execution.appendOutput([errorOutput(error)]);
+      }
       execution.end(false, Date.now());
     }
   }
@@ -501,7 +537,12 @@ class NotebookStream {
     try {
       for await (const frame of this.client.events(this.sessionId, { signal })) {
         this.route(frame);
-        if (frame.type === "run.completed" || frame.type === "run.failed") {
+        // Any terminal view outcome retires the run: a settled run must not
+        // stay here catching run-less frames (repl displays, input requests).
+        if (
+          frame.type === "run.completed" || frame.type === "run.failed" ||
+          frame.type === "run.missing"
+        ) {
           this.runs.delete(frame.runId ?? "");
         }
       }
@@ -661,9 +702,12 @@ class RunExecution {
         typeof value === "object" && value !== null &&
         "$object" in (value as Record<string, unknown>)
       );
-      this.ensureSegment(key, output);
-      if (hadObjectRefs) {
-        void fillReplObjectItemsAsync(this.execution, output).catch(() => {});
+      // The async fill must target the ATTACHED segment output: a fresh
+      // NotebookCellOutput that ensureSegment did not keep is an orphan, and
+      // replacing its items paints nothing (the binary items would be lost).
+      const attached = this.ensureSegment(key, output);
+      if (hadObjectRefs && attached !== undefined) {
+        void fillReplObjectItemsAsync(this.execution, attached, output.items).catch(() => {});
       }
     }
 
@@ -685,24 +729,31 @@ class RunExecution {
 
   /** Creates the segment output when absent (appended after the existing
    * outputs so segment order is REPL displays, tools, answer) or replaces its
-   * items in place. Passing no items removes the segment (empty tools). */
-  private ensureSegment(key: string, output: vscode.NotebookCellOutput | undefined): void {
+   * items in place. Passing no items removes the segment (empty tools).
+   * Returns the output that is attached to the cell after the call — the
+   * stable segment when one already existed — or undefined when the segment
+   * was removed. */
+  private ensureSegment(
+    key: string,
+    output: vscode.NotebookCellOutput | undefined,
+  ): vscode.NotebookCellOutput | undefined {
     const existing = this.segments.get(key);
     if (output === undefined) {
       if (existing) {
         this.execution.replaceOutputItems([], existing);
       }
 
-      return;
+      return undefined;
     }
 
     if (existing) {
       this.execution.replaceOutputItems(output.items, existing);
-      return;
+      return existing;
     }
 
     this.segments.set(key, output);
     this.execution.appendOutput([output]);
+    return output;
   }
 
   /** Paints (or repaints) the answer markdown; creates its output once. */
@@ -785,17 +836,18 @@ function replOutputSync(
   return new vscode.NotebookCellOutput(items);
 }
 
-/** Awaits the async binary fills and replaces the output's items in place with
- * the complete item list. */
+/** Awaits the async binary fills and replaces the attached segment's items in
+ * place with the complete list: binary items first, then the synchronous
+ * items the paint just produced. */
 async function fillReplObjectItemsAsync(
   execution: vscode.NotebookCellExecution,
   output: vscode.NotebookCellOutput,
+  items: readonly vscode.NotebookCellOutputItem[],
 ): Promise<void> {
   const pending = await drainPendingObjectItems();
   if (pending.length === 0) return;
 
-  const complete = [...pending, ...output.items];
-  execution.replaceOutputItems(complete, output);
+  execution.replaceOutputItems([...pending, ...items], output);
 }
 
 function errorOutput(error: unknown): vscode.NotebookCellOutput {

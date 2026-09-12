@@ -31,6 +31,7 @@ import {
   withoutTurnBinding,
   withTurnBinding,
 } from "./cellHistory.ts";
+import { CellQueue } from "./queueState.ts";
 import {
   bundleItems,
   drainPendingObjectItems,
@@ -82,6 +83,9 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   constructor(
     private readonly bridge: NotebookBridge,
     private readonly output: vscode.OutputChannel,
+    /** Cells waiting behind each notebook's queue, for the "queued" cell
+     * status markers and the dequeue/clear commands. */
+    private readonly queuedCells: CellQueue<vscode.NotebookCell>,
   ) {
     this.controller = vscode.notebooks.createNotebookController(
       "maieutics",
@@ -120,6 +124,9 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     // Remaining queued cells of a closed notebook never submit.
     this.closedNotebooks.add(queueKey);
     this.queues.delete(queueKey);
+    // Their "queued" markers clear immediately; the excluded marks keep the
+    // (dead) batches from submitting if the document is never reopened.
+    this.queuedCells.clear(queueKey);
 
     const sessionId = readStoredSessionId(document.metadata);
     if (sessionId === undefined) return;
@@ -151,61 +158,89 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     // A fresh submission (the document was reopened) revives the notebook;
     // batches that were already queued when it closed stay gated below.
     this.closedNotebooks.delete(queueKey);
+    // Tracked before the chained body runs, so cells of batches still waiting
+    // behind earlier work show their "queued" marker immediately.
+    const batch = this.queuedCells.enqueue(queueKey, cells);
     const previous = this.queues.get(queueKey) ?? Promise.resolve();
     const run = previous.then(async () => {
-      if (this.closedNotebooks.has(queueKey)) return;
-      const sessionId = await this.ensureSessionAsync(document);
-      // The history gate: committed cells never re-submit silently.
-      const { pending, committed } = partitionByHistory(cells.map(taggedCell));
-
-      if (
-        committed.length > 0 &&
-        isRunAboveSelection(committed.map((entry) => entry.cell.index))
-      ) {
-        this.warnOnce(
-          `${document.uri.toString()}:run-above`,
-          "Maieutics: Run Above targets committed history, so there is nothing to run. " +
-            "New cells continue below the last answered cell; run a committed cell to branch from it.",
-        );
-        return;
-      }
-
-      let targets = pending;
-      let activeSession = sessionId;
-      if (committed.length > 0) {
-        // An explicit run on committed history forks at the first committed
-        // cell (regenerate, or edit-and-continue when the text drifted); any
-        // further committed cells in the same request stay on the old branch.
-        if (pending.length > 0) {
-          this.warnOnce(
-            `${document.uri.toString()}:mixed-run`,
-            "Maieutics: skipped committed cell(s) — history is immutable. " +
-              "Run a committed cell on its own to branch from it.",
-          );
-        } else {
-          if (committed.length > 1) {
-            this.warnOnce(
-              `${document.uri.toString()}:fork-siblings`,
-              "Maieutics: only the first committed cell branches — the others stay on the old branch.",
-            );
-          }
-          const forked = await this.forkAtCellAsync(committed[0].cell, document, activeSession);
-          if (forked === undefined) return;
-          activeSession = forked;
-          targets = [committed[0]];
-        }
-      }
-
-      // One cell at a time, in document order: the session's single-run gate
-      // makes concurrent submissions typed busy errors, not a queue. A close
-      // mid-batch stops the remaining cells (no stream is recreated).
-      for (const target of targets) {
+      try {
         if (this.closedNotebooks.has(queueKey)) return;
-        await this.executeCellAsync(target.cell, activeSession);
+        const sessionId = await this.ensureSessionAsync(document);
+        // The history gate: committed cells never re-submit silently.
+        const { pending, committed } = partitionByHistory(cells.map(taggedCell));
+
+        if (
+          committed.length > 0 &&
+          isRunAboveSelection(committed.map((entry) => entry.cell.index))
+        ) {
+          this.warnOnce(
+            `${document.uri.toString()}:run-above`,
+            "Maieutics: Run Above targets committed history, so there is nothing to run. " +
+              "New cells continue below the last answered cell; run a committed cell to branch from it.",
+          );
+          return;
+        }
+
+        let targets = pending;
+        let activeSession = sessionId;
+        if (committed.length > 0) {
+          // An explicit run on committed history forks at the first committed
+          // cell (regenerate, or edit-and-continue when the text drifted); any
+          // further committed cells in the same request stay on the old branch.
+          if (pending.length > 0) {
+            this.warnOnce(
+              `${document.uri.toString()}:mixed-run`,
+              "Maieutics: skipped committed cell(s) — history is immutable. " +
+                "Run a committed cell on its own to branch from it.",
+            );
+          } else {
+            if (committed.length > 1) {
+              this.warnOnce(
+                `${document.uri.toString()}:fork-siblings`,
+                "Maieutics: only the first committed cell branches — the others stay on the old branch.",
+              );
+            }
+            const forked = await this.forkAtCellAsync(committed[0].cell, document, activeSession);
+            if (forked === undefined) return;
+            activeSession = forked;
+            targets = [committed[0]];
+          }
+        }
+
+        // One cell at a time, in document order: the session's single-run gate
+        // makes concurrent submissions typed busy errors, not a queue. A close
+        // mid-batch stops the remaining cells (no stream is recreated).
+        for (const target of targets) {
+          if (this.closedNotebooks.has(queueKey)) return;
+          // Removed from the queue early (dequeue command or clear): the marker
+          // is already gone and the user asked for this cell not to run.
+          if (batch.isExcluded(target.cell)) continue;
+          this.queuedCells.remove(queueKey, target.cell);
+          await this.executeCellAsync(target.cell, activeSession);
+        }
+      } finally {
+        // This batch's turn ended: its not-yet-run cells (dropped by the
+        // history/fork partitioning, or a close) leave the queue tracking.
+        batch.disposeRemaining();
       }
     });
     this.queues.set(queueKey, run.then(() => {}, () => {}));
     await run;
+  }
+
+  /** Removes one queued occurrence of the cell: its "queued" marker clears and
+   * the queue loop skips it when its turn comes. The in-flight cell is not
+   * affected (use the interrupt for that). True when it was queued. */
+  dequeueQueuedCell(cell: vscode.NotebookCell): boolean {
+    return this.queuedCells.remove(cell.notebook.uri.toString(), cell);
+  }
+
+  /** Removes every queued cell of the notebook: their markers clear and the
+   * queue loop skips them when their turns come. The in-flight run is not
+   * affected (use the interrupt for that). Returns how many cells were
+   * removed. */
+  clearQueuedCells(document: vscode.NotebookDocument): number {
+    return this.queuedCells.clear(document.uri.toString());
   }
 
   /** Forks the pinned session at a committed cell and re-pins the notebook to

@@ -17,6 +17,7 @@ import { connect, type Connection } from "./connection.ts";
 import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
 import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./controller.ts";
+import { CellQueue } from "./queueState.ts";
 import { MaieuticsNotebookSerializer, NotebookType, readStoredSessionId } from "./serializer.ts";
 import { NotebookLanguage } from "./notebookFormat.ts";
 import { FrontendError, type Transcript } from "./protocol.ts";
@@ -105,10 +106,16 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  controller = new MaieuticsNotebookController(createBridge(), output);
+  // Queue tracking feeds both the controller (skip semantics) and the cell
+  // status markers; the emitter is the providers' refresh signal.
+  const queuedCells = new CellQueue<vscode.NotebookCell>();
+  const queueChanges = new vscode.EventEmitter<void>();
+  queuedCells.onDidChange(() => queueChanges.fire());
+  controller = new MaieuticsNotebookController(createBridge(), output, queuedCells);
   context.subscriptions.push(controller);
 
   context.subscriptions.push(...registerHistorySurface());
+  context.subscriptions.push(...registerQueueSurface(queuedCells, queueChanges));
   context.subscriptions.push(...registerUsageBadge());
 
   treeEnvironment.currentOnly = context.workspaceState.get(CurrentOnlyStateKey, false);
@@ -576,6 +583,90 @@ function registerHistorySurface(): vscode.Disposable[] {
     statusProvider,
   );
   return [statusBarChanges, registration, documents];
+}
+
+/** The queued-cells surface: per-cell "queued #N" status markers fed by the
+ * in-memory {@link CellQueue} (never metadata, so queue transitions never
+ * dirty the notebook), plus the dequeue/clear commands the markers and the
+ * notebook toolbar expose. State lives only here and in the controller, so
+ * closing the extension host clears it with the queue itself. */
+function registerQueueSurface(
+  queuedCells: CellQueue<vscode.NotebookCell>,
+  queueChanges: vscode.EventEmitter<void>,
+): vscode.Disposable[] {
+  const statusProvider: vscode.NotebookCellStatusBarItemProvider = {
+    provideCellStatusBarItems(cell: vscode.NotebookCell) {
+      if (cell.notebook.notebookType !== NotebookType) return [];
+      const position = queuedCells.position(cell.notebook.uri.toString(), cell);
+      if (position === undefined) return [];
+      const item = new vscode.NotebookCellStatusBarItem(
+        `$(clock) queued #${position}`,
+        vscode.NotebookCellStatusBarAlignment.Left,
+      );
+      item.tooltip =
+        "Waiting behind earlier cells of this notebook's queue. Click to remove it from the queue (the running cell keeps going).";
+      item.command = {
+        command: "maieutics.dequeueCell",
+        title: "Remove from queue",
+        arguments: [cell],
+      };
+      return [item];
+    },
+    onDidChangeCellStatusBarItems: queueChanges.event,
+  };
+
+  const notebookOf = (arg: unknown): vscode.NotebookDocument | undefined => {
+    if (
+      typeof arg === "object" && arg !== null && "notebookType" in arg &&
+      "uri" in arg && "getCells" in arg
+    ) return arg as vscode.NotebookDocument;
+    if (arg instanceof vscode.Uri) {
+      return vscode.workspace.notebookDocuments.find((document) =>
+        document.uri.toString() === arg.toString()
+      );
+    }
+    return vscode.window.activeNotebookEditor?.notebook;
+  };
+
+  return [
+    queueChanges,
+    vscode.notebooks.registerNotebookCellStatusBarItemProvider(
+      NotebookType,
+      statusProvider,
+    ),
+    vscode.commands.registerCommand(
+      "maieutics.dequeueCell",
+      async (cell?: vscode.NotebookCell) => {
+        if (cell === undefined || cell.notebook.notebookType !== NotebookType) return;
+        const removed = controller?.dequeueQueuedCell(cell) ?? false;
+        if (!removed) {
+          await vscode.window.showInformationMessage(
+            "Maieutics: this cell is not queued.",
+          );
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "maieutics.clearQueuedCells",
+      async (arg?: unknown) => {
+        const document = notebookOf(arg);
+        if (document === undefined || document.notebookType !== NotebookType) {
+          await vscode.window.showInformationMessage(
+            "Maieutics: open a Maieutics notebook to clear its queue.",
+          );
+          return;
+        }
+        const removed = controller?.clearQueuedCells(document) ?? 0;
+        await vscode.window.showInformationMessage(
+          removed === 0
+            ? "Maieutics: no queued cells."
+            : `Maieutics: removed ${removed} queued cell${
+              removed === 1 ? "" : "s"
+            }. The running cell keeps going.`,
+        );
+      },
+    ),
+  ];
 }
 
 /** Shows an informational toast once per key. */

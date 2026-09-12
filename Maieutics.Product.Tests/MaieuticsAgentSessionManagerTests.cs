@@ -5,6 +5,8 @@ using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Persistence;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
 
@@ -72,6 +74,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             new FixedProfileProvider(),
             databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
+            NullLogger<MaieuticsAgentSessionManager>.Instance,
             reclaimer: objectStore);
 
         manager.PruneObjects(TimeSpan.FromMinutes(30)).Should().Be(1);
@@ -88,7 +91,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     public void DisabledPersistenceGuardsTheRecoverySurface()
     {
         using var manager = new MaieuticsAgentSessionManager(
-            new FixedProfileProvider(), familiesRoot: null, storeFactory: null);
+            new FixedProfileProvider(), familiesRoot: null, storeFactory: null,
+            NullLogger<MaieuticsAgentSessionManager>.Instance);
 
         manager.PersistenceEnabled.Should().BeFalse();
         manager.ListStoredSessions().Should().BeEmpty();
@@ -242,7 +246,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         using var manager = new MaieuticsAgentSessionManager(
             new FixedProfileProvider(new HangingChatClient(neverComplete.Task)),
             databaseDirectory,
-            familyId => new SqliteTranscriptStore(FamilyPath(familyId)));
+            familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
+            NullLogger<MaieuticsAgentSessionManager>.Instance);
 
         var session = manager.Resolve(stored);
         var run = await session
@@ -409,7 +414,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         return new MaieuticsAgentSessionManager(
             new FixedProfileProvider(),
             databaseDirectory,
-            familyId => new SqliteTranscriptStore(FamilyPath(familyId)));
+            familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
+            NullLogger<MaieuticsAgentSessionManager>.Instance);
     }
 
     private string FamilyPath(AgentSessionId familyId) =>

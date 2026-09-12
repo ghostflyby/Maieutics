@@ -355,10 +355,15 @@ public static class MaieuticsHost
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)
     {
         var profileProvider = services.GetRequiredService<IAgentRunProfileProvider>();
+        var logger = services.GetRequiredService<ILogger<MaieuticsAgentSessionManager>>();
         var paths = services.GetService<ApplicationPaths>();
         if (paths is null)
         {
-            return new MaieuticsAgentSessionManager(profileProvider, familiesRoot: null, storeFactory: null);
+            return new MaieuticsAgentSessionManager(
+                profileProvider,
+                familiesRoot: null,
+                storeFactory: null,
+                logger);
         }
 
         // Session rows stamp the workspace root current at row creation; a %workspace switch
@@ -370,6 +375,7 @@ public static class MaieuticsHost
             familyId => new SqliteTranscriptStore(
                 SqliteTranscriptStore.FamilyDatabasePath(paths.AgentFamiliesRoot, familyId),
                 workspace is null ? null : () => workspace.RootPath),
+            logger,
             services.GetService<IAgentObjectStore>(),
             services.GetService<IObjectReclaimer>(),
             paths.AgentViewSessionsRoot,

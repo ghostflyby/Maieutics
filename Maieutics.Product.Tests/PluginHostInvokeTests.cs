@@ -413,28 +413,26 @@ public sealed class PluginHostInvokeTests
         stillFirst.Should().Contain("cap-after-refusal");
 
         // After the live host detaches, a fresh attach is accepted again. The old detach finishes
-        // asynchronously (the receive loop unwinds on its own path), so retry until the manager
-        // has released the first connection; a refusal completes synchronously with the close
-        // status set, an accepted attach keeps running its receive loop.
+        // asynchronously (the receive loop unwinds on its own path), so await the manager's
+        // release signal — completed by the same locked transition that clears the attach slot —
+        // instead of racing re-attach attempts against the unwind: until the unwind lands, a
+        // refused attach completes instantly and an attempt-count retry loop spins without
+        // waiting (the CI failure mode).
+        var released = harness.Manager.HostConnectionReleased;
         harness.Host!.Dispose();
-        for (var attempt = 0; ; attempt++)
-        {
-            var third = new FakeHostWebSocket();
-            var thirdAttach = harness.Manager.AttachHostAsync(third, deadline.Token);
-            await Task.WhenAny(thirdAttach, Task.Delay(200, deadline.Token));
-            if (!thirdAttach.IsCompleted && third.CloseStatus is null)
-            {
-                third.CloseStatus.Should().BeNull("a fresh attach after the detach must not be refused");
-                harness.Manager.GetStatus().ControlConnected.Should().BeTrue();
-                third.Dispose();
-                await thirdAttach;
-                break;
-            }
+        await released.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
 
-            third.Dispose();
-            if (attempt >= 100)
-                throw new TimeoutException("the manager never released the first host connection for re-attach");
-        }
+        var third = new FakeHostWebSocket();
+        var thirdAttach = harness.Manager.AttachHostAsync(third, deadline.Token);
+        // A refusal completes the attach task immediately (synchronous policy-violation close);
+        // an accepted attach keeps running its receive loop, so the task stays incomplete. A
+        // refusal would land within the window; acceptance never completes on its own.
+        await Task.WhenAny(thirdAttach, Task.Delay(TimeSpan.FromSeconds(5), deadline.Token));
+        thirdAttach.IsCompleted.Should().BeFalse("a fresh attach after the detach must be accepted, not refused");
+        third.CloseStatus.Should().BeNull("a fresh attach after the detach must not be refused");
+        harness.Manager.GetStatus().ControlConnected.Should().BeTrue();
+        third.Dispose();
+        await thirdAttach;
     }
 
     private static ReplEnvelope EnvelopeOf(string json)

@@ -230,14 +230,16 @@ public sealed class FrontendTurnQueueIntegrationTests
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         texts.Should().Equal(["direct question", "queued one"]);
         Trace("two turns committed");
-
-        // Clearing an empty queue is a no-op that still answers 204.
         (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
             .StatusCode.Should().Be(HttpStatusCode.NoContent);
+        Trace("no-op clear ok");
+        await EnqueueAsync(harness, sessionId, deadline.Token, "queued after clear");
+        Trace("fresh enqueued");
+
+        // Clearing an empty queue is a no-op that still answers 204.
 
         // The next enqueue starts a fresh worker after the drained one exited; the item
         // runs to completion and the transcript keeps its committed order.
-        await EnqueueAsync(harness, sessionId, deadline.Token, "queued after clear");
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
         var afterRestart = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
         afterRestart.Should().Equal(["direct question", "queued one", "queued after clear"]);
@@ -602,12 +604,16 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(60));
+        var polls = 0;
         while (true)
         {
             var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
+            polls++;
             if (!HasRunningItem(queue) && ItemIds(queue).Length == 0) return;
 
             provider.ReleaseAll();
+            if (polls % 10 == 0)
+                Trace($"drain poll #{polls}: {QueueSummary(queue)}");
             await Task.Delay(50, wait.Token).ConfigureAwait(false);
         }
     }

@@ -17,6 +17,13 @@ public sealed class FrontendTurnQueueIntegrationTests
 {
     private const string Answer = "queued answer";
 
+    private readonly ITestOutputHelper output;
+
+    public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
+
+    private void Trace(string message) =>
+        output.WriteLine($"[queue-test] {DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)} {message}");
+
     [Fact(Timeout = 120_000)]
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()
     {
@@ -334,19 +341,24 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
+        Trace("harness booted");
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        Trace("session resolved");
 
         await using var first = await harness.OpenEventsAsync(sessionId, deadline.Token);
         (await first.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Trace("first socket hello");
 
         // The worker starts the first item immediately, so the socket's wake observes the
         // first stable state: the dequeued head running and the rest pending in order.
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
         ids.Should().HaveCount(2);
+        Trace($"enqueued {string.Join(",", ids)}");
         var firstRunning = await CollectQueueFrameUntilAsync(
             first,
             queue => HasRunningItem(queue, ids[0]) && ItemIds(queue).SequenceEqual([ids[1]]),
             deadline.Token);
+        Trace("first socket saw running state");
         // Frame items carry ids only; the text lives in the GET snapshot.
         firstRunning.GetProperty("items")[0].TryGetProperty("text", out _).Should().BeFalse();
 
@@ -355,19 +367,23 @@ public sealed class FrontendTurnQueueIntegrationTests
         // the running stream like the first socket does.
         await using var second = await harness.OpenEventsAsync(sessionId, deadline.Token);
         (await second.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Trace("second socket hello");
         await CollectQueueFrameUntilAsync(
             second,
             queue => HasRunningItem(queue, ids[0]) && ItemIds(queue).SequenceEqual([ids[1]]),
             deadline.Token);
+        Trace("second socket saw running state");
 
         // An enqueue while the head runs wakes the sockets too, but both are serving the
         // head's run stream, so they observe that mutation's state only once the serving
         // completes — the full-state frame makes the intermediate state unnecessary.
         var thirdIds = await EnqueueAsync(harness, sessionId, deadline.Token, "queued three");
+        Trace($"enqueued third {thirdIds[0]}");
 
         // Each release settles one run; the next item's running transition is the next
         // stable state both sockets observe (one release per gated provider request).
         provider.ReleaseNext();
+        Trace("released item one");
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[1]), deadline.Token);
         await CollectQueueFrameUntilAsync(
             first,
@@ -377,19 +393,25 @@ public sealed class FrontendTurnQueueIntegrationTests
             second,
             queue => HasRunningItem(queue, ids[1]) && ItemIds(queue).SequenceEqual([thirdIds[0]]),
             deadline.Token);
+        Trace("both sockets saw second running state");
 
         provider.ReleaseNext();
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, thirdIds[0]), deadline.Token);
         provider.ReleaseNext();
+        Trace("released items two and three");
         await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
+        Trace("transcript committed all three");
 
         // A socket that opens after the queue drained receives the (empty) current state
         // right after its run replay, without any further mutation.
         await using var third = await harness.OpenEventsAsync(sessionId, deadline.Token);
         (await third.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Trace("third socket hello");
         await CollectQueueFrameUntilAsync(third, queue => !HasRunningItem(queue), deadline.Token);
+        Trace("third socket saw drained state");
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
+        Trace("drained");
     }
 
     [Fact(Timeout = 120_000)]
@@ -585,21 +607,42 @@ public sealed class FrontendTurnQueueIntegrationTests
         }
     }
 
-    private static async Task<JsonElement> CollectQueueFrameUntilAsync(
+    private async Task<JsonElement> CollectQueueFrameUntilAsync(
         EventsConnection connection,
         Func<JsonElement, bool> predicate,
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(45));
-        while (true)
+        var seen = new List<string>();
+        try
         {
-            var frame = await connection.ReceiveFrameAsync(wait.Token).ConfigureAwait(false);
-            if (frame.GetProperty("type").GetString() != "queue.updated") continue;
-
-            var queue = frame.GetProperty("queue");
-            if (predicate(queue)) return queue;
+            while (true)
+            {
+                var frame = await connection.ReceiveFrameAsync(wait.Token).ConfigureAwait(false);
+                var type = frame.GetProperty("type").GetString();
+                if (type != "queue.updated") continue;
+                var queue = frame.GetProperty("queue");
+                seen.Add(QueueSummary(queue));
+                if (predicate(queue)) return queue;
+            }
         }
+        catch (OperationCanceledException exception)
+        {
+            // The budgets above are sized for slow CI runners; a timeout here means the
+            // frames genuinely never came — name what the socket actually delivered.
+            throw new InvalidOperationException(
+                $"no matching queue.updated frame; frames seen: [{string.Join("; ", seen)}]", exception);
+        }
+    }
+
+    private static string QueueSummary(JsonElement queue)
+    {
+        var running = queue.TryGetProperty("running", out var state)
+            ? state.GetProperty("itemId").GetString()
+            : null;
+        var items = ItemIds(queue);
+        return $"running={running ?? "none"} items=[{string.Join(",", items)}]";
     }
 
     private static bool HasRunningItem(JsonElement queue, string? itemId = null)

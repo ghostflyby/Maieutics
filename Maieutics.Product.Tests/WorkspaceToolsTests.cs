@@ -544,6 +544,7 @@ public sealed class WorkspaceToolsTests
                     "list_directory",
                     "read_text",
                     "search_text",
+                    "list_resources",
                     "repl_execute",
                     "repl_create",
                     "repl_list",

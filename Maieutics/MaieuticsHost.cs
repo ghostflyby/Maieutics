@@ -213,7 +213,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<ResourceRegistry>(static services => new ResourceRegistry(
             BuildResourceProviders(services)));
         builder.Services.AddSingleton(resourceProviderOptions);
-        builder.Services.AddSingleton<ResourceFunctions>();
+        builder.Services.AddSingleton(static services => new ResourceFunctions(
+            services.GetRequiredService<ResourceRegistry>()));
         builder.Services.AddSingleton<FrontendDenoReplPresentationRouter>();
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
             services.GetRequiredService<FrontendDenoReplPresentationRouter>());

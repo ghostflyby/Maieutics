@@ -6,12 +6,19 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Daily build+test at 19:37 UTC (03:37 Beijing) — prime hour and minute, off the
+    # top-of-the-hour CI crunch. The scheduled run on an idle day also surfaces
+    # concurrency/flaky failures the per-PR runs mask.
+    - cron: "37 19 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # The event name keeps a scheduled run from cancelling (or being cancelled by) a
+  # same-ref push run; runs of the same event still supersede each other.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,6 +35,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Cache Deno modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            ~/AppData/Local/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('deno/deno.lock') }}
+          restore-keys: |
+            deno-${{ runner.os }}-
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
@@ -79,6 +96,18 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Cache Deno modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            ~/AppData/Local/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('deno/deno.lock') }}
+          restore-keys: |
+            deno-${{ runner.os }}-
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
@@ -123,6 +152,18 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Cache Deno modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/deno
+            ~/AppData/Local/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('deno/deno.lock') }}
+          restore-keys: |
+            deno-${{ runner.os }}-
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2

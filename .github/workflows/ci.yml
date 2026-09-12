@@ -36,20 +36,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Cache Deno modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ~/AppData/Local/deno
-          key: deno-${{ runner.os }}-${{ hashFiles('deno/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
 
       # Fails on lockfile drift: a dependency changed without deno.lock.
       - name: Install workspace dependencies (frozen lockfile)
@@ -99,20 +91,12 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
-      - name: Cache Deno modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ~/AppData/Local/deno
-          key: deno-${{ runner.os }}-${{ hashFiles('deno/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
@@ -155,20 +139,12 @@ jobs:
           cache: true
           cache-dependency-path: '**/*.csproj'
 
-      - name: Cache Deno modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ~/AppData/Local/deno
-          key: deno-${{ runner.os }}-${{ hashFiles('deno/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts

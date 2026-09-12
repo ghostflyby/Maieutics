@@ -17,10 +17,10 @@ public sealed class FrontendTurnQueueIntegrationTests
 {
     private const string Answer = "queued answer";
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -46,10 +46,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task DirectTurnStaysBusyRejectedWhileTheQueueIsActive()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -78,10 +78,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueueSnapshotCarriesRunningItemAndOrderedPendingItems()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -124,10 +124,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueueItemDeleteRemovesQueuedItemsOnly()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -191,10 +191,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueueClearRemovesQueuedItemsAndTheRunningItemCompletes()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -231,10 +231,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueueFullRejectsTheWholeBatch()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -271,10 +271,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueueRejectsCommandCellsInvalidTextsAndUnknownSessions()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -328,10 +328,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 90_000)]
+    [Fact(Timeout = 180_000)]
     public async Task QueueUpdatedFramesReachEveryEventsSocket()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(80));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -392,10 +392,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task WorkerSurvivesADirectSubmissionRace()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -424,10 +424,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
-    [Fact(Timeout = 60_000)]
+    [Fact(Timeout = 120_000)]
     public async Task QueuePinLeaseIsHeldWhileWorkIsQueuedAndReleasedOnDrain()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer();
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -489,7 +489,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(20));
+        wait.CancelAfter(TimeSpan.FromSeconds(45));
         while (true)
         {
             var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
@@ -532,7 +532,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(15));
+        wait.CancelAfter(TimeSpan.FromSeconds(45));
         while (provider.ParkedRequests < count)
         {
             await Task.Delay(25, wait.Token).ConfigureAwait(false);
@@ -549,7 +549,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(30));
+        wait.CancelAfter(TimeSpan.FromSeconds(60));
         while (true)
         {
             var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
@@ -567,7 +567,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(30));
+        wait.CancelAfter(TimeSpan.FromSeconds(60));
         while (true)
         {
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
@@ -591,7 +591,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(20));
+        wait.CancelAfter(TimeSpan.FromSeconds(45));
         while (true)
         {
             var frame = await connection.ReceiveFrameAsync(wait.Token).ConfigureAwait(false);

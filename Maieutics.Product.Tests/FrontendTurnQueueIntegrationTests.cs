@@ -382,6 +382,7 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // Each release settles one run; the next item's running transition is the next
         // stable state both sockets observe (one release per gated provider request).
+        Trace($"parked before release: {provider.ParkedRequests}");
         provider.ReleaseNext();
         Trace("released item one");
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[1]), deadline.Token);
@@ -504,7 +505,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         return await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<JsonElement> WaitForQueueAsync(
+    private async Task<JsonElement> WaitForQueueAsync(
         Harness harness,
         string sessionId,
         Func<JsonElement, bool> predicate,
@@ -512,11 +513,15 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(45));
+        var polls = 0;
         while (true)
         {
             var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
+            polls++;
             if (predicate(queue)) return queue;
 
+            if (polls % 10 == 0)
+                Trace($"queue poll #{polls}: {QueueSummary(queue)}");
             await Task.Delay(50, wait.Token).ConfigureAwait(false);
         }
     }

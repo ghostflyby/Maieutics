@@ -72,6 +72,13 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # File-sink logging for diagnostics (docs/logging.md): captured to test-logs/ and
+    # uploaded when the job fails (or on scheduled runs).
+    env:
+      MAIEUTICS_LOG_DIR: ${{ github.workspace }}/test-logs
+      Logging__LogLevel__Maieutics: Debug
+      Logging__LogLevel__Microsoft: Warning
+      Logging__LogLevel__System: Warning
     strategy:
       fail-fast: false
       matrix:
@@ -110,10 +117,26 @@ jobs:
       - name: Test
         run: dotnet test Maieutics.slnx --configuration Release --no-restore --no-build
 
+      - name: Upload test logs
+        if: failure() || github.event_name == 'schedule'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: test-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
   native-aot:
     name: NativeAOT (${{ matrix.rid }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # File-sink logging for diagnostics (docs/logging.md): captured to test-logs/ and
+    # uploaded when the job fails (or on scheduled runs).
+    env:
+      MAIEUTICS_LOG_DIR: ${{ github.workspace }}/test-logs
+      Logging__LogLevel__Maieutics: Debug
+      Logging__LogLevel__Microsoft: Warning
+      Logging__LogLevel__System: Warning
     strategy:
       fail-fast: false
       matrix:
@@ -162,3 +185,12 @@ jobs:
         env:
           MAIEUTICS_TEST_HOST_EXECUTABLE: ${{ github.workspace }}/${{ matrix.executable }}
         run: dotnet test Maieutics.Product.Tests/Maieutics.Product.Tests.csproj --configuration Release --no-restore --filter-trait "Category=Smoke"
+
+      - name: Upload test logs
+        if: failure() || github.event_name == 'schedule'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }} (${{ matrix.rid }})
+          path: test-logs/
+          if-no-files-found: ignore
+          retention-days: 14

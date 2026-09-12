@@ -130,6 +130,12 @@ internal sealed class PluginHostManager(
     private readonly TaskCompletionSource readiness =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>Internal test observability: completed by the detach finally of the live host
+    /// connection, in the same locked section that clears the attach slot. Replaced with a fresh
+    /// source when a connection is accepted, so the property always reflects the current
+    /// connection (see <see cref="HostConnectionReleased"/>).</summary>
+    private TaskCompletionSource hostConnectionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     private readonly ILoggerFactory loggerFactory =
@@ -200,6 +206,19 @@ internal sealed class PluginHostManager(
 
     /// <summary>Number of watched changes awaiting an explicit apply.</summary>
     public int PendingReloadCount { get { lock (gate) return pendingReloadPaths.Count; } }
+
+    /// <summary>Internal test observability: completes when the live host connection's receive
+    /// loop releases the attach slot — the same locked transition that clears the slot, so an
+    /// awaited task guarantees a subsequent attach is accepted. A fresh source is installed when
+    /// a connection is accepted, so the property always reflects the current connection: capture
+    /// the task before detaching and await it after, instead of racing re-attach attempts against
+    /// the asynchronous unwind (until the old loop's finally runs, refusals complete instantly and
+    /// an attempt-count retry loop spins without ever waiting). Await it under the caller's
+    /// deadline.</summary>
+    internal Task HostConnectionReleased
+    {
+        get { lock (gate) return hostConnectionReleased.Task; }
+    }
 
     /// <summary>Internal test observability: completes when a watched plugin change is recorded
     /// as a pending reload — the same transition that increments <see cref="PendingReloadCount"/>
@@ -956,6 +975,9 @@ internal sealed class PluginHostManager(
             refused = Socket is not null;
             if (!refused)
             {
+                // A fresh release signal per accepted connection: tests capture it before
+                // detaching and await it instead of polling re-attach attempts.
+                hostConnectionReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Socket = socket;
                 // A WebSocket permits one outstanding send: every C#→host frame is
                 // serialized through this bounded channel instead of concurrent direct
@@ -1009,6 +1031,9 @@ internal sealed class PluginHostManager(
                     outbound = null;
                     writer = outboundWriter;
                     outboundWriter = null;
+                    // Signaled after the slot is cleared, under the same lock, so an awaiter is
+                    // guaranteed to observe the released slot.
+                    hostConnectionReleased.TrySetResult();
                 }
             }
 

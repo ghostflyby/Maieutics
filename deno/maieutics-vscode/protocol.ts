@@ -88,6 +88,26 @@ export interface ModelIdentity {
   model: string;
 }
 
+/** One waiting item of the server-owned session turn queue. `text` and
+ * `enqueuedAt` ride only the REST snapshot; `queue.updated` frames carry ids
+ * alone. */
+export interface QueueItemState {
+  id: string;
+  text?: string;
+  enqueuedAt?: string;
+}
+
+/** The server-owned per-session turn queue as one full-state snapshot,
+ * replaced wholesale on every `queue.updated` frame and `GET /queue` read.
+ * `running` is the item currently executing together with the run id its
+ * frames travel under; `items` are the waiting items in run order. */
+export interface QueueState {
+  sessionId: string;
+  running: { itemId: string; runId: string } | null;
+  items: QueueItemState[];
+  capacity: number;
+}
+
 /** Typed protocol error carried by non-2xx REST responses. */
 export class FrontendError extends Error {
   constructor(
@@ -148,6 +168,9 @@ export interface EventFrame {
    * (additive, absent on older servers and on failures). */
   model?: ModelIdentity;
   usage?: UsageSummary;
+  /** The server-owned session queue's full state, carried by `queue.updated`
+   * frames (no sequence number; idempotent replacement). */
+  queue?: QueueState;
 }
 
 /** Comm types are re-exported from the shared codec so protocol consumers have

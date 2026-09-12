@@ -2,7 +2,9 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { FrontendClient } from "./client.ts";
+import type { QueueState } from "./client.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
+import { isCommandCellText, QueueWatcher } from "./queueProjection.ts";
 import {
   CommKind,
   type CommMessage,
@@ -16,6 +18,34 @@ interface MockEventsConnection {
   sinceSequence: number;
   send(frame: unknown): void;
   close(): void;
+}
+
+/** The mock server queue's driving surface: the REST handlers mutate it and
+ * every mutation broadcasts a full-state `queue.updated` frame. */
+interface MockQueue {
+  /** Reads the current full-state snapshot (as GET /queue answers). */
+  snapshot(): QueueState;
+  /** Moves the first waiting item to running under the given run id (and
+   * emits the frame). Returns the item id, or undefined on an empty queue. */
+  startNext(runId: string): string | undefined;
+  /** Clears the running item (and emits the frame): the item is gone. */
+  finishRunning(): void;
+  /** Overrides the capacity (queue_full tests). */
+  setCapacity(capacity: number): void;
+  /** How many GET /queue requests arrived (reconcile counting). */
+  getHits(): number;
+  /** The text batches of every POST /queue, in arrival order. */
+  postedBatches(): string[][];
+}
+
+/** Polls until the predicate holds or the deadline passes (frames and REST
+ * answers race the test's assertions). */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 /** Immutable display objects served by the mock (content-addressed stand-ins). */
@@ -40,6 +70,8 @@ function startMockServer(): Promise<{
   onEventsConnection(handler: (connection: MockEventsConnection) => void): void;
   /** Object fetch counts by path. */
   objectHits(): Record<string, number>;
+  /** The server-side turn queue the /queue endpoints serve. */
+  queue: MockQueue;
 }> {
   let sockets: WebSocket[] = [];
   let broadcast: ((frame: unknown) => void) | null = null;
@@ -49,6 +81,49 @@ function startMockServer(): Promise<{
   let onEventsConnection: ((connection: MockEventsConnection) => void) | undefined;
   const objectFetches = new Map<string, number>();
   const abort = new AbortController();
+
+  // The server-owned turn queue: REST mutations move it and every mutation
+  // broadcasts a full-state queue.updated frame to the events sockets.
+  const sessionId = "a".repeat(32);
+  const queueItems: { id: string; text: string }[] = [];
+  let queueRunning: { itemId: string; runId: string } | null = null;
+  let queueCapacity = 8;
+  let nextItemId = 0;
+  let queueGetHits = 0;
+  const queuePostedBatches: string[][] = [];
+  const queueSnapshot = (): QueueState => ({
+    sessionId,
+    running: queueRunning,
+    items: queueItems.map((item) => ({
+      id: item.id,
+      text: item.text,
+      enqueuedAt: "2026-09-12T00:00:00Z",
+    })),
+    capacity: queueCapacity,
+  });
+  const broadcastQueueUpdate = () => {
+    broadcast?.({ type: "queue.updated", queue: queueSnapshot() });
+  };
+  const queue: MockQueue = {
+    snapshot: queueSnapshot,
+    startNext: (runId) => {
+      const item = queueItems.shift();
+      if (item === undefined) return undefined;
+      queueRunning = { itemId: item.id, runId };
+      broadcastQueueUpdate();
+      return item.id;
+    },
+    finishRunning: () => {
+      queueRunning = null;
+      broadcastQueueUpdate();
+    },
+    setCapacity: (capacity) => {
+      queueCapacity = capacity;
+    },
+    getHits: () => queueGetHits,
+    postedBatches: () => queuePostedBatches.map((batch) => [...batch]),
+  };
+
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", signal: abort.signal },
     async (request) => {
@@ -133,6 +208,54 @@ function startMockServer(): Promise<{
         return json(200, { markdown: "**View** ensured 4 object link(s)" });
       }
 
+      const queueMatch = url.pathname.match(/^\/v1\/agent\/sessions\/[^/]+\/queue(\/([^/]+))?$/);
+      if (queueMatch !== null) {
+        if (request.method === "GET") {
+          queueGetHits++;
+          return json(200, queueSnapshot());
+        }
+        if (request.method === "POST") {
+          const body = await request.json() as { items?: { text?: string }[] };
+          if (!Array.isArray(body.items)) {
+            return json(400, { code: "invalid_request", message: "items required" });
+          }
+          const texts = body.items.map((item) => String(item.text ?? ""));
+          if (texts.some((text) => isCommandCellText(text))) {
+            return json(400, { code: "invalid_request", message: "command text is not queueable" });
+          }
+          if (texts.some((text) => text.trim().length === 0)) {
+            return json(400, { code: "invalid_request", message: "empty text" });
+          }
+          if (queueItems.length + texts.length > queueCapacity) {
+            return json(409, { code: "queue_full", message: "the queue is full" });
+          }
+          const created = texts.map((text) => {
+            const id = `item-${++nextItemId}`;
+            queueItems.push({ id, text });
+            return { id, position: queueItems.length };
+          });
+          queuePostedBatches.push(texts);
+          broadcastQueueUpdate();
+          return json(202, { items: created });
+        }
+        if (request.method === "DELETE") {
+          const itemId = queueMatch[2];
+          if (itemId === undefined) {
+            queueItems.length = 0;
+            broadcastQueueUpdate();
+            return new Response(null, { status: 204 });
+          }
+          if (queueRunning?.itemId === itemId) {
+            return json(409, { code: "item_running", message: "cancel the run instead" });
+          }
+          const at = queueItems.findIndex((item) => item.id === itemId);
+          if (at === -1) return json(404, { code: "not_found", message: itemId });
+          queueItems.splice(at, 1);
+          broadcastQueueUpdate();
+          return new Response(null, { status: 204 });
+        }
+      }
+
       if (url.pathname === "/v1/agent/sessions/turns" || url.pathname.endsWith("/turns")) {
         const body = await request.json() as { text: string };
         if (body.text.startsWith("%")) {
@@ -203,6 +326,7 @@ function startMockServer(): Promise<{
       onEventsConnection = handler;
     },
     objectHits: () => Object.fromEntries(objectFetches),
+    queue,
     shutdown: async () => {
       // Upgraded WebSocket requests and keep-alive connections are long-lived: on Linux,
       // shutdown() waits for them. Close every open socket and abort the serve signal so
@@ -594,6 +718,255 @@ Deno.test("forkSession forwards a profile override and surfaces unknown profiles
       .catch((e: unknown) => e);
     assertEquals(error instanceof FrontendError, true);
     assertEquals((error as FrontendError).code, "invalid_request");
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("queue endpoints round-trip snapshots, one-batch enqueues, and deletions", async () => {
+  const { discovery, shutdown, queue } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  const sessionId = "a".repeat(32);
+  try {
+    assertEquals(await client.getQueue(sessionId), {
+      sessionId,
+      running: null,
+      items: [],
+      capacity: 8,
+    });
+
+    // One POST for the whole batch; the answer ids and positions are the
+    // projection keys.
+    const created = await client.enqueueTurns(sessionId, ["first turn", "second turn"]);
+    assertEquals(created, [
+      { id: "item-1", position: 1 },
+      { id: "item-2", position: 2 },
+    ]);
+    assertEquals(queue.postedBatches(), [["first turn", "second turn"]]);
+
+    const queued = await client.getQueue(sessionId);
+    assertEquals(queued.items.map((item) => [item.id, item.text]), [
+      ["item-1", "first turn"],
+      ["item-2", "second turn"],
+    ]);
+
+    // A waiting item is removable; a running item refuses with the typed
+    // error (cancel the run instead).
+    assertEquals(queue.startNext("b".repeat(32)), "item-1");
+    assertEquals((await client.getQueue(sessionId)).running, {
+      itemId: "item-1",
+      runId: "b".repeat(32),
+    });
+    await client.dequeueItem(sessionId, "item-2");
+    const running = await client.dequeueItem(sessionId, "item-1")
+      .then(() => null, (error: unknown) => error);
+    assert(running instanceof FrontendError);
+    assertEquals(running.code, "item_running");
+    queue.finishRunning();
+    await client.clearQueue(sessionId);
+    assertEquals((await client.getQueue(sessionId)).items.length, 0);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("enqueue rejects command text and full queues with typed errors", async () => {
+  const { discovery, shutdown, queue } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  const sessionId = "a".repeat(32);
+  try {
+    const command = await client.enqueueTurns(sessionId, ["%status"])
+      .then(() => null, (error: unknown) => error);
+    assert(command instanceof FrontendError);
+    assertEquals(command.code, "invalid_request");
+
+    queue.setCapacity(1);
+    const full = await client.enqueueTurns(sessionId, ["one", "two"])
+      .then(() => null, (error: unknown) => error);
+    assert(full instanceof FrontendError);
+    assertEquals(full.code, "queue_full");
+    assertEquals(full.status, 409);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("queue.updated frames flow through the events stream unfiltered", async () => {
+  const { discovery, shutdown, eventConnections } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  const sessionId = "a".repeat(32);
+  try {
+    const controller = new AbortController();
+    const frames: { type: string; queue?: QueueState }[] = [];
+    const pump = (async () => {
+      for await (const frame of client.events(sessionId, { signal: controller.signal })) {
+        frames.push(frame);
+        if (frame.type === "queue.updated") return;
+      }
+    })();
+    await waitFor(() => eventConnections().length === 1);
+    // Unknown fields on the frame and inside the queue payload are tolerated
+    // and pass through untouched.
+    eventConnections()[0].send({
+      type: "queue.updated",
+      future: "field",
+      queue: {
+        sessionId,
+        running: null,
+        items: [{ id: "item-1", future: 7 }],
+        capacity: 8,
+        futureCapacity: "x",
+      },
+    });
+    await pump;
+    const frame = frames.find((candidate) => candidate.type === "queue.updated");
+    assertEquals(frame?.queue?.sessionId, sessionId);
+    assertEquals(frame?.queue?.capacity, 8);
+    // The unknown fields ride the raw parsed value untouched (tolerated, not
+    // stripped): compare the untyped items value the wire delivered.
+    assertEquals(frame?.queue?.items as unknown, [{ id: "item-1", future: 7 }]);
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } finally {
+    await shutdown();
+  }
+});
+
+/** Drives one watcher over the mock's event stream until aborted. */
+function pumpWatcher(
+  client: FrontendClient,
+  watcher: QueueWatcher,
+  signal: AbortSignal,
+): Promise<void> {
+  return (async () => {
+    for await (const frame of client.events("a".repeat(32), { signal })) {
+      if (await watcher.handleFrame(frame)) continue;
+    }
+  })();
+}
+
+Deno.test("queue watcher reconciles once per (re)connect and applies snapshots", async () => {
+  const { discovery, shutdown, eventConnections, queue } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const snapshots: QueueState[] = [];
+    const watcher = new QueueWatcher(client, "a".repeat(32), (snapshot) => {
+      snapshots.push(snapshot);
+    }, () => {});
+    const pump = pumpWatcher(client, watcher, controller.signal);
+
+    // The connect hello reconciles with exactly one GET /queue.
+    await waitFor(() => queue.getHits() === 1);
+    assertEquals(watcher.lastSnapshot?.sessionId, "a".repeat(32));
+
+    // A scripted mutation frame applies as full state.
+    eventConnections()[0].send({
+      type: "queue.updated",
+      queue: {
+        sessionId: "a".repeat(32),
+        running: null,
+        items: [{ id: "item-1" }, { id: "item-2" }],
+        capacity: 8,
+      },
+    });
+    await waitFor(() => watcher.lastSnapshot?.items.length === 2);
+
+    // The reconnect hello reconciles again: one GET per (re)connect, and the
+    // GET applies the server's truth — the scripted frame (as if its frame
+    // had been missed) is replaced wholesale.
+    eventConnections()[0].close();
+    await waitFor(() => queue.getHits() === 2 && eventConnections().length === 2);
+    assertEquals(eventConnections()[1].sinceSequence, 0);
+    assertEquals(snapshots.at(-1)?.items.length, 0);
+
+    controller.abort();
+    await pump;
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("drain waits resolve only from snapshots after the enqueue", async () => {
+  const { discovery, shutdown, queue } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const watcher = new QueueWatcher(client, "a".repeat(32), () => {}, () => {});
+    const pump = pumpWatcher(client, watcher, controller.signal);
+    await waitFor(() => queue.getHits() === 1);
+
+    // The wait is registered against the pre-enqueue snapshot version, so the
+    // current (stale, empty) state cannot resolve it.
+    const version = watcher.snapshotVersion;
+    const wait = watcher.awaitDrainedAsync(version, ["item-1", "item-2"]);
+    const stillWaiting = await Promise.race([
+      wait.then(() => "drained" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    assertEquals(stillWaiting, "pending");
+
+    // The enqueue's own mutation frame postdates the wait and carries the
+    // items: still waiting.
+    await client.enqueueTurns("a".repeat(32), ["one", "two"]);
+    await waitFor(() => watcher.lastSnapshot?.items.length === 2);
+    const queuedStillWaiting = await Promise.race([
+      wait.then(() => "drained" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    assertEquals(queuedStillWaiting, "pending");
+
+    // item-1 starts running (it still holds its id): the batch keeps waiting.
+    assertEquals(queue.startNext("b".repeat(32)), "item-1");
+    await waitFor(() => (watcher.lastSnapshot?.running ?? null) !== null);
+    const runningStillWaiting = await Promise.race([
+      wait.then(() => "drained" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    assertEquals(runningStillWaiting, "pending");
+
+    // item-1 settles (its id leaves), but item-2 is still queued.
+    queue.finishRunning();
+    await waitFor(() => watcher.lastSnapshot?.running === null);
+    const settledStillWaiting = await Promise.race([
+      wait.then(() => "drained" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    assertEquals(settledStillWaiting, "pending");
+
+    // item-2 is dequeued: every id has left the queue, so the wait drains.
+    await client.dequeueItem("a".repeat(32), "item-2");
+    assertEquals(await wait, true);
+
+    controller.abort();
+    await pump;
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("drain waits evaluate a snapshot that beat the registration", async () => {
+  const { discovery, shutdown, queue } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const watcher = new QueueWatcher(client, "a".repeat(32), () => {}, () => {});
+    const pump = pumpWatcher(client, watcher, controller.signal);
+    await waitFor(() => queue.getHits() === 1);
+
+    // The HTTP answer and the events frame race: here the enqueue frame and
+    // the completion frames all apply BEFORE the waiter registers. The
+    // captured version predates them, so the post-enqueue absence drains.
+    const version = watcher.snapshotVersion;
+    await client.enqueueTurns("a".repeat(32), ["fast turn"]);
+    assertEquals(queue.startNext("b".repeat(32)), "item-1");
+    queue.finishRunning();
+    await waitFor(() => watcher.lastSnapshot?.items.length === 0);
+    const wait = watcher.awaitDrainedAsync(version, ["item-1"]);
+    assertEquals(await wait, true);
+
+    controller.abort();
+    await pump;
   } finally {
     await shutdown();
   }

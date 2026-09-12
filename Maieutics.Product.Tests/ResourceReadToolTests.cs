@@ -46,7 +46,8 @@ public sealed class ResourceReadToolTests
         await File.WriteAllTextAsync(
             Path.Combine(workspace.Path, "a.txt"),
             "first\nsecond\nthird",
-            Encoding.UTF8);
+            Encoding.UTF8,
+            TestContext.Current.CancellationToken);
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path))
         ]);

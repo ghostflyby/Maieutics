@@ -4,7 +4,7 @@ import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
-import { patchFetch } from "./resource_bridge.ts";
+import { patchFetch } from "../shared/resource_bridge.ts";
 import { CREDENTIAL_ENV, IPC_ENV } from "./repl_process_env.ts";
 import {
   INPUT_MAILBOX_LINK_LABEL,

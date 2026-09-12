@@ -15,6 +15,6 @@
   },
   "tasks": {
     "check": "deno check . && deno check ../maieutics-repl-client/mod.ts",
-    "test": "deno test --allow-read=. repl_test.ts output_protocol_test.ts input_mailbox_test.ts && deno test --allow-read=. --allow-net resource_bridge_test.ts && deno test --allow-read --allow-env --unstable-worker-options repl_sync_input_test.ts && deno test --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --unstable-worker-options process_rpc_test.ts"
+    "test": "deno test --allow-read=. repl_test.ts output_protocol_test.ts input_mailbox_test.ts && deno test --allow-net ../shared/resource_bridge_test.ts && deno test --allow-read --allow-env --unstable-worker-options repl_sync_input_test.ts && deno test --allow-env --allow-read --allow-write --allow-net --allow-run --allow-sys --allow-ffi --unstable-worker-options process_rpc_test.ts"
   }
 }

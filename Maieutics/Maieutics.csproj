@@ -29,10 +29,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <!-- 0.5.0 is the last line with TerminationSignal: 1.0.0 removed Unix termination-signal
-             reporting (Exited now delivers only the exit code), which the terminal tool surface
-             reports to the model. Re-bump only together with an ITerminalProcess adaptation. -->
-        <PackageReference Include="Ghostflyby.Pty" Version="0.5.0" />
+        <PackageReference Include="Ghostflyby.Pty" Version="1.0.0" />
         <!-- Core variant: no default SQLite engine dependency. The engine comes from the
              SqliteProviderMode-selected SQLitePCLRaw provider below (see the mode notes at
              the top of this file). -->

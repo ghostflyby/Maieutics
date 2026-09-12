@@ -551,12 +551,54 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         throw new ArgumentException("The session's profile provider is not configured.");
     }
 
+    /// <summary>Acquires a cooperative eviction-pin lease on a live session. A pinned
+    /// session is skipped by <see cref="EnforceLiveCapacity" /> (both at candidacy and at
+    /// the removal re-check), so a session with active queued turn work (ADR 0025) is not
+    /// evicted while it is active interest. Eviction stays survivable through lazy-resume,
+    /// so the lease is capacity management, not a lifetime guarantee. Returns
+    /// <see langword="null" /> for an unknown session id. Disposing the lease releases the
+    /// pin exactly once, harmlessly, even after an eviction or disposal.</summary>
+    internal IDisposable? TryPinSession(AgentSessionId sessionId)
+    {
+        var key = sessionId.Value.ToString("N");
+        lock (gate)
+        {
+            if (!live.TryGetValue(key, out var entry)) return null;
+
+            entry.AddPin();
+            return new SessionPin(this, key);
+        }
+    }
+
+    /// <summary>Whether a live session currently holds at least one eviction-pin lease,
+    /// so tests and diagnostics can observe pin lifetime across queue drain and
+    /// disposal. An unknown or unpinned session is not pinned.</summary>
+    internal bool IsPinned(AgentSessionId sessionId)
+    {
+        lock (gate)
+        {
+            return live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.IsPinned;
+        }
+    }
+
+    private void ReleasePin(string key)
+    {
+        lock (gate)
+        {
+            if (live.TryGetValue(key, out var entry)) entry.RemovePin();
+
+            // An evicted or replaced entry has no pin left to release; the lease is
+            // cooperative and never resurrects a session.
+        }
+    }
+
     /// <summary>Keeps the live set bounded, evicting the least recently used sessions that
     /// can still be lazily re-resumed from storage. Eviction drops the session's profile
     /// override with it (overrides are not durable; a re-resume follows the process
     /// selection). A session with a run in flight is never
     /// evicted (evicting it would let the next addressed turn build a second instance for
-    /// the same identity and break the per-instance single-run gate), the newly activated
+    /// the same identity and break the per-instance single-run gate), a pinned session is
+    /// skipped (see <see cref="TryPinSession" />), the newly activated
     /// session is protected, and a candidate that was touched after candidacy is skipped.
     /// Runs outside the gate because resumability checks open family databases.</summary>
     private void EnforceLiveCapacity(AgentSessionId? protectedId = null)
@@ -570,6 +612,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
                 .Where(entry =>
                     !ReferenceEquals(entry.Session, foreground) &&
                     !entry.Session.IsRunInProgress &&
+                    !entry.IsPinned &&
                     (protectedId is null || entry.Session.Id != protectedId.Value))
                 .OrderBy(entry => entry.Touched)
                 .Select(entry => (entry.Session.Id.Value.ToString("N"), entry.Touched, entry.Session.Id))
@@ -584,11 +627,12 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             {
                 if (live.Count <= LiveSessionCapacity) return;
                 // Still the stale entry we evaluated: not foreground or protected,
-                // not touched since candidacy, and with no run in flight.
+                // not pinned, not touched since candidacy, and with no run in flight.
                 if (live.TryGetValue(key, out var entry) &&
                     entry.Touched == touched &&
                     !ReferenceEquals(entry.Session, foreground) &&
                     !entry.Session.IsRunInProgress &&
+                    !entry.IsPinned &&
                     (protectedId is null || entry.Session.Id != protectedId.Value))
                 {
                     live.Remove(key);
@@ -643,15 +687,44 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
     private sealed class LiveSession(IAgentSession session, MaieuticsSessionProfileProvider? profile)
     {
+        private int pins;
+
         public IAgentSession Session { get; } = session;
 
         public MaieuticsSessionProfileProvider? Profile { get; } = profile;
 
         public long Touched { get; private set; } = Environment.TickCount64;
 
+        /// <summary>Whether an eviction-pin lease is held. Read and written under the
+        /// manager gate.</summary>
+        public bool IsPinned => pins > 0;
+
         public void Touch()
         {
             Touched = Environment.TickCount64;
+        }
+
+        public void AddPin()
+        {
+            pins++;
+        }
+
+        public void RemovePin()
+        {
+            pins--;
+        }
+    }
+
+    /// <summary>One eviction-pin lease; disposal releases the pin exactly once.</summary>
+    private sealed class SessionPin(MaieuticsAgentSessionManager owner, string key) : IDisposable
+    {
+        private int disposeState;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+
+            owner.ReleasePin(key);
         }
     }
 }

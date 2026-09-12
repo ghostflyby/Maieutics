@@ -37,6 +37,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private readonly FrontendOptions options;
     private readonly FrontendSessionService service;
+    private readonly FrontendTurnQueue turnQueue;
     private readonly ObjectStore? objectStore;
     private readonly FrontendCommRouter? commRouter;
     private readonly ILogger<FrontendHost> logger;
@@ -47,12 +48,14 @@ internal sealed class FrontendHost : IAsyncDisposable
     public FrontendHost(
         FrontendOptions options,
         FrontendSessionService service,
+        FrontendTurnQueue turnQueue,
         ILogger<FrontendHost> logger,
         ObjectStore? objectStore = null,
         FrontendCommRouter? commRouter = null)
     {
         this.options = options;
         this.service = service;
+        this.turnQueue = turnQueue;
         this.logger = logger;
         this.objectStore = objectStore;
         this.commRouter = commRouter;
@@ -96,6 +99,10 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/gc", HandleGcSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/repair", HandleRepairSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/turns", HandleTurn);
+        endpoints.MapGet("/v1/agent/sessions/{sessionId}/queue", HandleGetQueue);
+        endpoints.MapPost("/v1/agent/sessions/{sessionId}/queue", HandleEnqueueTurns);
+        endpoints.MapDelete("/v1/agent/sessions/{sessionId}/queue/{itemId}", HandleDeleteQueuedItem);
+        endpoints.MapDelete("/v1/agent/sessions/{sessionId}/queue", HandleClearQueue);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/transcript", HandleTranscript);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms);
@@ -308,6 +315,71 @@ internal sealed class FrontendHost : IAsyncDisposable
             Results.Json(service.GetTranscript(sessionId), FrontendJsonContext.Default.FrontendTranscript)));
     }
 
+    /// <summary>Serves the session's server-side turn queue snapshot (ADR 0025): the
+    /// running item with its run id plus the pending items in run order, with texts.</summary>
+    private Task HandleGetQueue(HttpContext context, string sessionId)
+    {
+        return GuardAsync(context, () => Task.FromResult(
+            Results.Json(QueueSnapshot(sessionId), FrontendJsonContext.Default.FrontendQueueSnapshot)));
+    }
+
+    /// <summary>Enqueues turn texts (1..64, all or nothing) behind the session's current
+    /// work. Command cells stay client-orchestrated on the turn endpoint and are rejected
+    /// here with a typed 400. The acceptance is a 202 with the assigned ids and positions,
+    /// mirroring the turn endpoint's status shape.</summary>
+    private async Task HandleEnqueueTurns(HttpContext context, string sessionId)
+    {
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendQueueEnqueueRequest)
+            .ConfigureAwait(false);
+        if (request is null) return;
+
+        FrontendQueueEnqueueResponse response;
+        try
+        {
+            var texts = request.Items is null ? [] : request.Items.Select(item => item.Text).ToArray();
+            response = turnQueue.Enqueue(sessionId, texts);
+        }
+        catch (FrontendFailureException exception)
+        {
+            await WriteErrorAsync(context, exception.Code, exception.Message).ConfigureAwait(false);
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status202Accepted;
+        await context.Response
+            .WriteAsJsonAsync(response, FrontendJsonContext.Default.FrontendQueueEnqueueResponse)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Removes one queued item; the running item is a typed 409 because clients
+    /// cancel the run itself instead.</summary>
+    private Task HandleDeleteQueuedItem(HttpContext context, string sessionId, string itemId)
+    {
+        return GuardAsync(context, () =>
+        {
+            turnQueue.Remove(sessionId, itemId);
+            return Task.FromResult<IResult>(Results.NoContent());
+        });
+    }
+
+    /// <summary>Clears every queued item; the running item is untouched and completes.</summary>
+    private Task HandleClearQueue(HttpContext context, string sessionId)
+    {
+        return GuardAsync(context, () =>
+        {
+            turnQueue.Clear(sessionId);
+            return Task.FromResult<IResult>(Results.NoContent());
+        });
+    }
+
+    /// <summary>Resolves the session for a queue route (typed 404 / invalid id) and builds
+    /// the full-state snapshot with texts.</summary>
+    private FrontendQueueSnapshot QueueSnapshot(string sessionId)
+    {
+        service.EnsureSessionResolved(sessionId);
+        return turnQueue.Snapshot(sessionId);
+    }
+
     private async Task HandleCancel(HttpContext context, string runId)
     {
         await GuardAsync(context, async () =>
@@ -494,15 +566,46 @@ internal sealed class FrontendHost : IAsyncDisposable
             else
             {
                 FrontendRunStream? previous = null;
+                var queueVersion = 0L;
                 while (!peer.IsCancellationRequested && socket.State == WebSocketState.Open)
                 {
-                    var stream = await service
-                        .WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token)
-                        .ConfigureAwait(false);
-                    await ServeStreamAsync(socket, stream, since, peer.Token).ConfigureAwait(false);
-                    previous = stream;
-                    // Replay offsets are per run; later runs stream live from their start.
-                    since = 0;
+                    // One wait race per loop iteration: a run wake serves that run exactly
+                    // once (queue wakes never touch the `previous` tracking, so a run can
+                    // neither be missed nor double-served); a queue wake writes one
+                    // full-state queue.updated frame straight on the socket. The queue
+                    // wait is raced first so a socket that opens while queue state exists
+                    // receives the current state immediately after hello, even when a run
+                    // announcement is also pending.
+                    var runWait = service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
+                    var queueWait = turnQueue.WaitForChangeAsync(sessionId, queueVersion, peer.Token);
+                    var settled = await Task.WhenAny(queueWait, runWait).ConfigureAwait(false);
+                    if (ReferenceEquals(settled, runWait))
+                    {
+                        var stream = await runWait.ConfigureAwait(false);
+                        await ServeStreamAsync(socket, stream, since, peer.Token).ConfigureAwait(false);
+                        previous = stream;
+                        // Replay offsets are per run; later runs stream live from their start.
+                        since = 0;
+                    }
+                    else
+                    {
+                        // The run wait stays pending across queue wakes; the announcements
+                        // channel it reads is never completed, so it cannot fault — but a
+                        // late fault or cancellation must still be observed (WhenAny leaves
+                        // the loser unobserved).
+                        _ = runWait.ContinueWith(
+                            static abandoned => _ = abandoned.Exception,
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+
+                        (var frameSnapshot, queueVersion) = turnQueue.FrameSnapshot(sessionId);
+                        if (socket.State == WebSocketState.Open)
+                            await SendFrameAsync(
+                                socket,
+                                new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                                peer.Token).ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -916,6 +1019,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         context.Response.StatusCode = code switch
         {
             FrontendErrors.Busy or FrontendErrors.SessionNotActive or FrontendErrors.ConfigurationError
+                or FrontendErrors.QueueFull or FrontendErrors.ItemRunning
                 => StatusCodes.Status409Conflict,
             FrontendErrors.NotFound => StatusCodes.Status404NotFound,
             _ => StatusCodes.Status400BadRequest

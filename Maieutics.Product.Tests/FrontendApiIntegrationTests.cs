@@ -1382,6 +1382,11 @@ public sealed class FrontendApiIntegrationTests
         public FrontendSessionService SessionService =>
             host.Services.GetRequiredService<FrontendSessionService>();
 
+        /// <summary>The live session manager, so tests can observe eviction-pin state
+        /// that the server-side turn queue drives (ADR 0025).</summary>
+        public Maieutics.Commands.MaieuticsAgentSessionManager SessionManager =>
+            host.Services.GetRequiredService<Maieutics.Commands.MaieuticsAgentSessionManager>();
+
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real
         /// input-answer endpoint.</summary>

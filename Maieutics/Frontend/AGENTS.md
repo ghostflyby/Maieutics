@@ -16,9 +16,11 @@ frontend paths, the versioned REST endpoints, and the per-session event WebSocke
   one is lazily resumed, and an unknown id is `404 not_found`. The process keeps multiple live sessions
   (bounded, LRU-evicted when re-resumable; sessions with a run in flight are never evicted); the foreground
   session exists only as the compatibility alias behind the singular endpoints and moves on start / resume /
-  fork. Concurrent turns on the *same* session fail with the typed `agent_busy` code — the protocol does not
-  queue turns (invariant 4). The model-profile override is per session (`%model use` in an addressed cell, a
-  fork's `profileId`); the configured default stays process-level.
+  fork. Concurrent *direct* turns on the *same* session fail with the typed `agent_busy` code — direct turn
+  submissions are never queued (invariant 4); the server-side turn queue (`FrontendTurnQueue`, ADR 0025)
+  composes on top of the single-run gate and is addressed through the `/queue` routes. The model-profile
+  override is per session (`%model use` in an addressed cell, a fork's `profileId`); the configured default
+  stays process-level.
 - The wire is provider-neutral: no Jupyter type and no Microsoft.Extensions.AI type crosses it. Convert in
   `FrontendTranscriptMapper` / the presentation sink.
 - Wire shapes live in `FrontendWireModels.cs` with source-generated JSON only (NativeAOT).

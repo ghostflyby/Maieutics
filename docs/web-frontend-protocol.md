@@ -50,9 +50,9 @@ user-owned state with default-restrictive permissions.
   `agent_response_too_large`, `agent_turn_in_progress`→`agent_busy`, …) plus
   protocol codes (`not_found`, `invalid_request`, `unauthorized`,
   `command_error`).
-- A concurrent turn on a session is rejected with `409` + `agent_busy`; the
-  protocol does not queue turns. Queuing semantics would be an explicit v2
-  design (AGENTS.md invariant 4).
+- A concurrent *direct* turn on a session is rejected with `409` + `agent_busy`; direct
+  submissions are never queued (invariant 4). Server-side turn queuing composes on top
+  of the single-run gate through the session's `/queue` endpoints below (ADR 0025).
 
 ## Display objects (binary rich values)
 
@@ -161,6 +161,10 @@ implement comms ignore it and never open the endpoint.
 | POST | `/v1/agent/sessions/{sid}/gc?graceHours=24` | Prune unreferenced objects |
 | POST | `/v1/agent/sessions/{sid}/repair` | Rebuild the derived object view |
 | POST | `/v1/agent/sessions/{sid}/turns` | Submit one Agent turn → `202 {runId}` |
+| GET | `/v1/agent/sessions/{sid}/queue` | The session's server-side turn queue snapshot |
+| POST | `/v1/agent/sessions/{sid}/queue` | Enqueue 1–64 turn texts to run serially → `202` |
+| DELETE | `/v1/agent/sessions/{sid}/queue/{itemId}` | Remove one queued item (running → `409 item_running`) |
+| DELETE | `/v1/agent/sessions/{sid}/queue` | Clear every queued item (running item untouched) |
 | GET | `/v1/agent/sessions/{sid}/transcript` | Authoritative history snapshot |
 | POST | `/v1/agent/runs/{runId}/cancel` | Cooperative cancel; waits for termination |
 | POST | `/v1/agent/commands` | Execute a `%`-command cell → `{markdown}` |
@@ -192,6 +196,57 @@ the foreground (`%session new` / `resume` / `fork`), in which case it is the
 new foreground — a notebook frontend re-pins only when it differs from its
 pinned session. Session-aware commands (`%session current`, `%model
 use/current/reset`) are scoped to the addressed session.
+
+### Session turn queue (ADR 0025)
+
+The turn queue is server state for Agent turn cells only: a queued session survives
+client disconnects and reloads (the queue drains while the client is gone), and every
+events socket for the session observes the same run order. `%`-command cells stay
+client-orchestrated on `POST /turns`; the queue rejects command text. Direct
+`POST /turns` semantics are unchanged — a submission while the session's single-run
+gate is held is still `409 agent_busy`, never queued (invariant 4).
+
+`GET /v1/agent/sessions/{sid}/queue` returns the session's full queue state:
+
+```json
+{
+  "sessionId": "…",
+  "running": {"itemId": "…", "runId": "…"},
+  "items": [
+    {"id": "…", "text": "…", "enqueuedAt": "2026-09-12T10:00:00Z"}
+  ],
+  "capacity": 64
+}
+```
+
+`running` is absent while no queued item is running; `items` are the pending items in
+run order and carry the text, so a reconnecting client can rebuild its view. Per the
+protocol-wide convention, nulls are omitted on write.
+
+`POST /v1/agent/sessions/{sid}/queue` body: `{"items": [{"text": "…"}]}` (1–64 items)
+enqueues atomically — all or nothing — and answers `202`:
+
+```json
+{"items": [{"id": "…", "position": 1}, {"id": "…", "position": 2}]}
+```
+
+`position` is 1-based in run order. Errors: `400 invalid_request` for a batch outside
+1–64 items, empty text, or command text (message: "Commands are submitted on the turn
+endpoint, not the queue."), `400 agent_input_too_large` over the turn input limit,
+`409 queue_full` when the committed total would exceed the 64-item capacity, and the
+usual `404 not_found` for an unresolvable session (items are validated before the
+capacity check, so an invalid batch never occupies queue space).
+
+`DELETE /v1/agent/sessions/{sid}/queue/{itemId}` removes one queued item → `204`. The
+running item is not removable: `409 item_running` — cancel the run instead, and the
+queue clears the item when the run settles. An unknown id is `404`.
+`DELETE /v1/agent/sessions/{sid}/queue` clears every queued item → `204`; the running
+item is untouched and completes normally.
+
+Queued turns run through the same path as direct submissions (`StartTurnAsync`), so a
+run started by the queue is indistinguishable on the events stream. When a direct
+submission races the queue's dequeue, the queue waits the in-flight run out (bounded)
+and retries before failing the item.
 
 `GET /v1/agent/sessions/{sid}/transcript` returns the committed public
 transcript rendered provider-neutrally:
@@ -294,6 +349,9 @@ JSON text:
 {"type": "repl.updateDisplay", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "run.status", "state": "busy" | "idle"}
 {"type": "input.request", "requestId": "input-<unique>-1", "prompt": "Name:", "password": false}
+{"type": "queue.updated", "queue": {"sessionId": "…",
+ "running": {"itemId": "…", "runId": "…"} | null,
+ "items": [{"id": "…"}], "capacity": 64}}
 ```
 
 Rules:
@@ -317,6 +375,17 @@ Rules:
   provider reports nothing). The chat-completions wire flavor only returns
   usage when the client asks for it — the executable's OpenAI adapter asks on
   the Responses flavor, which always reports it.
+- `queue.updated` carries the session's full queue state, has no sequence
+  number, and replaces prior state idempotently; clients reconcile with
+  `GET /queue` on reconnect. Every queue transition (enqueue, dequeue,
+  running transition, item removal, clear) wakes every connected session
+  socket, and each wake writes the queue's current full state — a socket that
+  is busy serving a run stream, or that wakes after a later transition already
+  happened, observes the newest state, which is sufficient because the frames
+  are full-state replacements (frame items carry ids only; the text lives in
+  the GET snapshot). A session socket that opens while queue state exists
+  receives one `queue.updated` immediately after `hello`, before serving any
+  announced run. Per-run sockets (`?runId=`) never receive queue frames.
 
 ## Notebook snapshot (frontend-owned)
 

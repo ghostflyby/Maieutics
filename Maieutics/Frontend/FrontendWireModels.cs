@@ -71,6 +71,43 @@ internal sealed record FrontendTurnRequest([property: JsonPropertyName("text")] 
 /// <summary>A turn acceptance body.</summary>
 internal sealed record FrontendTurnAccepted([property: JsonPropertyName("runId")] string RunId);
 
+/// <summary>One queued turn item (ADR 0025). Queue frames carry ids only — clients map ids
+/// to cells locally; the GET snapshot additionally carries the text and enqueue time.</summary>
+internal sealed record FrontendQueueItem(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("text")] string? Text = null,
+    [property: JsonPropertyName("enqueuedAt")] DateTimeOffset? EnqueuedAt = null);
+
+/// <summary>The queue item a worker is currently running, with the run id serving it.</summary>
+internal sealed record FrontendQueueRunningItem(
+    [property: JsonPropertyName("itemId")] string ItemId,
+    [property: JsonPropertyName("runId")] string RunId);
+
+/// <summary>A session's full queue state: at most one running item plus the pending FIFO
+/// in run order. Full-state and idempotent — a frame replaces the previous state entirely.</summary>
+internal sealed record FrontendQueueSnapshot(
+    [property: JsonPropertyName("sessionId")] string SessionId,
+    [property: JsonPropertyName("running")] FrontendQueueRunningItem? Running = null,
+    [property: JsonPropertyName("items")] IReadOnlyList<FrontendQueueItem>? Items = null,
+    [property: JsonPropertyName("capacity")] int Capacity = FrontendTurnQueue.Capacity);
+
+/// <summary>A queue enqueue request body: 1..64 turn texts to run serially after the
+/// session's current work. Command cells are rejected.</summary>
+internal sealed record FrontendQueueEnqueueRequest(
+    [property: JsonPropertyName("items")] IReadOnlyList<FrontendQueueItemRequest>? Items);
+
+/// <summary>One turn text inside a queue enqueue request.</summary>
+internal sealed record FrontendQueueItemRequest([property: JsonPropertyName("text")] string Text);
+
+/// <summary>A queue enqueue answer: the assigned ids with 1-based positions in run order.</summary>
+internal sealed record FrontendQueueEnqueueResponse(
+    [property: JsonPropertyName("items")] IReadOnlyList<FrontendQueueEnqueuedItem> Items);
+
+/// <summary>One enqueued queue item: its opaque id and 1-based pending position.</summary>
+internal sealed record FrontendQueueEnqueuedItem(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("position")] int Position);
+
 /// <summary>A command execution body.</summary>
 internal sealed record FrontendCommandRequest([property: JsonPropertyName("text")] string Text);
 
@@ -191,7 +228,8 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("session")] FrontendSessionInfo? Session = null,
     [property: JsonPropertyName("replayed")] bool? Replayed = null,
     [property: JsonPropertyName("model")] FrontendModelIdentity? Model = null,
-    [property: JsonPropertyName("usage")] FrontendUsage? Usage = null);
+    [property: JsonPropertyName("usage")] FrontendUsage? Usage = null,
+    [property: JsonPropertyName("queue")] FrontendQueueSnapshot? Queue = null);
 
 /// <summary>Source-generated JSON binding for the frontend wire (NativeAOT path).</summary>
 [JsonSourceGenerationOptions(
@@ -203,6 +241,9 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendSessionInfo[]))]
 [JsonSerializable(typeof(FrontendTurnRequest))]
 [JsonSerializable(typeof(FrontendTurnAccepted))]
+[JsonSerializable(typeof(FrontendQueueSnapshot))]
+[JsonSerializable(typeof(FrontendQueueEnqueueRequest))]
+[JsonSerializable(typeof(FrontendQueueEnqueueResponse))]
 [JsonSerializable(typeof(FrontendRenameRequest))]
 [JsonSerializable(typeof(FrontendRenameResponse))]
 [JsonSerializable(typeof(FrontendForkRequest))]

@@ -82,6 +82,16 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// <summary>Waits for the run to terminate; failures and cancellation surface here.</summary>
     internal Task<AgentRunResult> Completion => run.Completion;
 
+    /// <summary>
+    ///     Waits for the stream's full settlement: terminal frames published, the run
+    ///     disposed, and the presentation scope detached. Completes strictly after
+    ///     <see cref="Completion" /> — the pump's teardown detaches the presentation
+    ///     router's per-session sink last, so a follow-up turn on the same session (which
+    ///     attaches that sink while wiring its run stream) can only start after this task
+    ///     completes. Never faults.
+    /// </summary>
+    internal Task Settled => disposal.Task;
+
     /// <summary>Requests cooperative cancellation and waits for the run to terminate.</summary>
     internal Task CancelAsync(CancellationToken cancellationToken) => run.CancelAsync(cancellationToken);
 
@@ -314,7 +324,21 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             // would hold the session's turn gate and this stream's disposal forever.
             await SettleRunAsync().ConfigureAwait(false);
             MarkCompleted();
-            if (presentationScope is not null) await presentationScope.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                if (presentationScope is not null) await presentationScope.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                // A failed detach must not skip the settlement signal below: follow-up
+                // turns wait for it before they can attach the session's presentation
+                // sink again.
+                logger.LogWarning(
+                    exception,
+                    "Detaching the presentation scope for run {RunId} failed.",
+                    run.Id);
+            }
+
             disposal.TrySetResult();
         }
     }
@@ -598,13 +622,16 @@ internal static class FrontendErrors
     internal const string InvalidRequest = "invalid_request";
     internal const string CommandError = "command_error";
     internal const string ConfigurationError = "agent_configuration_error";
+    internal const string InputTooLarge = "agent_input_too_large";
+    internal const string QueueFull = "queue_full";
+    internal const string ItemRunning = "item_running";
 
     internal static string MapAgentException(AgentException exception)
     {
         return exception switch
         {
             AgentProviderException => "agent_provider_error",
-            AgentInputLimitExceededException => "agent_input_too_large",
+            AgentInputLimitExceededException => InputTooLarge,
             AgentResponseLimitExceededException => "agent_response_too_large",
             AgentToolLimitExceededException => "agent_tool_limit_exceeded",
             AgentToolArgumentsException => "agent_tool_arguments_error",

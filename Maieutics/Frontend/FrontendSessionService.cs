@@ -17,11 +17,12 @@ internal sealed class FrontendFailureException(string code, string message) : Ex
 
 /// <summary>
 ///     Orchestrates the frontend protocol against the executable's single authoritative
-///     agent session: turn submission (one in-flight run per session; concurrent turns are
-///     typed busy errors — the protocol does not queue), cancel, transcript snapshots,
-///     session lifecycle, and run-stream lookup for the events WebSocket. Runs are owned by
-///     their <see cref="FrontendRunStream" />, which keeps events flowing and replayable
-///     regardless of connections.
+///     agent session: turn submission (one in-flight run per session; concurrent direct
+///     turns are typed busy errors — server-side turn queuing lives in
+///     <see cref="FrontendTurnQueue" /> on top of the same gate, ADR 0025), cancel,
+///     transcript snapshots, session lifecycle, and run-stream lookup for the events
+///     WebSocket. Runs are owned by their <see cref="FrontendRunStream" />, which keeps
+///     events flowing and replayable regardless of connections.
 /// </summary>
 internal sealed class FrontendSessionService
 {
@@ -370,7 +371,8 @@ internal sealed class FrontendSessionService
     ///     token aborts only the pre-run handshake inside the session (its entry guard
     ///     and profile lease acquisition); a started run never observes it.
     /// </summary>
-    /// <exception cref="FrontendFailureException">Concurrent turn, inactive session, or missing
+    /// <exception cref="FrontendFailureException">Concurrent turn, a previous turn still
+    /// settling (typed busy; the submission is recoverable), inactive session, or missing
     /// model configuration.</exception>
     public async Task<FrontendTurnAccepted> StartTurnAsync(
         string sessionId,
@@ -399,12 +401,57 @@ internal sealed class FrontendSessionService
         }
 
         var stream = FrontendRunStream.Create(session.Id, run, presentationRouter, logger);
-        var scope = presentationRouter.Attach(session.Id, stream);
+        FrontendDenoReplPresentationRouter.FrontendPresentationScope scope;
+        try
+        {
+            scope = presentationRouter.Attach(session.Id, stream);
+        }
+        catch (InvalidOperationException)
+        {
+            // The previous run's stream is still detaching its presentation scope (a
+            // just-settled run). The started run must not linger unwired: it would hold
+            // the session's single-run gate and commit its turn with no stream serving
+            // it, so fail it (a cancelled run commits nothing) and answer the typed busy
+            // code — the submission is recoverable once the settle completes.
+            await FailUnwiredRunAsync(run).ConfigureAwait(false);
+            throw new FrontendFailureException(
+                FrontendErrors.Busy,
+                "The session's previous turn is still settling; retry the submission.");
+        }
+
         stream.Start(scope);
         registry.Add(stream);
 
         HubFor(session.Id).Announce(stream);
         return new FrontendTurnAccepted(run.Id.Value.ToString("N"));
+    }
+
+    /// <summary>Fails a run whose stream wiring failed after the run already started:
+    /// cooperative cancellation settles it without committing, which releases the
+    /// session's single-run gate for the next turn. The budget bounds a wedged
+    /// provider, mirroring the run stream's own settlement path.</summary>
+    private static async Task FailUnwiredRunAsync(IAgentRun run)
+    {
+        try
+        {
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+            budget.CancelAfter(TimeSpan.FromSeconds(15));
+            await run.CancelAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The run's own executor releases the gate in its finally regardless; this
+            // teardown must not mask the caller's original failure.
+        }
+
+        try
+        {
+            await run.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Same: disposal observation must not mask the caller's original failure.
+        }
     }
 
     /// <summary>Resolves the stream of a run while it is still retained.</summary>
@@ -415,6 +462,18 @@ internal sealed class FrontendSessionService
 
         return registry.TryGet(new AgentRunId(parsed), out stream);
     }
+
+    /// <summary>Gets the session's most recently announced run stream without waiting, so
+    /// the turn queue can wait out a direct submission that raced its dequeue.</summary>
+    internal bool TryGetLatestRun(AgentSessionId sessionId, out FrontendRunStream? stream)
+    {
+        stream = HubFor(sessionId).Latest;
+        return stream is not null;
+    }
+
+    /// <summary>Resolves the addressed session (live → use, stored → lazy-resume) so the
+    /// queue routes share the typed 404 of every other session-addressed route.</summary>
+    public void EnsureSessionResolved(string sessionId) => _ = ResolveSession(sessionId);
 
     /// <summary>Delivers a frontend stdin answer to the pending REPL input request
     /// announced by an <c>input.request</c> frame.</summary>

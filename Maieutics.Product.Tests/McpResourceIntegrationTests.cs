@@ -20,8 +20,9 @@ public sealed class McpResourceIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task GenerationRefreshesResourcesAlongsideTools()
     {
-        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        await using var harness = await ResourceServerHarness.StartAsync(lifetime.Token);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var harness = await ResourceServerHarness.StartAsync(deadline.Token);
         var generation = harness.Generation;
 
         var catalog = generation.GetResourceCatalog();
@@ -33,7 +34,7 @@ public sealed class McpResourceIntegrationTests
         provider.Claims.Should().Contain(claim => claim.Scheme == "test" && claim.Authority == "static");
         provider.Claims.Should().Contain(claim => claim.Scheme == "test" && claim.Authority == "users");
 
-        var entries = await provider.ListAsync(lifetime.Token);
+        var entries = await provider.ListAsync(deadline.Token);
         entries.Should().HaveCount(2);
         entries.Should().Contain(entry => entry.Kind == "resource" && entry.Uri == "test://static/hello");
         entries.Should().Contain(entry => entry.Kind == "template");
@@ -42,14 +43,15 @@ public sealed class McpResourceIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderReadsExactAndTemplateResources()
     {
-        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        await using var harness = await ResourceServerHarness.StartAsync(lifetime.Token);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var harness = await ResourceServerHarness.StartAsync(deadline.Token);
         var provider = new McpResourceProvider(() => harness.Source);
 
         var exact = await provider.ReadAsync(
             "test://static/hello",
             new ResourceReadRequest(1024),
-            lifetime.Token);
+            deadline.Token);
         using (exact.Content)
         {
             exact.MimeType.Should().Be("text/plain");
@@ -61,7 +63,7 @@ public sealed class McpResourceIntegrationTests
         var templated = await provider.ReadAsync(
             "test://users/42",
             new ResourceReadRequest(1024),
-            lifetime.Token);
+            deadline.Token);
         using (templated.Content)
         {
             using var buffered = new MemoryStream();
@@ -72,14 +74,14 @@ public sealed class McpResourceIntegrationTests
         Func<Task> missing = async () => await provider.ReadAsync(
             "test://absent",
             new ResourceReadRequest(1024),
-            lifetime.Token);
+            deadline.Token);
         var assertions = await missing.Should().ThrowAsync<ResourceException>();
         assertions.Which.Code.Should().Be("resource_not_found");
 
         var escape = await provider.ReadAsync(
             $"mcp://{harness.ServerId}/{Uri.EscapeDataString("test://static/hello")}",
             new ResourceReadRequest(1024),
-            lifetime.Token);
+            deadline.Token);
         using (escape.Content)
         {
             using var buffered = new MemoryStream();
@@ -91,9 +93,10 @@ public sealed class McpResourceIntegrationTests
     [Fact(Timeout = 30_000)]
     public async Task RegistryResolvesWorkspaceBeforeMcpAndServesEscapeHatch()
     {
-        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
         using var workspace = TemporaryWorkspace.Create();
-        await using var harness = await ResourceServerHarness.StartAsync(lifetime.Token);
+        await using var harness = await ResourceServerHarness.StartAsync(deadline.Token);
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path)),
             new McpResourceProvider(() => harness.Source)

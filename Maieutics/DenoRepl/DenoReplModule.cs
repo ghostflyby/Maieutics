@@ -13,7 +13,7 @@ internal sealed class DenoReplModule
         ("Maieutics.Deno.DenoRepl.Client.ts", "maieutics-deno-repl/repl_client.ts"),
         ("Maieutics.Deno.DenoRepl.Actor.ts", "maieutics-deno-repl/repl_actor.ts"),
         ("Maieutics.Deno.DenoRepl.Worker.ts", "maieutics-deno-repl/repl_worker.ts"),
-        ("Maieutics.Deno.DenoRepl.ResourceBridge.ts", "maieutics-deno-repl/resource_bridge.ts"),
+        ("Maieutics.Deno.Shared.ResourceBridge.ts", "shared/resource_bridge.ts"),
         ("Maieutics.Deno.DenoRepl.InputMailbox.ts", "maieutics-deno-repl/input_mailbox.ts"),
         ("Maieutics.Deno.DenoRepl.Queue.ts", "maieutics-deno-repl/repl_eval_queue.ts"),
         ("Maieutics.Deno.DenoRepl.ProcessMain.ts", "maieutics-deno-repl/process_main.ts"),

@@ -46,7 +46,8 @@ public sealed class ResourceReadToolTests
         await File.WriteAllTextAsync(
             Path.Combine(workspace.Path, "a.txt"),
             "first\nsecond\nthird",
-            Encoding.UTF8);
+            Encoding.UTF8,
+            TestContext.Current.CancellationToken);
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path))
         ]);
@@ -128,6 +129,9 @@ public sealed class ResourceReadToolTests
     [Fact]
     public async Task ControlHostServesResourceBodiesAndTypedErrors()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host resource endpoint test rides a Unix domain socket.");
+
         using var workspace = TemporaryWorkspace.Create();
         var registry = new ResourceRegistry([
             new FakeProvider([

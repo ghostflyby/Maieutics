@@ -75,7 +75,7 @@ public sealed class ResourceUrlRegistryTests
     public async Task WorkspaceProviderReadsFilesThroughWorkspaceContainment()
     {
         using var workspace = TemporaryWorkspace.Create();
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "content");
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "content", TestContext.Current.CancellationToken);
 
         var provider = new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path));
 
@@ -118,7 +118,11 @@ public sealed class ResourceUrlRegistryTests
     public async Task WorkspaceProviderRefusesBodiesBeyondTheLimit()
     {
         using var workspace = TemporaryWorkspace.Create();
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "big.txt"), new string('x', 64), Encoding.UTF8);
+        await File.WriteAllTextAsync(
+            Path.Combine(workspace.Path, "big.txt"),
+            new string('x', 64),
+            Encoding.UTF8,
+            TestContext.Current.CancellationToken);
         var provider = new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path));
 
         Func<Task> tooLarge = async () => await provider.ReadAsync(

@@ -382,6 +382,11 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // Each release settles one run; the next item's running transition is the next
         // stable state both sockets observe (one release per gated provider request).
+        // The worker's provider request is issued asynchronously after the run starts, so
+        // a release must WAIT for the request to park — releasing earlier is a no-op that
+        // parks the request forever (the Windows CI failure: every step before this was
+        // instant, and the released-into-nothing request froze the run mid-flight).
+        await WaitForParkedAsync(provider, 1, deadline.Token);
         Trace($"parked before release: {provider.ParkedRequests}");
         provider.ReleaseNext();
         Trace("released item one");
@@ -396,8 +401,10 @@ public sealed class FrontendTurnQueueIntegrationTests
             deadline.Token);
         Trace("both sockets saw second running state");
 
+        await WaitForParkedAsync(provider, 1, deadline.Token);
         provider.ReleaseNext();
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, thirdIds[0]), deadline.Token);
+        await WaitForParkedAsync(provider, 1, deadline.Token);
         provider.ReleaseNext();
         Trace("released items two and three");
         await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);

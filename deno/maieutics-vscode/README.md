@@ -37,11 +37,12 @@ Jupyter kernel involved (ADR 0023).
   Timeline" view (tools with argument previews and durations, truncation, errors, answering model,
   token usage) via the output's mimetype picker; markdown remains the default view.
 - Composer conveniences: **Maieutics: Queue Follow-up Turn** submits a message that joins the
-  notebook's execution queue behind any in-flight run; a status-bar badge totals the provider token
-  usage of the notebook's committed turns; a cancelled or failed run keeps its partial answer and
-  appends the failure instead of wiping the cell; running a committed cell offers "Fork with another
-  model" (profile picker) alongside the plain fork; a committed cell's branch badge (**Maieutics:
-  Switch Branch**) lists the conversation's other branches and opens the picked one.
+  session's server-owned turn queue behind anything already queued or running (queued cells show
+  `queued #N` markers with per-cell dequeue and clear-queue); a status-bar badge totals the provider
+  token usage of the notebook's committed turns; a cancelled or failed run keeps its partial answer
+  and appends the failure instead of wiping the cell; running a committed cell offers "Fork with
+  another model" (profile picker) alongside the plain fork; a committed cell's branch badge
+  (**Maieutics: Switch Branch**) lists the conversation's other branches and opens the picked one.
 - Cells as conversation history (see `docs/notebook-agent-semantics-design.md`): every committed
   cell carries its turn binding (`runId` + the submitted input, in cell metadata and in the
   structured snapshot), so the notebook distinguishes committed, edited-history (`stale`), and

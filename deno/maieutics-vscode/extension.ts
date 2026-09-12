@@ -17,7 +17,7 @@ import { connect, type Connection } from "./connection.ts";
 import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
 import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./controller.ts";
-import { CellQueue } from "./queueState.ts";
+import { QueueProjection } from "./queueProjection.ts";
 import { MaieuticsNotebookSerializer, NotebookType, readStoredSessionId } from "./serializer.ts";
 import { NotebookLanguage } from "./notebookFormat.ts";
 import { FrontendError, type Transcript } from "./protocol.ts";
@@ -106,16 +106,18 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  // Queue tracking feeds both the controller (skip semantics) and the cell
-  // status markers; the emitter is the providers' refresh signal.
-  const queuedCells = new CellQueue<vscode.NotebookCell>();
+  // The queued-cell markers are a projection of the server-owned session
+  // queue: the controller maintains the itemId ↔ cell map from queue.updated
+  // frames and reconnect snapshots; the emitter is the providers' refresh
+  // signal.
+  const queueProjection = new QueueProjection<vscode.NotebookCell>();
   const queueChanges = new vscode.EventEmitter<void>();
-  queuedCells.onDidChange(() => queueChanges.fire());
-  controller = new MaieuticsNotebookController(createBridge(), output, queuedCells);
+  queueProjection.onDidChange(() => queueChanges.fire());
+  controller = new MaieuticsNotebookController(createBridge(), output, queueProjection);
   context.subscriptions.push(controller);
 
   context.subscriptions.push(...registerHistorySurface());
-  context.subscriptions.push(...registerQueueSurface(queuedCells, queueChanges));
+  context.subscriptions.push(...registerQueueSurface(queueProjection, queueChanges));
   context.subscriptions.push(...registerUsageBadge());
 
   treeEnvironment.currentOnly = context.workspaceState.get(CurrentOnlyStateKey, false);
@@ -419,8 +421,9 @@ export function activate(context: vscode.ExtensionContext): void {
       ]);
       await vscode.workspace.applyEdit(edit);
 
-      // The controller's per-notebook queue serializes this behind any run in
-      // flight, so "queue" is simply "submit now, in order".
+      // The cell is a pending turn, so it joins the session's server-owned
+      // queue behind anything already queued or running and shows the queued
+      // marker until its item starts.
       const queued = document.getCells()[insertAt];
       if (queued !== undefined && controller !== undefined) {
         await controller.runAsync([queued], document);
@@ -586,18 +589,21 @@ function registerHistorySurface(): vscode.Disposable[] {
 }
 
 /** The queued-cells surface: per-cell "queued #N" status markers fed by the
- * in-memory {@link CellQueue} (never metadata, so queue transitions never
- * dirty the notebook), plus the dequeue/clear commands the markers and the
- * notebook toolbar expose. State lives only here and in the controller, so
- * closing the extension host clears it with the queue itself. */
+ * projection of the server-owned session queue (never metadata, so queue
+ * transitions never dirty the notebook), plus the dequeue/clear commands the
+ * markers and the notebook toolbar expose. The projection holds only the
+ * itemId ↔ cell map; the queue itself lives server-side. The map is rebuilt
+ * from the server's snapshots for items this client enqueued and is empty
+ * after an extension host reload — queued items keep running without markers
+ * until the cells are run again. */
 function registerQueueSurface(
-  queuedCells: CellQueue<vscode.NotebookCell>,
+  queueProjection: QueueProjection<vscode.NotebookCell>,
   queueChanges: vscode.EventEmitter<void>,
 ): vscode.Disposable[] {
   const statusProvider: vscode.NotebookCellStatusBarItemProvider = {
     provideCellStatusBarItems(cell: vscode.NotebookCell) {
       if (cell.notebook.notebookType !== NotebookType) return [];
-      const position = queuedCells.position(cell.notebook.uri.toString(), cell);
+      const position = queueProjection.positionOf(cell);
       if (position === undefined) return [];
       const item = new vscode.NotebookCellStatusBarItem(
         `$(clock) queued #${position}`,
@@ -638,12 +644,23 @@ function registerQueueSurface(
       "maieutics.dequeueCell",
       async (cell?: vscode.NotebookCell) => {
         if (cell === undefined || cell.notebook.notebookType !== NotebookType) return;
-        const removed = controller?.dequeueQueuedCell(cell) ?? false;
-        if (!removed) {
+        const outcome = (await controller?.dequeueQueuedCell(cell)) ?? "not-queued";
+        if (outcome === "removed") return;
+        if (outcome === "running") {
           await vscode.window.showInformationMessage(
-            "Maieutics: this cell is not queued.",
+            "Maieutics: this cell's turn already started — use the stop button to cancel it.",
           );
+          return;
         }
+        if (outcome === "failed") {
+          await vscode.window.showErrorMessage(
+            "Maieutics: the cell could not be removed from the queue.",
+          );
+          return;
+        }
+        await vscode.window.showInformationMessage(
+          "Maieutics: this cell is not queued.",
+        );
       },
     ),
     vscode.commands.registerCommand(
@@ -656,7 +673,7 @@ function registerQueueSurface(
           );
           return;
         }
-        const removed = controller?.clearQueuedCells(document) ?? 0;
+        const removed = (await controller?.clearQueuedCells(document)) ?? 0;
         await vscode.window.showInformationMessage(
           removed === 0
             ? "Maieutics: no queued cells."

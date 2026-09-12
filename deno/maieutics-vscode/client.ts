@@ -19,11 +19,23 @@ import type {
   CommHello,
   CommMessage,
   EventFrame,
+  QueueState,
   SessionInfo,
   StoredSession,
   Transcript,
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
+
+/** The server-owned queue snapshot (re-exported so queue consumers have one
+ * import surface with the client's queue API). */
+export type { QueueState } from "./protocol.ts";
+
+/** One created queue item in the enqueue answer: its id (the projection key)
+ * and its 1-based position in the queue at enqueue time. */
+export interface QueueItemAnswer {
+  id: string;
+  position: number;
+}
 
 /** One selectable model profile (read-only listing). */
 export interface ModelProfile {
@@ -186,6 +198,76 @@ export class FrontendClient {
 
   async transcript(sessionId: string, signal?: AbortSignal): Promise<Transcript> {
     return await this.get(`/v1/agent/sessions/${sessionId}/transcript`, signal);
+  }
+
+  /** Reads the session's server-owned turn queue: the waiting items in run
+   * order (with their texts) and the item currently running with the run id
+   * its frames travel under. */
+  async getQueue(sessionId: string, signal?: AbortSignal): Promise<QueueState> {
+    return await this.get(`/v1/agent/sessions/${sessionId}/queue`, signal);
+  }
+
+  /** Enqueues agent turn texts as one batch that runs server-side in order;
+   * the answer carries the created items' ids and 1-based positions. Command
+   * text, empty text, oversized payloads, and a full queue are typed errors. */
+  async enqueueTurns(
+    sessionId: string,
+    texts: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<QueueItemAnswer[]> {
+    const response = await this.fetchJson(
+      "POST",
+      `/v1/agent/sessions/${sessionId}/queue`,
+      { items: texts.map((text) => ({ text })) },
+      signal,
+    );
+    if (response.status !== 202) throw await this.errorOf(response);
+    const body = await response.json() as { items?: unknown };
+    if (!Array.isArray(body.items)) {
+      throw new FrontendError("protocol_error", 202, "The queue answer carries no items.");
+    }
+    return body.items.map((value, index) => {
+      const record = typeof value === "object" && value !== null
+        ? value as Record<string, unknown>
+        : {};
+      if (typeof record.id !== "string" || record.id.length === 0) {
+        throw new FrontendError(
+          "protocol_error",
+          202,
+          "The queue answer carries an item without an id.",
+        );
+      }
+      return {
+        id: record.id,
+        position: typeof record.position === "number" ? record.position : index + 1,
+      };
+    });
+  }
+
+  /** Removes one waiting queue item. An item that already started running
+   * answers `item_running` — cancel its run instead. */
+  async dequeueItem(sessionId: string, itemId: string, signal?: AbortSignal): Promise<void> {
+    const response = await this.fetchJson(
+      "DELETE",
+      `/v1/agent/sessions/${sessionId}/queue/${encodeURIComponent(itemId)}`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) throw await this.errorOf(response);
+    await response.body?.cancel();
+  }
+
+  /** Clears every waiting queue item of the session; the running item keeps
+   * going. */
+  async clearQueue(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const response = await this.fetchJson(
+      "DELETE",
+      `/v1/agent/sessions/${sessionId}/queue`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) throw await this.errorOf(response);
+    await response.body?.cancel();
   }
 
   /**
@@ -542,7 +624,7 @@ export class FrontendClient {
   }
 
   private fetchJson(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     body: unknown,
     signal?: AbortSignal,

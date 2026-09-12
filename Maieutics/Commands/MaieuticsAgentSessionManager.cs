@@ -646,7 +646,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
                 }
             }
 
-            candidates.Sort((left, right) => left.Touched.CompareTo(right.Touched));
+            // OrderBy is stable like the LINQ pipeline this replaces; List<T>.Sort is not,
+            // and eviction order must not reshuffle when Touched ticks tie.
+            candidates = candidates.OrderBy(entry => entry.Touched).ToList();
         }
 
         foreach (var (id, reason) in skipped)

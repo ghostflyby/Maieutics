@@ -88,6 +88,25 @@ internal sealed class FrontendHost : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(application);
         var endpoints = (IEndpointRouteBuilder)application;
+        // Unhandled endpoint exceptions must be loud: without this the request fails
+        // with a bare 500 and no server-side trace (Kestrel does not log these for
+        // in-process minimal APIs), which makes integration failures undiagnosable.
+        application.Use(async (context, next) =>
+        {
+            try
+            {
+                await next(context).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(
+                    exception,
+                    "Unhandled exception on {Method} {Path}.",
+                    context.Request.Method,
+                    context.Request.Path);
+                throw;
+            }
+        });
         application.Use(AuthorizeThenNextAsync);
         endpoints.MapGet("/v1/agent/capabilities", HandleCapabilities);
         endpoints.MapGet("/v1/agent/session", HandleSession);

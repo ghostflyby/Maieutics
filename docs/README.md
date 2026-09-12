@@ -12,6 +12,7 @@ Jupyter libraries are retained as standalone libraries with no executable consum
 ## Operations
 
 - [Runtime configuration](configuration.md)
+- [Logging](logging.md) — level policy, categories, and the opt-in file sink
 
 ## Architecture
 

@@ -99,6 +99,13 @@ public static class MaieuticsHost
                 ["--openai-api"] = "Maieutics:Sources:openai:ApiFlavor"
             });
 
+        // Safe defaults ahead of configuration so unconfigured hosts are not flooded by
+        // framework diagnostics; rules added by AddConfiguration (file, environment, or
+        // command line) are evaluated later and override these.
+        builder.Logging.SetMinimumLevel(LogLevel.Information);
+        builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
+        builder.Logging.AddFilter("System", LogLevel.Warning);
+
         builder.Logging
             .AddConfiguration(builder.Configuration.GetSection("Logging"));
         if (!string.IsNullOrWhiteSpace(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]) &&
@@ -114,7 +121,29 @@ public static class MaieuticsHost
         }
         else
         {
-            builder.Logging.AddSimpleConsole();
+            builder.Logging.AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+                options.UseUtcTimestamp = false;
+            });
+        }
+        // Opt-in file sink (CI/diagnostic channel; see docs/logging.md): production stays
+        // console-only unless MAIEUTICS_LOG_DIR points at a writable directory. No logger
+        // exists yet at this point, so an unusable directory is reported on stderr and the
+        // host starts without the file sink instead of failing startup.
+        var logDirectory = Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR");
+        if (!string.IsNullOrWhiteSpace(logDirectory))
+        {
+            try
+            {
+                builder.Logging.AddProvider(new FileLoggerProvider(logDirectory));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine(
+                    $"Maieutics: cannot open the log directory '{logDirectory}' ({exception.Message}); file logging is disabled.");
+            }
         }
         var denoReplOptions = new DenoReplOptions();
         builder.Configuration.GetSection(DenoReplOptions.SectionName).Bind(denoReplOptions);

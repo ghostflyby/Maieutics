@@ -700,7 +700,6 @@ internal sealed class McpServerGeneration
                     "MCP server {ServerId} does not expose resources ({FailureType}); its resource catalog stays empty.",
                     definition.Id,
                     exception.GetType().Name);
-                Console.Error.WriteLine("RESOURCES-LIST-FAILED: " + exception);
             }
 
             try

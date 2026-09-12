@@ -596,7 +596,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     /// <summary>Releases parked provider requests until the queue has fully drained, so no
     /// run is still in flight when the harness's host disposes (the runtime configuration's
     /// disposal waits for the active run's profile lease).</summary>
-    private static async Task DrainQueueAsync(
+    private async Task DrainQueueAsync(
         Harness harness,
         GatedOpenAiServer provider,
         string sessionId,

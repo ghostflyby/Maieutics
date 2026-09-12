@@ -176,7 +176,8 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 sink,
                 displayIds,
                 execution.ExecutionId,
-                rateLimiter);
+                rateLimiter,
+                logger: logger);
             var completion = collector.ConsumeAsync(activeRuntime.Connection, execution, outputEvents, wait.Token);
             try
             {

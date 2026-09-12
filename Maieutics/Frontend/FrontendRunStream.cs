@@ -111,9 +111,12 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         var channel = Channel.CreateBounded<FrontendEventFrame>(SubscriberQueueCapacity);
         var subscriber = new Subscriber(channel);
+        IReadOnlyList<FrontendEventFrame> initial;
+        int subscriberCount;
         lock (gate)
         {
             subscribers.Add(subscriber);
+            subscriberCount = subscribers.Count;
             if (completed)
             {
                 // The pump already published its terminal frame; complete the queue so the
@@ -121,8 +124,14 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 channel.Writer.TryComplete();
             }
 
-            return (BuildSnapshot(sinceSequence), channel);
+            initial = BuildSnapshot(sinceSequence);
         }
+
+        logger.LogDebug(
+            "A subscriber attached to run {RunId}; {SubscriberCount} now subscribed.",
+            run.Id,
+            subscriberCount);
+        return (initial, channel);
     }
 
     /// <summary>Builds the replay snapshot for a subscriber resuming from
@@ -144,6 +153,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// <summary>Removes a subscriber when its WebSocket closes.</summary>
     internal void Unsubscribe(Channel<FrontendEventFrame> channel)
     {
+        int subscriberCount;
         lock (gate)
         {
             for (var index = subscribers.Count - 1; index >= 0; index--)
@@ -152,7 +162,14 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                     subscribers[index].Channel.Writer.TryComplete();
                     subscribers.RemoveAt(index);
                 }
+
+            subscriberCount = subscribers.Count;
         }
+
+        logger.LogDebug(
+            "A subscriber detached from run {RunId}; {SubscriberCount} remain subscribed.",
+            run.Id,
+            subscriberCount);
     }
 
     /// <summary>Publishes a REPL presentation frame that carries no run-local sequence.
@@ -217,6 +234,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private async Task RunPumpAsync()
     {
+        logger.LogDebug("Frontend event pump started for run {RunId}.", run.Id);
         try
         {
             Publish(new FrontendEventFrame("run.started", RunId: run.Id.Value.ToString("N")));
@@ -373,6 +391,16 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         }
 
         await ObserveCompletionAsync().ConfigureAwait(false);
+        logger.LogDebug(
+            "Frontend run {RunId} settled with outcome {Outcome}.",
+            run.Id,
+            run.Completion.Status switch
+            {
+                TaskStatus.RanToCompletion => "completed",
+                TaskStatus.Faulted => "failed",
+                TaskStatus.Canceled => "cancelled",
+                _ => "pending"
+            });
         try
         {
             await run.DisposeAsync().ConfigureAwait(false);

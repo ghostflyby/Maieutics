@@ -558,6 +558,11 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        logger.LogDebug(
+            "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}).",
+            sessionId,
+            context.Request.Path,
+            since);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
             lifetime.Token);
@@ -606,6 +611,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                     if (latestQueueVersion != queueVersion)
                     {
                         queueVersion = latestQueueVersion;
+                        logger.LogTrace(
+                            "Flushing queue.updated for session {SessionId} at version {QueueVersion}.",
+                            sessionId,
+                            queueVersion);
                         if (socket.State == WebSocketState.Open)
                             await SendFrameAsync(
                                 socket,
@@ -648,6 +657,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             await peer.CancelAsync().ConfigureAwait(false);
             await drain.ConfigureAwait(false);
+            logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                 await CloseSocketOutputAsync(
                     socket,

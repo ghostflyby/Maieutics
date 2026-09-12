@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoRepl;
 
@@ -41,8 +42,10 @@ internal sealed class DenoReplExecutionCollector
     private bool digestTruncated;
     private int displayCount;
     private int displaySkippedCount;
+    private readonly ILogger? logger;
     private int modelBytes;
     private int omittedBytes;
+    private bool presentationBudgetWarned;
     private int presentationEvents;
     private int presentationTextBytes;
     private bool presentationTextTruncated;
@@ -58,7 +61,8 @@ internal sealed class DenoReplExecutionCollector
         Dictionary<string, ReplDisplayId> displayIds,
         string executionId,
         ReplOutputRateLimiter? rateLimiter = null,
-        IReplDisplayObjectStore? displayObjectStore = null)
+        IReplDisplayObjectStore? displayObjectStore = null,
+        ILogger? logger = null)
     {
         this.sessionId = sessionId;
         this.generation = generation;
@@ -68,6 +72,7 @@ internal sealed class DenoReplExecutionCollector
         this.executionId = executionId;
         this.rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
         this.displayObjectStore = displayObjectStore;
+        this.logger = logger;
     }
 
     private readonly IReplDisplayObjectStore? displayObjectStore;
@@ -492,11 +497,17 @@ internal sealed class DenoReplExecutionCollector
 
     private async ValueTask PresentStderrAsync(string text, CancellationToken cancellationToken)
     {
-        if (!TryReservePresentationEvent()) return;
+        if (!TryReservePresentationEvent())
+        {
+            WarnStderrPresentationBudgetExhausted();
+            return;
+        }
+
         var available = options.MaxPresentationTextBytes - presentationTextBytes;
         if (available <= 0)
         {
             displaySkippedCount++;
+            WarnStderrPresentationBudgetExhausted();
             return;
         }
 
@@ -508,7 +519,22 @@ internal sealed class DenoReplExecutionCollector
         {
             presentationTextTruncated = true;
             displaySkippedCount++;
+            WarnStderrPresentationBudgetExhausted();
         }
+    }
+
+    /// <summary>Warns once per execution when stderr stops reaching the notebook presentation
+    /// because a presentation budget (event count or text bytes) is exhausted; the dropped
+    /// content was previously silent, which made diagnosis require ad-hoc capture.</summary>
+    private void WarnStderrPresentationBudgetExhausted()
+    {
+        if (presentationBudgetWarned || logger is null) return;
+
+        presentationBudgetWarned = true;
+        logger.LogWarning(
+            "Stderr presentation for REPL session {SessionId} execution {ExecutionId} stopped early: the presentation budget is exhausted.",
+            sessionId,
+            executionId);
     }
 
     private async ValueTask PresentErrorAsync(

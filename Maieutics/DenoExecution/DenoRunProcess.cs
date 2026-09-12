@@ -15,6 +15,10 @@ internal sealed class DenoRunProcess : IAsyncDisposable
     private const int DrainBufferCharacters = 4096;
     private const int MaximumLoggedCharactersPerStream = 32 * 1024;
 
+    /// <summary>Bounds one logged child-output line so a child that never breaks lines still
+    /// cannot emit a single oversized log record; the line flushes early at this length.</summary>
+    private const int MaximumLoggedLineCharacters = 4096;
+
     /// <summary>The default total stop budget: the kill is immediate, so the budget bounds the
     /// final completion drain. Callers that need a different budget pass one to
     /// <see cref="Start"/>; layered shutdown paths compose their own total budget on top.</summary>
@@ -157,6 +161,12 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         process.Dispose();
     }
 
+    /// <summary>Drains one child stream, emitting each output line at Debug under the
+    /// per-stream character budget (the truncated-summary Debug marks the cut when the
+    /// budget is spent). Lines split on CR/LF; a final partial line flushes at EOF, and a
+    /// line longer than <see cref="MaximumLoggedLineCharacters" /> flushes early so one
+    /// logged message stays bounded. The optional capture accumulates independently of the
+    /// log budget and is returned to the caller unchanged.</summary>
     private async Task DrainAsync(
         TextReader reader,
         string streamName,
@@ -164,9 +174,25 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         TaskCompletionSource<string>? capturedOutput)
     {
         var buffer = ArrayPool<char>.Shared.Rent(DrainBufferCharacters);
-        var remainingLogBudget = logger.IsEnabled(LogLevel.Debug) ? MaximumLoggedCharactersPerStream : 0;
+        var loggingEnabled = logger.IsEnabled(LogLevel.Debug);
+        var remainingLogBudget = loggingEnabled ? MaximumLoggedCharactersPerStream : 0;
+        var pendingLine = loggingEnabled ? new StringBuilder() : null;
+        var truncatedLogged = false;
         var captured = capturedOutput is null ? null : new StringBuilder();
-        var streamCompleted = false;
+
+        void FlushLine(StringBuilder line)
+        {
+            if (line.Length == 0) return;
+
+            logger.LogDebug(
+                "{ProcessDescription} {ProcessId} {StreamName}: {Line}",
+                processDescription,
+                processId,
+                streamName,
+                line.ToString());
+            line.Clear();
+        }
+
         try
         {
             while (true)
@@ -180,27 +206,49 @@ internal sealed class DenoRunProcess : IAsyncDisposable
                     captured.Append(buffer, 0, count);
                 }
 
-                if (remainingLogBudget <= 0)
+                if (pendingLine is not { } line) continue; // Debug disabled or the budget was spent.
+
+                var segment = buffer.AsSpan(0, read);
+                while (!segment.IsEmpty)
                 {
-                    if (!streamCompleted && remainingLogBudget == 0)
+                    var terminator = segment.IndexOfAny('\r', '\n');
+                    var complete = terminator >= 0;
+                    var lineLength = complete ? terminator : segment.Length;
+                    while (lineLength > 0)
                     {
-                        LogStreamSummary(logger, streamName, truncated: true);
-                        streamCompleted = true;
+                        if (remainingLogBudget <= 0)
+                        {
+                            LogStreamSummary(logger, streamName, truncated: true);
+                            truncatedLogged = true;
+                            break;
+                        }
+
+                        var taken = Math.Min(
+                            Math.Min(lineLength, remainingLogBudget),
+                            MaximumLoggedLineCharacters - line.Length);
+                        line.Append(segment[..taken]);
+                        remainingLogBudget -= taken;
+                        segment = segment[taken..];
+                        lineLength -= taken;
+                        if (line.Length >= MaximumLoggedLineCharacters) FlushLine(line);
                     }
 
-                    continue;
+                    if (lineLength > 0) break; // truncated: the budget no longer covers the line
+
+                    if (!complete) break; // the rest of the segment is a partial line
+
+                    FlushLine(line);
+                    segment = segment[1..]; // the terminator
                 }
 
-                var loggedCount = Math.Min(read, remainingLogBudget);
-                remainingLogBudget -= loggedCount;
-                if (loggedCount >= read) continue;
-
-                LogStreamSummary(logger, streamName, truncated: true);
-                streamCompleted = true;
+                if (truncatedLogged) pendingLine = null;
             }
 
-            if (!streamCompleted)
-                LogStreamSummary(logger, streamName, truncated: false);
+            if (pendingLine is { } remainder)
+            {
+                FlushLine(remainder); // a final partial line without a terminator
+                if (!truncatedLogged) LogStreamSummary(logger, streamName, truncated: false);
+            }
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {

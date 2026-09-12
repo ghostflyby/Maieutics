@@ -1,6 +1,7 @@
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Persistence;
+using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Commands;
 
@@ -37,6 +38,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly IObjectReclaimer? reclaimer;
     private readonly string? viewSessionsRoot;
     private readonly string? objectsRoot;
+    private readonly ILogger<MaieuticsAgentSessionManager> logger;
     private readonly Lock gate = new();
     private readonly Dictionary<string, LiveSession> live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
@@ -47,6 +49,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         IAgentRunProfileProvider profileProvider,
         string? familiesRoot,
         Func<AgentSessionId, SqliteTranscriptStore>? storeFactory,
+        ILogger<MaieuticsAgentSessionManager> logger,
         IAgentObjectStore? objectStore = null,
         IObjectReclaimer? reclaimer = null,
         string? viewSessionsRoot = null,
@@ -61,6 +64,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         this.reclaimer = reclaimer;
         this.viewSessionsRoot = viewSessionsRoot;
         this.objectsRoot = objectsRoot;
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         foreground = CreateLive(AgentSessionId.Create());
     }
 
@@ -160,6 +164,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             entry.Touch();
         }
 
+        logger.LogDebug("Resolved session {SessionId} from stored history.", sessionId);
         EnforceLiveCapacity(sessionId);
         return restored;
     }
@@ -178,6 +183,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
                 if (live.TryGetValue(sessionId.Value.ToString("N"), out var existing))
                 {
                     MoveForegroundLocked(existing.Session);
+                    logger.LogDebug("Resumed session {SessionId} as the foreground.", sessionId);
                     return sessionId;
                 }
             }
@@ -187,6 +193,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
 
         MoveForeground(Resolve(sessionId));
+        logger.LogDebug("Resumed session {SessionId} as the foreground.", sessionId);
         return sessionId;
     }
 
@@ -207,6 +214,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             MoveForegroundLocked(session);
         }
 
+        logger.LogDebug("Created session {SessionId}.", sessionId);
         EnforceLiveCapacity(sessionId);
         return sessionId;
     }
@@ -259,6 +267,11 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             MoveForegroundLocked(forked);
         }
 
+        logger.LogDebug(
+            "Forked session {SourceSessionId} to {SessionId} at turn {ForkPoint}.",
+            sourceId,
+            forkId,
+            forkPointSeq);
         EnforceLiveCapacity(forkId);
         return forkId;
     }
@@ -566,8 +579,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             if (!live.TryGetValue(key, out var entry)) return null;
 
             entry.AddPin();
-            return new SessionPin(this, key);
         }
+
+        logger.LogDebug("Pinned session {SessionId} against eviction.", sessionId);
+        return new SessionPin(this, key);
     }
 
     /// <summary>Whether a live session currently holds at least one eviction-pin lease,
@@ -590,6 +605,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             // An evicted or replaced entry has no pin left to release; the lease is
             // cooperative and never resurrects a session.
         }
+
+        logger.LogDebug("Released the eviction pin for session {SessionId}.", key);
     }
 
     /// <summary>Keeps the live set bounded, evicting the least recently used sessions that
@@ -604,25 +621,47 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private void EnforceLiveCapacity(AgentSessionId? protectedId = null)
     {
         List<(string Key, long Touched, AgentSessionId Id)> candidates;
+        List<(AgentSessionId Id, string Reason)> skipped;
         lock (gate)
         {
             if (live.Count <= LiveSessionCapacity) return;
 
-            candidates = live.Values
-                .Where(entry =>
-                    !ReferenceEquals(entry.Session, foreground) &&
-                    !entry.Session.IsRunInProgress &&
-                    !entry.IsPinned &&
-                    (protectedId is null || entry.Session.Id != protectedId.Value))
-                .OrderBy(entry => entry.Touched)
-                .Select(entry => (entry.Session.Id.Value.ToString("N"), entry.Touched, entry.Session.Id))
-                .ToList();
+            candidates = [];
+            skipped = [];
+            foreach (var entry in live.Values)
+            {
+                var skipReason =
+                    ReferenceEquals(entry.Session, foreground) ? "foreground" :
+                    entry.Session.IsRunInProgress ? "run-in-flight" :
+                    entry.IsPinned ? "pinned" :
+                    protectedId is not null && entry.Session.Id == protectedId.Value ? "protected" :
+                    null;
+                if (skipReason is { } reason)
+                {
+                    skipped.Add((entry.Session.Id, reason));
+                }
+                else
+                {
+                    candidates.Add((entry.Session.Id.Value.ToString("N"), entry.Touched, entry.Session.Id));
+                }
+            }
+
+            // OrderBy is stable like the LINQ pipeline this replaces; List<T>.Sort is not,
+            // and eviction order must not reshuffle when Touched ticks tie.
+            candidates = candidates.OrderBy(entry => entry.Touched).ToList();
+        }
+
+        foreach (var (id, reason) in skipped)
+        {
+            logger.LogDebug("Eviction skipped session {SessionId}: {Reason}.", id, reason);
         }
 
         foreach (var (key, touched, id) in candidates)
         {
             if (LoadStoredTranscript(id) is null) continue; // never lose unresumable state
 
+            var evicted = false;
+            string? recheckSkipReason = null;
             lock (gate)
             {
                 if (live.Count <= LiveSessionCapacity) return;
@@ -636,7 +675,29 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
                     (protectedId is null || entry.Session.Id != protectedId.Value))
                 {
                     live.Remove(key);
+                    evicted = true;
                 }
+                else if (live.TryGetValue(key, out var current))
+                {
+                    recheckSkipReason =
+                        current.Touched != touched ? "touched-since-candidacy" :
+                        ReferenceEquals(current.Session, foreground) ? "foreground" :
+                        current.Session.IsRunInProgress ? "run-in-flight" :
+                        current.IsPinned ? "pinned" :
+                        "protected";
+                }
+            }
+
+            if (evicted)
+            {
+                logger.LogInformation(
+                    "Evicted session {SessionId} from the live set (last touched at {TouchedAt}).",
+                    id,
+                    touched);
+            }
+            else if (recheckSkipReason is { } reason)
+            {
+                logger.LogDebug("Eviction skipped session {SessionId}: {Reason}.", id, reason);
             }
         }
     }

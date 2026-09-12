@@ -83,9 +83,17 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         {
             // All-or-nothing: a batch that would exceed the capacity is rejected whole.
             if (state.Items.Count + items.Length > Capacity)
+            {
+                logger.LogDebug(
+                    "Rejected a turn queue batch of {Count} item(s) for session {SessionId}: {QueuedCount} of {Capacity} already queued.",
+                    items.Length,
+                    sessionId,
+                    state.Items.Count,
+                    Capacity);
                 throw new FrontendFailureException(
                     FrontendErrors.QueueFull,
                     $"The session's turn queue is full ({state.Items.Count} queued of {Capacity}).");
+            }
 
             response = new List<FrontendQueueEnqueuedItem>(items.Length);
             foreach (var item in items)
@@ -98,6 +106,11 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
             EnsureWorkerLocked(sessionId, state);
         }
 
+        logger.LogDebug(
+            "Enqueued {Count} turn queue item(s) for session {SessionId} ({Capacity} item capacity).",
+            items.Length,
+            sessionId,
+            Capacity);
         PublishChange(state);
         return new FrontendQueueEnqueueResponse(response);
     }
@@ -110,6 +123,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     {
         service.EnsureSessionResolved(sessionId);
         var state = GetOrAdd(sessionId);
+        var removed = false;
         lock (state.Gate)
         {
             var index = state.Items.FindIndex(item => item.Id == itemId);
@@ -117,6 +131,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
             {
                 state.Items.RemoveAt(index);
                 ReleaseLeaseWhenDrainedLocked(state);
+                removed = true;
             }
             else if (state.Running is { } running && running.ItemId == itemId)
             {
@@ -132,6 +147,9 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
             }
         }
 
+        if (removed)
+            logger.LogDebug("Removed turn queue item {ItemId} of session {SessionId}.", itemId, sessionId);
+
         PublishChange(state);
     }
 
@@ -142,17 +160,26 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         service.EnsureSessionResolved(sessionId);
         var state = GetOrAdd(sessionId);
         bool removed;
+        var removedCount = 0;
         lock (state.Gate)
         {
             removed = state.Items.Count > 0;
             if (removed)
             {
+                removedCount = state.Items.Count;
                 state.Items.Clear();
                 ReleaseLeaseWhenDrainedLocked(state);
             }
         }
 
-        if (removed) PublishChange(state);
+        if (removed)
+        {
+            logger.LogDebug(
+                "Cleared {Count} turn queue item(s) for session {SessionId}.",
+                removedCount,
+                sessionId);
+            PublishChange(state);
+        }
     }
 
     /// <summary>Gets the session's full queue state with item texts (the GET snapshot
@@ -370,6 +397,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// </summary>
     private async Task RunWorkerAsync(string sessionId, SessionQueue state, CancellationTokenSource cancellation)
     {
+        logger.LogDebug("Turn queue worker started for session {SessionId}.", sessionId);
         try
         {
             while (true)
@@ -392,6 +420,10 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 // again until the submission handshake completes and it becomes running —
                 // a DELETE in that window finds neither queued nor running item.
                 PublishChange(state);
+                logger.LogDebug(
+                    "Turn queue item {ItemId} of session {SessionId} dequeued; the run is starting.",
+                    item.Id,
+                    sessionId);
 
                 try
                 {
@@ -404,6 +436,11 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
 
                     PublishChange(state);
                     await AwaitRunSettledAsync(sessionId, runId, cancellation.Token).ConfigureAwait(false);
+                    logger.LogDebug(
+                        "Run {RunId} settled; turn queue item {ItemId} of session {SessionId} removed.",
+                        runId,
+                        item.Id,
+                        sessionId);
                 }
                 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
                 {
@@ -450,6 +487,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         }
         finally
         {
+            logger.LogDebug("Turn queue worker stopped for session {SessionId}.", sessionId);
             cancellation.Dispose();
         }
     }
@@ -488,6 +526,11 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 attempt <= BusyRetryLimit &&
                 !cancellationToken.IsCancellationRequested)
             {
+                logger.LogWarning(
+                    "Turn submission for session {SessionId} raced the busy gate on attempt {Attempt} of {MaxRetries}; waiting for the in-flight run.",
+                    sessionId,
+                    attempt,
+                    BusyRetryLimit);
                 await WaitForInFlightRunAsync(sessionId, cancellationToken).ConfigureAwait(false);
             }
         }

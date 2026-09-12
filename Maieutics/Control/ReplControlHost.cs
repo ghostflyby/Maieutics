@@ -253,11 +253,16 @@ internal sealed partial class ReplControlHost : IDisposable
         }
 
         var sessionId = identity.Id;
+        logger.LogDebug(
+            "Control-bus connection accepted for session {SessionId} (peer process {PeerProcessId}).",
+            sessionId,
+            peerProcessId);
         var connection = new SessionBusConnection(socket);
         if (connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
         {
             // A replaced connection drains under a bounded budget: a peer that stops
             // reading must not stall the new connection's registration.
+            logger.LogDebug("Replacing the control-bus connection for session {SessionId}.", sessionId);
             using var replacementBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
@@ -295,6 +300,16 @@ internal sealed partial class ReplControlHost : IDisposable
                     toolInvocations,
                     owner.Token).ConfigureAwait(false);
             }
+
+            logger.LogDebug("Control-bus receive loop for session {SessionId} ended gracefully.", sessionId);
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(
+                exception,
+                "Control-bus receive loop for session {SessionId} ended faulted.",
+                sessionId);
+            throw;
         }
         finally
         {

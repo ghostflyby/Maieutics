@@ -591,13 +591,28 @@ internal sealed class FrontendHost : IAsyncDisposable
                     // One wait race per loop iteration: a run wake serves that run exactly
                     // once (queue wakes never touch the `previous` tracking, so a run can
                     // neither be missed nor double-served); a queue wake writes one
-                    // full-state queue.updated frame straight on the socket. The queue
-                    // wait is raced first so a socket that opens while queue state exists
-                    // receives the current state immediately after hello, even when a run
-                    // announcement is also pending.
+                    // full-state queue.updated frame straight on the socket.
                     var runWait = service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
                     var queueWait = turnQueue.WaitForChangeAsync(sessionId, queueVersion, peer.Token);
                     var settled = await Task.WhenAny(queueWait, runWait).ConfigureAwait(false);
+
+                    // Flush queue state BEFORE serving a run: one worker transition fires
+                    // both wakes (dequeue and announce), and clients need the queue frame
+                    // to precede the run's own frames so they can map the new run id to
+                    // its queued cell before text arrives. Comparing versions — not the
+                    // wake winner — makes the order deterministic; a scheduling race here
+                    // parked the frame behind a gated run on slow runners.
+                    (var frameSnapshot, var latestQueueVersion) = turnQueue.FrameSnapshot(sessionId);
+                    if (latestQueueVersion != queueVersion)
+                    {
+                        queueVersion = latestQueueVersion;
+                        if (socket.State == WebSocketState.Open)
+                            await SendFrameAsync(
+                                socket,
+                                new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                                peer.Token).ConfigureAwait(false);
+                    }
+
                     if (ReferenceEquals(settled, runWait))
                     {
                         var stream = await runWait.ConfigureAwait(false);
@@ -617,13 +632,6 @@ internal sealed class FrontendHost : IAsyncDisposable
                             CancellationToken.None,
                             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                             TaskScheduler.Default);
-
-                        (var frameSnapshot, queueVersion) = turnQueue.FrameSnapshot(sessionId);
-                        if (socket.State == WebSocketState.Open)
-                            await SendFrameAsync(
-                                socket,
-                                new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
-                                peer.Token).ConfigureAwait(false);
                     }
                 }
             }

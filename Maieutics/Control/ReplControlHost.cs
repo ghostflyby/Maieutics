@@ -31,6 +31,7 @@ internal sealed partial class ReplControlHost : IDisposable
     private readonly ILogger<ReplControlHost> logger;
     private readonly ReplControlCredentialRegistry? credentialRegistry;
     private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
+    private readonly Maieutics.Execution.ResourceRegistry? resources;
 
     private readonly ReplOperationRegistry operations = new();
     private readonly PluginHostManager? pluginHosts;
@@ -46,7 +47,8 @@ internal sealed partial class ReplControlHost : IDisposable
         PluginHostManager? pluginHosts = null,
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsPipeBootstrap = null,
-        Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null)
+        Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null,
+        Maieutics.Execution.ResourceRegistry? resources = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
@@ -57,6 +59,7 @@ internal sealed partial class ReplControlHost : IDisposable
         this.credentialRegistry = credentials;
         this.windowsPipeBootstrap = windowsPipeBootstrap;
         this.commFrontendSink = commFrontendSink;
+        this.resources = resources;
     }
 
     /// <summary>Gets the Unix socket path used by the process-wide channel on Unix.</summary>
@@ -133,6 +136,7 @@ internal sealed partial class ReplControlHost : IDisposable
         application.MapGet("/health", () => Results.Text("ok"));
         application.Map("/ws", HandleWebSocketAsync);
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
+        if (resources is not null) application.MapGet("/v1/resource", HandleResourceGetAsync);
         MapCommEndpoint(application);
     }
 
@@ -141,6 +145,7 @@ internal sealed partial class ReplControlHost : IDisposable
         return path.StartsWithSegments("/health") ||
                path.StartsWithSegments("/ws") ||
                path.StartsWithSegments("/v1/tool.invoke") ||
+               path.StartsWithSegments("/v1/resource") ||
                path.StartsWithSegments("/comm");
     }
 

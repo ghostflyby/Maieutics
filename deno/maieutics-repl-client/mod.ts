@@ -36,6 +36,7 @@ function deferred<T>(): Deferred<T> {
 import { type BusConnection, connectBus } from "../shared/bus.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
 import { type CommClient, CommKind, connectComm } from "../maieutics-deno-repl/comm.ts";
+import { createResourceReader } from "../maieutics-deno-repl/resource_bridge.ts";
 
 export interface ReplClientOptions {
   /** Unix-domain socket path or Windows loopback host:port of the control channel. */
@@ -73,6 +74,37 @@ export interface ReplComm {
   ): void;
 }
 
+/** One entry of the virtual resource catalog returned by `resources.list()`. */
+export interface ResourceCatalogEntry {
+  readonly providerId: string;
+  readonly uri: string;
+  readonly name?: string;
+  readonly description?: string;
+  readonly mimeType?: string;
+  /** "resource" is a concrete URI; "template" is an RFC 6570 `template`. */
+  readonly kind: "resource" | "template";
+  readonly template?: string;
+}
+
+export interface ResourceListResult {
+  readonly resources: ResourceCatalogEntry[];
+  readonly conflicts: {
+    readonly providerId: string;
+    readonly scheme: string;
+    readonly authority?: string;
+    readonly reason: string;
+    readonly shadowedBy?: string;
+  }[];
+}
+
+export interface ReplResources {
+  /** Lists the virtual resources and templates registered with the kernel. */
+  list(): Promise<ResourceListResult>;
+  /** Reads one virtual resource URI; returns a native Response whose body
+   * carries the bytes (non-2xx answers keep their status). */
+  read(uri: string, options?: { signal?: AbortSignal }): Promise<Response>;
+}
+
 export interface ReplClient {
   /** Unix-domain socket path or Windows loopback host:port of the control channel. */
   readonly address: string;
@@ -82,6 +114,8 @@ export interface ReplClient {
   events: EventTarget;
   /** Comm channel operations. */
   comm: ReplComm;
+  /** Virtual resource reads over the control channel (ADR 0026). */
+  resources: ReplResources;
 
   /** Probes the kernel control channel over the multiplexed bus. */
   health(): Promise<string>;
@@ -517,14 +551,33 @@ function createComm(bus: ReplBus): ReplComm {
   };
 }
 
+function createResources(address: string, tools: ReplTools): ReplResources {
+  const read = createResourceReader({
+    address,
+    ...(Deno.build.os === "windows"
+      ? ((credential) => (credential === undefined || credential.length === 0
+        ? {}
+        : { credential }))(Deno.env.get(CREDENTIAL_ENV))
+      : {}),
+  });
+  return {
+    async list() {
+      return await tools.invoke("list_resources") as ResourceListResult;
+    },
+    read: (uri, options) => read(uri, options),
+  };
+}
+
 function createClient(address: string, events: EventTarget): ReplClient {
   const bus = new ReplBus(address, events);
+  const tools = createTools(bus);
   return {
     address,
     health: () => healthProbe(bus),
-    tools: createTools(bus),
+    tools,
     events,
     comm: createComm(bus),
+    resources: createResources(address, tools),
   };
 }
 
@@ -578,4 +631,10 @@ export const comm: ReplComm = {
   msg: (commId, data, buffers) => ensureDefaultClient().comm.msg(commId, data, buffers),
   close: (commId, data) => ensureDefaultClient().comm.close(commId, data),
   on: (event, handler) => ensureDefaultClient().comm.on(event, handler),
+};
+
+/** Virtual resource reads against the default client (ADR 0026). */
+export const resources: ReplResources = {
+  list: () => ensureDefaultClient().resources.list(),
+  read: (uri, options) => ensureDefaultClient().resources.read(uri, options),
 };

@@ -151,6 +151,11 @@ public static class MaieuticsHost
         var terminalOptions = new TerminalOptions();
         builder.Configuration.GetSection(TerminalOptions.SectionName).Bind(terminalOptions);
         terminalOptions.Validate();
+        var resourceProviderOptions = new ResourceProviderOptions();
+        builder.Configuration
+            .GetSection(ResourceProviderOptions.SectionName)
+            .Bind(resourceProviderOptions);
+        resourceProviderOptions.Validate();
         // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
         var agentPersistenceOptions = new MaieuticsAgentPersistenceOptions();
         builder.Configuration
@@ -194,6 +199,21 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(EffectivePolicy.Default);
         builder.Services.AddSingleton<TerminalRegistry>();
         builder.Services.AddSingleton<TerminalFunctions>();
+        // One shared HTTP client for every custom resource bridge; per-provider request
+        // timeouts live in the provider, so the client itself never cuts a stream short.
+        builder.Services.AddSingleton<HttpClient>(static _ => new HttpClient(
+            new SocketsHttpHandler
+            {
+                AutomaticDecompression = DecompressionMethods.None,
+                ConnectTimeout = TimeSpan.FromSeconds(10)
+            })
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        builder.Services.AddSingleton<ResourceRegistry>(static services => new ResourceRegistry(
+            BuildResourceProviders(services)));
+        builder.Services.AddSingleton(resourceProviderOptions);
+        builder.Services.AddSingleton<ResourceFunctions>();
         builder.Services.AddSingleton<FrontendDenoReplPresentationRouter>();
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
             services.GetRequiredService<FrontendDenoReplPresentationRouter>());
@@ -269,17 +289,22 @@ public static class MaieuticsHost
                 controlSocketPath,
                 services.GetRequiredService<ReplControlSessionRegistry>(),
                 services.GetRequiredService<ILogger<ReplControlHost>>(),
-                services.GetRequiredService<WorkspaceFunctions>().Functions,
-                services.GetRequiredService<PluginHostManager>(),
-                services.GetRequiredService<ReplControlCredentialRegistry>(),
-                OperatingSystem.IsWindows()
+                scriptTools:
+                [
+                    .. services.GetRequiredService<WorkspaceFunctions>().Functions,
+                    .. services.GetRequiredService<ResourceFunctions>().Functions
+                ],
+                pluginHosts: services.GetRequiredService<PluginHostManager>(),
+                credentials: services.GetRequiredService<ReplControlCredentialRegistry>(),
+                windowsPipeBootstrap: OperatingSystem.IsWindows()
                     ? services.GetRequiredService<IWindowsPipeBootstrap>()
                     : null,
-                frontendOptions.Enabled
+                commFrontendSink: frontendOptions.Enabled
                     ? (sessionId, message, cancellationToken) =>
                         services.GetRequiredService<FrontendCommRouter>()
                             .AcceptFromReplAsync(sessionId, message, cancellationToken)
-                    : null);
+                    : null,
+                resources: services.GetRequiredService<ResourceRegistry>());
 
             // Plugin capability calls execute kernel script tools through the same
             // invocation path the control bus uses; the manager is resolved lazily so
@@ -314,10 +339,13 @@ public static class MaieuticsHost
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();
         builder.Services.AddHostedService<DenoModuleGraphWarmer>();
         builder.Services.AddSingleton(static services =>
-            new WorkspaceFunctions(services.GetRequiredService<Workspace>()));
+            new WorkspaceFunctions(
+                services.GetRequiredService<Workspace>(),
+                resources: services.GetRequiredService<ResourceRegistry>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
+            .. services.GetRequiredService<ResourceFunctions>().Functions,
             .. services.GetRequiredService<DenoReplFunctions>().Functions,
             .. (services.GetService<AgentObjectFunctions>()?.Functions ?? [])
         ]);
@@ -367,8 +395,26 @@ public static class MaieuticsHost
         return application;
     }
 
-    private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)
+    /// <summary>Composes the resource plane in resolution order: the built-in workspace
+    /// provider, custom config-declared bridges, then the MCP resource provider whose
+    /// catalog source resolves lazily (the runtime configuration is still being built
+    /// when this registration runs; ADR 0026).</summary>
+    private static IReadOnlyList<Execution.IResourceProvider> BuildResourceProviders(IServiceProvider services)
     {
+        var options = services.GetRequiredService<ResourceProviderOptions>();
+        var client = services.GetRequiredService<HttpClient>();
+        var providers = new List<Execution.IResourceProvider>
+        {
+            new WorkspaceResourceProvider(services.GetRequiredService<Workspace>()),
+            new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+        };
+        foreach (var custom in options.CustomProviders)
+            providers.Add(new HttpBridgeResourceProvider(client, custom));
+
+        return providers;
+    }
+
+    private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)    {
         var runtimeConfiguration = services.GetService<IMaieuticsRuntimeConfiguration>();
         var workspace = services.GetService<Workspace>();
         return new FrontendSessionService(

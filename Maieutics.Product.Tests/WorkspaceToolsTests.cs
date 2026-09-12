@@ -606,14 +606,16 @@ public sealed class WorkspaceToolsTests
         int maximumFiles = 10_000,
         int maximumDirectoryEntries = 10_000,
         int maximumFileBytes = 2 * 1_024 * 1_024,
-        long maximumSearchBytes = 64L * 1_024 * 1_024)
+        long maximumSearchBytes = 64L * 1_024 * 1_024,
+        ResourceRegistry? resources = null)
     {
         return new WorkspaceFunctions(
             Workspace.Create(root, root),
             maximumFiles,
             maximumDirectoryEntries,
             maximumFileBytes,
-            maximumSearchBytes);
+            maximumSearchBytes,
+            resources);
     }
 
     private static AIFunction Function(WorkspaceFunctions functions, string name)
@@ -692,34 +694,6 @@ public sealed class WorkspaceToolsTests
     }
 
     private sealed record ToolInvocation(object? Result, AgentToolException? Failure);
-
-    private sealed class TemporaryWorkspace : IDisposable
-    {
-        private TemporaryWorkspace(string parentPath, string path)
-        {
-            ParentPath = parentPath;
-            Path = path;
-        }
-
-        internal string ParentPath { get; }
-
-        internal string Path { get; }
-
-        public void Dispose()
-        {
-            Directory.Delete(ParentPath, true);
-        }
-
-        internal static TemporaryWorkspace Create()
-        {
-            var parent = System.IO.Path.Combine(
-                System.IO.Path.GetTempPath(),
-                $"maieutics-workspace-tests-{Guid.NewGuid():N}");
-            var path = System.IO.Path.Combine(parent, "workspace");
-            Directory.CreateDirectory(path);
-            return new TemporaryWorkspace(parent, path);
-        }
-    }
 
     private sealed class EnvironmentVariableScope : IDisposable
     {

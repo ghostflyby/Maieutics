@@ -1,9 +1,5 @@
 import { assertEquals, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
-import {
-  createResourceReader,
-  isVirtualResourceUrl,
-  patchFetch,
-} from "./resource_bridge.ts";
+import { createResourceReader, isVirtualResourceUrl, patchFetch } from "./resource_bridge.ts";
 
 Deno.test("virtual URL detection covers registered schemes only", () => {
   assertEquals(isVirtualResourceUrl("workspace://local/notes/a.md"), true);

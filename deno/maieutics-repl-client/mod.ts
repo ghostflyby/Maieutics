@@ -555,9 +555,11 @@ function createResources(address: string, tools: ReplTools): ReplResources {
   const read = createResourceReader({
     address,
     ...(Deno.build.os === "windows"
-      ? ((credential) => (credential === undefined || credential.length === 0
-        ? {}
-        : { credential }))(Deno.env.get(CREDENTIAL_ENV))
+      ? ((
+        credential,
+      ) => (credential === undefined || credential.length === 0 ? {} : { credential }))(
+        Deno.env.get(CREDENTIAL_ENV),
+      )
       : {}),
   });
   return {

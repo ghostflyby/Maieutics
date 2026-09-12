@@ -286,9 +286,7 @@ function installResourceFetch(): void {
   const address = Deno.env.get(IPC_ENV);
   if (address === undefined || address.length === 0) return;
 
-  const credential = Deno.build.os === "windows"
-    ? Deno.env.get(CREDENTIAL_ENV)
-    : undefined;
+  const credential = Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined;
   globalThis.fetch = patchFetch(globalThis.fetch, {
     address,
     ...(credential === undefined ? {} : { credential }),

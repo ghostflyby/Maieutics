@@ -76,11 +76,8 @@ export function createResourceReader(
     : { Authorization: `Bearer ${options.credential}` };
 
   return (uri, init) => {
-    const base = useUnixProxy
-      ? `http://${PROXY_HOST}`
-      : `http://${options.address}`;
-    const target =
-      `${base}${RESOURCE_PATH}?uri=${encodeURIComponent(String(uri))}`;
+    const base = useUnixProxy ? `http://${PROXY_HOST}` : `http://${options.address}`;
+    const target = `${base}${RESOURCE_PATH}?uri=${encodeURIComponent(String(uri))}`;
     return fetch(target, {
       method: "GET",
       redirect: "error",
@@ -110,9 +107,7 @@ export function patchFetch(
       );
     }
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-    return signal === undefined
-      ? readResource(String(url))
-      : readResource(String(url), { signal });
+    return signal === undefined ? readResource(String(url)) : readResource(String(url), { signal });
   };
   return patched;
 }

@@ -7,7 +7,6 @@ import {
   QueueWatcher,
   readQueueState,
 } from "./queueProjection.ts";
-import type { QueueState } from "./protocol.ts";
 
 /** Builds a snapshot the parser accepts (tests mutate individual fields; the
  * overrides stay untyped so malformed fixtures are expressible). */

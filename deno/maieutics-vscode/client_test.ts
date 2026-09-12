@@ -888,7 +888,7 @@ Deno.test("queue watcher reconciles once per (re)connect and applies snapshots",
 });
 
 Deno.test("drain waits resolve only from snapshots after the enqueue", async () => {
-  const { discovery, shutdown, eventConnections, queue } = await startMockServer();
+  const { discovery, shutdown, queue } = await startMockServer();
   const client = FrontendClient.fromDiscovery(discovery);
   try {
     const controller = new AbortController();
@@ -946,7 +946,7 @@ Deno.test("drain waits resolve only from snapshots after the enqueue", async () 
 });
 
 Deno.test("drain waits evaluate a snapshot that beat the registration", async () => {
-  const { discovery, shutdown, eventConnections, queue } = await startMockServer();
+  const { discovery, shutdown, queue } = await startMockServer();
   const client = FrontendClient.fromDiscovery(discovery);
   try {
     const controller = new AbortController();

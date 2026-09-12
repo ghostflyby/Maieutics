@@ -38,7 +38,7 @@
  */
 
 import * as vscode from "vscode";
-import type { FrontendClient, QueueItemAnswer, SubmitAnswer } from "./client.ts";
+import type { FrontendClient, SubmitAnswer } from "./client.ts";
 import type { EventFrame, QueueState, SessionInfo } from "./protocol.ts";
 import { FrontendError } from "./protocol.ts";
 import {

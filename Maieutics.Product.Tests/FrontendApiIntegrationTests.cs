@@ -1266,12 +1266,14 @@ public sealed class FrontendApiIntegrationTests
         private readonly IHost host;
         private readonly IAsyncDisposable provider;
         private readonly string configurationFile;
+        private readonly string dataRoot;
         private readonly HangingOpenAiServer? hangingProvider;
 
         private FrontendHarness(
             IHost host,
             IAsyncDisposable provider,
             string configurationFile,
+            string dataRoot,
             string discoveryPath,
             JsonElement discovery,
             bool hanging)
@@ -1279,6 +1281,7 @@ public sealed class FrontendApiIntegrationTests
             this.host = host;
             this.provider = provider;
             this.configurationFile = configurationFile;
+            this.dataRoot = dataRoot;
             hangingProvider = hanging ? (HangingOpenAiServer)provider : null;
             DiscoveryPath = discoveryPath;
             Discovery = discovery;
@@ -1332,12 +1335,28 @@ public sealed class FrontendApiIntegrationTests
                 Path.GetTempPath(),
                 $"maieutics-frontend-discovery-{Guid.NewGuid():N}.json");
 
+            // Isolate persistent data: the composition root registers ApplicationPaths
+            // unconditionally, so without this override the host resolves sessions against
+            // the machine's real agent families root — an unknown-session lookup would
+            // enumerate and open every real family database (slow, and SQLITE_CANTOPEN
+            // under load or stale locks surfaces as an untyped 500).
+            var dataRoot = Path.Combine(
+                Path.GetTempPath(),
+                $"maieutics-frontend-data-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dataRoot);
             var host = MaieuticsHost.CreateApplication(
             [
                 "--config", configurationFile,
                 "--frontend-discovery", discoveryPath
             ], builder =>
             {
+                var real = ApplicationPaths.Resolve();
+                builder.Services.RemoveAll<ApplicationPaths>();
+                builder.Services.AddSingleton(new ApplicationPaths(
+                    dataRoot,
+                    real.CacheRoot,
+                    real.RuntimeRoot,
+                    real.TempRoot));
                 configureBuilder?.Invoke(builder);
             });
             await host.StartAsync(cancellationToken);
@@ -1366,6 +1385,7 @@ public sealed class FrontendApiIntegrationTests
                 host,
                 provider,
                 configurationFile,
+                dataRoot,
                 discoveryPath,
                 discoveryElement,
                 hanging);
@@ -1381,6 +1401,11 @@ public sealed class FrontendApiIntegrationTests
         /// that need precise control over inputs such as cancellation tokens.</summary>
         public FrontendSessionService SessionService =>
             host.Services.GetRequiredService<FrontendSessionService>();
+
+        /// <summary>The live session manager, so tests can observe eviction-pin state
+        /// that the server-side turn queue drives (ADR 0025).</summary>
+        public Maieutics.Commands.MaieuticsAgentSessionManager SessionManager =>
+            host.Services.GetRequiredService<Maieutics.Commands.MaieuticsAgentSessionManager>();
 
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real
@@ -1472,6 +1497,15 @@ public sealed class FrontendApiIntegrationTests
 
             await ((IAsyncDisposable)host).DisposeAsync();
             await provider.DisposeAsync();
+            try
+            {
+                Directory.Delete(dataRoot, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A store connection can hold the directory briefly on Windows; a
+                // leftover temp directory must not mask the test result.
+            }
             try
             {
                 File.Delete(configurationFile);

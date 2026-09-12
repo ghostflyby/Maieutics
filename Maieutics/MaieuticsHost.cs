@@ -205,6 +205,7 @@ public static class MaieuticsHost
                     .PushCommMessageAsync(sessionId, message, cancellationToken)
                     .ConfigureAwait(false)));
         builder.Services.AddSingleton<FrontendSessionService>(CreateFrontendSessionService);
+        builder.Services.AddSingleton<FrontendTurnQueue>();
         builder.Services.AddSingleton<FrontendHost>();
         builder.Services.AddHostedService<FrontendHostedService>();
         if (OperatingSystem.IsWindows())

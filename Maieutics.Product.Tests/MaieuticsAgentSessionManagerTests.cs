@@ -361,6 +361,49 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         manager.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
     }
 
+    [Fact]
+    public void PinnedSessionsAreNotEvictedUntilTheLeaseIsReleased()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+        {
+            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+        }
+
+        using var manager = CreateManager();
+        manager.Resolve(stored);
+
+        // An unknown session has no live entry to pin.
+        manager.TryPinSession(AgentSessionId.Create()).Should().BeNull();
+
+        // A queued session holds one cooperative pin lease (ADR 0025): eviction skips the
+        // pinned session both at candidacy and at the removal re-check.
+        var lease = manager.TryPinSession(stored);
+        lease.Should().NotBeNull();
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
+        {
+            manager.StartNew();
+        }
+
+        manager.IsLive(stored).Should().BeTrue();
+
+        // Disposing the lease twice releases the pin exactly once; the next eviction pass
+        // may evict the session again (the lease is capacity management, not a lifetime
+        // guarantee).
+        if (lease is { } pin)
+        {
+            pin.Dispose();
+            pin.Dispose();
+        }
+
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
+        {
+            manager.StartNew();
+        }
+
+        manager.IsLive(stored).Should().BeFalse();
+    }
+
     private MaieuticsAgentSessionManager CreateManager()
     {
         return new MaieuticsAgentSessionManager(

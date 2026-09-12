@@ -147,16 +147,22 @@ public sealed class FrontendRunStreamTests
             NullLogger<FrontendRunStream>.Instance);
         stream.Start(null);
 
-        // Poll until the buffer has been filled and its front evicted; the run is still in
-        // flight, so every snapshot comes from the live branch (the queue never completed).
+        // Poll until the buffer has been filled to capacity AND the pump has published the
+        // whole held delta range: "count reached the cap" alone also matches mid-fill (the
+        // gap frame plus a full window appears as soon as the first eviction fires, while
+        // the oldest retained delta is still drifting), which asserted a sequence the run
+        // had not reached yet — a race that only slow runners lost. The oldest retained
+        // delta is stable once every delta is published, so wait for exactly that value.
+        var oldestRetainedDelta = deltas - FrontendRunStream.ReplayRetention + 1;
         IReadOnlyList<FrontendEventFrame> snapshot;
         while (true)
         {
             var (initial, channel) = stream.Subscribe(sinceSequence: 5);
             snapshot = initial;
-            var filled = initial.Count >= 1 + FrontendRunStream.ReplayRetention;
+            var settled = initial.Count >= 1 + FrontendRunStream.ReplayRetention &&
+                initial[1].Sequence == oldestRetainedDelta;
             stream.Unsubscribe(channel);
-            if (filled) break;
+            if (settled) break;
 
             await Task.Delay(10, TestContext.Current.CancellationToken);
         }

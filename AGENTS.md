@@ -174,7 +174,7 @@ domain whose files participate in one call tree; it is not a folder mirror. See 
 
 | Namespace | Domain |
 |---|---|
-| `Maieutics.Execution` | Workspace root, workspace://local URI resolution, and bounded read/search tools |
+| `Maieutics.Execution` | Workspace root, workspace://local URI resolution, bounded read/search tools, and the virtual resource URL registry (ADR 0026) |
 | `Maieutics.Terminal` | PTY sessions, headless VT screen, terminal input encoding, and `terminal_*` tools |
 | `Maieutics.Permissions` | Declarative permission layers, variable interpolation, effective policy, and Deno rendering |
 | `Maieutics.Processes` | General process start policy: environment allowlist and the future sandbox-enforcement seam (terminal and MCP children) |

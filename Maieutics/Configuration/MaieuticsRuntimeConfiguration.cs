@@ -18,6 +18,7 @@ namespace Maieutics.Configuration;
 internal sealed class MaieuticsRuntimeConfiguration :
     IMaieuticsRuntimeConfiguration,
     IMaieuticsMcpController,
+    IMcpResourceCatalogSource,
     IAsyncDisposable
 {
     private const string TerminalShellCapability = "Shell";
@@ -168,6 +169,23 @@ internal sealed class MaieuticsRuntimeConfiguration :
             return GetCurrent().McpServers.Values
                 .OrderBy(static generation => generation.Id, StringComparer.OrdinalIgnoreCase)
                 .Select(static generation => generation.GetInfo())
+                .ToArray();
+        }
+    }
+
+    /// <summary>The live MCP resource servers in <c>mcp.json</c> order (ADR 0026 decision 3).
+    /// Reconnecting servers still appear: their catalog is empty and reads fail with the
+    /// typed unavailable error until the connection returns.</summary>
+    public IReadOnlyList<McpResourceServerAccess> GetResourceServers()
+    {
+        lock (gate)
+        {
+            return GetCurrent().McpServers.Values
+                .OrderBy(static generation => generation.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(static generation => new McpResourceServerAccess(
+                    generation.Id,
+                    generation.GetResourceCatalog(),
+                    generation))
                 .ToArray();
         }
     }

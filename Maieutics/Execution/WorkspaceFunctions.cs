@@ -38,15 +38,18 @@ internal sealed class WorkspaceFunctions
     private readonly int maximumFiles;
     private readonly long maximumSearchBytes;
     private readonly Workspace workspace;
+    private readonly ResourceRegistry? resources;
 
     internal WorkspaceFunctions(
         Workspace workspace,
         int maximumFiles = DefaultMaximumFiles,
         int maximumDirectoryEntries = DefaultMaximumDirectoryEntries,
         int maximumFileBytes = DefaultMaximumFileBytes,
-        long maximumSearchBytes = DefaultMaximumSearchBytes)
+        long maximumSearchBytes = DefaultMaximumSearchBytes,
+        ResourceRegistry? resources = null)
     {
         this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this.resources = resources;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDirectoryEntries);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFileBytes);
@@ -65,7 +68,8 @@ internal sealed class WorkspaceFunctions
             CreateFunction(
                 (Func<string, int?, int?, CancellationToken, ValueTask<ReadTextResult>>)ReadTextAsync,
                 "read_text",
-                "Reads a bounded range of lines from a UTF-8 text file in the workspace."),
+                "Reads a bounded range of lines from a UTF-8 text resource: a workspace://local " +
+                "URI or any other registered resource URI (see list_resources)."),
             CreateFunction(
                 (Func<string, string?, bool?, bool?, int?, CancellationToken, ValueTask<SearchTextResult>>)
                 SearchTextAsync,
@@ -162,9 +166,9 @@ internal sealed class WorkspaceFunctions
         }
     }
 
-    [Description("Reads a bounded range of lines from a UTF-8 workspace text file.")]
+    [Description("Reads a bounded range of lines from a UTF-8 text resource.")]
     private async ValueTask<ReadTextResult> ReadTextAsync(
-        [Description("The workspace://local URI of a text file.")]
+        [Description("The resource URI: workspace://local/... or any registered resource URI.")]
         string uri,
         [Description("The first one-based line to return.")]
         int? startLine = null,
@@ -184,6 +188,16 @@ internal sealed class WorkspaceFunctions
                     "workspace_invalid_arguments",
                     $"startLine must be positive and maxLines must be between 1 and {MaximumLines}.");
 
+            if (resources is not null)
+            {
+                var resource = await ResolveResourceAsync(
+                    uri,
+                    requestedStartLine,
+                    maximumLines,
+                    cancellationToken).ConfigureAwait(false);
+                if (resource is { } result) return result;
+            }
+
             var snapshot = workspace.Capture();
             var file = snapshot.Resolve(uri, false);
             if (file.IsDirectory)
@@ -197,8 +211,8 @@ internal sealed class WorkspaceFunctions
                     "Workspace text tools can read only regular files.");
 
             return await ReadTextCoreAsync(
-                snapshot,
-                file,
+                file.Uri,
+                snapshot.OpenVerifiedRead(file.FullPath),
                 requestedStartLine,
                 maximumLines,
                 cancellationToken).ConfigureAwait(false);
@@ -207,16 +221,55 @@ internal sealed class WorkspaceFunctions
         {
             throw;
         }
+        catch (ResourceException exception)
+        {
+            throw new AgentToolException(exception.Code, exception.Message);
+        }
         catch (DecoderFallbackException)
         {
             throw new AgentToolException(
                 "workspace_invalid_utf8",
-                "The requested file is not valid UTF-8 text.");
+                "The requested resource is not valid UTF-8 text.");
         }
         catch (Exception exception) when (IsRecoverable(exception))
         {
             throw ToAgentToolException(exception);
         }
+    }
+
+    /// <summary>Resolves a non-workspace resource URI through the registry and reads its
+    /// body into the shared bounded line reader. Returns null when the URI belongs to the
+    /// built-in workspace plane (or cannot be a resource URI at all), so the original
+    /// workspace path with its exact error codes stays authoritative for those URIs.</summary>
+    private async ValueTask<ReadTextResult?> ResolveResourceAsync(
+        string uri,
+        int requestedStartLine,
+        int maximumLines,
+        CancellationToken cancellationToken)
+    {
+        if (!ResourceRegistry.TryParseUri(uri, out var parsed))
+            throw new AgentToolException(
+                "resource_invalid_uri",
+                "The value must be an absolute resource URI without a fragment.");
+
+        var provider = resources!.Resolve(parsed);
+        if (provider is null)
+            throw new AgentToolException(
+                "resource_unknown_scheme",
+                $"No registered provider reads the resource URI scheme '{parsed.Scheme}://'.");
+
+        if (provider is WorkspaceResourceProvider) return null;
+
+        var read = await provider.ReadAsync(
+            uri,
+            new ResourceReadRequest(MaximumReadScanBytes),
+            cancellationToken).ConfigureAwait(false);
+        return await ReadTextCoreAsync(
+            uri,
+            read.Content,
+            requestedStartLine,
+            maximumLines,
+            cancellationToken).ConfigureAwait(false);
     }
 
     [Description("Searches UTF-8 workspace files recursively.")]
@@ -351,15 +404,17 @@ internal sealed class WorkspaceFunctions
         return encoded.TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
+    /// <summary>Reads the shared bounded line window from one open resource body.
+    /// Takes ownership of <paramref name="content"/> and disposes it on every path.</summary>
     private static async Task<ReadTextResult> ReadTextCoreAsync(
-        WorkspaceSnapshot snapshot,
-        WorkspacePath file,
+        string uri,
+        Stream content,
         int requestedStartLine,
         int maximumLines,
         CancellationToken cancellationToken)
     {
-        await using var stream = snapshot.OpenVerifiedRead(file.FullPath);
-        var reader = new BoundedUtf8LineReader(stream);
+        await using var stream = content.ConfigureAwait(false);
+        var reader = new BoundedUtf8LineReader(content);
         var text = new StringBuilder();
         var outputBytes = 0;
         var lineNumber = 0;
@@ -373,7 +428,7 @@ internal sealed class WorkspaceFunctions
             {
                 var hasMore = await reader.HasMoreDataAsync(cancellationToken).ConfigureAwait(false);
                 return new ReadTextResult(
-                    file.Uri,
+                    uri,
                     actualStartLine,
                     actualEndLine,
                     text.ToString(),
@@ -384,7 +439,7 @@ internal sealed class WorkspaceFunctions
             var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
             if (line is null)
                 return new ReadTextResult(
-                    file.Uri,
+                    uri,
                     actualStartLine,
                     actualEndLine,
                     text.ToString(),
@@ -398,7 +453,7 @@ internal sealed class WorkspaceFunctions
             var lineBytes = StrictUtf8.GetByteCount(line);
             if (outputBytes + separatorBytes + lineBytes > MaximumUtf8Bytes)
                 return new ReadTextResult(
-                    file.Uri,
+                    uri,
                     actualStartLine,
                     actualEndLine,
                     text.ToString(),
@@ -668,7 +723,7 @@ internal sealed class WorkspaceFunctions
         };
     }
 
-    private sealed class BoundedUtf8LineReader(FileStream stream)
+    private sealed class BoundedUtf8LineReader(Stream stream)
     {
         private readonly byte[] buffer = new byte[4_096];
         private readonly byte[] lineBuffer = new byte[MaximumLineUtf8Bytes + 3];

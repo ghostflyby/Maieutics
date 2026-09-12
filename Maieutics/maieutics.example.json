@@ -9,6 +9,9 @@
     "Workspace": {
       "Root": null
     },
+    "Resources": {
+      "CustomProviders": []
+    },
     "DefaultProfile": "gpt",
     "Sources": {
       "openai": {

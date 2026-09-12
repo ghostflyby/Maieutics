@@ -4,9 +4,11 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using Maieutics.Execution;
 using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -221,6 +223,45 @@ internal sealed class McpServerGeneration
         }
     }
 
+    /// <summary>The server's resource catalog snapshot; empty while reconnecting or
+    /// when the server does not implement the resources capability.</summary>
+    internal McpResourceCatalog GetResourceCatalog()
+    {
+        lock (gate)
+        {
+            return current is { Client.Completion.IsCompleted: false } connection
+                ? connection.GetResourceCatalog()
+                : McpResourceCatalog.Empty;
+        }
+    }
+
+    /// <summary>Reads one resource through the live connection under the request
+    /// timeout. Throws <see cref="ResourceException"/> with
+    /// <c>resource_provider_unavailable</c> while no connection is active; transport
+    /// failures surface as <see cref="McpException"/>.</summary>
+    internal async Task<ImmutableArray<ResourceContents>> ReadResourceAsync(
+        string uri,
+        CancellationToken cancellationToken)
+    {
+        McpClient client;
+        lock (gate)
+        {
+            if (current is not { Client.Completion.IsCompleted: false } connection)
+                throw new ResourceException(
+                    "resource_provider_unavailable",
+                    $"MCP server '{definition.Id}' is reconnecting; its resources are temporarily unavailable.");
+
+            client = connection.Client;
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(definition.RequestTimeout);
+        var result = await client.ReadResourceAsync(
+            new ReadResourceRequestParams { Uri = uri },
+            timeout.Token).ConfigureAwait(false);
+        return [.. result.Contents];
+    }
+
     internal Task Retire()
     {
         TaskCompletionSource? completion = null;
@@ -430,7 +471,12 @@ internal sealed class McpServerGeneration
             clientOptions,
             loggerFactory,
             cancellationToken).ConfigureAwait(false);
-        var connection = new McpConnectionGeneration(client, definition, refreshSignals, reservedToolNames);
+        var connection = new McpConnectionGeneration(
+            client,
+            definition,
+            refreshSignals,
+            reservedToolNames,
+            loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}"));
         try
         {
             await connection.RefreshToolsAsync(cancellationToken).ConfigureAwait(false);
@@ -543,14 +589,17 @@ internal sealed class McpServerGeneration
         McpClient client,
         McpServerDefinition definition,
         Channel<byte> refreshSignals,
-        IReadOnlySet<string>? reservedToolNames)
+        IReadOnlySet<string>? reservedToolNames,
+        ILogger logger)
     {
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock gate = new();
+        private readonly ILogger logger = logger;
         private int references = 1;
         private bool retired;
         private ImmutableArray<MaieuticsMcpToolInfo> toolInfo = [];
         private ImmutableArray<AIFunction> tools = [];
+        private McpResourceCatalog resourceCatalog = McpResourceCatalog.Empty;
 
         internal McpClient Client { get; } = client;
 
@@ -570,6 +619,14 @@ internal sealed class McpServerGeneration
             lock (gate)
             {
                 return toolInfo;
+            }
+        }
+
+        internal McpResourceCatalog GetResourceCatalog()
+        {
+            lock (gate)
+            {
+                return resourceCatalog;
             }
         }
 
@@ -603,13 +660,74 @@ internal sealed class McpServerGeneration
                 info.Add(new MaieuticsMcpToolInfo(name, name, true));
             }
 
+            var catalog = await RefreshResourceCatalogAsync(cancellationToken).ConfigureAwait(false);
+
             lock (gate)
             {
                 if (retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
 
                 tools = exposed.ToImmutable();
                 toolInfo = info.ToImmutable();
+                resourceCatalog = catalog;
             }
+        }
+
+        /// <summary>Fetches the resource catalog. A server without the resources
+        /// capability (or refusing the listing) contributes an empty catalog instead of
+        /// failing the refresh; a cancellation still propagates.</summary>
+        private async Task<McpResourceCatalog> RefreshResourceCatalogAsync(CancellationToken cancellationToken)
+        {
+            var resources = ImmutableArray.CreateBuilder<McpResourceDescriptor>();
+            var templates = ImmutableArray.CreateBuilder<McpResourceTemplateDescriptor>();
+            try
+            {
+                var listed = await Client.ListResourcesAsync(cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var resource in listed.OrderBy(static value => value.ProtocolResource.Uri, StringComparer.Ordinal))
+                    resources.Add(new McpResourceDescriptor(
+                        resource.ProtocolResource.Uri,
+                        resource.ProtocolResource.Name,
+                        resource.ProtocolResource.Description,
+                        resource.ProtocolResource.MimeType));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (McpException exception)
+            {
+                logger.LogDebug(
+                    "MCP server {ServerId} does not expose resources ({FailureType}); its resource catalog stays empty.",
+                    definition.Id,
+                    exception.GetType().Name);
+            }
+
+            try
+            {
+                var listedTemplates = await Client.ListResourceTemplatesAsync(cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var template in listedTemplates.OrderBy(
+                             static value => value.ProtocolResourceTemplate.UriTemplate,
+                             StringComparer.Ordinal))
+                    templates.Add(new McpResourceTemplateDescriptor(
+                        template.ProtocolResourceTemplate.UriTemplate,
+                        template.ProtocolResourceTemplate.Name,
+                        template.ProtocolResourceTemplate.Description,
+                        template.ProtocolResourceTemplate.MimeType));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (McpException exception)
+            {
+                logger.LogDebug(
+                    "MCP server {ServerId} does not expose resource templates ({FailureType}).",
+                    definition.Id,
+                    exception.GetType().Name);
+            }
+
+            return new McpResourceCatalog(resources.ToImmutable(), templates.ToImmutable());
         }
 
         internal Task Retire()

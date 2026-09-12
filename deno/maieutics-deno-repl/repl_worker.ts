@@ -4,6 +4,8 @@ import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
+import { patchFetch } from "./resource_bridge.ts";
+import { CREDENTIAL_ENV, IPC_ENV } from "./repl_process_env.ts";
 import {
   INPUT_MAILBOX_LINK_LABEL,
   type ReplActorEvent,
@@ -264,6 +266,7 @@ function deliverCommToHandlers(
 
 function installHostEnvironment(): void {
   globalThis.console = createConsole();
+  installResourceFetch();
   const globals = globalThis as unknown as Record<string, unknown>;
   globals.prompt = (message = ""): string => blockingInput("prompt", String(message), false);
   globals.confirm = (message = ""): boolean => blockingInput("confirm", String(message), true);
@@ -271,6 +274,23 @@ function installHostEnvironment(): void {
     blockingInput("alert", String(message), false);
   };
   (Deno as unknown as { jupyter: unknown }).jupyter = createJupyterApi();
+}
+
+/**
+ * Routes fetch() for virtual resource URIs through the control channel
+ * (ADR 0026 decision 5). The patch only applies when the process knows its
+ * control-channel address; http(s) and other non-virtual schemes keep the
+ * native fetch. Nested workers are profile-neutral and do not inherit this.
+ */
+function installResourceFetch(): void {
+  const address = Deno.env.get(IPC_ENV);
+  if (address === undefined || address.length === 0) return;
+
+  const credential = Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined;
+  globalThis.fetch = patchFetch(globalThis.fetch, {
+    address,
+    ...(credential === undefined ? {} : { credential }),
+  });
 }
 
 /**

@@ -10,6 +10,11 @@ internal static class ReplControlLimits
     internal const int MaximumJsonDepth = 64;
     internal const int QueueCapacity = 64;
 
+    /// <summary>Body ceiling for one resource read over <c>GET /v1/resource</c> (ADR 0026
+    /// decision 5). Matches the read tool's per-call scan budget so a virtual resource can
+    /// never dominate the channel.</summary>
+    internal const int MaximumResourceBytes = 8 * 1024 * 1024;
+
     /// <summary>Per-message ceiling for the dedicated comm WebSocket; owned beside the shared
     /// codec in <see cref="DenoRepl.ReplCommLimits"/> so both hops enforce one value. The
     /// control bus keeps its own 1 MiB ceiling (control messages are small).</summary>

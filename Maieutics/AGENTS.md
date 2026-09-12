@@ -15,7 +15,8 @@ internal Deno execution layer (supervised `deno run` children and the Deno permi
 Logical namespaces under this project are product modules, not independent SDK assemblies. A namespace is a semantic
 domain whose files participate in one call tree; it is not a folder mirror. The partition is:
 
-- `Maieutics.Execution` — workspace root and `workspace://local` read/search tools.
+- `Maieutics.Execution` — workspace root and `workspace://local` read/search tools, plus the virtual resource
+  URL registry (`IResourceProvider`, custom bridge providers, `mcp://` escape hatch; ADR 0026).
 - `Maieutics.Terminal` — PTY sessions, headless VT screen, terminal key encoding, and `terminal_*` tools.
 - `Maieutics.Permissions` — layered declarative permissions, variable interpolation, effective policy, Deno rendering.
 - `Maieutics.Processes` — general process start policy (environment allowlist, future sandbox enforcement seam).

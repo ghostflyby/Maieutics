@@ -40,13 +40,13 @@ public sealed class FrontendTurnQueueIntegrationTests
         // The direct run settles, then the queue drains head-first, serially. The gated
         // provider parks every run, so each release settles exactly one run: the direct
         // one, then each queued item as the worker submits it.
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue), deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         var afterFirst = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         afterFirst.Should().Equal(["direct question", "queued one"]);
 
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         var afterSecond = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
         afterSecond.Should().Equal(["direct question", "queued one", "queued two"]);
 
@@ -76,9 +76,9 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // The direct run completes first; the queue item the worker submits after it
         // settles next (each gated provider request parks until its own release).
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue), deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         texts.Should().Equal(["direct question", "queued one"]);
 
@@ -117,16 +117,16 @@ public sealed class FrontendTurnQueueIntegrationTests
             .Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
 
         // The first queued item runs with its run id once the direct run settles.
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[0]), deadline.Token);
         var running = await GetQueueAsync(harness, sessionId, deadline.Token);
         running.GetProperty("running").GetProperty("runId").GetString()!.Should().HaveLength(32);
         ItemIds(running).Should().Equal([ids[1]]);
 
         // The second item runs after the first settles; then the queue drains.
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[1]), deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -158,7 +158,7 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // The direct run settles and the dequeued head starts; the deleted tail is gone
         // from the pending order and never runs.
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(
             harness,
             sessionId,
@@ -185,7 +185,7 @@ public sealed class FrontendTurnQueueIntegrationTests
                 $"/v1/agent/sessions/{sessionId}/queue/{ids[1]}",
                 deadline.Token))
             .StatusCode.Should().Be(HttpStatusCode.NoContent);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         texts.Should().Equal(["direct question", "queued one"]);
 
@@ -210,7 +210,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         await WaitForParkedAsync(provider, 1, deadline.Token);
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
 
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[0]), deadline.Token);
 
         // Clear removes the pending items only; the running item is untouched.
@@ -220,7 +220,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         HasRunningItem(cleared, ids[0]).Should().BeTrue();
         ItemIds(cleared).Should().BeEmpty();
 
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         texts.Should().Equal(["direct question", "queued one"]);
 
@@ -388,7 +388,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // instant, and the released-into-nothing request froze the run mid-flight).
         await WaitForParkedAsync(provider, 1, deadline.Token);
         Trace($"parked before release: {provider.ParkedRequests}");
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         Trace("released item one");
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[1]), deadline.Token);
         await CollectQueueFrameUntilAsync(
@@ -402,10 +402,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         Trace("both sockets saw second running state");
 
         await WaitForParkedAsync(provider, 1, deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, thirdIds[0]), deadline.Token);
         await WaitForParkedAsync(provider, 1, deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         Trace("released items two and three");
         await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
         Trace("transcript committed all three");
@@ -443,11 +443,11 @@ public sealed class FrontendTurnQueueIntegrationTests
             queue => !ItemIds(queue).Contains(ids[0]) && ItemIds(queue).Contains(ids[1]),
             deadline.Token);
 
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[0]), deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[1]), deadline.Token);
-        provider.ReleaseNext();
+        await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
         texts.Should().Equal(["direct question", "queued one", "queued two"]);
 
@@ -558,6 +558,17 @@ public sealed class FrontendTurnQueueIntegrationTests
         }
 
         return ids;
+    }
+
+    /// <summary>Releases exactly one gated provider request, waiting for it to park
+    /// first: the worker issues the request asynchronously after the run starts, so an
+    /// unconditional release can fire into an empty gate and park the request forever.</summary>
+    private static async Task ReleaseOneAsync(
+        GatedOpenAiServer provider,
+        CancellationToken cancellationToken)
+    {
+        await WaitForParkedAsync(provider, 1, cancellationToken).ConfigureAwait(false);
+        provider.ReleaseNext();
     }
 
     private static async Task WaitForParkedAsync(

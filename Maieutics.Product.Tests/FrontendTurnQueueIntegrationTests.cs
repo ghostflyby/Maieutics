@@ -208,10 +208,14 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
         await WaitForParkedAsync(provider, 1, deadline.Token);
+        Trace("direct run parked");
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
+        Trace("enqueued two items");
 
         await ReleaseOneAsync(provider, deadline.Token);
+        Trace("released direct run");
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[0]), deadline.Token);
+        Trace("first item running");
 
         // Clear removes the pending items only; the running item is untouched.
         (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
@@ -219,10 +223,13 @@ public sealed class FrontendTurnQueueIntegrationTests
         var cleared = await GetQueueAsync(harness, sessionId, deadline.Token);
         HasRunningItem(cleared, ids[0]).Should().BeTrue();
         ItemIds(cleared).Should().BeEmpty();
+        Trace("queue cleared");
 
         await ReleaseOneAsync(provider, deadline.Token);
+        Trace("released first item");
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         texts.Should().Equal(["direct question", "queued one"]);
+        Trace("two turns committed");
 
         // Clearing an empty queue is a no-op that still answers 204.
         (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))

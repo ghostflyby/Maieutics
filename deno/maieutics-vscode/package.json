@@ -139,6 +139,17 @@
         "title": "Queue Follow-up Turn",
         "category": "Maieutics",
         "icon": "$(add)"
+      },
+      {
+        "command": "maieutics.dequeueCell",
+        "title": "Remove Cell from Queue",
+        "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.clearQueuedCells",
+        "title": "Clear Queued Cells",
+        "category": "Maieutics",
+        "icon": "$(clear-all)"
       }
     ],
     "configuration": {
@@ -194,6 +205,11 @@
         {
           "command": "maieutics.queueTurn",
           "group": "maieutics@3",
+          "when": "notebookType == 'maieutics-notebook'"
+        },
+        {
+          "command": "maieutics.clearQueuedCells",
+          "group": "maieutics@4",
           "when": "notebookType == 'maieutics-notebook'"
         }
       ],

@@ -208,10 +208,14 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
         await WaitForParkedAsync(provider, 1, deadline.Token);
+        Trace("direct run parked");
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
+        Trace("enqueued two items");
 
         await ReleaseOneAsync(provider, deadline.Token);
+        Trace("released direct run");
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[0]), deadline.Token);
+        Trace("first item running");
 
         // Clear removes the pending items only; the running item is untouched.
         (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
@@ -219,18 +223,23 @@ public sealed class FrontendTurnQueueIntegrationTests
         var cleared = await GetQueueAsync(harness, sessionId, deadline.Token);
         HasRunningItem(cleared, ids[0]).Should().BeTrue();
         ItemIds(cleared).Should().BeEmpty();
+        Trace("queue cleared");
 
         await ReleaseOneAsync(provider, deadline.Token);
+        Trace("released first item");
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
         texts.Should().Equal(["direct question", "queued one"]);
-
-        // Clearing an empty queue is a no-op that still answers 204.
+        Trace("two turns committed");
         (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
             .StatusCode.Should().Be(HttpStatusCode.NoContent);
+        Trace("no-op clear ok");
+        await EnqueueAsync(harness, sessionId, deadline.Token, "queued after clear");
+        Trace("fresh enqueued");
+
+        // Clearing an empty queue is a no-op that still answers 204.
 
         // The next enqueue starts a fresh worker after the drained one exited; the item
         // runs to completion and the transcript keeps its committed order.
-        await EnqueueAsync(harness, sessionId, deadline.Token, "queued after clear");
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
         var afterRestart = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
         afterRestart.Should().Equal(["direct question", "queued one", "queued after clear"]);
@@ -587,7 +596,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     /// <summary>Releases parked provider requests until the queue has fully drained, so no
     /// run is still in flight when the harness's host disposes (the runtime configuration's
     /// disposal waits for the active run's profile lease).</summary>
-    private static async Task DrainQueueAsync(
+    private async Task DrainQueueAsync(
         Harness harness,
         GatedOpenAiServer provider,
         string sessionId,
@@ -595,12 +604,16 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(60));
+        var polls = 0;
         while (true)
         {
             var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
+            polls++;
             if (!HasRunningItem(queue) && ItemIds(queue).Length == 0) return;
 
             provider.ReleaseAll();
+            if (polls % 10 == 0)
+                Trace($"drain poll #{polls}: {QueueSummary(queue)}");
             await Task.Delay(50, wait.Token).ConfigureAwait(false);
         }
     }

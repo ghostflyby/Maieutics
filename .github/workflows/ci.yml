@@ -6,12 +6,19 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Daily build+test at 19:37 UTC (03:37 Beijing) — prime hour and minute, off the
+    # top-of-the-hour CI crunch. The scheduled run on an idle day also surfaces
+    # concurrency/flaky failures the per-PR runs mask.
+    - cron: "37 19 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # The event name keeps a scheduled run from cancelling (or being cancelled by) a
+  # same-ref push run; runs of the same event still supersede each other.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -33,6 +40,8 @@ jobs:
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
 
       # Fails on lockfile drift: a dependency changed without deno.lock.
       - name: Install workspace dependencies (frozen lockfile)
@@ -79,11 +88,15 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
@@ -123,11 +136,15 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts

@@ -105,6 +105,18 @@ internal sealed partial class ReplControlHost
                 context.Response.Body,
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (ResourceException exception) when (exception.Code == "resource_too_large")
+        {
+            // A non-seekable body that exceeds the ceiling mid-copy either already
+            // truncated the stream (peer sees the cut) or never started (peer gets
+            // the typed envelope instead of a silent 200).
+            await WriteResourceErrorAsync(
+                context,
+                StatusCodes.Status413PayloadTooLarge,
+                exception.Code,
+                exception.Message,
+                cancellationToken).ConfigureAwait(false);
+        }
         finally
         {
             await read.Content.DisposeAsync().ConfigureAwait(false);

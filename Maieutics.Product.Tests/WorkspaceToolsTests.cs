@@ -172,7 +172,7 @@ public sealed class WorkspaceToolsTests
         File.Delete(file);
         File.CreateSymbolicLink(file, outside);
 
-        snapshot.Invoking(s => s.OpenVerifiedRead(resolved.FullPath))
+        snapshot.Invoking(s => s.OpenVerifiedRead(resolved))
             .Should().Throw<WorkspaceException>()
             .Which.Code.Should().Be("workspace_symbolic_link_not_allowed");
 
@@ -180,7 +180,7 @@ public sealed class WorkspaceToolsTests
         Directory.Delete(directory);
         Directory.CreateSymbolicLink(directory, workspace.ParentPath);
 
-        snapshot.Invoking(s => s.OpenVerifiedRead(resolved.FullPath)).Should().Throw<IOException>();
+        snapshot.Invoking(s => s.OpenVerifiedRead(resolved)).Should().Throw<IOException>();
     }
 
     [Fact]
@@ -468,7 +468,7 @@ public sealed class WorkspaceToolsTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task WorkspaceSwitchesFutureFunctionInvocationsAndInvalidatesCursors()
+    public async Task OpeningLinksKeepsRootChangesListingsAndInvalidatesCursors()
     {
         using var workspace = TemporaryWorkspace.Create();
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.txt"), "startup a",
@@ -477,38 +477,48 @@ public sealed class WorkspaceToolsTests
             TestContext.Current.CancellationToken);
         var other = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "other workspace")).FullName;
         await File.WriteAllTextAsync(Path.Combine(other, "other.txt"), "other", TestContext.Current.CancellationToken);
-        var context = Workspace.Create(workspace.Path, workspace.Path);
+        var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        var context = Workspace.Create(home);
         var tool = Function(new WorkspaceFunctions(context), "list_directory");
 
         var startup = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
                 """{"pageSize":1}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        startup.Entries.Should().ContainSingle().Which.Name.Should().Be("a.txt");
+        startup.Entries.Should().ContainSingle().Which.Name.Should().Be(".maieutics");
         startup.NextCursor.Should().NotBeNull();
 
-        var selected = context.Use("../other workspace");
-        selected.RootPath.Should().Be(other);
-        selected.HasSessionOverride.Should().BeTrue();
-        var switched = Result<ListDirectoryResult>(await InvokeAsync(
-                tool,
-                "{}"),
-            WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        switched.Entries.Should().ContainSingle().Which.Name.Should().Be("other.txt");
+        var opened = context.OpenLink(other, null);
+        opened.RootPath.Should().Be(workspace.Path);
+        var links = opened.Links ?? throw new InvalidOperationException("The snapshot carried no links.");
+        links.Records.Should().ContainSingle().Which.Name.Should().Be("other workspace");
 
         var staleCursor = await InvokeAsync(
             tool,
             $$"""{"cursor":{{JsonSerializer.Serialize(startup.NextCursor)}}}""");
         ShouldFailure(staleCursor).Code.Should().Be("workspace_invalid_cursor");
 
-        var reset = context.Reset();
-        reset.RootPath.Should().Be(workspace.Path);
-        reset.HasSessionOverride.Should().BeFalse();
-        var restored = Result<ListDirectoryResult>(await InvokeAsync(
+        var linkUri = "workspace://local/projects/other%20workspace";
+        var linked = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
-                "{}"),
+                $$"""{"uri":{{JsonSerializer.Serialize(linkUri)}}}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        restored.Entries.Select(static entry => entry.Name).Should().Equal("a.txt", "b.txt");
+        linked.Uri.Should().Be(linkUri);
+        linked.Entries.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        {
+            Name = "other.txt",
+            Uri = $"{linkUri}/other.txt",
+            Kind = "file",
+            SizeBytes = 5L
+        });
+
+        var closed = context.CloseLink("other workspace");
+        (closed.Links ?? throw new InvalidOperationException("The snapshot carried no links."))
+            .Records.Should().BeEmpty();
+        var afterClose = await InvokeAsync(
+            tool,
+            $$"""{"uri":{{JsonSerializer.Serialize(linkUri)}}}""");
+        ShouldFailure(afterClose).Code.Should().Be("workspace_path_not_found");
     }
 
     [Fact]

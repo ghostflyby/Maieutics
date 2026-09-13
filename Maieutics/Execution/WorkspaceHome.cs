@@ -99,12 +99,13 @@ internal sealed class WorkspaceHome
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var candidate = Path.GetFullPath(path);
+        RejectUnsupportedTargetRoot(candidate);
         if (!Directory.Exists(candidate))
             throw new DirectoryNotFoundException(
                 $"The workspace link target does not exist: {candidate}");
 
         var target = CanonicalizeTarget(candidate);
-        RejectUnsupportedTarget(target);
+        RejectUnsupportedTargetCycle(target);
 
         var existing = registry.FindByTarget(target);
         if (existing is not null)
@@ -183,17 +184,22 @@ internal sealed class WorkspaceHome
         Directory.Delete(linkPath, false);
     }
 
-    private void RejectUnsupportedTarget(string target)
+    /// <summary>Rejects a target whose volume root junctions cannot express (UNC on
+    /// Windows). No file system access, so it fires before existence checks and any
+    /// nonexistent network path still fails with the typed error.</summary>
+    private void RejectUnsupportedTargetRoot(string target)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            var root = Path.GetPathRoot(target);
-            if (root is not null && root.StartsWith(@"\\", StringComparison.Ordinal))
-                throw new ArgumentException(
-                    "A workspace link target cannot be a UNC network path; " +
-                    "junctions support local paths only.");
-        }
+        if (!OperatingSystem.IsWindows()) return;
 
+        var root = Path.GetPathRoot(target);
+        if (root is not null && root.StartsWith(@"\\", StringComparison.Ordinal))
+            throw new ArgumentException(
+                "A workspace link target cannot be a UNC network path; " +
+                "junctions support local paths only.");
+    }
+
+    private void RejectUnsupportedTargetCycle(string target)
+    {
         var relative = Path.GetRelativePath(target, HomePath);
         if (relative == "." ||
             (!Path.IsPathRooted(relative) &&

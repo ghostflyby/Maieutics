@@ -191,7 +191,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task RecursiveHomeDeletionRemovesTheLinkButNeverTheTarget()
+    public async Task LinkAwareTreeDeletionRemovesTheLinkButNeverTheTarget()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -201,9 +201,9 @@ public sealed class WorkspaceLinksTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         Workspace.Create(home).OpenLink(project, null);
 
-        Directory.Delete(home.ProjectsRoot, true);
+        TemporaryWorkspace.DeleteTree(home.ProjectsRoot);
         File.Exists(marker).Should().BeTrue(
-            "recursive deletion of product-owned workspace state must not follow managed links");
+            "link-aware deletion of product-owned workspace state must not follow managed links");
     }
 
     [Fact(Timeout = 30_000)]

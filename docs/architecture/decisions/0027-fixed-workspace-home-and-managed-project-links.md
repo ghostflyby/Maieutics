@@ -154,7 +154,10 @@ project and granting it are deliberately separate acts.
   permission configs should use `${var.project.*}` until (if) auto-granting lands.
 - Search and list skip `.maieutics` alongside `.git`, count unregistered reparse points as
   skipped symbolic links, and descend only through registered hops.
-- Two Windows behaviors are pinned by integration tests: recursive delete removes the
-  junction itself, not the target; enumeration does not follow reparse points.
+- Windows deletion semantics, pinned by integration tests: .NET's recursive delete does
+  not follow a junction — it throws the moment it meets one — so product cleanup only ever
+  removes links non-recursively (`Directory.Delete(link, recursive: false)` removes the
+  reparse point itself), and link-aware test cleanup sweeps links before recursive
+  deletion. Enumeration does not follow reparse points.
 - The REPL child's working directory is now the home root; a session starts in its own
   persistent space and reaches projects through `projects/<name>`.

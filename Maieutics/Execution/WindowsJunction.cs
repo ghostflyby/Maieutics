@@ -47,7 +47,8 @@ internal static partial class WindowsJunction
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), (ushort)dataLength);
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(8), 0);
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(10), (ushort)substitute.Length);
-        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(12), (ushort)(8 + substitute.Length));
+        // Name offsets are relative to PathBuffer (buffer offset 16), not to the header.
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(12), (ushort)substitute.Length);
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(14), (ushort)printName.Length);
         substitute.CopyTo(buffer, 16);
         printName.CopyTo(buffer, 16 + substitute.Length);

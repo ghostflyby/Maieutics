@@ -39,19 +39,21 @@ internal static partial class WindowsJunction
                 $"The junction directory '{linkPath}' could not be opened.",
                 new Win32Exception(Marshal.GetLastWin32Error()));
 
+        // MOUNT_POINT layout validated by the kernel: the substitute name (\??\<target>)
+        // and the empty print name are both null-terminated, and the length fields exclude
+        // the terminators. ReparseDataLength counts the four name fields (8 bytes) plus the
+        // names plus both terminators (4 bytes); name offsets are PathBuffer-relative.
         var substitute = Encoding.Unicode.GetBytes(@"\??\" + targetPath);
-        var printName = Encoding.Unicode.GetBytes(targetPath);
-        var dataLength = 8 + substitute.Length + printName.Length;
+        var dataLength = substitute.Length + 12;
         var buffer = new byte[8 + dataLength];
         BinaryPrimitives.WriteUInt32LittleEndian(buffer, IoReparseTagMountPoint);
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), (ushort)dataLength);
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(8), 0);
         BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(10), (ushort)substitute.Length);
-        // Name offsets are relative to PathBuffer (buffer offset 16), not to the header.
-        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(12), (ushort)substitute.Length);
-        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(14), (ushort)printName.Length);
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(12), (ushort)(substitute.Length + 2));
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(14), 0);
         substitute.CopyTo(buffer, 16);
-        printName.CopyTo(buffer, 16 + substitute.Length);
+        // The two 2-byte terminators (substitute, empty print name) stay zero-initialized.
 
         if (!DeviceIoControl(
                 handle,

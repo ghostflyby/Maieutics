@@ -65,6 +65,7 @@ import {
 } from "./serializer.ts";
 import {
   type ReplDisplayEntry,
+  toolSnapshotLines,
   type ToolSnapshotView,
   TurnOutputMime,
   TurnView,
@@ -1051,12 +1052,11 @@ class RunExecution {
       return;
     }
 
-    // Final tool statuses (an entry can flip after the last streamed paint).
+    // Final tool statuses (an entry can flip after the last streamed paint);
+    // rendered through the shared snapshot renderer so edit diffs survive.
     const toolsKey = `tools:${this.view.runId}`;
     if (final.tools.length > 0) {
-      const markdown = final.tools
-        .map((tool) => tool.status === "error" ? `- ❌ \`${tool.tool}\`` : `- ✅ \`${tool.tool}\``)
-        .join("\n");
+      const markdown = toolSnapshotLines(final.tools).join("\n");
       const existing = this.segments.get(toolsKey);
       const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
       if (existing) this.execution.replaceOutputItems(items, existing);

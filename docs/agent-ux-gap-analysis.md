@@ -197,6 +197,19 @@ just missing — it is currently impossible.
 
 Size: L overall; item 1 is the prerequisite for B2/B3 too.
 
+**Implementation (2026-09-14).** Item 1 shipped as the `write_text`
+(create/overwrite) and `edit_text` (exact unique replacement, optional
+replace-all) tools in `WorkspaceEditFunctions`, plus item 2's renderer: tool
+results carry `diff: {unified, additions, deletions, truncated}` (bounded
+Myers unified diff, 16 KiB/400-line output bound), and the VSCode extension
+renders it as a capped ```diff fence in the streamed tool lines, the final
+cell paint, and the restored notebook snapshot (which round-trips the capped
+body). Both tools reuse the read tools' safety envelope: workspace://local
+URIs only, regular files only, no reparse points, no `.git`, 2 MiB content
+bounds, exclusive-create semantics, and openat O_NOFOLLOW write walks.
+Deletion is deferred to B2 (inverse patches need a journaled delete); the
+runtime piece of A2 and accept/reject (item 3) remain open.
+
 ### B2. No workspace checkpoint/rollback
 
 Priority: High. Type: Safety net.

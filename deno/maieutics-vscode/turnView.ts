@@ -37,10 +37,44 @@ export interface ToolEntry {
   /** Latest progress text captured from tool.progress (last wins, so the
    * line stays bounded however chatty the tool is). */
   progress?: string;
+  /** Structured edit diff captured from tool.finished (workspace edit tools). */
+  diff?: EditDiffSummary;
   /** Wall-clock duration measured between the start and finish frames
    * (receipt time, so replayed streams under-report). */
   startedAt?: number;
   durationMs?: number;
+}
+
+/** A bounded unified diff carried by a structured edit-tool result. */
+export interface EditDiffSummary {
+  unified: string;
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+}
+
+/** Diff body lines rendered per tool; the server already bounds the text,
+ * this only caps the visible preview. */
+export const MaximumDiffPreviewLines = 40;
+
+/** Renders one diff as a ```diff fence, capped, with a note when the body
+ * was cut (locally or by the server bound). */
+export function fencedDiffLines(diff: EditDiffSummary): string[] {
+  const body = diff.unified.length > 0 && diff.unified.endsWith("\n")
+    ? diff.unified.slice(0, -1).split("\n")
+    : diff.unified.split("\n");
+  const lines = body.slice(0, MaximumDiffPreviewLines);
+  if (body.length > MaximumDiffPreviewLines || diff.truncated) {
+    lines.push("… diff preview truncated");
+  }
+
+  return ["```diff", ...lines, "```"];
+}
+
+/** Formats a `+a −d` change summary; plain text so it stays unambiguous
+ * inside a markdown code span. */
+function diffStat(diff: EditDiffSummary): string {
+  return `+${diff.additions} −${diff.deletions}`;
 }
 
 export type TerminalState =
@@ -109,6 +143,13 @@ export class TurnView {
     }
 
     return anon;
+  }
+
+  /** Live tool entries in first-appearance call order. */
+  private orderedEntries(): ToolEntry[] {
+    return this.toolOrder
+      .map((callId) => this.tools.get(callId))
+      .filter((entry) => entry !== undefined);
   }
 
   /** Drains the set of output segments touched since the last call. The answer
@@ -180,6 +221,7 @@ export class TurnView {
           const failed = isFailureResult(frame.result);
           if (entry) {
             entry.status = failed ? "error" : "ok";
+            if (!failed) entry.diff = readEditDiff(frame.result);
             if (entry.startedAt !== undefined) entry.durationMs = Date.now() - entry.startedAt;
           }
           this.dirty.add(`tools:${this.runId}`);
@@ -249,20 +291,23 @@ export class TurnView {
   }
 
   /** Markdown lines summarizing tool activity, in call order, with argument
-   * previews, the latest progress text, and durations (receipt-time measured). */
+   * previews, the latest progress text, durations (receipt-time measured),
+   * and a capped ```diff fence under each structured edit result. */
   toolLines(): string[] {
-    return this.toolOrder
-      .map((callId) => this.tools.get(callId))
-      .filter((entry) => entry !== undefined)
-      .map((entry) => {
-        const detail = [
-          entry.args === undefined ? undefined : `\`${entry.args}\``,
-          entry.progress === undefined ? undefined : `\`${entry.progress}\``,
-          entry.durationMs === undefined ? undefined : formatDuration(entry.durationMs),
-        ].filter((part) => part !== undefined).join(" · ");
-        const mark = entry.status === "running" ? "⏳" : entry.status === "error" ? "❌" : "✅";
-        return `- ${mark} \`${entry.tool}\`${detail === "" ? "" : ` · ${detail}`}`;
-      });
+    const lines: string[] = [];
+    for (const entry of this.orderedEntries()) {
+      lines.push(toolBullet(
+        entry.tool,
+        entry.status,
+        entry.args,
+        entry.progress,
+        entry.durationMs,
+        entry.diff,
+      ));
+      if (entry.diff !== undefined) lines.push("", ...fencedDiffLines(entry.diff));
+    }
+
+    return lines;
   }
 
   /** Whether anything user-visible streamed (answer text or REPL displays). */
@@ -307,6 +352,7 @@ export class TurnView {
           status: entry.status === "error" ? "error" as const : "ok" as const,
           ...(entry.args === undefined ? {} : { argsSummary: entry.args }),
           ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+          ...(entry.diff === undefined ? {} : { diff: entry.diff }),
         })),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
       ...(this.usage === undefined ? {} : { usage: this.usage }),
@@ -323,6 +369,45 @@ export interface ToolSnapshotView {
   status: "ok" | "error";
   argsSummary?: string;
   durationMs?: number;
+  diff?: EditDiffSummary;
+}
+
+/** Renders tool snapshot entries as markdown bullets with a capped ```diff
+ * fence under each structured edit result — shared by the final cell paint
+ * and the notebook snapshot restore so both match the streamed view. */
+export function toolSnapshotLines(tools: ToolSnapshotView[]): string[] {
+  const lines: string[] = [];
+  for (const entry of tools) {
+    lines.push(toolBullet(
+      entry.tool,
+      entry.status,
+      entry.argsSummary,
+      undefined,
+      entry.durationMs,
+      entry.diff,
+    ));
+    if (entry.diff !== undefined) lines.push("", ...fencedDiffLines(entry.diff));
+  }
+
+  return lines;
+}
+
+function toolBullet(
+  tool: string,
+  status: "running" | "ok" | "error",
+  args: string | undefined,
+  progress: string | undefined,
+  durationMs: number | undefined,
+  diff: EditDiffSummary | undefined,
+): string {
+  const detail = [
+    args === undefined ? undefined : `\`${args}\``,
+    progress === undefined ? undefined : `\`${progress}\``,
+    diff === undefined ? undefined : `\`${diffStat(diff)}\``,
+    durationMs === undefined ? undefined : formatDuration(durationMs),
+  ].filter((part) => part !== undefined).join(" · ");
+  const mark = status === "running" ? "⏳" : status === "error" ? "❌" : "✅";
+  return `- ${mark} \`${tool}\`${detail === "" ? "" : ` · ${detail}`}`;
 }
 
 function readUsage(frame: EventFrame): UsageSummary | undefined {
@@ -368,4 +453,27 @@ function isFailureResult(result: unknown): boolean {
   if (typeof result !== "object" || result === null) return false;
   const status = (result as Record<string, unknown>).status;
   return typeof status === "string" && status !== "ok" && status !== "cancelled";
+}
+
+/** Extracts the bounded edit diff from an ok tool result envelope:
+ * `{"status":"ok","value":{"diff":{"unified":"...","additions":n,...}}}`.
+ * Anything else (other tools, malformed shapes) yields undefined. */
+function readEditDiff(result: unknown): EditDiffSummary | undefined {
+  if (typeof result !== "object" || result === null) return undefined;
+  const value = (result as Record<string, unknown>).value;
+  if (typeof value !== "object" || value === null) return undefined;
+  const diff = (value as Record<string, unknown>).diff;
+  if (typeof diff !== "object" || diff === null) return undefined;
+  const record = diff as Record<string, unknown>;
+  if (
+    typeof record.unified !== "string" || record.unified.length === 0 ||
+    typeof record.additions !== "number" || typeof record.deletions !== "number"
+  ) return undefined;
+
+  return {
+    unified: record.unified,
+    additions: record.additions,
+    deletions: record.deletions,
+    truncated: record.truncated === true,
+  };
 }

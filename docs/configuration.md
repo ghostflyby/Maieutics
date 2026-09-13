@@ -39,7 +39,10 @@ For example, `Maieutics__DefaultProfile` overrides `MAIEUTICS_PROFILE`, while `-
 
 ## Workspace tools
 
-The executable registers three read-only tools: `list_directory`, `read_text`, and `search_text`. They operate on one
+The executable registers five workspace tools: the read-only `list_directory`, `read_text`, and `search_text`, and the
+edit tools `write_text` (create or overwrite a UTF-8 text file) and `edit_text` (replace exact unique text, optionally
+across every occurrence). The edit tools return a bounded unified diff as structured tool output and enforce the same
+safety envelope as the read tools. They operate on one
 process-local workspace context whose startup root is selected when the process begins:
 
 | Setting                    | Environment alias     | Command line  | Default                   |

@@ -41,6 +41,17 @@ export interface ReplDisplaySnapshot {
 export interface ToolSnapshot {
   tool: string;
   status: "ok" | "error";
+  /** Bounded unified diff captured from a structured edit-tool result;
+   * optional so older snapshots keep loading. */
+  diff?: ToolDiffSnapshot;
+}
+
+/** The persisted edit diff of a tool snapshot (already capped when written). */
+export interface ToolDiffSnapshot {
+  unified: string;
+  additions: number;
+  deletions: number;
+  truncated: boolean;
 }
 
 export interface CellSnapshot {

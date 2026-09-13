@@ -1,7 +1,7 @@
 /// <reference lib="deno.window" />
 
 import { assert, assertEquals } from "@std/assert";
-import { TurnView } from "./turnView.ts";
+import { fencedDiffLines, TurnView } from "./turnView.ts";
 
 Deno.test("text deltas fold in order", () => {
   const view = new TurnView("run-1");
@@ -336,4 +336,102 @@ Deno.test("tool.progress for unknown calls or non-text content is ignored", () =
   });
   assertEquals(view.toolLines(), ["- ⏳ `repl_execute`"]);
   assertEquals(view.takeDirty().size, 0);
+});
+
+Deno.test("structured edit results render diff fences and travel into the snapshot", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c1", tool: "write_text" });
+  view.apply({
+    type: "tool.finished",
+    runId: "run-1",
+    callId: "c1",
+    result: {
+      status: "ok",
+      value: {
+        uri: "workspace://local/a.txt",
+        operation: "updated",
+        diff: {
+          unified: "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n",
+          additions: 1,
+          deletions: 1,
+          truncated: false,
+        },
+      },
+    },
+  });
+
+  const lines = view.toolLines();
+  // The bullet, a blank separator, and the seven fence lines.
+  assertEquals(lines.length, 9);
+  assertEquals(lines[0].startsWith("- ✅ `write_text` · `+1 −1` · "), true);
+  assertEquals(lines[1], "");
+  assertEquals(lines[2], "```diff");
+  assertEquals(lines[3], "--- a/a.txt");
+  assertEquals(lines[4], "+++ b/a.txt");
+  assertEquals(lines[5], "@@ -1,2 +1,2 @@");
+  assertEquals(lines[6], "-old");
+  assertEquals(lines[7], "+new");
+  assertEquals(lines[8], "```");
+
+  const final = view.finalOutput();
+  assertEquals(final.tools[0].diff, {
+    unified: "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n",
+    additions: 1,
+    deletions: 1,
+    truncated: false,
+  });
+});
+
+Deno.test("failed results and other tools carry no diff", () => {
+  const view = new TurnView("run-1");
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c1", tool: "edit_text" });
+  view.apply({
+    type: "tool.finished",
+    runId: "run-1",
+    callId: "c1",
+    result: {
+      status: "ok",
+      value: { uri: "workspace://local/a.txt", operation: "created" },
+    },
+  });
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c2", tool: "read_text" });
+  view.apply({
+    type: "tool.finished",
+    runId: "run-1",
+    callId: "c2",
+    result: { status: "ok", value: { text: "irrelevant" } },
+  });
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c3", tool: "edit_text" });
+  view.apply({
+    type: "tool.finished",
+    runId: "run-1",
+    callId: "c3",
+    result: { status: "tool_error", code: "workspace_edit_target_not_found", message: "boom" },
+  });
+
+  assertEquals(view.toolLines().filter((line) => line.includes("+")).length, 0);
+  assertEquals(view.finalOutput().tools.every((tool) => tool.diff === undefined), true);
+});
+
+Deno.test("diff fences cap the preview and honor the server truncation flag", () => {
+  const long = Array.from({ length: 60 }, (_, index) => `+line ${index}`).join("\n");
+  const capped = fencedDiffLines({
+    unified: `${long}\n`,
+    additions: 60,
+    deletions: 0,
+    truncated: false,
+  });
+  assertEquals(capped[0], "```diff");
+  assertEquals(capped[capped.length - 1], "```");
+  assertEquals(capped.some((line) => line.startsWith("… diff preview truncated")), true);
+  // 40 body lines + the note, inside the fence.
+  assertEquals(capped.length, 1 + 40 + 1 + 1);
+
+  const flagged = fencedDiffLines({
+    unified: "+one\n",
+    additions: 1,
+    deletions: 0,
+    truncated: true,
+  });
+  assertEquals(flagged.some((line) => line.startsWith("… diff preview truncated")), true);
 });

@@ -52,7 +52,7 @@ public sealed class MaieuticsStatusTests
             .And.Contain("last reload `rejected`")
             .And.Contain("profile `profile`")
             .And.Contain("Capabilities: no model profiles")
-            .And.Contain("Workspace: session override")
+            .And.Contain("Workspace: fixed home")
             .And.Contain("Plugins: `Exited`")
             .And.Contain("`server`: `Reconnecting`")
             .And.Contain("`default`: generation `4`, state `busy` (default)")

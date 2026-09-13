@@ -191,6 +191,22 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task RecursiveHomeDeletionRemovesTheLinkButNeverTheTarget()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        using var workspace = TemporaryWorkspace.Create();
+        var project = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "project")).FullName;
+        var marker = Path.Combine(project, "keep.txt");
+        await File.WriteAllTextAsync(marker, "kept", TestContext.Current.CancellationToken);
+        var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        Workspace.Create(home).OpenLink(project, null);
+
+        Directory.Delete(home.ProjectsRoot, true);
+        File.Exists(marker).Should().BeTrue(
+            "recursive deletion of product-owned workspace state must not follow managed links");
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task OpeningFailsWithTypedErrorsForMissingUnsupportedAndCyclingTargets()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();

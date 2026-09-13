@@ -85,7 +85,7 @@ internal static class MaieuticsStatusRenderer
         }
 
         output.Append("- Workspace: ")
-            .Append(snapshot.Workspace.HasSessionOverride ? "session override" : "startup root")
+            .Append("fixed home")
             .Append(" (version ")
             .Append(MarkdownText.CodeSpan(snapshot.Workspace.Version.ToString()))
             .AppendLine("; path redacted)");

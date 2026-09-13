@@ -40,27 +40,32 @@ For example, `Maieutics__DefaultProfile` overrides `MAIEUTICS_PROFILE`, while `-
 ## Workspace tools
 
 The executable registers three read-only tools: `list_directory`, `read_text`, and `search_text`. They operate on one
-process-local workspace context whose startup root is selected when the process begins:
+fixed workspace home (ADR 0027) selected when the process begins:
 
-| Setting                    | Environment alias     | Command line  | Default                   |
-|----------------------------|-----------------------|---------------|---------------------------|
-| `Maieutics:Workspace:Root` | `MAIEUTICS_WORKSPACE` | `--workspace` | Startup working directory |
+| Setting                    | Environment alias     | Command line  | Default                        |
+|----------------------------|-----------------------|---------------|--------------------------------|
+| `Maieutics:Workspace:Root` | `MAIEUTICS_WORKSPACE` | `--workspace` | `<data root>/workspaces`       |
 
-The startup root must be an existing directory and cannot itself be a symbolic link. Relative startup values are
-resolved against the startup working directory. Configuration is not hot reloaded; changing the JSON setting requires a
-process restart or an explicit session command.
+The home layout is `projects/` (managed project links), `scratch/` (agent-owned persistent space), and `.maieutics/`
+(product state, denied to tools). The default home is created on first boot; an explicitly configured home must already
+exist and cannot be a symbolic link. Configuration is not hot reloaded; changing the JSON setting requires a process
+restart.
+
+External disk projects are opened as managed links under `projects/` with `%workspace open`; a symbolic link is used on
+POSIX and a directory junction on Windows. The link registry at `.maieutics/registry.json` is authoritative: link names
+default to the project directory's basename, conflicts get a path-hash suffix, and a retired name is never reused for a
+different target. Each open link contributes the `${var.project.<name>}` permission variable for its canonical target.
 
 Tools accept canonical `workspace://local/...` URIs rather than operating-system absolute paths. They reject path
-traversal, `.git` metadata access, and symbolic-link traversal. Text reads and searches require regular UTF-8 files and
-apply explicit line, result, file-count, directory-entry, byte, and regular-expression limits. Binary and large values
-remain deferred to the artifact boundary.
+traversal, `.git` and `.maieutics` metadata access, and every symbolic-link traversal except the registered
+`projects/<name>` hop. Text reads and searches require regular UTF-8 files and apply explicit line, result, file-count,
+directory-entry, byte, and regular-expression limits. Binary and large values remain deferred to the artifact boundary.
 
 ## Deno REPL tools
 
 The executable also registers `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close`. The default
 REPL starts lazily; each explicitly created REPL starts one independent supervised `deno run` process. A REPL captures
-the currently selected workspace root as its working directory when the session is created. Later workspace commands do
-not move an existing process.
+the fixed workspace home as its working directory when the session is created.
 
 The configuration is captured once when the Maieutics host builder is created:
 
@@ -241,22 +246,23 @@ The legacy `%maieutics model ...` form remains accepted for existing notebooks a
 
 ## Notebook workspace commands
 
-The following control cells inspect or change the workspace used by subsequent read-only tool calls:
+The following control cells inspect the fixed workspace home and manage its external project links (ADR 0027):
 
 ```text
 %workspace
 %workspace current
-%workspace use <path>
-%workspace reset
+%workspace open <path> [as <alias>]
+%workspace close <name>
 ```
 
-`use` accepts an absolute path or a path relative to the current workspace, including unquoted spaces. The selected
-directory must exist and cannot itself be a symbolic link. `reset` restores the startup root. The override lasts only
-for the current Kernel process: it does not edit configuration, survive restart, call a model, or enter the Agent
-transcript. Shell execution is serialized, so a command affects subsequent turns rather than an active turn.
+`open` accepts an absolute path to an existing directory, including unquoted spaces; a trailing ` as <alias>` chooses
+the link name explicitly. Opening the same directory twice is idempotent. `close` removes the link, never the project.
+The home root never changes mid-process; links last for the process and are remounted from the registry on restart.
+Commands do not edit configuration, call a model, or enter the Agent transcript. Shell execution is serialized, so a
+command affects subsequent turns rather than an active turn.
 
-Jupyter completion covers the workspace command and its `current`, `use`, and `reset` subcommands; filesystem paths are
-not enumerated for completion. The legacy `%maieutics workspace ...` form remains accepted and is deprecated.
+Completion covers the workspace command and its `current`, `open`, and `close` subcommands; filesystem paths are not
+enumerated for completion. The legacy `%maieutics workspace ...` form remains accepted and is deprecated.
 
 ## Notebook runtime status
 

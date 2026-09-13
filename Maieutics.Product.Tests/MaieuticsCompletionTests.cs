@@ -290,7 +290,7 @@ public sealed class MaieuticsCompletionTests
         partial.CursorEnd.Should().Be(8);
 
         var workspace = Complete("%workspace ");
-        workspace.Matches.Should().Equal("current", "reset", "use");
+        workspace.Matches.Should().Equal("close", "current", "open");
         workspace.CursorStart.Should().Be(11);
         workspace.CursorEnd.Should().Be(11);
 

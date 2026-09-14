@@ -66,12 +66,6 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
             var credential = new ApiKeyCredential(options.ApiKey);
             var clientOptions = new OpenAIClientOptions();
             if (options.Endpoint is not null) clientOptions.Endpoint = options.Endpoint;
-            if (options.ApiFlavor == OpenAiApiFlavor.Responses)
-                // The SDK cannot model OpenAI's apply_patch tool yet (its wire
-                // entry and custom tool call items), so the transport rewrites
-                // the request and response bodies around it.
-                clientOptions.Transport = ApplyPatchPipelineTransport.CreateDefault();
-
             var openAiClient = new OpenAIClient(credential, clientOptions);
 
 #pragma warning disable OPENAI001 // The OpenAI .NET Responses surface is currently marked experimental.
@@ -82,9 +76,18 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
                 _ => throw new UnreachableException()
             };
 
+            // The Responses flavor declares OpenAI's built-in apply_patch tool and keeps the
+            // same-named local function off the wire; the adapter projects the built-in call onto
+            // the function contract so the runtime's apply_patch function executes it. It wraps
+            // the options factory below, so it must sit outside it.
+            client = options.ApiFlavor == OpenAiApiFlavor.Responses
+                ? new ResponsesApplyPatchChatClient(client, ApplyPatchFunctions.ToolName)
+                : client;
+
             client = new ConfigureOptionsChatClient(client, chatOptions =>
             {
-                chatOptions.RawRepresentationFactory = _ => options.ApiFlavor switch
+                var factory = chatOptions.RawRepresentationFactory;
+                chatOptions.RawRepresentationFactory = client => factory?.Invoke(client) ?? options.ApiFlavor switch
                 {
                     OpenAiApiFlavor.Responses => new CreateResponseOptions { StoredOutputEnabled = false },
                     OpenAiApiFlavor.ChatCompletions => new ChatCompletionOptions { StoredOutputEnabled = false },
@@ -96,8 +99,8 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
             return new ToolVisibilityChatClient(
                 client,
                 options.ApiFlavor == OpenAiApiFlavor.Responses
-                    ? ApplyPatchWire.ResponsesHiddenToolNames
-                    : ApplyPatchWire.NonResponsesHiddenToolNames);
+                    ? ApplyPatchFunctions.ResponsesHiddenToolNames
+                    : ApplyPatchFunctions.NonResponsesHiddenToolNames);
         }
 
         public async ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(

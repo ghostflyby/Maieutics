@@ -45,6 +45,10 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         this.workspaceRootAccessor = workspaceRootAccessor;
+        // Register the provider and SQLite's serialized threading default before opening: a
+        // process that reached Microsoft.Data.Sqlite without this assembly's module initializer
+        // having run would otherwise open connections with no mutex on a multi-thread engine.
+        SqliteProviderInit.EnsureInitialized();
         var directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         // Pooling disabled: each family store holds exactly one connection for its lifetime, and

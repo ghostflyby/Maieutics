@@ -30,7 +30,7 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         // Messages adapter only sees the general edit functions.
         return new ToolVisibilityChatClient(
             new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint),
-            ApplyPatchWire.NonResponsesHiddenToolNames);
+            ApplyPatchFunctions.NonResponsesHiddenToolNames);
     }
 
     private sealed class AnthropicSource(AnthropicSourceOptions options)

@@ -214,15 +214,20 @@ runtime piece of A2 and accept/reject (item 3) remain open.
 edit surface is the model-native `apply_patch` tool instead: the runtime
 registers an `apply_patch` function (V4A patch text in, per-file bounded
 diffs out) and the provider boundary hides `write_text`/`edit_text`, sending
-`{"type":"apply_patch"}` instead. The OpenAI .NET SDK cannot model that tool
-yet, so `ApplyPatchPipelineTransport` translates both directions inside the
-provider folder: requests gain the built-in tool entry and rewritten
-history, `apply_patch_call`/`custom_tool_call` items and their streamed
-events are folded into ordinary function calls, and tool outputs replay in
-the shape the original call used. Other flavors (Chat Completions,
-Anthropic) hide `apply_patch` and keep the general edit tools. Deletion is
-supported here (`*** Delete File:`, `*** Move to:`) because the patch
-document carries it.
+`{"type":"apply_patch"}` instead. The OpenAI .NET SDK models that tool
+natively (`ResponseTool.CreateApplyPatchTool()`, `ApplyPatchCallItem`, and its
+per-operation types), so `ResponsesApplyPatchChatClient` only bridges the two
+content contracts inside the provider folder: the built-in tool is declared on
+each request with the same-named local function kept off the wire, an incoming
+`apply_patch_call` is projected onto an ordinary `FunctionCallContent` whose
+`patch` argument is the equivalent V4A text, and the outbound call and result
+carry the SDK's own items as `RawRepresentation`, which the Responses client
+serializes as `apply_patch_call` / `apply_patch_call_output`. The structured
+operation is preserved as JSON on the function call so a later turn replays
+the provider's own form. No transport rewriting is involved. Other flavors
+(Chat Completions, Anthropic) hide `apply_patch` and keep the general edit
+tools. Deletion is supported here (`*** Delete File:`, `*** Move to:`) because
+the patch document carries it.
 
 ### B2. No workspace checkpoint/rollback
 

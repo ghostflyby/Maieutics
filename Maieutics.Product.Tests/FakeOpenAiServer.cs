@@ -25,6 +25,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
     private readonly bool toolFlow;
     private readonly bool applyPatchFlow;
     private readonly string? applyPatchOperationJson;
+    private readonly bool webSearchFlow;
     private readonly string toolName;
 
     public FakeOpenAiServer(
@@ -38,7 +39,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         string toolArgumentsJson = "{\"text\":\"hello\"}",
         string? expectedToolResultText = null,
         bool applyPatchFlow = false,
-        string? applyPatchOperationJson = null)
+        string? applyPatchOperationJson = null,
+        bool webSearchFlow = false)
     {
         this.apiFlavor = apiFlavor;
         this.toolFlow = toolFlow;
@@ -50,6 +52,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         this.expectedToolResultText = expectedToolResultText;
         this.applyPatchFlow = applyPatchFlow;
         this.applyPatchOperationJson = applyPatchOperationJson;
+        this.webSearchFlow = webSearchFlow;
         this.requestCount = requestCount ?? (toolFlow || applyPatchFlow ? 2 : 1);
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
@@ -155,6 +158,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                     (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(
                         toolName,
                         toolArgumentsJson),
+                    (OpenAiApiFlavor.Responses, _, _) when webSearchFlow && served == 0 =>
+                        CreateResponsesWebSearchStream(),
                     (OpenAiApiFlavor.Responses, false, 0) when applyPatchFlow =>
                         CreateResponsesApplyPatchStream(applyPatchOperationJson!),
                     (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
@@ -299,6 +304,54 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
             "\"sequence_number\":6,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":7," +
             "\"response\":" + completedResponse + "}\n\n";
+    }
+
+    /// <summary>A Responses turn where the provider ran a web search: a web_search_call item,
+    /// then the assistant message with a url_citation annotation. Server-executed, so no
+    /// tool-result round trip follows.</summary>
+    private static string CreateResponsesWebSearchStream()
+    {
+        const string searchItem =
+            "{\"id\":\"ws1\",\"type\":\"web_search_call\",\"status\":\"completed\"," +
+            "\"action\":{\"type\":\"search\",\"query\":\"zhipu ai\"}}";
+        const string messageItem =
+            "{\"id\":\"msg1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\"," +
+            "\"content\":[{\"type\":\"output_text\",\"text\":\"Zhipu AI is a Chinese AI company.\"," +
+            "\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://example.com/zhipu\"," +
+            "\"title\":\"Zhipu AI\",\"start_index\":0,\"end_index\":8}]}]}";
+
+        const string inProgress =
+            "{\"id\":\"resp-ws\",\"object\":\"response\",\"created_at\":0,\"status\":\"in_progress\"," +
+            "\"error\":null,\"incomplete_details\":null,\"instructions\":null,\"max_output_tokens\":null," +
+            "\"model\":\"test-model\",\"output\":[],\"parallel_tool_calls\":true,\"previous_response_id\":null," +
+            "\"reasoning\":null,\"store\":false,\"temperature\":null,\"text\":{\"format\":{\"type\":\"text\"}}," +
+            "\"tool_choice\":\"auto\",\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":null," +
+            "\"metadata\":{}}";
+        var completed =
+            "{\"id\":\"resp-ws\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\"," +
+            "\"error\":null,\"incomplete_details\":null,\"instructions\":null,\"max_output_tokens\":null," +
+            "\"model\":\"test-model\",\"output\":[" + searchItem + "," + messageItem + "]," +
+            "\"parallel_tool_calls\":true,\"previous_response_id\":null,\"reasoning\":null,\"store\":false," +
+            "\"temperature\":null,\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\"," +
+            "\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":1," +
+            "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1," +
+            "\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":2},\"metadata\":{}}";
+
+        return
+            "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0," +
+            "\"response\":" + inProgress + "}\n\n" +
+            "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
+            "\"sequence_number\":1,\"output_index\":0,\"item\":" + searchItem + "}\n\n" +
+            "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"," +
+            "\"sequence_number\":2,\"output_index\":1,\"item\":{\"id\":\"msg1\",\"type\":\"message\"," +
+            "\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n" +
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\"," +
+            "\"sequence_number\":3,\"item_id\":\"msg1\",\"output_index\":1,\"content_index\":0," +
+            "\"delta\":\"Zhipu AI is a Chinese AI company.\"}\n\n" +
+            "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
+            "\"sequence_number\":4,\"output_index\":1,\"item\":" + messageItem + "}\n\n" +
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":5," +
+            "\"response\":" + completed + "}\n\n";
     }
 
     private static string CreateResponsesApplyPatchStream(string operationJson)

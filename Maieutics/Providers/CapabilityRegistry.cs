@@ -36,7 +36,9 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
             ["api.openai.com"] = new(
                 "openai",
                 ["WebSearch", "FileSearch", "CodeInterpreter", "ComputerUse", "ImageGeneration", "ApplyPatch", "Mcp"]),
-            ["api.anthropic.com"] = new("anthropic", [])
+            // The Anthropic Messages API serves its server-executed web search tool; it has no
+            // equivalent for the other hosted names.
+            ["api.anthropic.com"] = new("anthropic", ["WebSearch"])
         };
 
     /// <summary>The vendor host to assume for each provider when no endpoint is configured.</summary>

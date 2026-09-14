@@ -237,6 +237,15 @@ internal static class AgentTranscriptCodec
             case WebSearchToolResultContent result:
                 ValidateContents(result.Outputs, visited);
                 break;
+            case WebSearchToolCallContent call:
+                if (call.Queries is not null)
+                    foreach (var query in call.Queries)
+                        if (query is null)
+                            throw new AgentContentCompatibilityException(
+                                nameof(WebSearchToolCallContent),
+                                new JsonException("A web search tool call contains a null query."));
+
+                break;
             case ToolApprovalRequestContent request:
                 ValidateContent(request.ToolCall, visited);
                 break;

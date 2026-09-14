@@ -1309,6 +1309,110 @@ public sealed class FrontendApiIntegrationTests
         invalidError.GetProperty("code").GetString().Should().Be("invalid_request");
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task ResponsesWebSearchStreamsTheSearchAndItsCitation()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, webSearchFlow: true);
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: null,
+            transformConfiguration: body => DeclareEndpointCapability(
+                body.Replace("ChatCompletions", "Responses"),
+                provider.Endpoint,
+                "WebSearch"));
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+            await events.ReceiveFrameAsync(deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", deadline.Token);
+            var frames = await events.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.status" &&
+                         frame.GetProperty("state").GetString() == "idle",
+                deadline.Token);
+
+            frames.Select(frame => frame.GetProperty("type").GetString())
+                .Should().Contain("run.completed");
+
+            // The request declares the provider's web search tool; it is server-executed, so no
+            // local function is registered for it.
+            provider.RequestBodies.First().GetProperty("tools").EnumerateArray()
+                .Where(tool => tool.TryGetProperty("type", out _))
+                .Select(tool => tool.GetProperty("type").GetString())
+                .Should().Contain("web_search");
+
+            // The canonical transcript records the cited answer.
+            var transcript = (await harness.Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                deadline.Token)).GetRawText();
+            transcript.Should().Contain("Zhipu AI is a Chinese AI company.");
+            transcript.Should().Contain("https://example.com/zhipu");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AnthropicWebSearchStreamsTheServerToolAndCommitsTheTranscript()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", webSearchFlow: true);
+        var config = ANTHROPIC_CONFIG_TEMPLATE.Replace("{{endpoint}}", provider.Endpoint.ToString());
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: null,
+            transformConfiguration: _ => DeclareEndpointCapability(config, provider.Endpoint, "WebSearch"));
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+            await events.ReceiveFrameAsync(deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", deadline.Token);
+            var frames = await events.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.status" &&
+                         frame.GetProperty("state").GetString() == "idle",
+                deadline.Token);
+
+            frames.Select(frame => frame.GetProperty("type").GetString())
+                .Should().Contain("run.completed");
+
+            // The request declares Anthropic's server tool by its versioned type; function tools
+            // carry no type field, so the projection skips them.
+            provider.RequestBodies.First().GetProperty("tools").EnumerateArray()
+                .Where(tool => tool.TryGetProperty("type", out _))
+                .Select(tool => tool.GetProperty("type").GetString())
+                .Should().Contain("web_search_20250305");
+
+            var transcript = (await harness.Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                deadline.Token)).GetRawText();
+            transcript.Should().Contain("Zhipu AI is a Chinese AI company.");
+            transcript.Should().Contain("zhipu ai");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+
+    /// <summary>The harness points at a loopback endpoint, and an unknown endpoint is assumed to
+    /// host nothing, so a test that needs a hosted capability declares it explicitly here.</summary>
+    private static string DeclareEndpointCapability(string body, Uri endpoint, string capability)
+    {
+        var withoutTrailingSlash = endpoint.ToString().TrimEnd('/');
+        // Anchor on the Maieutics section itself: the capability table sits beside Sources,
+        // Profiles, and Model, so every template shape can carry it.
+        return body.Replace(
+            "\"Maieutics\": {",
+            "\"Maieutics\": {\n            \"Endpoints\": [ { \"Url\": " +
+            $"{JsonSerializer.Serialize(withoutTrailingSlash)}, \"Capabilities\": [ \"{capability}\" ] }} ],");
+    }
+
+
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

@@ -251,10 +251,15 @@ public sealed class AgentSession : IAgentSession
         var loopToken = budget?.Token ?? cancellationToken;
         var requestMessages = GetCommittedChatMessages().ToList();
         requestMessages.Add(run.UserMessage);
+        // Hosted tools are declared alongside the local functions but executed by the provider;
+        // they never enter the local registry and no call for them reaches the runtime.
+        var requestTools = new List<AITool>(run.Tools.Count + profile.HostedTools.Count);
+        requestTools.AddRange(run.Tools.Values);
+        requestTools.AddRange(profile.HostedTools);
         var chatOptions = new ChatOptions
         {
             Instructions = options.SystemPrompt,
-            Tools = run.Tools.Values.Cast<AITool>().ToList(),
+            Tools = requestTools,
             AllowMultipleToolCalls = true
         };
         try

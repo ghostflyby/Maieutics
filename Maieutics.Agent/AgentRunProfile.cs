@@ -24,13 +24,19 @@ public sealed record AgentRunProfile
     ///     The provider-neutral capability names hosted by the model endpoint, when known.
     /// </param>
     /// <param name="tools">The immutable tools available for the complete run.</param>
+    /// <param name="hostedTools">
+    ///     The provider-hosted tools attached to each request. These are declared to the model and
+    ///     executed by the provider, so the runtime never invokes them and they carry no local
+    ///     function schema.
+    /// </param>
     public AgentRunProfile(
         IChatClient chatClient,
         AgentSessionOptions options,
         AgentModelIdentity? modelIdentity = null,
         AgentModelCapabilities capabilities = DefaultCapabilities,
         IEnumerable<string>? hostedCapabilities = null,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        IEnumerable<AITool>? hostedTools = null)
     {
         if ((capabilities & ~KnownCapabilities) != 0)
             throw new ArgumentOutOfRangeException(nameof(capabilities), capabilities,
@@ -43,6 +49,7 @@ public sealed record AgentRunProfile
         Capabilities = capabilities;
         HostedCapabilities = NormalizeHostedCapabilities(hostedCapabilities);
         Tools = tools?.ToImmutableArray() ?? [];
+        HostedTools = NormalizeHostedTools(hostedTools, Tools);
     }
 
     private static IReadOnlyList<string> NormalizeHostedCapabilities(IEnumerable<string>? hostedCapabilities)
@@ -57,6 +64,41 @@ public sealed record AgentRunProfile
         }
 
         return [.. names];
+    }
+
+    /// <summary>Hosted tools are declared to the model and executed by the provider, so they are
+    /// kept apart from the local function registry: they carry no JSON schema and no call ever
+    /// reaches the runtime. A name colliding with a local function would make the provider's
+    /// choice ambiguous, so that is rejected here.</summary>
+    private static IReadOnlyList<AITool> NormalizeHostedTools(
+        IEnumerable<AITool>? hostedTools,
+        IReadOnlyList<AIFunction> functions)
+    {
+        if (hostedTools is null) return [];
+
+        var functionNames = new HashSet<string>(
+            functions.Select(static function => function.Name),
+            StringComparer.Ordinal);
+        var hosted = new List<AITool>();
+        foreach (var tool in hostedTools)
+        {
+            ArgumentNullException.ThrowIfNull(tool);
+            if (tool is AIFunction)
+                throw new ArgumentException(
+                    "Hosted tools must not be local functions; register local functions through the tools list.",
+                    nameof(hostedTools));
+            if (string.IsNullOrWhiteSpace(tool.Name))
+                throw new ArgumentException("A hosted tool must have a name.", nameof(hostedTools));
+            if (functionNames.Contains(tool.Name) ||
+                hosted.Any(existing => string.Equals(existing.Name, tool.Name, StringComparison.Ordinal)))
+                throw new ArgumentException(
+                    $"A tool named '{tool.Name}' is already registered.",
+                    nameof(hostedTools));
+
+            hosted.Add(tool);
+        }
+
+        return [.. hosted];
     }
 
     /// <summary>Gets the model client used for every model invocation in the run.</summary>
@@ -76,6 +118,9 @@ public sealed record AgentRunProfile
 
     /// <summary>Gets the immutable tools available for the complete run.</summary>
     public IReadOnlyList<AIFunction> Tools { get; }
+
+    /// <summary>Gets the provider-hosted tools declared on every request of the run.</summary>
+    public IReadOnlyList<AITool> HostedTools { get; }
 }
 
 /// <summary>Provides an immutable profile for each newly started Agent run.</summary>

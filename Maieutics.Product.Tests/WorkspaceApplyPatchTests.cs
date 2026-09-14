@@ -45,8 +45,12 @@ public sealed class WorkspaceApplyPatchTests
         result.Files.Select(static file => file.Operation)
             .Should().Equal("created", "updated", "deleted");
         result.Files[0].Path.Should().Be("docs/new.txt");
-        result.Files[1].Diff.Unified.Should().Contain("+var fresh = false;\n");
-        result.Files[2].Diff.Deletions.Should().Be(1);
+        var updated = result.Files[1];
+        updated.Diff.Should().NotBeNull();
+        updated.Diff.Unified.Should().Contain("+var fresh = false;\n");
+        var deleted = result.Files[2];
+        deleted.Diff.Should().NotBeNull();
+        deleted.Diff.Deletions.Should().Be(1);
 
         (await File.ReadAllTextAsync(
                 workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "app.cs",

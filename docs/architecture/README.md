@@ -157,8 +157,11 @@ function results, and the final assistant response. Maieutics adds bounded invoc
 events, and stable JSON result envelopes around the standard function contract.
 
 The executable registers `list_directory`, `read_text`, and `search_text` from one cohesive `WorkspaceFunctions`
-implementation and `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close` from the local Deno
-REPL adapter. The startup root is fixed from configuration, while
+implementation, `write_text`, `edit_text`, and `apply_patch` (bounded-diff file edits) from `WorkspaceEditFunctions`,
+and `repl_execute`, `repl_create`, `repl_list`, `repl_restart`, and `repl_close` from the local Deno
+REPL adapter. The OpenAI Responses flavor presents the model-native `apply_patch` tool on the wire and hides the
+general edit functions; the provider boundary translates the built-in tool calls, which the OpenAI .NET SDK does not
+model yet. The startup root is fixed from configuration, while
 `%workspace use` may install a session override for subsequent function invocations and `reset` restores the
 startup root. Workspace functions capture one immutable workspace snapshot per call; a Deno REPL captures the selected
 root once as its process working directory at session creation. The snapshot owns URI validation,

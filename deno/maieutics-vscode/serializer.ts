@@ -21,7 +21,7 @@ import {
   type TurnBinding,
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
-import { TurnOutputMime } from "./turnView.ts";
+import { toolSnapshotLines, TurnOutputMime } from "./turnView.ts";
 
 export const NotebookType = "maieutics-notebook";
 
@@ -258,9 +258,7 @@ export function renderSnapshotMarkdown(output: OutputSnapshot): string {
 }
 
 function renderTools(tools: ToolSnapshot[]): string {
-  return tools
-    .map((tool) => tool.status === "error" ? `- ❌ \`${tool.tool}\`` : `- ✅ \`${tool.tool}\``)
-    .join("\n");
+  return toolSnapshotLines(tools).join("\n");
 }
 
 // NotebookKind is re-exported for the controller's notebook-type contract.

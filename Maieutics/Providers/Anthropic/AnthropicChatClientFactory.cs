@@ -3,6 +3,8 @@ using Maieutics.Agent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 
+using Maieutics.Providers.OpenAI;
+
 namespace Maieutics.Providers.Anthropic;
 
 internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
@@ -24,7 +26,11 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
         ArgumentNullException.ThrowIfNull(source);
         source.Validate();
-        return new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint);
+        // apply_patch is an OpenAI Responses wire concept; the Anthropic
+        // Messages adapter only sees the general edit functions.
+        return new ToolVisibilityChatClient(
+            new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint),
+            ApplyPatchWire.NonResponsesHiddenToolNames);
     }
 
     private sealed class AnthropicSource(AnthropicSourceOptions options)

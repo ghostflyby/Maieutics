@@ -64,9 +64,15 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(model);
             var credential = new ApiKeyCredential(options.ApiKey);
-            var openAiClient = options.Endpoint is null
-                ? new OpenAIClient(credential)
-                : new OpenAIClient(credential, new OpenAIClientOptions { Endpoint = options.Endpoint });
+            var clientOptions = new OpenAIClientOptions();
+            if (options.Endpoint is not null) clientOptions.Endpoint = options.Endpoint;
+            if (options.ApiFlavor == OpenAiApiFlavor.Responses)
+                // The SDK cannot model OpenAI's apply_patch tool yet (its wire
+                // entry and custom tool call items), so the transport rewrites
+                // the request and response bodies around it.
+                clientOptions.Transport = ApplyPatchPipelineTransport.CreateDefault();
+
+            var openAiClient = new OpenAIClient(credential, clientOptions);
 
 #pragma warning disable OPENAI001 // The OpenAI .NET Responses surface is currently marked experimental.
             var client = options.ApiFlavor switch
@@ -76,7 +82,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
                 _ => throw new UnreachableException()
             };
 
-            return new ConfigureOptionsChatClient(client, chatOptions =>
+            client = new ConfigureOptionsChatClient(client, chatOptions =>
             {
                 chatOptions.RawRepresentationFactory = _ => options.ApiFlavor switch
                 {
@@ -86,6 +92,12 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
                 };
             });
 #pragma warning restore OPENAI001
+
+            return new ToolVisibilityChatClient(
+                client,
+                options.ApiFlavor == OpenAiApiFlavor.Responses
+                    ? ApplyPatchWire.ResponsesHiddenToolNames
+                    : ApplyPatchWire.NonResponsesHiddenToolNames);
         }
 
         public async ValueTask<IReadOnlyList<AgentModelDescriptor>> GetAvailableModelsAsync(

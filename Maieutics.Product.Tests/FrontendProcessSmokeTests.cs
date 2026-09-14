@@ -24,8 +24,23 @@ public sealed class FrontendProcessSmokeTests
         using var deadline = CreateDeadline(
             TestContext.Current.CancellationToken,
             TimeSpan.FromSeconds(90));
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "smoke answer");
-        var process = StartHostProcess(provider.Endpoint, deadline.Token);
+        // The scripted tool flow doubles as the published-process function
+        // continuation check: the model calls write_text, the AOT process
+        // marshals arguments through the source-generated tool contract,
+        // writes the file, and returns the structured result to the model.
+        var workspace = Path.Combine(
+            Path.GetTempPath(),
+            $"maieutics-smoke-workspace-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            toolFlow: true,
+            toolName: "write_text",
+            toolArgumentsJson: """{"uri":"workspace://local/smoke.txt","content":"smoke body\n"}""",
+            // The tool result rides inside the tool message's JSON-escaped
+            // content, so match a substring without quotes or colons.
+            expectedToolResultText: "smoke.txt");
+        var process = StartHostProcess(provider.Endpoint, deadline.Token, workspace);
         try
         {
             var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
@@ -54,7 +69,7 @@ public sealed class FrontendProcessSmokeTests
 
                 var turn = await client.PostAsJsonAsync(
                     $"/v1/agent/sessions/{sessionId}/turns",
-                    new { text = "hello" },
+                    new { text = "write the smoke file" },
                     deadline.Token);
                 turn.StatusCode.Should().Be(HttpStatusCode.Accepted);
                 var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
@@ -62,8 +77,16 @@ public sealed class FrontendProcessSmokeTests
 
                 var transcript = await WaitForTranscriptTurnAsync(client, sessionId, deadline.Token);
                 transcript.GetProperty("runId").GetString().Should().Be(runId);
-                transcript.GetProperty("messages")[1].GetProperty("parts")[0]
-                    .GetProperty("text").GetString().Should().Be("smoke answer");
+                // The tool flow commits the intermediate tool-call messages, so
+                // the final assistant answer is the transcript's last message.
+                var messages = transcript.GetProperty("messages");
+                messages[messages.GetArrayLength() - 1].GetProperty("parts")[0]
+                    .GetProperty("text").GetString().Should().Be("tool-backed answer");
+
+                // The write_text tool result reached the model (the fake provider
+                // asserts "smoke.txt" rode in the follow-up request) and the
+                // canonical transcript records the structured result envelope.
+                transcript.GetRawText().Should().Contain("smoke.txt");
             }
             finally
             {
@@ -75,6 +98,15 @@ public sealed class FrontendProcessSmokeTests
             // The child must never outlive the test, including on failures: a leaked
             // host keeps running for the rest of the job and holds the temp files.
             await process.DisposeAsync();
+            try
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort cleanup on the same grounds as the discovery file.
+            }
         }
     }
 
@@ -106,7 +138,10 @@ public sealed class FrontendProcessSmokeTests
         }
     }
 
-    private static SmokeHostProcess StartHostProcess(Uri endpoint, CancellationToken cancellationToken)
+    private static SmokeHostProcess StartHostProcess(
+        Uri endpoint,
+        CancellationToken cancellationToken,
+        string? workspaceRoot = null)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
         var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
@@ -143,6 +178,7 @@ public sealed class FrontendProcessSmokeTests
         startInfo.Environment["Maieutics__Providers__OpenAI__Endpoint"] = endpoint.ToString();
         startInfo.Environment["Maieutics__Providers__OpenAI__ApiFlavor"] =
             OpenAiApiFlavor.ChatCompletions.ToString();
+        if (workspaceRoot is not null) startInfo.Environment["Maieutics__Workspace__Root"] = workspaceRoot;
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("MAIEUTICS_CONFIG");
         startInfo.Environment.Remove("MAIEUTICS_PROVIDER");

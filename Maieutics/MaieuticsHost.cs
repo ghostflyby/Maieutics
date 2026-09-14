@@ -293,6 +293,7 @@ public static class MaieuticsHost
                 scriptTools:
                 [
                     .. services.GetRequiredService<WorkspaceFunctions>().Functions,
+                    .. services.GetRequiredService<WorkspaceEditFunctions>().Functions,
                     .. services.GetRequiredService<ResourceFunctions>().Functions
                 ],
                 pluginHosts: services.GetRequiredService<PluginHostManager>(),
@@ -343,9 +344,12 @@ public static class MaieuticsHost
             new WorkspaceFunctions(
                 services.GetRequiredService<Workspace>(),
                 resources: services.GetRequiredService<ResourceRegistry>()));
+        builder.Services.AddSingleton(static services =>
+            new WorkspaceEditFunctions(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
+            .. services.GetRequiredService<WorkspaceEditFunctions>().Functions,
             .. services.GetRequiredService<ResourceFunctions>().Functions,
             .. services.GetRequiredService<DenoReplFunctions>().Functions,
             .. (services.GetService<AgentObjectFunctions>()?.Functions ?? [])

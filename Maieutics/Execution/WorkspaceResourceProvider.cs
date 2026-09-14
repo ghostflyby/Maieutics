@@ -39,7 +39,7 @@ internal sealed class WorkspaceResourceProvider : IResourceProvider
                 "workspace_not_regular_file",
                 "Workspace text tools can read only regular files.");
 
-        var stream = snapshot.OpenVerifiedRead(path.FullPath);
+        var stream = snapshot.OpenVerifiedRead(path);
         try
         {
             if (stream.Length > request.MaxBytes)

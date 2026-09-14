@@ -33,7 +33,7 @@ public sealed class MaieuticsStatusTests
                     MaieuticsConfigurationReloadOutcome.Rejected,
                     7),
                 []),
-            new WorkspaceSnapshot("/secret/workspace", 3, true),
+            new WorkspaceSnapshot("/secret/workspace", 3, null),
             new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
             [new MaieuticsMcpServerInfo(
                 "server",
@@ -52,7 +52,7 @@ public sealed class MaieuticsStatusTests
             .And.Contain("last reload `rejected`")
             .And.Contain("profile `profile`")
             .And.Contain("Capabilities: no model profiles")
-            .And.Contain("Workspace: session override")
+            .And.Contain("Workspace: fixed home")
             .And.Contain("Plugins: `Exited`")
             .And.Contain("`server`: `Reconnecting`")
             .And.Contain("`default`: generation `4`, state `busy` (default)")
@@ -79,7 +79,7 @@ public sealed class MaieuticsStatusTests
                     AgentModelCapabilities.StreamingText,
                     ["Shell", "WebSearch"],
                     ["FileSearch", "WebSearch"])]),
-            new WorkspaceSnapshot("/secret/workspace", 3, true),
+            new WorkspaceSnapshot("/secret/workspace", 3, null),
             new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
             [],
             new DenoReplListResult([]));
@@ -124,7 +124,7 @@ public sealed class MaieuticsStatusTests
                         [],
                         [])
                 ]),
-            new WorkspaceSnapshot("/secret/workspace", 3, true),
+            new WorkspaceSnapshot("/secret/workspace", 3, null),
             new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
             [],
             new DenoReplListResult([]));

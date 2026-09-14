@@ -118,7 +118,7 @@ internal sealed class WorkspaceEditFunctions
                 beforeSize = new FileInfo(target.FullPath).Length;
                 if (beforeSize <= maximumEditedFileBytes)
                 {
-                    var bounded = await snapshot.ReadAsync(target.FullPath, maximumEditedFileBytes, cancellationToken)
+                    var bounded = await snapshot.ReadAsync(target.FullPath, target.Segments, maximumEditedFileBytes, cancellationToken)
                         .ConfigureAwait(false);
                     if (!bounded.ExceededLimit)
                     {
@@ -131,8 +131,8 @@ internal sealed class WorkspaceEditFunctions
             if (beforeRaw is not null && beforeRaw.AsSpan().SequenceEqual(bytes))
                 return new WriteTextResult(target.Uri, "unchanged", beforeSize, bytes.Length, null);
 
-            if (!target.Exists) snapshot.EnsureParentDirectories(target.FullPath);
-            await WriteFileAsync(snapshot, target.FullPath, bytes, create: !target.Exists, cancellationToken)
+            if (!target.Exists) WorkspaceSnapshot.EnsureParentDirectories(target);
+            await WriteFileAsync(snapshot, target, bytes, create: !target.Exists, cancellationToken)
                 .ConfigureAwait(false);
 
             // A previous file whose content could not be decoded (binary or
@@ -200,6 +200,7 @@ internal sealed class WorkspaceEditFunctions
 
             var bounded = await snapshot.ReadAsync(
                 file.FullPath,
+                file.Segments,
                 maximumEditedFileBytes,
                 cancellationToken).ConfigureAwait(false);
             if (bounded.ExceededLimit)
@@ -227,13 +228,13 @@ internal sealed class WorkspaceEditFunctions
 
             var after = before.Replace(search, replacement);
             var bytes = EncodeUtf8(hadByteOrderMark ? after.Insert(0, "\uFEFF") : after);
-            await WriteFileAsync(snapshot, file.FullPath, bytes, create: false, cancellationToken)
+            await WriteFileAsync(snapshot, file.AsWriteTarget(), bytes, create: false, cancellationToken)
                 .ConfigureAwait(false);
 
             var diff = UnifiedDiff.Create(
                 before,
                 after,
-                snapshot.ToDisplayPath(file.FullPath),
+                WorkspaceSnapshot.ToDisplayPath(file.Segments),
                 maximumDiffBytes,
                 maximumDiffLines);
             return new EditTextResult(file.Uri, occurrences, bounded.Bytes.Length, bytes.Length, diff!);
@@ -298,9 +299,9 @@ internal sealed class WorkspaceEditFunctions
                         "workspace_path_exists",
                         $"The patch creates '{change.Path}', but that file already exists.");
 
-                snapshot.EnsureParentDirectories(target.FullPath);
+                WorkspaceSnapshot.EnsureParentDirectories(target);
                 var bytes = EncodeUtf8(change.Diff ?? "");
-                await WriteFileAsync(snapshot, target.FullPath, bytes, create: true, cancellationToken)
+                await WriteFileAsync(snapshot, target, bytes, create: true, cancellationToken)
                     .ConfigureAwait(false);
                 return new ApplyPatchFileResult(
                     target.DisplayPath,
@@ -326,7 +327,7 @@ internal sealed class WorkspaceEditFunctions
                         "workspace_file_too_large",
                         $"edit tools edit files of at most {maximumEditedFileBytes} bytes.");
 
-                var bounded = await snapshot.ReadAsync(file.FullPath, maximumEditedFileBytes, cancellationToken)
+                var bounded = await snapshot.ReadAsync(file.FullPath, file.Segments, maximumEditedFileBytes, cancellationToken)
                     .ConfigureAwait(false);
                 if (bounded.ExceededLimit)
                     throw new WorkspaceException(
@@ -340,7 +341,7 @@ internal sealed class WorkspaceEditFunctions
 
                 var after = ApplyChangeSections(before, change.Path, change.Changes);
                 if (string.Equals(before, after, StringComparison.Ordinal))
-                    return new ApplyPatchFileResult(snapshot.ToDisplayPath(file.FullPath), "unchanged", null, null);
+                    return new ApplyPatchFileResult(WorkspaceSnapshot.ToDisplayPath(file.Segments), "unchanged", null, null);
 
                 var bytes = EncodeUtf8(hadByteOrderMark ? after.Insert(0, "\uFEFF") : after);
                 if (change.MoveToPath is { } moveTo)
@@ -351,24 +352,24 @@ internal sealed class WorkspaceEditFunctions
                             "workspace_path_exists",
                             $"The patch moves '{change.Path}' to '{moveTo}', but that file already exists.");
 
-                    snapshot.EnsureParentDirectories(moved.FullPath);
-                    await WriteFileAsync(snapshot, moved.FullPath, bytes, create: true, cancellationToken)
+                    WorkspaceSnapshot.EnsureParentDirectories(moved);
+                    await WriteFileAsync(snapshot, moved, bytes, create: true, cancellationToken)
                         .ConfigureAwait(false);
-                    snapshot.DeleteFile(file.FullPath);
+                    snapshot.DeleteFile(file.AsWriteTarget());
                     return new ApplyPatchFileResult(
                         moved.DisplayPath,
                         "created",
-                        snapshot.ToDisplayPath(file.FullPath),
+                        WorkspaceSnapshot.ToDisplayPath(file.Segments),
                         UnifiedDiff.Create(before, after, moved.DisplayPath, maximumDiffBytes, maximumDiffLines));
                 }
 
-                await WriteFileAsync(snapshot, file.FullPath, bytes, create: false, cancellationToken)
+                await WriteFileAsync(snapshot, file.AsWriteTarget(), bytes, create: false, cancellationToken)
                     .ConfigureAwait(false);
                 return new ApplyPatchFileResult(
-                    snapshot.ToDisplayPath(file.FullPath),
+                    WorkspaceSnapshot.ToDisplayPath(file.Segments),
                     "updated",
                     null,
-                    UnifiedDiff.Create(before, after, snapshot.ToDisplayPath(file.FullPath), maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(before, after, WorkspaceSnapshot.ToDisplayPath(file.Segments), maximumDiffBytes, maximumDiffLines));
             }
             case "delete_file":
             {
@@ -378,13 +379,13 @@ internal sealed class WorkspaceEditFunctions
                         "workspace_not_regular_file",
                         "Workspace edit tools can delete only regular files.");
 
-                var beforeText = await TryReadBeforeAsync(snapshot, file.FullPath, cancellationToken).ConfigureAwait(false);
-                snapshot.DeleteFile(file.FullPath);
+                var beforeText = await TryReadBeforeAsync(snapshot, file, cancellationToken).ConfigureAwait(false);
+                snapshot.DeleteFile(file.AsWriteTarget());
                 return new ApplyPatchFileResult(
-                    snapshot.ToDisplayPath(file.FullPath),
+                    WorkspaceSnapshot.ToDisplayPath(file.Segments),
                     "deleted",
                     null,
-                    UnifiedDiff.Create(beforeText, "", snapshot.ToDisplayPath(file.FullPath), maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(beforeText, "", WorkspaceSnapshot.ToDisplayPath(file.Segments), maximumDiffBytes, maximumDiffLines));
             }
             default:
                 throw new WorkspaceException(
@@ -546,12 +547,16 @@ internal sealed class WorkspaceEditFunctions
     /// the read (the caller then omits the diff).</summary>
     private async Task<string?> TryReadBeforeAsync(
         WorkspaceSnapshot snapshot,
-        string path,
+        WorkspacePath path,
         CancellationToken cancellationToken)
     {
-        if (new FileInfo(path).Length > maximumEditedFileBytes) return null;
+        if (new FileInfo(path.FullPath).Length > maximumEditedFileBytes) return null;
 
-        var bounded = await snapshot.ReadAsync(path, maximumEditedFileBytes, cancellationToken)
+        var bounded = await snapshot.ReadAsync(
+                path.FullPath,
+                path.Segments,
+                maximumEditedFileBytes,
+                cancellationToken)
             .ConfigureAwait(false);
         if (bounded.ExceededLimit) return null;
 
@@ -621,12 +626,12 @@ internal sealed class WorkspaceEditFunctions
 
     private static async Task WriteFileAsync(
         WorkspaceSnapshot snapshot,
-        string path,
+        WorkspaceWriteTarget target,
         byte[] bytes,
         bool create,
         CancellationToken cancellationToken)
     {
-        var stream = snapshot.OpenWrite(path, create);
+        var stream = snapshot.OpenWrite(target, create);
         await using (stream.ConfigureAwait(false))
         {
             await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);

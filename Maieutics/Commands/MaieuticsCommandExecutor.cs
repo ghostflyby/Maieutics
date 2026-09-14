@@ -184,36 +184,58 @@ internal sealed class MaieuticsCommandExecutor(
             throw new MaieuticsCommandException(
                 MaieuticsCommandException.Unavailable, "Workspace commands are not available in this host.");
 
-        WorkspaceSnapshot selection;
         if (arguments.Length == 2 ||
             (arguments.Length == 3 && string.Equals(
                 arguments[2],
                 MaieuticsCommandLanguage.Current,
                 StringComparison.OrdinalIgnoreCase)))
         {
-            selection = workspace.Capture();
+            return RenderWorkspace(workspace.Capture());
         }
-        else if (arguments.Length == 3 &&
-                 string.Equals(arguments[2], MaieuticsCommandLanguage.Reset, StringComparison.OrdinalIgnoreCase))
+
+        if (arguments.Length >= 4 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Open, StringComparison.OrdinalIgnoreCase))
         {
-            selection = workspace.Reset();
-        }
-        else if (arguments.Length >= 4 &&
-                 string.Equals(arguments[2], MaieuticsCommandLanguage.Use, StringComparison.OrdinalIgnoreCase))
-        {
-            var path = GetRemainderAfterTokens(code, pathTokenCount);
+            var remainder = GetRemainderAfterTokens(code, pathTokenCount);
+            var (path, alias) = SplitOpenAlias(remainder);
             if (path.Length == 0 || path.IndexOfAny(['\r', '\n']) >= 0)
                 throw new ArgumentException("A single-line workspace path is required.");
 
-            selection = workspace.Use(path);
-        }
-        else
-        {
-            throw new MaieuticsCommandException(
-                MaieuticsCommandException.CommandError, "Unknown workspace command or invalid arguments.");
+            return RenderWorkspace(workspace.OpenLink(path, alias));
         }
 
-        return RenderWorkspace(selection);
+        if (arguments.Length == 4 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Close, StringComparison.OrdinalIgnoreCase))
+        {
+            return RenderWorkspace(workspace.CloseLink(arguments[3]));
+        }
+
+        throw new MaieuticsCommandException(
+            MaieuticsCommandException.CommandError, "Unknown workspace command or invalid arguments.");
+    }
+
+    /// <summary>Splits a trailing <c> as &lt;alias&gt;</c> off the open command's raw
+    /// remainder, preserving interior whitespace in the path part.</summary>
+    private static (string Path, string? Alias) SplitOpenAlias(string remainder)
+    {
+        var tokens = remainder.Split(
+            (char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length < 2 ||
+            !string.Equals(tokens[^2], "as", StringComparison.OrdinalIgnoreCase))
+            return (remainder, null);
+
+        var index = remainder.Length;
+        for (var token = 1; token <= 2; token++)
+        {
+            while (index > 0 && char.IsWhiteSpace(remainder[index - 1])) index--;
+
+            index -= tokens[^token].Length;
+        }
+
+        while (index > 0 && char.IsWhiteSpace(remainder[index - 1])) index--;
+
+        return (remainder[..index], tokens[^1]);
     }
 
     private string ExecuteStatusCommand(string[] arguments)
@@ -525,12 +547,31 @@ internal sealed class MaieuticsCommandExecutor(
 
     private static string RenderWorkspace(WorkspaceSnapshot selection)
     {
-        var selectionSource = selection.HasSessionOverride ? "session override" : "startup root";
-        return $"""
-                ### Current workspace
+        var output = new System.Text.StringBuilder("### Current workspace\n\n");
+        output.Append("- Root: ")
+            .Append(MarkdownText.CodeSpan(selection.RootPath))
+            .Append(" (fixed home)")
+            .AppendLine();
 
-                - Root: {MarkdownText.CodeSpan(selection.RootPath)} ({selectionSource})
-                """;
+        var links = selection.Links;
+        if (links is null || links.Records.Count == 0)
+        {
+            output.AppendLine("- Projects: none");
+            return output.ToString();
+        }
+
+        output.AppendLine("- Projects:");
+        foreach (var record in links.Records)
+        {
+            output.Append("  - ")
+                .Append(MarkdownText.CodeSpan(record.Name))
+                .Append(" → ")
+                .Append(MarkdownText.CodeSpan(record.Target));
+            if (record.Alias is not null) output.Append(" (alias)");
+            output.AppendLine();
+        }
+
+        return output.ToString();
     }
 
     private static string RenderMcpList(IReadOnlyList<MaieuticsMcpServerInfo> servers)

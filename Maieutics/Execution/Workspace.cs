@@ -1,33 +1,64 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace Maieutics.Execution;
 
+/// <summary>The authoritative workspace: a fixed, product-owned home directory
+/// (ADR 0027). The root never changes mid-process; external projects are opened as managed
+/// links under <c>projects/</c>, which bumps the snapshot version. Exposes the permission
+/// variable seam: <c>workspace</c> is the home root, <c>project.&lt;name&gt;</c> is a
+/// registered link's canonical target.</summary>
 internal sealed class Workspace : IPermissionVariableSource
 {
+    private const string WorkspaceVariableName = "workspace";
+    private const string ProjectVariablePrefix = "project.";
     private readonly Lock gate = new();
-    private readonly string startupRootPath;
+    private readonly WorkspaceHome? home;
+    private readonly string rootPath;
     private WorkspaceSnapshot current;
 
-    private Workspace(string rootPath)
+    private Workspace(WorkspaceHome? home, string rootPath)
     {
-        startupRootPath = rootPath;
-        current = new WorkspaceSnapshot(rootPath, 0, false);
+        this.home = home;
+        this.rootPath = rootPath;
+        current = new WorkspaceSnapshot(rootPath, 0, home?.LinksView());
     }
 
-    internal string RootPath => Capture().RootPath;
+    internal string RootPath => rootPath;
 
     string? IPermissionVariableSource.GetVariable(string name)
     {
-        return string.Equals(name, "workspace", StringComparison.Ordinal) ? RootPath : null;
+        if (string.Equals(name, WorkspaceVariableName, StringComparison.Ordinal)) return rootPath;
+
+        if (name.StartsWith(ProjectVariablePrefix, StringComparison.Ordinal))
+        {
+            var projectName = name[ProjectVariablePrefix.Length..];
+            if (projectName.Length > 0 &&
+                Capture().Links?.TargetsByName.TryGetValue(projectName, out var target) == true)
+                return target;
+        }
+
+        return null;
     }
 
+    /// <summary>Host composition: the workspace root is the managed home.</summary>
+    internal static Workspace Create(WorkspaceHome home)
+    {
+        ArgumentNullException.ThrowIfNull(home);
+        return new Workspace(home, home.HomePath);
+    }
+
+    /// <summary>Root-only variant without a home: no links can be opened and no link
+    /// traversal is registered. The configured path resolves against
+    /// <paramref name="startupCurrentDirectory"/>; null selects that directory itself.</summary>
     internal static Workspace Create(string? configuredPath, string startupCurrentDirectory)
     {
         var rootPath = ValidateRoot(configuredPath, startupCurrentDirectory);
-        return new Workspace(rootPath);
+        return new Workspace(null, rootPath);
     }
 
     internal WorkspaceSnapshot Capture()
@@ -38,36 +69,32 @@ internal sealed class Workspace : IPermissionVariableSource
         }
     }
 
-    internal WorkspaceSnapshot Use(string path)
+    internal WorkspaceSnapshot OpenLink(string path, string? alias)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        while (true)
-        {
-            var previous = Capture();
-            var replacementPath = ValidateRoot(path, previous.RootPath);
-            lock (gate)
-            {
-                if (current.Version != previous.Version) continue;
-
-                current = new WorkspaceSnapshot(
-                    replacementPath,
-                    checked(previous.Version + 1),
-                    true);
-                return current;
-            }
-        }
+        var owner = home
+                    ?? throw new InvalidOperationException(
+                        "Workspace links require the fixed workspace home.");
+        var record = owner.Open(path, alias);
+        return CommitLinksChanged(record);
     }
 
-    internal WorkspaceSnapshot Reset()
+    internal WorkspaceSnapshot CloseLink(string name)
+    {
+        var owner = home
+                    ?? throw new InvalidOperationException(
+                        "Workspace links require the fixed workspace home.");
+        var record = owner.Close(name);
+        return CommitLinksChanged(record);
+    }
+
+    private WorkspaceSnapshot CommitLinksChanged(WorkspaceLinkRecord record)
     {
         lock (gate)
         {
-            if (!current.HasSessionOverride) return current;
-
             current = new WorkspaceSnapshot(
-                startupRootPath,
+                rootPath,
                 checked(current.Version + 1),
-                false);
+                home?.LinksView());
             return current;
         }
     }
@@ -81,7 +108,8 @@ internal sealed class Workspace : IPermissionVariableSource
                 nameof(configuredPath));
 
         var candidate = configuredPath ?? startupCurrentDirectory;
-        var fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate, startupCurrentDirectory));
+        var fullPath = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(candidate, startupCurrentDirectory));
         if (!Directory.Exists(fullPath))
             throw new DirectoryNotFoundException("The configured Maieutics workspace root does not exist.");
 
@@ -94,327 +122,197 @@ internal sealed class Workspace : IPermissionVariableSource
     }
 }
 
+/// <summary>An immutable view of the workspace root and its registered links. URIs are
+/// logical (root-relative through <c>projects/&lt;name&gt;</c>); paths past a managed hop
+/// are physical locations outside the root, so URIs are always built from logical
+/// segments, never from physical paths. Partial: hosts the Unix <c>openat</c> P/Invokes.</summary>
 internal sealed partial record WorkspaceSnapshot(
     string RootPath,
     long Version,
-    bool HasSessionOverride)
+    WorkspaceLinks? Links)
 {
     private const string UriPrefix = "workspace://local";
+
+    /// <summary>The errno a no-follow open reports for a symbolic link: ELOOP on macOS,
+    /// ELOOP-via-ENOTDIR on the Linux variants this project targets.</summary>
+    private static readonly int SymlinkErrno = OperatingSystem.IsMacOS() ? 62 : 40;
 
     internal WorkspacePath Resolve(string? uri, bool allowRoot = true)
     {
         var segments = ParseSegments(uri, allowRoot);
         var current = RootPath;
-        foreach (var segment in segments)
+        FileAttributes attributes;
+        if (segments.Count == 0)
         {
-            current = Path.Combine(current, segment);
-            FileAttributes attributes;
-            try
+            attributes = File.GetAttributes(current);
+        }
+        else
+        {
+            attributes = 0;
+            for (var index = 0; index < segments.Count; index++)
             {
-                attributes = File.GetAttributes(current);
-            }
-            catch (FileNotFoundException exception)
-            {
-                throw new WorkspaceException(
-                    "workspace_path_not_found",
-                    "The workspace URI does not identify an existing path.",
-                    exception);
-            }
-            catch (DirectoryNotFoundException exception)
-            {
-                throw new WorkspaceException(
-                    "workspace_path_not_found",
-                    "The workspace URI does not identify an existing path.",
-                    exception);
-            }
+                var candidate = Path.Combine(current, segments[index]);
+                FileAttributes candidateAttributes;
+                try
+                {
+                    candidateAttributes = File.GetAttributes(candidate);
+                }
+                catch (FileNotFoundException exception)
+                {
+                    throw NotFound(exception);
+                }
+                catch (DirectoryNotFoundException exception)
+                {
+                    throw NotFound(exception);
+                }
 
-            if ((attributes & FileAttributes.ReparsePoint) != 0)
-                throw new WorkspaceException(
-                    "workspace_symbolic_link_not_allowed",
-                    "Workspace tools cannot read or traverse symbolic links.");
+                if ((candidateAttributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    var target = ResolveRegisteredLink(segments, index, candidate);
+                    if (target is null)
+                        throw new WorkspaceException(
+                            "workspace_symbolic_link_not_allowed",
+                            "Workspace tools cannot read or traverse symbolic links.");
+
+                    current = target;
+                    candidateAttributes = File.GetAttributes(current);
+                }
+                else
+                {
+                    current = candidate;
+                }
+
+                attributes = candidateAttributes;
+            }
         }
 
-        return new WorkspacePath(current, ToWorkspaceUri(current), File.GetAttributes(current));
+        return new WorkspacePath(current, ToWorkspaceUri(segments), attributes, segments);
     }
 
-    internal string ToWorkspaceUri(string fullPath)
+    /// <summary>The only permitted traversal of a reparse point: the segment directly
+    /// under <c>projects/</c>, when the registry binds that name to exactly the link's
+    /// final target. Everything else is rejected by the caller as a foreign link.</summary>
+    internal string? ResolveRegisteredLink(
+        IReadOnlyList<string> segments,
+        int index,
+        string linkPath)
     {
-        var relative = Path.GetRelativePath(RootPath, fullPath);
-        if (relative == ".") return $"{UriPrefix}/";
+        if (index != 1 || Links is null || segments.Count <= index ||
+            !segments[0].Equals(WorkspaceHome.ProjectsDirectoryName, StringComparison.Ordinal))
+            return null;
 
-        if (Path.IsPathRooted(relative) ||
-            relative.Equals("..", StringComparison.Ordinal) ||
-            relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            throw new InvalidOperationException("A workspace path escaped its configured root.");
+        if (!Links.TargetsByName.TryGetValue(segments[index], out var target)) return null;
+
+        var final = new DirectoryInfo(linkPath).ResolveLinkTarget(returnFinalTarget: true);
+        if (final is null) return null;
+
+        var finalPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(final.FullName));
+        return string.Equals(
+            finalPath,
+            target,
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal)
+            ? target
+            : null;
+    }
+
+    internal string ToWorkspaceUri(IReadOnlyList<string> segments)
+    {
+        if (segments.Count == 0) return $"{UriPrefix}/";
 
         var builder = new StringBuilder(UriPrefix);
-        foreach (var segment in relative.Split(
-                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                     StringSplitOptions.RemoveEmptyEntries))
+        foreach (var segment in segments)
             builder.Append('/').Append(Uri.EscapeDataString(segment));
 
         return builder.ToString();
     }
 
-    /// <summary>The workspace-relative, forward-slash display path used in
-    /// diff headers: decoded, unlike the percent-escaped wire URI.</summary>
-    internal string ToDisplayPath(string fullPath)
+    /// <summary>The logical, decoded, forward-slash path used in diff headers: unlike the
+    /// percent-escaped wire URI it is the plain path past the workspace root.</summary>
+    internal static string ToDisplayPath(IReadOnlyList<string> segments)
     {
-        var relative = Path.GetRelativePath(RootPath, fullPath);
-        return relative.Replace(Path.DirectorySeparatorChar, '/');
+        return string.Join('/', segments);
     }
 
-    /// <summary>Resolves a write target for the edit tools. Unlike
-    /// <see cref="Resolve(string,bool)"/> the final segment may be missing
-    /// (creation); existing segments still refuse reparse points and the same
-    /// URI rules apply, so the caller can classify create versus update while
-    /// every opened component re-validates at open time.</summary>
+    /// <summary>Resolves a write target. Unlike <see cref="Resolve"/> the final segment may be
+    /// missing, in which case the tool creates it; the parent chain is resolved through the same
+    /// rules as reads (including the registered <c>projects/&lt;name&gt;</c> hop), and a parent
+    /// that does not exist yet is created under the deepest ancestor that does.</summary>
     internal WorkspaceWriteTarget ResolveWriteTarget(string uri)
     {
         var segments = ParseSegments(uri, allowRoot: false);
-        var current = RootPath;
-        for (var index = 0; index < segments.Count; index++)
+        var parentCount = segments.Count - 1;
+
+        WorkspacePath parent;
+        var existing = parentCount;
+        while (true)
         {
-            current = Path.Combine(current, segments[index]);
-            FileAttributes attributes;
             try
             {
-                attributes = File.GetAttributes(current);
+                parent = Resolve(
+                    existing == 0 ? null : ToWorkspaceUri([.. segments.Take(existing)]));
+                break;
             }
-            catch (FileNotFoundException)
+            catch (WorkspaceException exception) when (exception.Code == "workspace_path_not_found")
             {
-                return MissingWriteTarget(current, segments, index);
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return MissingWriteTarget(current, segments, index);
-            }
+                if (existing == 0) throw;
 
-            if ((attributes & FileAttributes.ReparsePoint) != 0)
-                throw new WorkspaceException(
-                    "workspace_symbolic_link_not_allowed",
-                    "Workspace tools cannot write through symbolic links.");
-
-            if ((attributes & FileAttributes.Directory) == 0)
-            {
-                if (index == segments.Count - 1)
-                    return new WorkspaceWriteTarget(
-                        current,
-                        ToWorkspaceUri(current),
-                        ToDisplayPath(current),
-                        true);
-
-                throw new WorkspaceException(
-                    "workspace_not_directory",
-                    "The workspace URI's parent path is not a directory.");
+                existing--;
             }
         }
 
-        throw new WorkspaceException(
-            "workspace_not_regular_file",
-            "Workspace edit tools can write only regular files.");
-    }
+        if (!parent.IsDirectory)
+            throw new WorkspaceException(
+                "workspace_not_directory",
+                "The workspace URI's parent path is not a directory.");
 
-    private WorkspaceWriteTarget MissingWriteTarget(
-        string existingPrefix,
-        IReadOnlyList<string> segments,
-        int missingIndex)
-    {
-        var fullPath = existingPrefix;
-        for (var index = missingIndex + 1; index < segments.Count; index++)
-            fullPath = Path.Combine(fullPath, segments[index]);
+        // Segments below the resolved ancestor map one to one onto physical children, whether
+        // that ancestor is inside the root or the canonical target of a registered link.
+        var parentPath = parent.FullPath;
+        for (var index = existing; index < parentCount; index++)
+            parentPath = Path.Combine(parentPath, segments[index]);
 
-        return new WorkspaceWriteTarget(
-            fullPath,
-            ToWorkspaceUri(fullPath),
-            ToDisplayPath(fullPath),
-            false);
-    }
-
-    internal void EnsureParentDirectories(string fullPath)
-    {
-        var parent = Path.GetDirectoryName(fullPath);
-        if (parent is null || !parent.StartsWith(RootPath, StringComparison.Ordinal))
-            throw new InvalidOperationException("A workspace write target escaped its captured root.");
-
-        Directory.CreateDirectory(parent);
-    }
-
-    /// <summary>Opens a write handle to a workspace file. Creation uses an
-    /// exclusive create so a concurrent appearance fails typed; updates truncate
-    /// an existing regular file. Every path component re-validates at open
-    /// time: the Unix walk uses openat with O_NOFOLLOW, and Windows re-checks
-    /// the final attributes after opening.</summary>
-    internal FileStream OpenWrite(string path, bool create)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            var stream = new FileStream(path, new FileStreamOptions
-            {
-                Mode = create ? FileMode.CreateNew : FileMode.Create,
-                Access = FileAccess.Write,
-                Share = FileShare.Read,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-                BufferSize = 4_096
-            });
-            try
-            {
-                EnsureWritableRegular(File.GetAttributes(path));
-                return stream;
-            }
-            catch
-            {
-                stream.Dispose();
-                throw;
-            }
-        }
-
-        var segments = GetRelativeSegments(path);
-        using var rootHandle = OpenUnixHandle(
-            RootPath,
-            UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
-        SafeFileHandle? childDirectory = null;
+        var fullPath = Path.Combine(parentPath, segments[^1]);
+        var exists = true;
+        FileAttributes attributes;
         try
         {
-            var directoryHandle = rootHandle;
-            for (var index = 0; index < segments.Count - 1; index++)
-            {
-                var nextDirectory = OpenUnixHandleAt(
-                    directoryHandle,
-                    segments[index],
-                    UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
-                childDirectory?.Dispose();
-                childDirectory = nextDirectory;
-                directoryHandle = nextDirectory;
-            }
-
-            var flags = UnixOpenFlags.WriteOnly | UnixOpenFlags.Trunc | UnixOpenFlags.NoFollow;
-            if (create) flags |= UnixOpenFlags.Creat | UnixOpenFlags.Excl;
-
-            var descriptor = OpenAt(
-                directoryHandle.DangerousGetHandle().ToInt32(),
-                segments[^1],
-                GetUnixOpenFlags(flags),
-                // 0x198 = 0o666; narrowed below to the conventional 0644 (see
-                // SetUnixFileMode) so the created file is owner-writable and
-                // world-readable regardless of how the host applies the mask.
-                mode: create ? 0x198 : 0);
-            if (descriptor < 0)
-            {
-                var error = Marshal.GetLastPInvokeError();
-                if (error == 17)
-                    throw new WorkspaceException(
-                        "workspace_path_exists",
-                        "The workspace path already exists.");
-
-                if (error == (OperatingSystem.IsMacOS() ? 62 : 40))
-                    throw new WorkspaceException(
-                        "workspace_symbolic_link_not_allowed",
-                        "Workspace tools cannot write through symbolic links.");
-
-                throw new IOException(
-                    "The workspace file could not be opened.",
-                    new Win32Exception(error));
-            }
-
-            var handle = new SafeFileHandle(descriptor, true);
-            if (create)
-                // Normalize the fresh file's mode through the open descriptor:
-                // the kernel applies the umask at create time, and an explicit
-                // chmod makes the resulting permissions deterministic.
-                File.SetUnixFileMode(
-                    handle,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite |
-                    UnixFileMode.GroupRead | UnixFileMode.OtherRead);
-
-            return new FileStream(handle, FileAccess.Write, 4_096, false);
+            attributes = File.GetAttributes(fullPath);
         }
-        finally
+        catch (FileNotFoundException)
         {
-            childDirectory?.Dispose();
+            exists = false;
+            attributes = 0;
         }
-    }
+        catch (DirectoryNotFoundException)
+        {
+            exists = false;
+            attributes = 0;
+        }
 
-    private static void EnsureWritableRegular(FileAttributes attributes)
-    {
-        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
+        if (exists && (attributes & FileAttributes.ReparsePoint) != 0)
+            throw new WorkspaceException(
+                "workspace_symbolic_link_not_allowed",
+                "Workspace tools cannot write through symbolic links.");
+
+        if (exists && (attributes & FileAttributes.Directory) != 0)
             throw new WorkspaceException(
                 "workspace_not_regular_file",
                 "Workspace edit tools can write only regular files.");
+
+        return new WorkspaceWriteTarget(
+            fullPath,
+            parentPath,
+            ToWorkspaceUri(segments),
+            ToDisplayPath(segments),
+            exists,
+            segments);
     }
-
-    /// <summary>Deletes one regular file. The Unix path walks openat with
-    /// O_NOFOLLOW and unlinks through the parent descriptor; Windows checks
-    /// the final attributes before deleting. Directories are not deletable
-    /// through this surface.</summary>
-    internal void DeleteFile(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            EnsureWritableRegular(File.GetAttributes(path));
-            File.Delete(path);
-            return;
-        }
-
-        var segments = GetRelativeSegments(path);
-        using var rootHandle = OpenUnixHandle(
-            RootPath,
-            UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
-        SafeFileHandle? childDirectory = null;
-        try
-        {
-            var directoryHandle = rootHandle;
-            for (var index = 0; index < segments.Count - 1; index++)
-            {
-                var nextDirectory = OpenUnixHandleAt(
-                    directoryHandle,
-                    segments[index],
-                    UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
-                childDirectory?.Dispose();
-                childDirectory = nextDirectory;
-                directoryHandle = nextDirectory;
-            }
-
-            if (UnlinkAt(
-                    directoryHandle.DangerousGetHandle().ToInt32(),
-                    segments[^1],
-                    flags: 0) != 0)
-            {
-                var error = Marshal.GetLastPInvokeError();
-                if (error == 21)
-                    throw new WorkspaceException(
-                        "workspace_not_regular_file",
-                        "Workspace edit tools can delete only regular files.");
-
-                if (error == 2)
-                    throw new WorkspaceException(
-                        "workspace_path_not_found",
-                        "The workspace URI does not identify an existing path.");
-
-                if (error == (OperatingSystem.IsMacOS() ? 62 : 40))
-                    throw new WorkspaceException(
-                        "workspace_symbolic_link_not_allowed",
-                        "Workspace tools cannot delete symbolic links.");
-
-                throw new IOException(
-                    "The workspace file could not be deleted.",
-                    new Win32Exception(error));
-            }
-        }
-        finally
-        {
-            childDirectory?.Dispose();
-        }
-    }
-
-    [LibraryImport("libc", EntryPoint = "unlinkat", SetLastError = true)]
-    private static partial int UnlinkAt(
-        int directoryDescriptor,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
-        int flags);
 
     internal async ValueTask<BoundedFileContent> ReadAsync(
         string path,
+        IReadOnlyList<string> segments,
         int maximumBytes,
         CancellationToken cancellationToken)
     {
@@ -422,7 +320,7 @@ internal sealed partial record WorkspaceSnapshot(
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
 
         EnsureRegular(File.GetAttributes(path));
-        await using var stream = OpenVerifiedRead(path);
+        await using var stream = OpenVerifiedRead(path, segments);
         if (stream.Length > maximumBytes) return new BoundedFileContent([], true);
 
         var buffer = new byte[maximumBytes];
@@ -442,9 +340,27 @@ internal sealed partial record WorkspaceSnapshot(
         return new BoundedFileContent(buffer, false);
     }
 
-    internal FileStream OpenVerifiedRead(string path)
+    internal FileStream OpenVerifiedRead(WorkspacePath path)
     {
-        var stream = OpenRead(path);
+        EnsureRegular(path.Attributes);
+        var stream = OpenRead(path.FullPath, path.Segments);
+        try
+        {
+            if (!stream.CanSeek) throw NotRegular();
+
+            EnsureRegular(File.GetAttributes(path.FullPath));
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    private FileStream OpenVerifiedRead(string path, IReadOnlyList<string> segments)
+    {
+        var stream = OpenRead(path, segments);
         try
         {
             if (!stream.CanSeek) throw NotRegular();
@@ -457,6 +373,22 @@ internal sealed partial record WorkspaceSnapshot(
             stream.Dispose();
             throw;
         }
+    }
+
+    private static WorkspaceException NotFound(FileNotFoundException exception)
+    {
+        return new WorkspaceException(
+            "workspace_path_not_found",
+            "The workspace URI does not identify an existing path.",
+            exception);
+    }
+
+    private static WorkspaceException NotFound(DirectoryNotFoundException exception)
+    {
+        return new WorkspaceException(
+            "workspace_path_not_found",
+            "The workspace URI does not identify an existing path.",
+            exception);
     }
 
     private static IReadOnlyList<string> ParseSegments(string? uri, bool allowRoot)
@@ -512,10 +444,10 @@ internal sealed partial record WorkspaceSnapshot(
                 segment.IndexOf('\\') >= 0)
                 throw InvalidUri("The workspace URI contains an invalid path segment.");
 
-            if (segment.Equals(".git", StringComparison.OrdinalIgnoreCase))
+            if (IsDeniedSegmentName(segment))
                 throw new WorkspaceException(
                     "workspace_path_denied",
-                    "Workspace tools cannot access .git metadata.");
+                    "Workspace tools cannot access restricted metadata directories.");
 
             segments.Add(segment);
         }
@@ -523,6 +455,12 @@ internal sealed partial record WorkspaceSnapshot(
         if (segments.Count == 0 && !allowRoot) throw InvalidUri("The workspace root is not valid for this operation.");
 
         return segments;
+    }
+
+    private static bool IsDeniedSegmentName(string segment)
+    {
+        return segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+               segment.Equals(WorkspaceHome.StateDirectoryName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ValidatePercentEscaping(string value)
@@ -561,7 +499,11 @@ internal sealed partial record WorkspaceSnapshot(
             "Workspace text tools can read only regular files.");
     }
 
-    private FileStream OpenRead(string path)
+    /// <summary>Opens a regular file for reading. The Unix walk pins every directory
+    /// component with <c>openat</c> + <c>O_NOFOLLOW</c>; the one permitted link traversal
+    /// is the registered <c>projects/&lt;name&gt;</c> hop, whose canonical target is opened
+    /// directly so the no-follow discipline continues inside the target.</summary>
+    private FileStream OpenRead(string path, IReadOnlyList<string> segments)
     {
         if (OperatingSystem.IsWindows())
             return new FileStream(
@@ -575,7 +517,7 @@ internal sealed partial record WorkspaceSnapshot(
                     BufferSize = 4_096
                 });
 
-        var segments = GetRelativeSegments(path);
+        var segmentsLocal = segments;
         using var rootHandle = OpenUnixHandle(
             RootPath,
             UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
@@ -583,12 +525,25 @@ internal sealed partial record WorkspaceSnapshot(
         try
         {
             var directoryHandle = rootHandle;
-            for (var index = 0; index < segments.Count - 1; index++)
+            for (var index = 0; index < segmentsLocal.Count - 1; index++)
             {
-                var nextDirectory = OpenUnixHandleAt(
-                    directoryHandle,
-                    segments[index],
-                    UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+                SafeFileHandle nextDirectory;
+                try
+                {
+                    nextDirectory = OpenUnixHandleAt(
+                        directoryHandle,
+                        segmentsLocal[index],
+                        UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+                }
+                catch (Exception potentialLink) when (
+                    potentialLink is WorkspaceException { Code: "workspace_symbolic_link_not_allowed" } or IOException)
+                {
+                    // A symlinked directory component surfaces as ELOOP on some kernels and
+                    // as ENOTDIR under O_NOFOLLOW|O_DIRECTORY on others; a validated walk can
+                    // only reach that state at the registered projects/<name> hop.
+                    nextDirectory = OpenHopOrRethrow(potentialLink, index, segmentsLocal);
+                }
+
                 childDirectory?.Dispose();
                 childDirectory = nextDirectory;
                 directoryHandle = nextDirectory;
@@ -596,7 +551,7 @@ internal sealed partial record WorkspaceSnapshot(
 
             var fileHandle = OpenUnixHandleAt(
                 directoryHandle,
-                segments[^1],
+                segmentsLocal[^1],
                 UnixOpenFlags.NonBlocking | UnixOpenFlags.NoFollow);
             try
             {
@@ -614,18 +569,212 @@ internal sealed partial record WorkspaceSnapshot(
         }
     }
 
-    private IReadOnlyList<string> GetRelativeSegments(string path)
+    private string LinkPathForHop(int index, IReadOnlyList<string> segments)
     {
-        var relative = Path.GetRelativePath(RootPath, path);
-        if (relative == "." ||
-            Path.IsPathRooted(relative) ||
-            relative.Equals("..", StringComparison.Ordinal) ||
-            relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            throw new InvalidOperationException("A workspace path escaped its captured root.");
+        var builder = new StringBuilder(RootPath);
+        for (var position = 0; position <= index; position++)
+            builder.Append(Path.DirectorySeparatorChar).Append(segments[position]);
 
-        return relative.Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries);
+        return builder.ToString();
+    }
+
+    private SafeFileHandle OpenHopOrRethrow(
+        Exception original,
+        int index,
+        IReadOnlyList<string> segments)
+    {
+        if (ResolveRegisteredLink(segments, index, LinkPathForHop(index, segments)) is { } hopTarget)
+            return OpenUnixHandle(hopTarget, UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+
+        ExceptionDispatchInfo.Capture(original).Throw();
+        throw new UnreachableException("ExceptionDispatchInfo.Throw never returns.");
+    }
+
+    /// <summary>Opens a write handle to a workspace file. Creation uses an exclusive create so a
+    /// concurrent appearance fails typed; updates truncate the existing regular file. The Unix
+    /// walk mirrors <see cref="OpenRead"/>: every component is pinned with <c>O_NOFOLLOW</c> and
+    /// the one permitted link traversal is the registered hop.</summary>
+    private FileStream OpenWrite(string path, IReadOnlyList<string> segments, bool create)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var stream = new FileStream(path, new FileStreamOptions
+            {
+                Mode = create ? FileMode.CreateNew : FileMode.Create,
+                Access = FileAccess.Write,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+                BufferSize = 4_096
+            });
+            try
+            {
+                EnsureRegular(File.GetAttributes(path));
+                return stream;
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
+
+        using var rootHandle = OpenUnixHandle(
+            RootPath,
+            UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+        SafeFileHandle? childDirectory = null;
+        try
+        {
+            var directoryHandle = rootHandle;
+            for (var index = 0; index < segments.Count - 1; index++)
+            {
+                SafeFileHandle nextDirectory;
+                try
+                {
+                    nextDirectory = OpenUnixHandleAt(
+                        directoryHandle,
+                        segments[index],
+                        UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+                }
+                catch (Exception potentialLink) when (
+                    potentialLink is WorkspaceException { Code: "workspace_symbolic_link_not_allowed" } or IOException)
+                {
+                    nextDirectory = OpenHopOrRethrow(potentialLink, index, segments);
+                }
+
+                childDirectory?.Dispose();
+                childDirectory = nextDirectory;
+                directoryHandle = nextDirectory;
+            }
+
+            var flags = UnixOpenFlags.WriteOnly | UnixOpenFlags.Trunc | UnixOpenFlags.NoFollow;
+            if (create) flags |= UnixOpenFlags.Creat | UnixOpenFlags.Excl;
+
+            var descriptor = OpenAt(
+                directoryHandle.DangerousGetHandle().ToInt32(),
+                segments[^1],
+                GetUnixOpenFlags(flags),
+                // 0o666; the process mask narrows it, and the mode is normalized through the
+                // descriptor below so the result is deterministic.
+                mode: create ? 0x1B6 : 0);
+            if (descriptor < 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error == 17)
+                    throw new WorkspaceException(
+                        "workspace_path_exists",
+                        "The workspace path already exists.");
+
+                if (error == SymlinkErrno)
+                    throw new WorkspaceException(
+                        "workspace_symbolic_link_not_allowed",
+                        "Workspace tools cannot write through symbolic links.");
+
+                throw new IOException(
+                    "The workspace file could not be opened.",
+                    new Win32Exception(error));
+            }
+
+            var handle = new SafeFileHandle(descriptor, true);
+            if (create)
+                File.SetUnixFileMode(
+                    handle,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                    UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+            return new FileStream(handle, FileAccess.Write, 4_096, false);
+        }
+        finally
+        {
+            childDirectory?.Dispose();
+        }
+    }
+
+    /// <summary>Deletes one regular file, with the same component pinning as a read. Directories
+    /// are not deletable through this surface.</summary>
+    private void DeleteFile(string path, IReadOnlyList<string> segments)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            EnsureRegular(File.GetAttributes(path));
+            File.Delete(path);
+            return;
+        }
+
+        using var rootHandle = OpenUnixHandle(
+            RootPath,
+            UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+        SafeFileHandle? childDirectory = null;
+        try
+        {
+            var directoryHandle = rootHandle;
+            for (var index = 0; index < segments.Count - 1; index++)
+            {
+                SafeFileHandle nextDirectory;
+                try
+                {
+                    nextDirectory = OpenUnixHandleAt(
+                        directoryHandle,
+                        segments[index],
+                        UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+                }
+                catch (Exception potentialLink) when (
+                    potentialLink is WorkspaceException { Code: "workspace_symbolic_link_not_allowed" } or IOException)
+                {
+                    nextDirectory = OpenHopOrRethrow(potentialLink, index, segments);
+                }
+
+                childDirectory?.Dispose();
+                childDirectory = nextDirectory;
+                directoryHandle = nextDirectory;
+            }
+
+            if (UnlinkAt(directoryHandle.DangerousGetHandle().ToInt32(), segments[^1], flags: 0) != 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error == 2)
+                    throw new WorkspaceException(
+                        "workspace_path_not_found",
+                        "The workspace URI does not identify an existing path.");
+
+                if (error == 21)
+                    throw new WorkspaceException(
+                        "workspace_not_regular_file",
+                        "Workspace edit tools can delete only regular files.");
+
+                if (error == SymlinkErrno)
+                    throw new WorkspaceException(
+                        "workspace_symbolic_link_not_allowed",
+                        "Workspace tools cannot delete symbolic links.");
+
+                throw new IOException(
+                    "The workspace file could not be deleted.",
+                    new Win32Exception(error));
+            }
+        }
+        finally
+        {
+            childDirectory?.Dispose();
+        }
+    }
+
+    /// <summary>Opens a workspace file for a write or delete, resolving the URI anew so the write
+    /// path revalidates every component exactly as a read does.</summary>
+    internal FileStream OpenWrite(WorkspaceWriteTarget target, bool create)
+    {
+        return OpenWrite(target.FullPath, target.Segments, create);
+    }
+
+    /// <summary>Creates the target's parent chain, which <see cref="ResolveWriteTarget"/> already
+    /// validated past the resolved ancestor.</summary>
+    internal static void EnsureParentDirectories(WorkspaceWriteTarget target)
+    {
+        if (!Directory.Exists(target.ParentPath)) Directory.CreateDirectory(target.ParentPath);
+    }
+
+    /// <summary>Deletes a resolved write target through the pinned walk.</summary>
+    internal void DeleteFile(WorkspaceWriteTarget target)
+    {
+        DeleteFile(target.FullPath, target.Segments);
     }
 
     private static SafeFileHandle OpenUnixHandle(string path, UnixOpenFlags additionalFlags)
@@ -692,9 +841,15 @@ internal sealed partial record WorkspaceSnapshot(
     [LibraryImport("libc", EntryPoint = "openat", SetLastError = true)]
     private static partial int OpenAt(
         int directoryDescriptor,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
         int flags,
         int mode);
+
+    [LibraryImport("libc", EntryPoint = "unlinkat", SetLastError = true)]
+    private static partial int UnlinkAt(
+        int directoryDescriptor,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        int flags);
 
     [Flags]
     private enum UnixOpenFlags
@@ -710,18 +865,43 @@ internal sealed partial record WorkspaceSnapshot(
     }
 }
 
-internal sealed record WorkspacePath(string FullPath, string Uri, FileAttributes Attributes)
+internal sealed record WorkspacePath(
+    string FullPath,
+    string Uri,
+    FileAttributes Attributes,
+    IReadOnlyList<string> Segments)
 {
     internal bool IsDirectory => (Attributes & FileAttributes.Directory) != 0;
 
     internal bool IsRegularFile =>
         (Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device)) == 0;
+
+    /// <summary>Views this resolved file as an existing write target, so an update reuses the
+    /// segments the read already validated.</summary>
+    internal WorkspaceWriteTarget AsWriteTarget()
+    {
+        var parent = Path.GetDirectoryName(FullPath)
+                     ?? throw new InvalidOperationException("A workspace path has no parent directory.");
+        return new WorkspaceWriteTarget(
+            FullPath,
+            parent,
+            Uri,
+            WorkspaceSnapshot.ToDisplayPath(Segments),
+            true,
+            Segments);
+    }
 }
 
-/// <summary>A write target resolved by <see cref="WorkspaceSnapshot.ResolveWriteTarget"/>:
-/// the final path segment may be missing, in which case the edit tools create it
-/// (with its parent directories) instead of updating an existing file.</summary>
-internal sealed record WorkspaceWriteTarget(string FullPath, string Uri, string DisplayPath, bool Exists);
+/// <summary>A resolved write target. The final segment may be missing (the tool creates it),
+/// <see cref="ParentPath"/> is the physical parent chain to create when absent, and
+/// <see cref="Segments"/> are the logical segments the pinned write walk replays.</summary>
+internal sealed record WorkspaceWriteTarget(
+    string FullPath,
+    string ParentPath,
+    string Uri,
+    string DisplayPath,
+    bool Exists,
+    IReadOnlyList<string> Segments);
 
 internal sealed class WorkspaceException : Exception
 {

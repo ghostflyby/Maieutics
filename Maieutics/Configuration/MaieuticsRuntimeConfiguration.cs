@@ -352,7 +352,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 selection.Identity,
                 selection.Capabilities,
                 selection.HostedCapabilities,
-                tools));
+                tools,
+                HostedToolCatalog.Create(selection.HostedCapabilities)));
     }
 
     public MaieuticsModelProfileSelection GetModelProfileSelection()

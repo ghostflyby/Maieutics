@@ -50,7 +50,9 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
 
         public string? Vendor => options.Vendor;
 
-        public IReadOnlyList<string> FormatCapabilities => [];
+        /// <summary>The Messages API can express Anthropic's server-executed web search tool;
+        /// it has no native equivalent for the other hosted capability names.</summary>
+        public IReadOnlyList<string> FormatCapabilities => ["WebSearch"];
 
         public IChatClient Create(string model)
         {

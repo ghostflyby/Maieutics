@@ -14,12 +14,22 @@ internal sealed class FakeAnthropicServer : IAsyncDisposable
     private readonly TcpListener listener = new(IPAddress.Loopback, 0);
     private readonly string model;
     private readonly bool toolFlow;
+    private readonly bool webSearchFlow;
 
-    public FakeAnthropicServer(string model, string answer, bool toolFlow = false)
+    private readonly int requestCount;
+
+    public FakeAnthropicServer(
+        string model,
+        string answer,
+        bool toolFlow = false,
+        bool webSearchFlow = false,
+        int? requestCount = null)
     {
         this.model = model;
         this.answer = answer;
         this.toolFlow = toolFlow;
+        this.webSearchFlow = webSearchFlow;
+        this.requestCount = requestCount ?? (toolFlow || webSearchFlow ? 2 : 1);
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
         Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}");
@@ -58,7 +68,6 @@ internal sealed class FakeAnthropicServer : IAsyncDisposable
         // HttpClient pools connections, so keep each connection open for the
         // next request instead of racing the client's connection reuse with a
         // per-request "Connection: close".
-        var requestCount = toolFlow ? 2 : 1;
         var served = 0;
         while (served < requestCount)
         {
@@ -83,7 +92,11 @@ internal sealed class FakeAnthropicServer : IAsyncDisposable
                 RequestBodies.Enqueue(request.Body);
                 if (toolFlow) request.Body.GetRawText().Should().Contain("echo");
 
-                var data = toolFlow && served == 0 ? CreateToolStream() : CreateTextStream(answer);
+                var data = toolFlow && served == 0
+                    ? CreateToolStream()
+                    : webSearchFlow && served == 0
+                        ? CreateWebSearchStream()
+                        : CreateTextStream(answer);
                 var body = Encoding.UTF8.GetBytes(data);
                 var headers = Encoding.ASCII.GetBytes(
                     $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
@@ -117,6 +130,52 @@ internal sealed class FakeAnthropicServer : IAsyncDisposable
 
                """.Replace("TEXT_PLACEHOLDER",
             JsonSerializer.Serialize(text), StringComparison.Ordinal);
+    }
+
+    /// <summary>A server-executed web search turn: a text preamble, the server tool use block
+    /// (arguments stream as input_json_delta), the complete result block, then the answer text.
+    /// Mirrors Anthropic's documented ordering; the result arrives whole inside one
+    /// content_block_start with its encrypted_content intact.</summary>
+    private static string CreateWebSearchStream()
+    {
+        return """
+               event: message_start
+               data: {"type":"message_start","message":{"id":"msg_search","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_test","name":"web_search","input":{}}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"zhipu ai\"}"}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":0}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_test","content":[{"type":"web_search_result","title":"Zhipu AI","url":"https://example.com/zhipu","encrypted_content":"ENCRYPTED_PAYLOAD","page_age":"April 30, 2025"}]}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":1}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Zhipu AI is a Chinese AI company."}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com/zhipu","title":"Zhipu AI","encrypted_index":"ENCRYPTED_INDEX","cited_text":"Zhipu AI is a Chinese AI company."}}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":2}
+
+               event: message_delta
+               data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5,"server_tool_use":{"web_search_requests":1}}}
+
+               event: message_stop
+               data: {"type":"message_stop"}
+
+               """;
     }
 
     private static string CreateToolStream()

@@ -57,6 +57,54 @@ public sealed class AgentRunProfileTests
             .Should().Throw<ArgumentException>();
     }
 
+    [Fact]
+    public void HostedToolsAreCarriedApartFromLocalFunctions()
+    {
+        var function = AIFunctionFactory.Create(() => "ok", "read_text");
+        var profile = new AgentRunProfile(
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedCapabilities: ["WebSearch"],
+            tools: [function],
+            hostedTools: [new HostedWebSearchTool()]);
+
+        profile.Tools.Should().ContainSingle().Which.Should().BeSameAs(function);
+        profile.HostedTools.Should().ContainSingle().Which.Should().BeOfType<HostedWebSearchTool>();
+    }
+
+    [Fact]
+    public void HostedToolsRejectNameCollisionsWithLocalFunctions()
+    {
+        // The hosted web search tool is named "web_search", so a local function by that name
+        // would make the provider's tool choice ambiguous.
+        var function = AIFunctionFactory.Create(() => "ok", "web_search");
+
+        FluentActions.Invoking(() => new AgentRunProfile(
+                new ScriptedChatClient((_, _) => StreamAsync("unused")),
+                new AgentSessionOptions(),
+                tools: [function],
+                hostedTools: [new HostedWebSearchTool()]))
+            .Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void HostedToolsRejectLocalFunctionsAndDuplicates()
+    {
+        var function = AIFunctionFactory.Create(() => "ok", "read_text");
+
+        FluentActions.Invoking(() => new AgentRunProfile(
+                new ScriptedChatClient((_, _) => StreamAsync("unused")),
+                new AgentSessionOptions(),
+                hostedTools: [function]))
+            .Should().Throw<ArgumentException>();
+
+        FluentActions.Invoking(() => new AgentRunProfile(
+                new ScriptedChatClient((_, _) => StreamAsync("unused")),
+                new AgentSessionOptions(),
+                hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]))
+            .Should().Throw<ArgumentException>();
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task StaticConstructorKeepsExistingClientOptionsAndTranscriptBehavior()
     {
@@ -422,6 +470,41 @@ public sealed class AgentRunProfileTests
         return new AgentRunProfile(client, new AgentSessionOptions { SystemPrompt = instructions });
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task HostedToolsReachTheProviderRequestAlongsideLocalFunctions()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var client = new ScriptedChatClient((_, _) => StreamAsync("answer"));
+        var profile = new AgentRunProfile(
+            client,
+            new AgentSessionOptions(),
+            hostedCapabilities: ["WebSearch"],
+            tools: [AIFunctionFactory.Create(() => "ok", "read_text")],
+            hostedTools: [new HostedWebSearchTool()]);
+        var session = new AgentSession(new SingleProfileProvider(profile));
+
+        await CompleteTurnAsync(session, "search something", deadline.Token);
+
+        // The request carries both the local function (still invocable by the runtime) and the
+        // provider-hosted tool (executed by the provider).
+        client.AllTools.Should().ContainSingle().Which.Should()
+            .Contain(tool => tool is HostedWebSearchTool);
+        client.ToolNames.Should().ContainSingle().Which.Should().Equal("read_text");
+    }
+
+    private sealed class SingleProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
+    {
+        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
+
+        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
+        {
+            public AgentRunProfile Profile => profile;
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     private static async Task<AgentRunResult> CompleteTurnAsync(
         AgentSession session,
         string input,
@@ -549,6 +632,9 @@ public sealed class AgentRunProfileTests
 
         public List<string[]> ToolNames { get; } = [];
 
+        /// <summary>Every tool attached to each request, including provider-hosted ones.</summary>
+        public List<AITool[]> AllTools { get; } = [];
+
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
@@ -565,6 +651,7 @@ public sealed class AgentRunProfileTests
             Requests.Add(messages.Select(static message => message.Clone()).ToArray());
             Instructions.Add(options?.Instructions);
             ToolNames.Add(options?.Tools?.OfType<AIFunction>().Select(static tool => tool.Name).ToArray() ?? []);
+            AllTools.Add(options?.Tools?.ToArray() ?? []);
             return responses.Dequeue()(Requests[^1], cancellationToken);
         }
 

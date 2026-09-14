@@ -331,6 +331,27 @@ unknown gateway. The **effective** compatibility (carried into each run as `Agen
 the default plus any explicit `Maieutics:Endpoints` profile capabilities, always additive. Only provider-neutral
 capability names reach the Agent run profile; API-specific wire details stay inside the executable.
 
+### Hosted web search
+
+`WebSearch` is executable, not just declared. When a run's effective capabilities include it, the executable attaches a
+provider-neutral hosted search tool (`HostedWebSearchTool`) to every model request from that run:
+
+- **OpenAI** — the Responses flavor sends `{"type": "web_search"}` and the Chat Completions flavor sends
+  `web_search_options`; the Microsoft.Extensions.AI OpenAI bridge performs both mappings, and folds the provider's
+  search call and citations back into provider-neutral content.
+- **Anthropic** — the Messages adapter declares the versioned server tool
+  (`{"type": "web_search_20250305", "name": "web_search"}`) and preserves each server block verbatim, because Anthropic
+  validates the blocks it produced on the following turn (`encrypted_content` and citation `encrypted_index` must
+  survive unchanged).
+
+Web search is server-executed: the provider runs the search inside the same request, so it is not a local function, no
+tool call reaches the runtime, and there is no tool-result round trip. The search that ran, its results (url/title), and
+the answer's citations are recorded in the canonical transcript and rendered through the ordinary tool pair the
+frontend already understands.
+
+Capability names without a provider-neutral tool type (`FileSearch`, `CodeInterpreter`, `ComputerUse`,
+`ImageGeneration`, `ApplyPatch`, `Mcp`) remain declaration-only: they are reported by `%status` but attach no tool.
+
 ### Vendors
 
 `Maieutics:Vendors` declares vendor identities, their endpoints, aggregate capabilities, and per-model capability
@@ -402,7 +423,7 @@ URL matching is exact after normalization: scheme and host are case-insensitive,
 trailing slash is insignificant. URLs must be absolute HTTP or HTTPS URIs without user information, query strings, or
 fragments, and each normalized URL may appear only once. A provider source endpoint that cannot be normalized (for
 example one that carries a query string) is treated as unmatched. The `Limits` section is parsed and validated now and
-becomes an input for hosted built-in tool mapping in a later step.
+becomes an input for hosted built-in tool mapping in a later step (hosted web search currently declares no limits).
 
 `%status` reports each configured model profile's resolved capabilities, hosted capability names, potential
 capabilities, and whether the source matched an explicit endpoint profile, is a known vendor, or is a declared baseline

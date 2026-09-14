@@ -81,10 +81,91 @@ internal static class FrontendTranscriptMapper
                 "tool_result",
                 CallId: result.CallId,
                 Value: SerializeValue(result.Result)),
+            // Provider-hosted tools are executed by the provider; the frontend shows the search
+            // that ran (its queries) and the results as an ordinary tool pair so existing
+            // rendering applies without a new wire kind.
+            WebSearchToolCallContent search => new FrontendMessagePart(
+                "tool_call",
+                CallId: search.CallId,
+                Name: WebSearchToolName,
+                Value: SerializeValue(search.Queries)),
+            WebSearchToolResultContent searchResult => new FrontendMessagePart(
+                "tool_result",
+                CallId: searchResult.CallId,
+                Value: SerializeSearchResults(searchResult)),
+            // Some providers (the OpenAI Responses bridge among them) surface web citations as a
+            // stand-alone content item that only carries annotations. They belong to the answer
+            // text, so project them as a text part followed by its sources.
+            _ when content.Annotations is { Count: > 0 } => new FrontendMessagePart(
+                "text",
+                Text: string.Empty,
+                Value: SerializeCitations(content.Annotations)),
             TextReasoningContent => null,
             UsageContent => null,
             _ => new FrontendMessagePart("unknown")
         };
+    }
+
+    /// <summary>Projects citation annotations into {url,title} pairs.</summary>
+    private static JsonElement? SerializeCitations(IEnumerable<AIAnnotation> annotations)
+    {
+        var sources = new List<Dictionary<string, object?>>();
+        foreach (var annotation in annotations)
+        {
+            if (annotation is not CitationAnnotation citation) continue;
+            sources.Add(new Dictionary<string, object?>
+            {
+                ["url"] = citation.Url?.ToString(),
+                ["title"] = citation.Title
+            });
+        }
+
+        return sources.Count == 0 ? null : SerializeValue(sources);
+    }
+
+    /// <summary>The provider-neutral name hosted web search content projects onto.</summary>
+    internal const string WebSearchToolName = "web_search";
+
+    /// <summary>Projects search results as url/title pairs. The provider's opaque
+    /// encrypted_content is deliberately not exposed to the frontend.</summary>
+    private static JsonElement? SerializeSearchResults(WebSearchToolResultContent content)
+    {
+        var results = new List<Dictionary<string, object?>>();
+        foreach (var output in content.Outputs ?? [])
+        {
+            if (output is ErrorContent error)
+            {
+                results.Add(new Dictionary<string, object?>
+                {
+                    ["error"] = error.Message
+                });
+                continue;
+            }
+
+            if (output.AdditionalProperties is { } properties &&
+                properties.TryGetValue("anthropicRawBlock", out var raw) &&
+                raw is JsonElement element)
+                AddAnthropicResult(results, element);
+        }
+
+        return SerializeValue(results);
+    }
+
+    private static void AddAnthropicResult(List<Dictionary<string, object?>> results, JsonElement content)
+    {
+        if (content.ValueKind != JsonValueKind.Object ||
+            !content.TryGetProperty("content", out var items) ||
+            items.ValueKind != JsonValueKind.Array)
+            return;
+
+        foreach (var item in items.EnumerateArray())
+        {
+            results.Add(new Dictionary<string, object?>
+            {
+                ["url"] = item.TryGetProperty("url", out var url) ? url.GetString() : null,
+                ["title"] = item.TryGetProperty("title", out var title) ? title.GetString() : null
+            });
+        }
     }
 
     private static string ToRole(ChatRole role) =>

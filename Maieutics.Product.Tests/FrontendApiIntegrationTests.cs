@@ -974,6 +974,83 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ResponsesApplyPatchToolEditsFilesAndHidesTheGeneralEditTools()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var operation = """{"type":"create_file","path":"patched.txt","diff":"+patched body\n"}""";
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.Responses,
+            applyPatchFlow: true,
+            applyPatchOperationJson: operation,
+            answer: "tool-backed answer");
+        var workspace = Path.Combine(Path.GetTempPath(), $"maieutics-applypatch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: null,
+            transformConfiguration: body => body
+                .Replace("ChatCompletions", "Responses")
+                .Replace(
+                    "\"Model\"",
+                    $"\"Workspace\": {{ \"Root\": {JsonSerializer.Serialize(workspace)} }},\n            \"Model\""));
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+            await events.ReceiveFrameAsync(deadline.Token);
+            var runId = await harness.SubmitTurnAsync(sessionId, "apply the patch", deadline.Token);
+            var frames = await events.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.status" &&
+                         frame.GetProperty("state").GetString() == "idle",
+                deadline.Token);
+
+            var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
+            types.Should().Contain("tool.started").And.Contain("tool.finished");
+            frames.Single(frame => frame.GetProperty("type").GetString() == "tool.started")
+                .GetProperty("tool").GetString().Should().Be("apply_patch");
+            frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
+                .GetProperty("text").GetString().Should().Be("tool-backed answer");
+
+            // The wire carries the built-in apply_patch tool and neither of the
+            // general edit functions it replaces.
+            provider.RequestBodies.Should().HaveCount(2);
+            var firstRequest = provider.RequestBodies.First();
+            var toolTypes = firstRequest.GetProperty("tools").EnumerateArray()
+                .Select(tool => tool.TryGetProperty("type", out var type) ? type.GetString() : null)
+                .ToArray();
+            toolTypes.Should().Contain("apply_patch");
+            firstRequest.GetProperty("tools").EnumerateArray()
+                .Where(tool => tool.TryGetProperty("name", out _) &&
+                               (tool.GetProperty("name").GetString() == "write_text" ||
+                                tool.GetProperty("name").GetString() == "edit_text"))
+                .Should().BeEmpty();
+
+            // The follow-up request replays the call in its original structured
+            // shape and carries the structured result envelope as its output.
+            var secondRequest = provider.RequestBodies.Last();
+            secondRequest.GetRawText().Should()
+                .Contain("apply_patch_call").And.Contain("apply_patch_call_output")
+                .And.Contain("patched.txt");
+
+            (await File.ReadAllTextAsync(
+                    Path.Combine(workspace, "patched.txt"),
+                    deadline.Token))
+                .Should().Be("patched body\n");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+            try
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task NotebookSwitchesBetweenOpenAiAndAnthropicWithCanonicalHistory()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(60));

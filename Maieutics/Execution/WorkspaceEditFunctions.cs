@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
@@ -63,7 +64,14 @@ internal sealed class WorkspaceEditFunctions
                 "edit_text",
                 "Replaces exact text inside one workspace UTF-8 text file and returns a bounded unified " +
                 "diff of the change. The target text must appear exactly once unless replaceAll is true. " +
-                "Refuses binary files, symbolic links, and .git paths.")
+                "Refuses binary files, symbolic links, and .git paths."),
+            CreateFunction(
+                (Func<string, CancellationToken, ValueTask<ApplyPatchResult>>)ApplyPatchAsync,
+                "apply_patch",
+                "Applies an OpenAI apply_patch V4A patch document to one or more workspace files: " +
+                "'*** Add File:', '*** Update File:' (with @@ change sections), and '*** Delete File:'. " +
+                "Operations run in order and the patch stops at the first failure. Paths are " +
+                "workspace-relative and must not escape the workspace root.")
         ];
     }
 
@@ -240,6 +248,282 @@ internal sealed class WorkspaceEditFunctions
         }
     }
 
+    [Description("Applies an OpenAI apply_patch V4A patch document to workspace files.")]
+    private async ValueTask<ApplyPatchResult> ApplyPatchAsync(
+        [Description("The complete patch text, including the '*** Begin Patch' and '*** End Patch' sentinels.")]
+        string patch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(patch))
+                throw new WorkspaceException("workspace_invalid_arguments", "patch is required.");
+
+            var document = ApplyPatchParser.Parse(patch);
+            var snapshot = workspace.Capture();
+            var files = ImmutableArray.CreateBuilder<ApplyPatchFileResult>(document.Files.Length);
+            foreach (var change in document.Files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                files.Add(await ApplyFileChangeAsync(snapshot, change, cancellationToken).ConfigureAwait(false));
+            }
+
+            return new ApplyPatchResult(files.ToImmutable());
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsRecoverable(exception))
+        {
+            throw ToAgentToolException(exception);
+        }
+    }
+
+    /// <summary>Applies one parsed file operation. Failures propagate as typed
+    /// tool errors after earlier operations in the patch have been applied;
+    /// like the reference harnesses, applied files are not rolled back.</summary>
+    private async ValueTask<ApplyPatchFileResult> ApplyFileChangeAsync(
+        WorkspaceSnapshot snapshot,
+        ApplyPatchFileChange change,
+        CancellationToken cancellationToken)
+    {
+        switch (change.Kind)
+        {
+            case "create_file":
+            {
+                var target = snapshot.ResolveWriteTarget(ToWorkspaceUri(change.Path));
+                if (target.Exists)
+                    throw new WorkspaceException(
+                        "workspace_path_exists",
+                        $"The patch creates '{change.Path}', but that file already exists.");
+
+                snapshot.EnsureParentDirectories(target.FullPath);
+                var bytes = EncodeUtf8(change.Diff ?? "");
+                await WriteFileAsync(snapshot, target.FullPath, bytes, create: true, cancellationToken)
+                    .ConfigureAwait(false);
+                return new ApplyPatchFileResult(
+                    target.DisplayPath,
+                    "created",
+                    null,
+                    UnifiedDiff.Create(null, change.Diff ?? "", target.DisplayPath, maximumDiffBytes, maximumDiffLines));
+            }
+            case "update_file":
+            {
+                if (change.Changes.Length == 0)
+                    throw new WorkspaceException(
+                        "workspace_patch_invalid",
+                        $"The update for '{change.Path}' contains no change sections.");
+
+                var file = snapshot.Resolve(ToWorkspaceUri(change.Path), allowRoot: false);
+                if (!file.IsRegularFile)
+                    throw new WorkspaceException(
+                        "workspace_not_regular_file",
+                        "Workspace edit tools can edit only regular files.");
+
+                if (new FileInfo(file.FullPath).Length > maximumEditedFileBytes)
+                    throw new WorkspaceException(
+                        "workspace_file_too_large",
+                        $"edit tools edit files of at most {maximumEditedFileBytes} bytes.");
+
+                var bounded = await snapshot.ReadAsync(file.FullPath, maximumEditedFileBytes, cancellationToken)
+                    .ConfigureAwait(false);
+                if (bounded.ExceededLimit)
+                    throw new WorkspaceException(
+                        "workspace_file_too_large",
+                        $"edit tools edit files of at most {maximumEditedFileBytes} bytes.");
+
+                var before = TryDecodeText(bounded.Bytes, out var hadByteOrderMark) ??
+                    throw new WorkspaceException(
+                        "workspace_binary_file",
+                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+
+                var after = ApplyChangeSections(before, change.Path, change.Changes);
+                if (string.Equals(before, after, StringComparison.Ordinal))
+                    return new ApplyPatchFileResult(snapshot.ToDisplayPath(file.FullPath), "unchanged", null, null);
+
+                var bytes = EncodeUtf8(hadByteOrderMark ? after.Insert(0, "\uFEFF") : after);
+                if (change.MoveToPath is { } moveTo)
+                {
+                    var moved = snapshot.ResolveWriteTarget(ToWorkspaceUri(moveTo));
+                    if (moved.Exists)
+                        throw new WorkspaceException(
+                            "workspace_path_exists",
+                            $"The patch moves '{change.Path}' to '{moveTo}', but that file already exists.");
+
+                    snapshot.EnsureParentDirectories(moved.FullPath);
+                    await WriteFileAsync(snapshot, moved.FullPath, bytes, create: true, cancellationToken)
+                        .ConfigureAwait(false);
+                    snapshot.DeleteFile(file.FullPath);
+                    return new ApplyPatchFileResult(
+                        moved.DisplayPath,
+                        "created",
+                        snapshot.ToDisplayPath(file.FullPath),
+                        UnifiedDiff.Create(before, after, moved.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                }
+
+                await WriteFileAsync(snapshot, file.FullPath, bytes, create: false, cancellationToken)
+                    .ConfigureAwait(false);
+                return new ApplyPatchFileResult(
+                    snapshot.ToDisplayPath(file.FullPath),
+                    "updated",
+                    null,
+                    UnifiedDiff.Create(before, after, snapshot.ToDisplayPath(file.FullPath), maximumDiffBytes, maximumDiffLines));
+            }
+            case "delete_file":
+            {
+                var file = snapshot.Resolve(ToWorkspaceUri(change.Path), allowRoot: false);
+                if (!file.IsRegularFile)
+                    throw new WorkspaceException(
+                        "workspace_not_regular_file",
+                        "Workspace edit tools can delete only regular files.");
+
+                var beforeText = await TryReadBeforeAsync(snapshot, file.FullPath, cancellationToken).ConfigureAwait(false);
+                snapshot.DeleteFile(file.FullPath);
+                return new ApplyPatchFileResult(
+                    snapshot.ToDisplayPath(file.FullPath),
+                    "deleted",
+                    null,
+                    UnifiedDiff.Create(beforeText, "", snapshot.ToDisplayPath(file.FullPath), maximumDiffBytes, maximumDiffLines));
+            }
+            default:
+                throw new WorkspaceException(
+                    "workspace_patch_invalid",
+                    $"Unsupported patch operation '{change.Kind}'.");
+        }
+    }
+
+    /// <summary>Locates and applies each change section against the current
+    /// file lines. With an anchor, the pattern must start on the line after
+    /// the anchor (or insert there when the section has no removed lines);
+    /// without one, the pattern's first occurrence at or after the previous
+    /// section's end is used. Line comparison ignores carriage returns.</summary>
+    private static string ApplyChangeSections(
+        string before,
+        string displayPath,
+        ImmutableArray<ApplyPatchChangeSection> sections)
+    {
+        var crlf = before.Contains('\r');
+        var lines = SplitContentLines(before);
+        var seek = 0;
+        foreach (var section in sections)
+        {
+            int position;
+            if (section.Anchor is { } anchor)
+            {
+                var anchorIndex = FindLine(lines, seek, anchor);
+                if (anchorIndex < 0)
+                    throw ContextNotFound(displayPath, anchor);
+
+                position = anchorIndex + 1;
+                if (section.OldLines.Length > 0 && !MatchAt(lines, position, section.OldLines))
+                    throw ContextNotFound(displayPath, anchor);
+            }
+            else
+            {
+                position = FindPattern(lines, seek, section.OldLines);
+                if (position < 0)
+                    throw ContextNotFound(displayPath, section.OldLines.IsEmpty ? "@@" : section.OldLines[0]);
+            }
+
+            // Pure-insertion sections have no removed lines; anything else
+            // replaces the matched pattern run.
+            if (section.OldLines.Length > 0)
+                lines.RemoveRange(position, section.OldLines.Length);
+
+            lines.InsertRange(position, section.NewLines);
+            seek = position + section.NewLines.Length;
+        }
+
+        var body = string.Join(crlf ? "\r\n" : "\n", lines);
+        var trailing = endsWithNewline(before) ? (crlf ? "\r\n" : "\n") : "";
+        return body + trailing;
+
+        static bool endsWithNewline(string text)
+        {
+            return text.Length > 0 && (text.EndsWith('\n') || text.EndsWith('\r'));
+        }
+    }
+
+    private static List<string> SplitContentLines(string text)
+    {
+        var lines = new List<string>();
+        var start = 0;
+        while (start < text.Length)
+        {
+            var newline = text.IndexOf('\n', start);
+            if (newline < 0)
+            {
+                lines.Add(text[start..].TrimEnd('\r'));
+                return lines;
+            }
+
+            lines.Add(text[start..newline].TrimEnd('\r'));
+            start = newline + 1;
+        }
+
+        return lines;
+    }
+
+    private static int FindLine(List<string> lines, int start, string value)
+    {
+        for (var index = Math.Max(0, start); index < lines.Count; index++)
+            if (string.Equals(lines[index], value, StringComparison.Ordinal))
+                return index;
+
+        return -1;
+    }
+
+    private static bool MatchAt(List<string> lines, int position, ImmutableArray<string> pattern)
+    {
+        if (position + pattern.Length > lines.Count) return false;
+
+        for (var index = 0; index < pattern.Length; index++)
+            if (!string.Equals(lines[position + index], pattern[index], StringComparison.Ordinal))
+                return false;
+
+        return true;
+    }
+
+    private static int FindPattern(List<string> lines, int start, ImmutableArray<string> pattern)
+    {
+        if (pattern.Length == 0) return Math.Max(0, Math.Min(start, lines.Count));
+
+        for (var index = Math.Max(0, start); index + pattern.Length <= lines.Count; index++)
+            if (MatchAt(lines, index, pattern))
+                return index;
+
+        return -1;
+    }
+
+    private static WorkspaceException ContextNotFound(string path, string hint)
+    {
+        return new WorkspaceException(
+            "workspace_patch_context_not_found",
+            $"Invalid context in '{path}': the section beginning '@@ {hint.Trim()}' does not match the file. " +
+            "Read the file again and include more surrounding context lines.");
+    }
+
+    /// <summary>Converts a patch-relative POSIX path into a workspace URI.
+    /// Absolute paths and escapes fail later with the workspace's typed
+    /// URI errors.</summary>
+    private static string ToWorkspaceUri(string relativePath)
+    {
+        var trimmed = relativePath.Trim().TrimStart('/');
+        if (trimmed.Length == 0)
+            throw new WorkspaceException(
+                "workspace_patch_invalid",
+                "Patch paths must name a file inside the workspace.");
+
+        var builder = new StringBuilder("workspace://local");
+        foreach (var segment in trimmed.Split('/'))
+        {
+            builder.Append('/').Append(Uri.EscapeDataString(segment));
+        }
+
+        return builder.ToString();
+    }
+
     /// <summary>Encodes content strictly, surfacing unpaired surrogates as the
     /// typed invalid-UTF-8 failure.</summary>
     private static byte[] EncodeUtf8(string content)
@@ -255,6 +539,23 @@ internal sealed class WorkspaceEditFunctions
                 "The content is not valid UTF-8 text.",
                 exception);
         }
+    }
+
+    /// <summary>Reads an existing file as text for diff purposes, or null when
+    /// it is binary or grew past the edit bound between the length check and
+    /// the read (the caller then omits the diff).</summary>
+    private async Task<string?> TryReadBeforeAsync(
+        WorkspaceSnapshot snapshot,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        if (new FileInfo(path).Length > maximumEditedFileBytes) return null;
+
+        var bounded = await snapshot.ReadAsync(path, maximumEditedFileBytes, cancellationToken)
+            .ConfigureAwait(false);
+        if (bounded.ExceededLimit) return null;
+
+        return TryDecodeText(bounded.Bytes, out _);
     }
 
     /// <summary>Decodes file bytes as editable text, or null when the file is
@@ -362,6 +663,7 @@ internal sealed class WorkspaceEditFunctions
 [JsonSerializable(typeof(bool?))]
 [JsonSerializable(typeof(WriteTextResult))]
 [JsonSerializable(typeof(EditTextResult))]
+[JsonSerializable(typeof(ApplyPatchResult))]
 internal sealed partial class WorkspaceEditJsonSerializerContext : JsonSerializerContext;
 
 internal sealed record WriteTextResult(
@@ -377,3 +679,15 @@ internal sealed record EditTextResult(
     long BeforeBytes,
     long AfterBytes,
     WorkspaceEditDiff Diff);
+
+/// <summary>The ordered per-file outcomes of one apply_patch call.</summary>
+internal sealed record ApplyPatchResult(
+    ImmutableArray<ApplyPatchFileResult> Files);
+
+/// <summary>One file's outcome: the workspace-relative display path, the
+/// applied operation, and the bounded diff it produced.</summary>
+internal sealed record ApplyPatchFileResult(
+    string Path,
+    string Operation,
+    string? MovedFrom,
+    WorkspaceEditDiff? Diff);

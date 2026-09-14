@@ -456,13 +456,39 @@ function isFailureResult(result: unknown): boolean {
 }
 
 /** Extracts the bounded edit diff from an ok tool result envelope:
- * `{"status":"ok","value":{"diff":{"unified":"...","additions":n,...}}}`.
+ * `{"status":"ok","value":{"diff":{...}}}` for the single-file edit tools, or
+ * `{"status":"ok","value":{"files":[{"diff":{...}}, ...]}}` for apply_patch.
  * Anything else (other tools, malformed shapes) yields undefined. */
 function readEditDiff(result: unknown): EditDiffSummary | undefined {
   if (typeof result !== "object" || result === null) return undefined;
   const value = (result as Record<string, unknown>).value;
   if (typeof value !== "object" || value === null) return undefined;
-  const diff = (value as Record<string, unknown>).diff;
+
+  const direct = readDiffObject((value as Record<string, unknown>).diff);
+  if (direct !== undefined) return direct;
+
+  const files = (value as Record<string, unknown>).files;
+  if (!Array.isArray(files)) return undefined;
+
+  const unifiedParts: string[] = [];
+  let additions = 0;
+  let deletions = 0;
+  let truncated = false;
+  for (const entry of files) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const diff = readDiffObject((entry as Record<string, unknown>).diff);
+    if (diff === undefined) continue;
+    unifiedParts.push(diff.unified.replace(/\n$/, ""));
+    additions += diff.additions;
+    deletions += diff.deletions;
+    truncated = truncated || diff.truncated;
+  }
+
+  if (unifiedParts.length === 0) return undefined;
+  return { unified: unifiedParts.join("\n") + "\n", additions, deletions, truncated };
+}
+
+function readDiffObject(diff: unknown): EditDiffSummary | undefined {
   if (typeof diff !== "object" || diff === null) return undefined;
   const record = diff as Record<string, unknown>;
   if (

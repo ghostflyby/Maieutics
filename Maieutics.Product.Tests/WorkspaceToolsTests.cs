@@ -546,6 +546,7 @@ public sealed class WorkspaceToolsTests
                     "search_text",
                     "write_text",
                     "edit_text",
+                    "apply_patch",
                     "list_resources",
                     "repl_execute",
                     "repl_create",

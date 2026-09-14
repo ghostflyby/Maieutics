@@ -19,7 +19,7 @@ public sealed class WorkspaceEditToolTests
         var functions = CreateFunctions(workspace.Path).Functions;
 
         functions.Select(static function => function.Name)
-            .Should().Equal("write_text", "edit_text");
+            .Should().Equal("write_text", "edit_text", "apply_patch");
         functions.Should().OnlyContain(static function =>
             function.JsonSchema.ValueKind == JsonValueKind.Object &&
             function.JsonSchema.GetProperty("type").GetString() == "object");

@@ -210,6 +210,20 @@ bounds, exclusive-create semantics, and openat O_NOFOLLOW write walks.
 Deletion is deferred to B2 (inverse patches need a journaled delete); the
 runtime piece of A2 and accept/reject (item 3) remain open.
 
+**Responses special case (2026-09-14).** On the OpenAI Responses flavor the
+edit surface is the model-native `apply_patch` tool instead: the runtime
+registers an `apply_patch` function (V4A patch text in, per-file bounded
+diffs out) and the provider boundary hides `write_text`/`edit_text`, sending
+`{"type":"apply_patch"}` instead. The OpenAI .NET SDK cannot model that tool
+yet, so `ApplyPatchPipelineTransport` translates both directions inside the
+provider folder: requests gain the built-in tool entry and rewritten
+history, `apply_patch_call`/`custom_tool_call` items and their streamed
+events are folded into ordinary function calls, and tool outputs replay in
+the shape the original call used. Other flavors (Chat Completions,
+Anthropic) hide `apply_patch` and keep the general edit tools. Deletion is
+supported here (`*** Delete File:`, `*** Move to:`) because the patch
+document carries it.
+
 ### B2. No workspace checkpoint/rollback
 
 Priority: High. Type: Safety net.

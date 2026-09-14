@@ -343,6 +343,76 @@ internal sealed partial record WorkspaceSnapshot(
                 "Workspace edit tools can write only regular files.");
     }
 
+    /// <summary>Deletes one regular file. The Unix path walks openat with
+    /// O_NOFOLLOW and unlinks through the parent descriptor; Windows checks
+    /// the final attributes before deleting. Directories are not deletable
+    /// through this surface.</summary>
+    internal void DeleteFile(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            EnsureWritableRegular(File.GetAttributes(path));
+            File.Delete(path);
+            return;
+        }
+
+        var segments = GetRelativeSegments(path);
+        using var rootHandle = OpenUnixHandle(
+            RootPath,
+            UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+        SafeFileHandle? childDirectory = null;
+        try
+        {
+            var directoryHandle = rootHandle;
+            for (var index = 0; index < segments.Count - 1; index++)
+            {
+                var nextDirectory = OpenUnixHandleAt(
+                    directoryHandle,
+                    segments[index],
+                    UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+                childDirectory?.Dispose();
+                childDirectory = nextDirectory;
+                directoryHandle = nextDirectory;
+            }
+
+            if (UnlinkAt(
+                    directoryHandle.DangerousGetHandle().ToInt32(),
+                    segments[^1],
+                    flags: 0) != 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error == 21)
+                    throw new WorkspaceException(
+                        "workspace_not_regular_file",
+                        "Workspace edit tools can delete only regular files.");
+
+                if (error == 2)
+                    throw new WorkspaceException(
+                        "workspace_path_not_found",
+                        "The workspace URI does not identify an existing path.");
+
+                if (error == (OperatingSystem.IsMacOS() ? 62 : 40))
+                    throw new WorkspaceException(
+                        "workspace_symbolic_link_not_allowed",
+                        "Workspace tools cannot delete symbolic links.");
+
+                throw new IOException(
+                    "The workspace file could not be deleted.",
+                    new Win32Exception(error));
+            }
+        }
+        finally
+        {
+            childDirectory?.Dispose();
+        }
+    }
+
+    [LibraryImport("libc", EntryPoint = "unlinkat", SetLastError = true)]
+    private static partial int UnlinkAt(
+        int directoryDescriptor,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        int flags);
+
     internal async ValueTask<BoundedFileContent> ReadAsync(
         string path,
         int maximumBytes,

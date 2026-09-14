@@ -23,6 +23,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
     private readonly string toolArgumentsJson;
 
     private readonly bool toolFlow;
+    private readonly bool applyPatchFlow;
+    private readonly string? applyPatchOperationJson;
     private readonly string toolName;
 
     public FakeOpenAiServer(
@@ -34,7 +36,9 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         int? requestCount = null,
         string toolName = "echo",
         string toolArgumentsJson = "{\"text\":\"hello\"}",
-        string? expectedToolResultText = null)
+        string? expectedToolResultText = null,
+        bool applyPatchFlow = false,
+        string? applyPatchOperationJson = null)
     {
         this.apiFlavor = apiFlavor;
         this.toolFlow = toolFlow;
@@ -44,7 +48,9 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         this.toolName = toolName;
         this.toolArgumentsJson = toolArgumentsJson;
         this.expectedToolResultText = expectedToolResultText;
-        this.requestCount = requestCount ?? (toolFlow ? 2 : 1);
+        this.applyPatchFlow = applyPatchFlow;
+        this.applyPatchOperationJson = applyPatchOperationJson;
+        this.requestCount = requestCount ?? (toolFlow || applyPatchFlow ? 2 : 1);
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
         Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
@@ -149,6 +155,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                     (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(
                         toolName,
                         toolArgumentsJson),
+                    (OpenAiApiFlavor.Responses, false, 0) when applyPatchFlow =>
+                        CreateResponsesApplyPatchStream(applyPatchOperationJson!),
                     (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
                         toolFlow ? "tool-backed answer" : answer),
                     (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
@@ -290,6 +298,46 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
             "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
             "\"sequence_number\":6,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":7," +
+            "\"response\":" + completedResponse + "}\n\n";
+    }
+
+    private static string CreateResponsesApplyPatchStream(string operationJson)
+    {
+        const string inProgressResponse =
+            "{\"id\":\"resp-apc\",\"object\":\"response\",\"created_at\":0," +
+            "\"status\":\"in_progress\",\"error\":null,\"incomplete_details\":null," +
+            "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
+            "\"output\":[],\"parallel_tool_calls\":true,\"previous_response_id\":null," +
+            "\"reasoning\":null,\"store\":false,\"temperature\":null," +
+            "\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\"," +
+            "\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":null," +
+            "\"metadata\":{}}";
+        var completedItem =
+            "{\"id\":\"apc-test\",\"type\":\"apply_patch_call\",\"status\":\"completed\"," +
+            "\"call_id\":\"call-apc\",\"operation\":" + operationJson + "}";
+        var completedResponse =
+            "{\"id\":\"resp-apc\",\"object\":\"response\",\"created_at\":0," +
+            "\"status\":\"completed\",\"error\":null,\"incomplete_details\":null," +
+            "\"instructions\":null,\"max_output_tokens\":null,\"model\":\"test-model\"," +
+            "\"output\":[" + completedItem + "],\"parallel_tool_calls\":true," +
+            "\"previous_response_id\":null,\"reasoning\":null,\"store\":false," +
+            "\"temperature\":null,\"text\":{\"format\":{\"type\":\"text\"}}," +
+            "\"tool_choice\":\"auto\",\"tools\":[],\"top_p\":null," +
+            "\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":1," +
+            "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1," +
+            "\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":2}," +
+            "\"metadata\":{}}";
+
+        return
+            "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0," +
+            "\"response\":" + inProgressResponse + "}\n\n" +
+            "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"," +
+            "\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"apc-test\"," +
+            "\"type\":\"apply_patch_call\",\"status\":\"in_progress\",\"call_id\":\"call-apc\"," +
+            "\"operation\":" + operationJson + "}}\n\n" +
+            "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
+            "\"sequence_number\":2,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3," +
             "\"response\":" + completedResponse + "}\n\n";
     }
 

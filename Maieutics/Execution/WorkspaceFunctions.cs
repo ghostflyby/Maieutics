@@ -146,7 +146,7 @@ internal sealed class WorkspaceFunctions
             var page = entries
                 .Skip(offset)
                 .Take(requestedPageSize)
-                .Select(entry => CreateEntry(snapshot, entry))
+                .Select(entry => CreateEntry(snapshot, entry, directory.Segments))
                 .ToImmutableArray();
             var nextOffset = offset + page.Length;
             return ValueTask.FromResult(new ListDirectoryResult(
@@ -212,7 +212,7 @@ internal sealed class WorkspaceFunctions
 
             return await ReadTextCoreAsync(
                 file.Uri,
-                snapshot.OpenVerifiedRead(file.FullPath),
+                snapshot.OpenVerifiedRead(file),
                 requestedStartLine,
                 maximumLines,
                 cancellationToken).ConfigureAwait(false);
@@ -351,23 +351,30 @@ internal sealed class WorkspaceFunctions
         }
     }
 
-    private static WorkspaceDirectoryEntry CreateEntry(WorkspaceSnapshot snapshot, FileSystemInfo entry)
+    private static WorkspaceDirectoryEntry CreateEntry(
+        WorkspaceSnapshot snapshot,
+        FileSystemInfo entry,
+        IReadOnlyList<string> parentSegments)
     {
+        var segments = new List<string>(parentSegments.Count + 1);
+        segments.AddRange(parentSegments);
+        segments.Add(entry.Name);
+        var uri = snapshot.ToWorkspaceUri(segments);
         var attributes = entry.Attributes;
         if ((attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null)
-            return new WorkspaceDirectoryEntry(entry.Name, snapshot.ToWorkspaceUri(entry.FullName), "symbolic_link");
+            return new WorkspaceDirectoryEntry(entry.Name, uri, "symbolic_link");
 
         if ((attributes & FileAttributes.Directory) != 0)
-            return new WorkspaceDirectoryEntry(entry.Name, snapshot.ToWorkspaceUri(entry.FullName), "directory");
+            return new WorkspaceDirectoryEntry(entry.Name, uri, "directory");
 
         if ((attributes & FileAttributes.Normal) != 0 || File.Exists(entry.FullName))
             return new WorkspaceDirectoryEntry(
                 entry.Name,
-                snapshot.ToWorkspaceUri(entry.FullName),
+                uri,
                 "file",
                 ((FileInfo)entry).Length);
 
-        return new WorkspaceDirectoryEntry(entry.Name, snapshot.ToWorkspaceUri(entry.FullName), "other");
+        return new WorkspaceDirectoryEntry(entry.Name, uri, "other");
     }
 
     private static DirectoryCursor? DecodeCursor(string? cursor, string uri, long workspaceVersion)
@@ -487,7 +494,7 @@ internal sealed class WorkspaceFunctions
         var statistics = new SearchStatistics();
         var truncated = false;
 
-        foreach (var file in EnumerateFiles(searchRoot, statistics, cancellationToken))
+        foreach (var (file, fileSegments) in EnumerateFiles(snapshot, searchRoot, statistics, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (statistics.VisitedFiles >= maximumFiles)
@@ -508,8 +515,11 @@ internal sealed class WorkspaceFunctions
             BoundedFileContent bounded;
             try
             {
-                bounded = await snapshot.ReadAsync(file.FullName, maximumReadBytes, cancellationToken)
-                    .ConfigureAwait(false);
+                bounded = await snapshot.ReadAsync(
+                    file.FullName,
+                    fileSegments,
+                    maximumReadBytes,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (WorkspaceException exception) when (
                 exception.Code == "workspace_not_regular_file" && searchRoot.IsDirectory)
@@ -557,7 +567,7 @@ internal sealed class WorkspaceFunctions
                 continue;
             }
 
-            var fileUri = snapshot.ToWorkspaceUri(file.FullName);
+            var fileUri = snapshot.ToWorkspaceUri(fileSegments);
             var lineMap = new TextLineMap(content);
             if (regex is null)
                 AddLiteralMatches(
@@ -589,38 +599,58 @@ internal sealed class WorkspaceFunctions
             statistics.SkippedNonRegularFiles);
     }
 
-    private IEnumerable<FileInfo> EnumerateFiles(
+    /// <summary>Yields regular files depth-first with the logical segments that identify
+    /// each file's workspace URI. Reparse points are never descended except the registered
+    /// <c>projects/&lt;name&gt;</c> hop, which is followed into its canonical target while
+    /// files are reported under the link's logical path; every other link counts as a
+    /// skipped symbolic link.</summary>
+    private IEnumerable<(FileInfo File, IReadOnlyList<string> Segments)> EnumerateFiles(
+        WorkspaceSnapshot snapshot,
         WorkspacePath searchRoot,
         SearchStatistics statistics,
         CancellationToken cancellationToken)
     {
         if (!searchRoot.IsDirectory)
         {
-            yield return new FileInfo(searchRoot.FullPath);
+            yield return (new FileInfo(searchRoot.FullPath), searchRoot.Segments);
             yield break;
         }
 
-        var directories = new Stack<DirectoryInfo>();
-        directories.Push(new DirectoryInfo(searchRoot.FullPath));
-        while (directories.TryPop(out var directory))
+        var directories = new Stack<(DirectoryInfo Directory, IReadOnlyList<string> Segments)>();
+        directories.Push((new DirectoryInfo(searchRoot.FullPath), searchRoot.Segments));
+        while (directories.TryPop(out var current))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var entries = GetSortedEntries(directory, statistics, cancellationToken);
-            var childDirectories = new List<DirectoryInfo>();
+            var entries = GetSortedEntries(current.Directory, statistics, cancellationToken);
+            var childDirectories = new List<(DirectoryInfo Directory, IReadOnlyList<string> Segments)>();
             foreach (var entry in entries)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var attributes = entry.Attributes;
                 if ((attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null)
                 {
-                    statistics.SkippedSymbolicLinks++;
+                    var hopSegments = AppendSegment(current.Segments, entry.Name);
+                    var hopTarget = snapshot.ResolveRegisteredLink(
+                        hopSegments,
+                        hopSegments.Count - 1,
+                        Path.Combine(current.Directory.FullName, entry.Name));
+                    if (hopTarget is null)
+                    {
+                        statistics.SkippedSymbolicLinks++;
+                        continue;
+                    }
+
+                    childDirectories.Add((new DirectoryInfo(hopTarget), hopSegments));
                     continue;
                 }
 
                 if ((attributes & FileAttributes.Directory) != 0)
                 {
-                    if (!entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
-                        childDirectories.Add((DirectoryInfo)entry);
+                    if (!IsDeniedDirectoryName(entry.Name))
+                    {
+                        var segments = AppendSegment(current.Segments, entry.Name);
+                        childDirectories.Add(((DirectoryInfo)entry, segments));
+                    }
 
                     continue;
                 }
@@ -631,11 +661,26 @@ internal sealed class WorkspaceFunctions
                     continue;
                 }
 
-                yield return file;
+                yield return (file, AppendSegment(current.Segments, entry.Name));
             }
 
-            for (var index = childDirectories.Count - 1; index >= 0; index--) directories.Push(childDirectories[index]);
+            for (var index = childDirectories.Count - 1; index >= 0; index--)
+                directories.Push(childDirectories[index]);
         }
+    }
+
+    private static IReadOnlyList<string> AppendSegment(IReadOnlyList<string> segments, string name)
+    {
+        var appended = new List<string>(segments.Count + 1);
+        appended.AddRange(segments);
+        appended.Add(name);
+        return appended;
+    }
+
+    private static bool IsDeniedDirectoryName(string name)
+    {
+        return name.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(WorkspaceHome.StateDirectoryName, StringComparison.OrdinalIgnoreCase);
     }
 
     private FileSystemInfo[] GetSortedEntries(

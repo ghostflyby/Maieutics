@@ -16,7 +16,26 @@ internal sealed class TemporaryWorkspace : IDisposable
 
     public void Dispose()
     {
-        Directory.Delete(ParentPath, true);
+        DeleteTree(ParentPath);
+    }
+
+    /// <summary>Recursive deletion that never descends into reparse points. .NET's
+    /// recursive delete throws ("the parameter is incorrect") the moment it meets a
+    /// junction on Windows — it does not follow it — so managed links are removed
+    /// non-recursively first and the remaining tree is deleted afterwards.</summary>
+    internal static void DeleteTree(string path)
+    {
+        if (!Directory.Exists(path)) return;
+
+        foreach (var entry in Directory.EnumerateDirectories(path))
+        {
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+                Directory.Delete(entry, false);
+            else
+                DeleteTree(entry);
+        }
+
+        Directory.Delete(path, true);
     }
 
     internal static TemporaryWorkspace Create()

@@ -157,15 +157,19 @@ public static class MaieuticsHost
             .Bind(resourceProviderOptions);
         resourceProviderOptions.Validate();
         // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
+        var applicationPaths = ApplicationPaths.Resolve();
+        // The workspace root is the fixed home; external projects open as managed links
+        // under projects/ inside it (ADR 0027).
+        var workspaceHome = WorkspaceHome.Ensure(
+            builder.Configuration["Maieutics:Workspace:Root"],
+            applicationPaths.DataRoot);
         var agentPersistenceOptions = new MaieuticsAgentPersistenceOptions();
         builder.Configuration
             .GetSection($"{MaieuticsOptions.SectionName}:Agent:Persistence")
             .Bind(agentPersistenceOptions);
         if (agentPersistenceOptions.Enabled)
         {
-            var applicationPaths = ApplicationPaths.Resolve();
             applicationPaths.EnsureAgentRoot();
-            builder.Services.AddSingleton(applicationPaths);
             builder.Services.AddSingleton(static services => new ObjectStore(
                 services.GetRequiredService<ApplicationPaths>().AgentObjectsRoot));
             builder.Services.AddSingleton<IAgentObjectStore>(static services =>
@@ -180,6 +184,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(fileErrors);
         builder.Services.AddSingleton(new McpStartupDirectory(startupCurrentDirectory));
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton(applicationPaths);
+        builder.Services.AddSingleton(workspaceHome);
         builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
@@ -188,9 +194,7 @@ public static class MaieuticsHost
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IMaieuticsMcpController>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
-        builder.Services.AddSingleton(Workspace.Create(
-            builder.Configuration["Maieutics:Workspace:Root"],
-            startupCurrentDirectory));
+        builder.Services.AddSingleton(Workspace.Create(workspaceHome));
         builder.Services.AddSingleton(denoReplOptions);
         builder.Services.AddSingleton(terminalOptions);
         builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();

@@ -52,12 +52,12 @@ public sealed class MaieuticsCompletionTests
     public void WorkspaceSubcommandsCompleteAtBoundariesAndIgnoreCase()
     {
         var commands = Complete("%maieutics workspace ");
-        commands.Matches.Should().Equal("current", "reset", "use");
+        commands.Matches.Should().Equal("close", "current", "open");
         commands.CursorStart.Should().Be(21);
         commands.CursorEnd.Should().Be(21);
 
-        var partial = Complete("%MAIEUTICS WORKSPACE R");
-        partial.Matches.Should().Equal("reset");
+        var partial = Complete("%MAIEUTICS WORKSPACE O");
+        partial.Matches.Should().Equal("open");
         partial.CursorStart.Should().Be(21);
         partial.CursorEnd.Should().Be(22);
     }
@@ -290,7 +290,7 @@ public sealed class MaieuticsCompletionTests
         partial.CursorEnd.Should().Be(8);
 
         var workspace = Complete("%workspace ");
-        workspace.Matches.Should().Equal("current", "reset", "use");
+        workspace.Matches.Should().Equal("close", "current", "open");
         workspace.CursorStart.Should().Be(11);
         workspace.CursorEnd.Should().Be(11);
 

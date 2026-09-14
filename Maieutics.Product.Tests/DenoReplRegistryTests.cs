@@ -60,9 +60,7 @@ public sealed class DenoReplRegistryTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-registry-{Guid.NewGuid():N}");
         var firstRoot = Path.Combine(root, "first");
-        var secondRoot = Path.Combine(root, "second");
         Directory.CreateDirectory(firstRoot);
-        Directory.CreateDirectory(secondRoot);
         var workspace = Workspace.Create(firstRoot, root);
         var factory = new DenoReplSessionTests.ControlledFactory();
         await using var registry = new DenoReplRegistry(
@@ -76,15 +74,14 @@ public sealed class DenoReplRegistryTests
         try
         {
             var first = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
-            workspace.Use(secondRoot);
             var second = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
 
             first.SessionId.Should().MatchRegex("^[0-9a-f]{32}$");
             second.SessionId.Should().MatchRegex("^[0-9a-f]{32}$").And.NotBe(first.SessionId);
             first.Cwd.Should().Be(firstRoot);
-            second.Cwd.Should().Be(secondRoot);
+            second.Cwd.Should().Be(firstRoot);
             factory.Generations.Should().HaveCount(2);
-            factory.Starts.Select(static start => start.WorkingDirectory).Should().Equal(firstRoot, secondRoot);
+            factory.Starts.Select(static start => start.WorkingDirectory).Should().Equal(firstRoot, firstRoot);
             registry.List(owner).Sessions.Should().HaveCount(2);
 
             var limitFailure = await (Registry: registry, Owner: owner)

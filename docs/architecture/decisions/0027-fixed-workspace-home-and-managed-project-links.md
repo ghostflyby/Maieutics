@@ -161,3 +161,68 @@ project and granting it are deliberately separate acts.
   deletion. Enumeration does not follow reparse points.
 - The REPL child's working directory is now the home root; a session starts in its own
   persistent space and reaches projects through `projects/<name>`.
+- Deleting a *dangling* physical link — one whose target has vanished — needs a fallback:
+  `Directory.Delete` stats through the link, reports the whole path missing, and would
+  crash remount; `ManagedWorkspaceLink.Delete` falls back to unlinking the reparse point
+  itself.
+
+## Amendment (2026-09-15): rename-surviving file identity
+
+Status: Implemented (amends §4's name binding and the remount rules)
+
+The path-only identity of §4 breaks in two ways that matter in practice. Renaming an
+external project directory leaves the link dangling and the name effectively stranded: the
+only recovery re-opens the project under a new suffixed name, invalidating every persisted
+`projects/<name>` URI. Worse, a *different* directory placed at the registered path is
+silently adopted — remount only checked that the path exists, so transcripts would read the
+replacement without notice, exactly the silent drift §4 exists to prevent.
+
+### Decision
+
+1. **Records carry an optional fingerprint.** `WorkspaceLinkRecord.Identity` is the
+   `(device, inode, birth time)` triple captured at open through a no-follow open:
+   `fstat` on macOS, `statx` on Linux (which also yields the creation time, closing the
+   inode-reuse hole on ext4), `GetFileInformationByHandle` on Windows (a zero file index,
+   as on FAT, degrades to no fingerprint). Every capture failure degrades to null, and a
+   fingerprint-less record keeps exactly the pre-amendment path-only semantics. The
+   registry v1 format is extended additively; unknown fields stay tolerated in both
+   directions.
+2. **Matching is by object, not by path.** Fingerprints compare on device and inode, with
+   birth time required to match only when both sides report one. A rename keeps the
+   identity on every local file system; a cross-volume move changes it and is treated as a
+   different project.
+3. **Open reconciles by identity.** Opening the registered path of an existing record
+   whose fingerprint no longer matches fails with a typed error instructing an explicit
+   close. Opening a path where the *same object* now lives re-points the existing record
+   (same name, alias, opening time) instead of creating a duplicate, so transcripts keep
+   citing `projects/<name>`.
+4. **Remount re-locates or withholds.** When the registered path is gone, the record's
+   fingerprint is searched for in the target's *former parent directory* — bounded on
+   purpose, covering the common rename-inside-its-folder case without volume scans. A
+   match re-points the record (state "relocated") after re-running the target validation.
+   When the registered path holds a different object and no relocation is allowed, the
+   physical link is removed and the state is "identity changed": the entry and its name
+   stay reserved for the registered object, and use fails loudly. The relocation search
+   never follows reparse points.
+5. **§4 amendment.** The forever binding is a name↔*object* binding, not name↔path. The
+   recorded path may follow the same object when the fingerprint proves it; it is never
+   re-pointed to a different object. Retired-name reuse requires the same fingerprint when
+   both tombstone and candidate carry one (path-only reuse remains for legacy
+   fingerprint-less tombstones) — otherwise replacing a closed project's directory would
+   silently inherit its transcript names.
+6. **Health is runtime state, not registry state.** Remount outcomes (verified,
+   relocated, target missing, identity changed, failed) are rebuilt at startup and open,
+   rendered by `%workspace`, and never persisted.
+
+### Consequences
+
+- Re-pointing updates `${var.project.<name>}` for future renders only; children already
+  launched keep their earlier grants, consistent with §7's separation of opening and
+  granting.
+- Identity capture requires `fstat` (glibc ≥ 2.33 on Linux distributions without `statx`
+  wrappers degrade to path-only), and file systems with unstable or absent identities
+  (network file systems, FAT-family) degrade to path-only the same way — the feature
+  sharpens identity where the platform supports it and changes nothing where it does not.
+- The silent-follow behavior on same-path replacement is gone: a replaced directory is a
+  typed "identity changed" state requiring an explicit close-and-re-open. That is a
+  deliberate behavior change; the old behavior was the defect.

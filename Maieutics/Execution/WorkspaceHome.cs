@@ -1,5 +1,37 @@
 namespace Maieutics.Execution;
 
+/// <summary>How a managed link last fared against the file system (ADR 0027 amendment).
+/// Runtime state rebuilt at startup and open; never persisted.</summary>
+internal enum WorkspaceLinkState
+{
+    /// <summary>The registered object was found at the registered path (fingerprint match,
+    /// or path-only for a fingerprint-less record).</summary>
+    Verified,
+
+    /// <summary>The fingerprint re-located the project at a new path this startup (or the
+    /// record was re-pointed by an explicit open); the link follows the object.</summary>
+    Relocated,
+
+    /// <summary>The registered path is gone and no fingerprint match was found; the entry
+    /// stays dangling until the target reappears.</summary>
+    TargetMissing,
+
+    /// <summary>The registered path now holds a different directory (or a relocation was
+    /// found at a disallowed location). The physical link is withheld so tools cannot read
+    /// the wrong project; the name stays reserved for the registered object.</summary>
+    IdentityChanged,
+
+    /// <summary>The remount itself failed (link creation, I/O); the error detail is
+    /// carried by the health entry.</summary>
+    Failed
+}
+
+/// <summary>The remount outcome for one link, with an optional human-readable detail.</summary>
+internal sealed record WorkspaceLinkHealth(WorkspaceLinkState State, string? Detail = null)
+{
+    internal static readonly WorkspaceLinkHealth Verified = new(WorkspaceLinkState.Verified);
+}
+
 /// <summary>Immutable link view handed to each workspace snapshot: the registered targets
 /// by link name (case-insensitive) drive managed-hop validation and
 /// <c>${var.project.*}</c> permission variables (ADR 0027 §7).</summary>
@@ -7,22 +39,38 @@ internal sealed class WorkspaceLinks
 {
     private WorkspaceLinks(
         IReadOnlyDictionary<string, string> targetsByName,
-        IReadOnlyList<WorkspaceLinkRecord> records)
+        IReadOnlyList<WorkspaceLinkRecord> records,
+        IReadOnlyDictionary<string, WorkspaceLinkHealth> healthByName)
     {
         TargetsByName = targetsByName;
         Records = records;
+        HealthByName = healthByName;
     }
 
     internal IReadOnlyDictionary<string, string> TargetsByName { get; }
 
     internal IReadOnlyList<WorkspaceLinkRecord> Records { get; }
 
-    internal static WorkspaceLinks FromRecords(IReadOnlyList<WorkspaceLinkRecord> records)
+    internal IReadOnlyDictionary<string, WorkspaceLinkHealth> HealthByName { get; }
+
+    internal static WorkspaceLinks FromRecords(
+        IReadOnlyList<WorkspaceLinkRecord> records,
+        IReadOnlyDictionary<string, WorkspaceLinkHealth>? healthByName = null)
     {
         var targets = new Dictionary<string, string>(records.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var record in records) targets[record.Name] = record.Target;
 
-        return new WorkspaceLinks(targets, records);
+        var health = new Dictionary<string, WorkspaceLinkHealth>(records.Count, StringComparer.OrdinalIgnoreCase);
+        if (healthByName is not null)
+        {
+            foreach (var (name, entry) in healthByName) health[name] = entry;
+        }
+        else
+        {
+            foreach (var record in records) health[record.Name] = WorkspaceLinkHealth.Verified;
+        }
+
+        return new WorkspaceLinks(targets, records, health);
     }
 }
 
@@ -38,6 +86,9 @@ internal sealed class WorkspaceHome
     internal const string StateDirectoryName = ".maieutics";
 
     private readonly WorkspaceLinkRegistry registry;
+    private readonly Lock healthGate = new();
+    private readonly Dictionary<string, WorkspaceLinkHealth> healthByName =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private WorkspaceHome(string homePath, string projectsRoot, WorkspaceLinkRegistry registry)
     {
@@ -88,13 +139,15 @@ internal sealed class WorkspaceHome
         return home;
     }
 
-    internal WorkspaceLinks LinksView() => WorkspaceLinks.FromRecords(registry.Entries());
+    internal WorkspaceLinks LinksView() =>
+        WorkspaceLinks.FromRecords(registry.Entries(), SnapshotHealth());
 
     /// <summary>Opens an external directory as a managed project link. Opening the same
-    /// canonical target twice is idempotent and returns the existing record. The physical
-    /// link and the registry entry are written only after the target passed validation;
-    /// a stray physical link at the allocated name is removed because the registry is
-    /// authoritative for the name.</summary>
+    /// target twice is idempotent and returns the existing record; opening the same
+    /// <em>object</em> at a path it moved to re-points the existing record to the new
+    /// path (ADR 0027 amendment). The physical link and the registry entry are written
+    /// only after the target passed validation; a stray physical link at the allocated
+    /// name is removed because the registry is authoritative for the name.</summary>
     internal WorkspaceLinkRecord Open(string path, string? alias)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -110,20 +163,45 @@ internal sealed class WorkspaceHome
         var target = Path.TrimEndingDirectorySeparator(candidate);
         RejectUnsupportedTargetCycle(CanonicalizeTarget(target));
 
+        var identity = WorkspaceFileIdentityReader.TryRead(target);
+
         var existing = registry.FindByTarget(target);
         if (existing is not null)
         {
+            if (existing.Identity is not null && identity is not null &&
+                !existing.Identity.Matches(identity))
+                throw new InvalidOperationException(
+                    $"The workspace link '{existing.Name}' is bound to a different project " +
+                    $"that was opened at this path; the directory now here is not that " +
+                    $"project. Close '{existing.Name}' and open again to adopt the new one.");
+
             EnsurePhysicalLink(existing);
+            SetHealth(existing.Name, WorkspaceLinkHealth.Verified);
             return existing;
         }
 
-        var name = registry.AllocateName(target, alias);
+        var moved = identity is null ? null : registry.FindByFingerprint(identity);
+        if (moved is not null)
+        {
+            // The same project object, opened where it now lives after a rename or move:
+            // the record follows it, and transcripts keep citing projects/<name>.
+            registry.UpdateTarget(moved.Name, target);
+            var record = moved with { Target = target };
+            EnsurePhysicalLink(record);
+            SetHealth(moved.Name, new WorkspaceLinkHealth(
+                WorkspaceLinkState.Relocated,
+                $"relocated to {target}"));
+            return record;
+        }
+
+        var name = registry.AllocateName(target, alias, identity);
         var linkPath = LinkPath(name);
         RemoveStrayLink(linkPath);
         ManagedWorkspaceLink.Create(linkPath, target);
-        var record = new WorkspaceLinkRecord(name, target, alias, DateTimeOffset.UtcNow);
-        registry.CommitNew(record);
-        return record;
+        var created = new WorkspaceLinkRecord(name, target, alias, DateTimeOffset.UtcNow, identity);
+        registry.CommitNew(created);
+        SetHealth(name, WorkspaceLinkHealth.Verified);
+        return created;
     }
 
     /// <summary>Closes a link: removes the physical reparse point (never a real directory)
@@ -145,6 +223,7 @@ internal sealed class WorkspaceHome
         }
 
         registry.Remove(record.Name);
+        ForgetHealth(record.Name);
         return record;
     }
 
@@ -154,9 +233,135 @@ internal sealed class WorkspaceHome
     {
         foreach (var record in registry.Entries())
         {
-            if (!Directory.Exists(record.Target)) continue;
+            try
+            {
+                RemountRecord(record);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                SetHealth(record.Name, new WorkspaceLinkHealth(
+                    WorkspaceLinkState.Failed,
+                    exception.Message));
+            }
+        }
+    }
 
+    /// <summary>Reconciles one registry entry with the file system. The fingerprint can
+    /// tell a renamed project (the same object elsewhere) from a replaced one (a different
+    /// object at the registered path) — the two cases the path-only model confused.</summary>
+    private void RemountRecord(WorkspaceLinkRecord record)
+    {
+        var targetExists = Directory.Exists(record.Target);
+        var identityHere = targetExists
+            ? WorkspaceFileIdentityReader.TryRead(record.Target)
+            : null;
+
+        if (targetExists &&
+            (record.Identity is null || identityHere is null || record.Identity.Matches(identityHere)))
+        {
             EnsurePhysicalLink(record);
+            SetHealth(record.Name, WorkspaceLinkHealth.Verified);
+            return;
+        }
+
+        if (record.Identity is not null && TryRelocate(record) is { } relocated)
+        {
+            registry.UpdateTarget(record.Name, relocated);
+            EnsurePhysicalLink(record with { Target = relocated });
+            SetHealth(record.Name, new WorkspaceLinkHealth(
+                WorkspaceLinkState.Relocated,
+                $"relocated from {record.Target} to {relocated}"));
+            return;
+        }
+
+        if (targetExists)
+        {
+            // The registered path validates against the record, so a physical link left
+            // from an earlier session would let tools silently read the wrong project.
+            // The link is withheld; the entry and its name stay reserved.
+            WithholdLink(record, "the registered path now holds a different directory");
+            return;
+        }
+
+        SetHealth(record.Name, new WorkspaceLinkHealth(WorkspaceLinkState.TargetMissing));
+    }
+
+    /// <summary>Searches the registered target's former parent directory for the recorded
+    /// object — bounded on purpose: it catches the common rename-inside-its-folder case
+    /// without ever scanning a whole volume. Returns the candidate's path in the record's
+    /// own path form, or null when the object is not found or its new location is not an
+    /// allowed target.</summary>
+    private string? TryRelocate(WorkspaceLinkRecord record)
+    {
+        var registered = record.Identity;
+        var formerParent = Path.GetDirectoryName(record.Target);
+        if (registered is null || formerParent is null || !Directory.Exists(formerParent))
+            return null;
+
+        foreach (var entry in new DirectoryInfo(formerParent).EnumerateDirectories(
+                     "*",
+                     new EnumerationOptions
+                     {
+                         IgnoreInaccessible = true,
+                         AttributesToSkip = FileAttributes.ReparsePoint
+                     }))
+        {
+            if (WorkspaceFileIdentityReader.TryRead(entry.FullName) is not { } identity ||
+                !registered.Matches(identity))
+                continue;
+
+            var candidate = Path.Combine(formerParent, entry.Name);
+            try
+            {
+                RejectUnsupportedTargetRoot(candidate);
+                RejectUnsupportedTargetCycle(CanonicalizeTarget(candidate));
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
+
+            return candidate;
+        }
+
+        return null;
+    }
+
+    private void WithholdLink(WorkspaceLinkRecord record, string detail)
+    {
+        var linkPath = LinkPath(record.Name);
+        if (TryGetAttributes(linkPath, out var attributes) &&
+            (attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            Directory.Delete(linkPath, false);
+        }
+
+        SetHealth(record.Name, new WorkspaceLinkHealth(WorkspaceLinkState.IdentityChanged, detail));
+    }
+
+    private void SetHealth(string name, WorkspaceLinkHealth entry)
+    {
+        lock (healthGate)
+        {
+            healthByName[name] = entry;
+        }
+    }
+
+    private void ForgetHealth(string name)
+    {
+        lock (healthGate)
+        {
+            healthByName.Remove(name);
+        }
+    }
+
+    private IReadOnlyDictionary<string, WorkspaceLinkHealth> SnapshotHealth()
+    {
+        lock (healthGate)
+        {
+            return new Dictionary<string, WorkspaceLinkHealth>(
+                healthByName,
+                StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -168,10 +373,11 @@ internal sealed class WorkspaceHome
             if ((attributes & FileAttributes.ReparsePoint) == 0) return;
 
             if (PathsEqual(FinalTarget(linkPath), record.Target)) return;
-
-            Directory.Delete(linkPath, false);
         }
 
+        // Both a mismatched link and a dangling one (stat follows the link and fails) are
+        // replaced; a real directory at the name is never touched (handled above).
+        ManagedWorkspaceLink.Delete(linkPath);
         ManagedWorkspaceLink.Create(linkPath, record.Target);
     }
 
@@ -306,7 +512,7 @@ internal sealed class WorkspaceHome
 /// <summary>Creates and deletes managed directory links: a symbolic link on POSIX, a
 /// directory junction on Windows (ADR 0027 §3). Deletion removes the reparse point only —
 /// never the target.</summary>
-internal static class ManagedWorkspaceLink
+internal static partial class ManagedWorkspaceLink
 {
     internal static void Create(string linkPath, string targetPath)
     {
@@ -314,5 +520,19 @@ internal static class ManagedWorkspaceLink
         else Directory.CreateSymbolicLink(linkPath, targetPath);
     }
 
-    internal static void Delete(string linkPath) => Directory.Delete(linkPath, false);
+    internal static void Delete(string linkPath)
+    {
+        try
+        {
+            Directory.Delete(linkPath, false);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // A link whose target has vanished cannot be stat'd (stat follows the link),
+            // so Directory.Delete reports the whole path missing even though the reparse
+            // point is there. Unlinking removes it, and File.Delete ignores an
+            // already-absent path.
+            File.Delete(linkPath);
+        }
+    }
 }

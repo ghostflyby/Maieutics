@@ -15,11 +15,10 @@
  * the target module directly. The wrapper reads the bootstrap metadata (the
  * target module URL and non-sensitive version/profile markers) from its own
  * module URL query string — a controlled internal descriptor that never
- * carries credentials, connection-file contents, or any other sensitive
- * value.
+ * carries credentials or any other sensitive value.
  *
- * This module is not part of the reusable Jupyter assemblies and not part of
- * the public plugin-author SDK.
+ * This module is product-owned runtime composition and is not part of the
+ * public plugin-author SDK.
  *
  * Profile space: this contract runs only inside Deno execution contexts, which
  * produce exactly two profiles ("repl" and "plugin"). The standalone Node-side

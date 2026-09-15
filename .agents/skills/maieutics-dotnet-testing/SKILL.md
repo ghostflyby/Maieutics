@@ -38,10 +38,10 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 
 ## Coverage By Boundary
 
-- Shared: frames, HMAC, JSON names, source-generated round trips, unknown fields, buffers, connection validation, MIME, display IDs, and cursor conversion.
-- Client: socket ownership, five channels, correlation, reply/idle ordering, stdin parents, output order, late output, cancellation, disconnect, and backpressure.
-- Kernel: busy/reply/idle, shell serialization, control responsiveness, heartbeat, interrupt, shutdown, silent execution, stdin, language services, and display updates.
-- Agent: run reservation, event backpressure, provider-iteration recording, transcript commit, tools, limits, capabilities, provider switching, and rollback.
+- Agent (`Maieutics.Agent.Tests`): run reservation, event backpressure, provider-iteration recording, transcript commit, tools, limits, capabilities, provider switching, and rollback.
+- Frontend and product (`Maieutics.Product.Tests`): discovery, auth, turn lifecycle, replay/resume, cancel, commands, sessions/forks, comm plane, and the published-executable smoke tests.
+- Providers, configuration, permissions, and processes: deterministic fake HTTP/SSE servers, layered overlays, variable interpolation, reload, and process environment allowlists.
+- Deno execution/REPL, plugins, and control plane: eval/output/control IPC, comm channels, host derive, policy broker, plugin lifecycle, and persistence stores.
 
 ## Verification Sequence
 

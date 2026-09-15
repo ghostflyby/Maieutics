@@ -1440,8 +1440,7 @@ public sealed class FrontendApiIntegrationTests
     }
 
     /// <summary>Boots the composition root in process with the frontend API enabled and a
-    /// fake model provider, mirroring the Jupyter host integration tests. Shared with the
-    /// comm-plane integration tests.</summary>
+    /// fake model provider. Shared with the comm-plane integration tests.</summary>
     internal sealed class FrontendHarness : IAsyncDisposable
     {
         private readonly IHost host;

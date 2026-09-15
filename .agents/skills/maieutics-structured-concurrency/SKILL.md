@@ -1,6 +1,6 @@
 ---
 name: maieutics-structured-concurrency
-description: Use when changing Maieutics background loops, channels, ZeroMQ transport ownership, cancellation, backpressure, run lifetimes, provider generations, process supervision, interrupt, shutdown, concurrent disposal, or timeout behavior in any project.
+description: Use when changing Maieutics background loops, channels, transport ownership, cancellation, backpressure, run lifetimes, provider generations, process supervision, interrupt, shutdown, concurrent disposal, or timeout behavior in any project.
 ---
 
 # Maieutics Structured Concurrency

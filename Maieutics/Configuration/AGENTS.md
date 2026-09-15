@@ -38,6 +38,6 @@ session-level profile selection, and reference-counted provider generation lifet
 - Record reload outcomes as immutable status data without retaining exception text, configuration values, or secrets.
 - A manual session override affects the next run, survives default changes while its profile exists, and resets to the
   new default if that profile is removed. It is not persisted.
-- Connection-file changes are restart-required. Agent and Jupyter presentation settings apply at the next run or
-  execution boundary, never midway through an active operation.
+- The active configuration path and the transcript-persistence flag are restart-required. Model and presentation
+  settings apply at the next run or execution boundary, never midway through an active operation.
 - Reload notification coalescing may drop duplicate signals, but never a published configuration or run profile.

@@ -182,8 +182,8 @@ Configuration -> Agent, Execution, Mcp, Plugins, Providers, Terminal
 
 ## Security and errors
 
-- Verify HMAC signatures whenever a connection key is configured.
-- Never log provider secrets, authorization headers, HMAC keys, or complete connection-file credentials.
+- Authenticate every frontend request with the per-process bearer token compared in constant time.
+- Never log provider secrets, authorization headers, or the frontend bearer token.
 - Treat notebook input, model output, tool arguments, and tool output as untrusted.
 - Execute cell text only through an explicitly selected runtime or tool.
 - Validate tool arguments and enforce filesystem, workspace, network, process, and environment policy inside tools.

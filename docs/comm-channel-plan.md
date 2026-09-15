@@ -2,6 +2,11 @@
 
 Status: 已实施(2026-08-24)
 
+> **历史文档。** 本文是一次性的执行计划,仅作记录。计划写作时的前端通路是 Jupyter wire
+> (`Maieutics.Jupyter.Kernel`/`Maieutics.Jupyter.Client`),已随 ADR 0023 退役,这两个项目已抽取到独立的
+> JupyterSharp 仓库;现行前端为自定义 Web 前端协议(`docs/web-frontend-protocol.md`),comm 通道现状以
+> [frontend-migration-gaps.md](frontend-migration-gaps.md) 第 6 项(ADR 0024)为准。
+
 分支:`feat/comm-channel`(基于 `feat/deno-jupyter-compat`)。
 
 ## 架构决策

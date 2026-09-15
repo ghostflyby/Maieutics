@@ -331,7 +331,7 @@ Rules:
   `DenoExecution` + `Control`. No new project references are created — these are namespaces inside the executable.
 - **Tests move with the domain.** `TerminalInputTests`, `TerminalRegistryTests`, `TerminalSessionTests` stay
   terminal-domain tests; new `PermissionLayerTests`, `VariableInterpolationTests`,
-  `DenoPermissionRendererTests` live in `Maieutics.Jupyter.Tests` following the existing product-test convention.
+  `DenoPermissionRendererTests` live in `Maieutics.Product.Tests` following the existing product-test convention.
 
 ### 12. Out of scope this phase
 
@@ -469,7 +469,7 @@ Goal: pure permission logic with zero behavior change.
   grants; absorbs `TerminalEnvironment`), `ProcessSandboxPolicy.cs` (future enforcer seam, interface only).
 - `Workspace` gains the narrow `IPermissionVariableSource` implementation (adapter lives in `Execution`; no
   dependency from `Workspace` to `Permissions`).
-- Tests (`Maieutics.Jupyter.Tests`): `PermissionLayerTests`, `VariableInterpolationTests`,
+- Tests (`Maieutics.Product.Tests`): `PermissionLayerTests`, `VariableInterpolationTests`,
   `DenoPermissionRendererTests`, `ProcessEnvironmentTests`.
 - Gate: focused tests green; `dotnet build Maieutics.slnx --no-restore -warnaserror`; no production behavior
   change.

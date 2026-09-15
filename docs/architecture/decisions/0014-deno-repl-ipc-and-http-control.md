@@ -131,6 +131,8 @@ verify peer credentials and detect Jupyter restarts. The reusable Jupyter librar
   relays REPL-originated comm to iopub via `SendCommAsync`; `MaieuticsAgentKernelApplication` lazily starts the
   default REPL and pushes frontend comm to it; the Deno side connects `/comm` in `repl_client.ts`, exposes
   `maieutics.comm` (open/msg/close + `on` events), and `Deno.jupyter.broadcast` supports comm message types.
+  (Superseded in part: the `Maieutics.Jupyter.Kernel` leg described here was retired with ADR 0023; `/comm` remains a
+  child-process-only channel (REPL ↔ host), and the frontend comm plane is owned by ADR 0024.)
 - Pending: tool progress streams, SSE external event endpoint, approval for script tool
   calls, external loopback control endpoint, and the Windows named-pipe bootstrap.
 

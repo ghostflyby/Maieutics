@@ -39,9 +39,13 @@ Jupyter libraries were extracted to the standalone JupyterSharp repository and a
 - [ADR 0021: Plugin HTTP UI — host-mounted zero-permission fetch handlers](architecture/decisions/0021-plugin-http-ui-host-mounted-zero-permission-handlers.md)
 - [ADR 0022: Plugin web storage and platform application directories](architecture/decisions/0022-plugin-web-storage-and-application-directories.md)
 - [ADR 0024: Frontend comm plane for interactive widgets](architecture/decisions/0024-frontend-comm-plane-and-widgets.md)
-- ADR 0023 is listed under Frontend above.
+- [ADR 0025: Server-owned session turn queue](architecture/decisions/0025-server-owned-session-turn-queue.md)
+- [ADR 0026: Virtual resource URLs](architecture/decisions/0026-virtual-resource-urls.md)
+- [ADR 0027: Fixed workspace home and managed project links](architecture/decisions/0027-fixed-workspace-home-and-managed-project-links.md)
+- ADR 0023 is listed under Frontend above; ADR 0019 was never allocated.
 
 ## Historical
 
 - [Deno.jupyter compatibility boundary](deno-jupyter-compat.md) — still describes the REPL API surface; the output path it describes is superseded by ADR 0023
 - [Deno.jupyter compatibility completion plan](deno-jupyter-compat-plan.md) — one-time execution plan, kept as a record
+- [Bidirectional Jupyter comm channel plan](comm-channel-plan.md) — one-time execution plan, kept as a record; the Jupyter wire path it targets was retired with ADR 0023

@@ -212,6 +212,18 @@ remains; the IOPub bridge is historical); both compat docs carry historical
 banners; `docs/README.md` gained Frontend and Historical sections presenting
 the web protocol as primary.
 
+**Follow-up (2026-09-15).** The acceptance criterion was not fully met: the
+sweep covered the docs that framed the Jupyter path as primary, but not the
+architecture overview, which is linked from `docs/README.md` as current.
+`docs/architecture/README.md` still described the Jupyter-hosted deployment in
+present tense, and three further files named projects deleted by the extraction.
+Corrected in the extraction follow-up: the architecture overview now marks its
+system shape, invariants, module map, and dependency edges as historical and
+scopes the remaining claims to the surviving layers; `runtime-bootstrapping-design.md`
+re-points its test paths at `Maieutics.Product.Tests`; `comm-channel-plan.md`
+gains the historical banner its sibling plans carry; and the Draft ADRs 0014,
+0018, and 0021 no longer direct work at the deleted projects.
+
 ## Out of scope (recorded deliberately)
 
 - Server-side turn queueing beyond the single-run gate (invariant 4 keeps

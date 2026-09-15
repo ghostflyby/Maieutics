@@ -224,7 +224,12 @@ replacement without notice, exactly the silent drift §4 exists to prevent.
 - Identity capture uses `fstat` (macOS) or `statx` (Linux; the libc wrapper exists since
   glibc 2.28 and musl 1.1.24; older or exotic platforms fail the call and degrade to
   path-only) and `GetFileInformationByHandle` (Windows; a zero file index on FAT-family
-  volumes degrades to path-only). File systems whose identities are *unstable* rather
+  volumes degrades to path-only). Birth time is compared at full precision — sub-second
+  differences are exactly what distinguishes a directory deleted and recreated within one
+  wall-clock second on an inode-reusing file system. A file system that reports no birth
+  time at all gives up that discrimination: a same-path replacement that reuses the inode
+  number is then indistinguishable from the original object and degrades to the legacy
+  path-only behavior for that corner. File systems whose identities are *unstable* rather
   than absent (a network file system across server failover) do not degrade cleanly:
   the next remount sees a fingerprint mismatch and withholds the link pending an explicit
   close-and-re-open — a false alarm in the conservative direction, never a silent wrong

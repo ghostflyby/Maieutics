@@ -128,8 +128,13 @@ internal static partial class WorkspaceFileIdentityReader
         // file-system artifact and degrades to no birth time.
         if (seconds == 0) return null;
         if (seconds is < -62_135_596_800L or > 253_402_300_799L) return null;
-        _ = nanoseconds;
-        return DateTimeOffset.FromUnixTimeSeconds(seconds);
+
+        // Full precision is load-bearing: identity comparison turns on sub-second
+        // differences, such as a directory deleted and recreated within the same
+        // wall-clock second while the file system reuses the inode number.
+        return DateTimeOffset
+            .FromUnixTimeMilliseconds(seconds * 1000)
+            .AddTicks(nanoseconds / 100);
     }
 
     private static DateTimeOffset? FromFileTime(ulong fileTime)

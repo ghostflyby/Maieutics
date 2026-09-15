@@ -118,13 +118,18 @@ public sealed class WorkspaceLinkIdentityTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         Workspace.Create(home).OpenLink(project, null);
 
-        // A different project now occupies the registered path.
-        Directory.Delete(project, true);
-        var replacement = Directory.CreateDirectory(project).FullName;
+        // A different project now occupies the registered path. It is built beside the
+        // original and swapped in, so it coexisted with the original and is guaranteed a
+        // different identity on every file system — no reliance on birth-time precision.
+        var replacementSource = Directory.CreateDirectory(
+            Path.Combine(workspace.ParentPath, "project-replacement")).FullName;
         await File.WriteAllTextAsync(
-            Path.Combine(replacement, "marker.txt"),
+            Path.Combine(replacementSource, "marker.txt"),
             "replacement project",
             TestContext.Current.CancellationToken);
+        Directory.Delete(project, true);
+        Directory.Move(replacementSource, project);
+        var replacement = project;
 
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var context = Workspace.Create(remounted);
@@ -333,8 +338,13 @@ public sealed class WorkspaceLinkIdentityTests
         var project = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "project")).FullName;
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         Workspace.Create(home).OpenLink(project, null);
+
+        // Swap in a directory that coexisted with the original, so its identity differs
+        // on every file system regardless of birth-time support.
+        var replacementSource = Directory.CreateDirectory(
+            Path.Combine(workspace.ParentPath, "project-replacement")).FullName;
         Directory.Delete(project, true);
-        Directory.CreateDirectory(project);
+        Directory.Move(replacementSource, project);
 
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var executor = new Maieutics.Commands.MaieuticsCommandExecutor(

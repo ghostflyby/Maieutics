@@ -17,6 +17,10 @@ public sealed class FrontendTurnQueueIntegrationTests
 {
     private const string Answer = "queued answer";
 
+    /// <summary>Consecutive empty queue observations that count as drained. The dequeue→running
+    /// handshake is a local in-process submission, so four 50 ms polls is far beyond it.</summary>
+    private const int StableEmptyPolls = 4;
+
     private readonly ITestOutputHelper output;
 
     public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
@@ -464,6 +468,43 @@ public sealed class FrontendTurnQueueIntegrationTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task DrainReleasesARunParkedWhileTheQueueLooksEmpty()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
+        var provider = new GatedOpenAiServer();
+        await using var harness = await StartHarnessAsync(deadline.Token, provider);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        // Reproduce the window the drain has to survive: a direct run holds the single-run
+        // gate (parked at the provider), and the worker dequeues its item while that run is
+        // still in flight. The dequeue→running handshake then blocks on the busy gate, so the
+        // queue reports neither a pending nor a running item while a provider request is
+        // already on its way. A drain that samples emptiness once and returns — or that skips
+        // the release on such a sample — leaves that request parked forever, which is exactly
+        // the Windows CI hang (the harness's host disposal then blocks on the run's lease).
+        await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
+        await WaitForParkedAsync(provider, 1, deadline.Token);
+        var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one");
+        await WaitForQueueAsync(
+            harness,
+            sessionId,
+            queue => !ItemIds(queue).Contains(ids[0]),
+            deadline.Token);
+
+        // The worker has dequeued, is waiting out the parked direct run, and the queue is
+        // legitimately empty from the API's point of view.
+        var observed = await GetQueueAsync(harness, sessionId, deadline.Token);
+        ItemIds(observed).Should().BeEmpty();
+        HasRunningItem(observed).Should().BeFalse();
+
+        // The drain must still converge: it keeps releasing as each run reaches the gate.
+        await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
+
+        var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
+        texts.Should().Equal(["direct question", "queued one"]);
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task QueuePinLeaseIsHeldWhileWorkIsQueuedAndReleasedOnDrain()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
@@ -595,7 +636,26 @@ public sealed class FrontendTurnQueueIntegrationTests
 
     /// <summary>Releases parked provider requests until the queue has fully drained, so no
     /// run is still in flight when the harness's host disposes (the runtime configuration's
-    /// disposal waits for the active run's profile lease).</summary>
+    /// disposal waits for the active run's profile lease).
+    /// <para>
+    /// Two properties are load-bearing, and the earlier version had neither:
+    /// </para>
+    /// <para>
+    /// <b>Release on every poll, not only when the queue looks busy.</b> The worker removes an
+    /// item from the pending list and publishes it as running only after the submission
+    /// handshake completes, so a poll can legitimately see neither a pending nor a running item
+    /// while a run is already on its way to the gate. Skipping the release on such a sample
+    /// leaves that request parked with nothing left to release it. The submission handshake can
+    /// also block for a long time — when a direct submission holds the single-run gate the
+    /// worker waits the in-flight run out before retrying — which widens that window from a
+    /// round trip into however long the other run is parked.
+    /// </para>
+    /// <para>
+    /// <b>Require sustained emptiness.</b> A single empty sample is not evidence that the work
+    /// finished; returning on one ends the drain before the run is visible, and the harness's
+    /// host disposal then blocks on that run's profile lease until the xUnit timeout — the
+    /// Windows CI failure this guards.
+    /// </para></summary>
     private async Task DrainQueueAsync(
         Harness harness,
         GatedOpenAiServer provider,
@@ -605,16 +665,45 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(60));
         var polls = 0;
-        while (true)
+        var consecutiveEmptyPolls = 0;
+        var lastSummary = "not polled";
+        try
         {
-            var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
-            polls++;
-            if (!HasRunningItem(queue) && ItemIds(queue).Length == 0) return;
+            while (true)
+            {
+                var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
+                polls++;
+                lastSummary = QueueSummary(queue);
 
-            provider.ReleaseAll();
-            if (polls % 10 == 0)
-                Trace($"drain poll #{polls}: {QueueSummary(queue)}");
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+                // Always: a request parked during a window where the queue still looks empty
+                // must be released too, or it is never released at all.
+                provider.ReleaseAll();
+
+                if (!HasRunningItem(queue) && ItemIds(queue).Length == 0)
+                {
+                    if (++consecutiveEmptyPolls >= StableEmptyPolls)
+                    {
+                        Trace($"queue drained (stable across {consecutiveEmptyPolls} polls)");
+                        return;
+                    }
+                }
+                else
+                {
+                    consecutiveEmptyPolls = 0;
+                }
+
+                if (polls % 10 == 0)
+                    Trace($"drain poll #{polls}: {lastSummary}");
+                await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
+        {
+            // Name what the queue actually looked like instead of surfacing a bare cancellation:
+            // a drain that cannot converge means a run is parked with nothing releasing it.
+            throw new InvalidOperationException(
+                $"the queue did not drain after {polls} polls; last observed: {lastSummary}",
+                exception);
         }
     }
 

@@ -174,8 +174,9 @@ internal sealed class WorkspaceLinkRegistry
     /// <summary>Chooses the link name for a new target: an explicit alias, else the target
     /// basename; a name already bound to a different target gets a path-hash suffix. A name
     /// retired while bound to this same object is reused, keeping identities stable across
-    /// close/reopen cycles — "same object" is the fingerprint when both sides carry one,
-    /// and the path alone for legacy fingerprint-less tombstones.</summary>
+    /// close/reopen cycles — including a close, a rename, and a reopen at the new path —
+    /// where "same object" is the fingerprint when both sides carry one, and the path alone
+    /// for legacy fingerprint-less tombstones.</summary>
     internal string AllocateName(
         string canonicalTarget,
         string? alias,
@@ -185,7 +186,7 @@ internal sealed class WorkspaceLinkRegistry
         {
             var boundName = retired.FirstOrDefault(retiredLink =>
                     RetiredNameMatches(retiredLink, canonicalTarget, identity) &&
-                    !IsOccupied(retiredLink.Name, excludeTarget: canonicalTarget))
+                    !IsOccupied(retiredLink.Name, excludeTarget: canonicalTarget, identity))
                 ?.Name;
             if (boundName is not null) return boundName;
 
@@ -195,12 +196,12 @@ internal sealed class WorkspaceLinkRegistry
                     "The workspace link name derived from the target path is empty or " +
                     "reserved; open the project with an explicit alias.");
 
-            if (!IsOccupied(baseName, excludeTarget: null)) return baseName;
+            if (!IsOccupied(baseName, excludeTarget: null, identity)) return baseName;
 
             for (var length = HashCharacters; length <= HashCharacters * 3; length++)
             {
                 var candidate = $"{baseName}-{TargetHash(canonicalTarget, length)}";
-                if (!IsOccupied(candidate, excludeTarget: null)) return candidate;
+                if (!IsOccupied(candidate, excludeTarget: null, identity)) return candidate;
             }
 
             throw new InvalidOperationException(
@@ -281,14 +282,25 @@ internal sealed class WorkspaceLinkRegistry
         return hex[..characters].ToLowerInvariant();
     }
 
-    private bool IsOccupied(string name, string? excludeTarget)
+    private bool IsOccupied(
+        string name,
+        string? excludeTarget,
+        WorkspaceFileIdentity? excludeIdentity = null)
     {
         return links.Any(link =>
                    string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase) &&
                    (excludeTarget is null || !PathsEqual(link.Target, excludeTarget))) ||
                retired.Any(link =>
                    string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase) &&
-                   (excludeTarget is null || !PathsEqual(link.Target, excludeTarget)));
+                   (excludeTarget is null || !PathsEqual(link.Target, excludeTarget)) &&
+                   !IsOwnFormerBinding(link, excludeIdentity));
+    }
+
+    /// <summary>Whether this tombstone is the same object reclaiming its old name at a new
+    /// path: an identity match means the name is not occupied, it is waiting.</summary>
+    private static bool IsOwnFormerBinding(WorkspaceRetiredLink link, WorkspaceFileIdentity? identity)
+    {
+        return identity is not null && link.Identity is not null && identity.Matches(link.Identity);
     }
 
     private void Persist()

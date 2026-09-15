@@ -95,6 +95,14 @@ public sealed class WorkspaceLinkIdentityTests
 
         var resolved = context.Capture().Resolve("workspace://local/projects/project/marker.txt", false);
         resolved.FullPath.Should().Be(Path.Combine(movedPath, "marker.txt"));
+
+        var executor = new Maieutics.Commands.MaieuticsCommandExecutor(null, null, context, null, null);
+        var rendered = await executor.ExecuteAsync(
+            "%workspace current",
+            null,
+            TestContext.Current.CancellationToken);
+        rendered.Markdown.Should().Contain("relocated",
+            "the operator sees that the record followed the project");
     }
 
     [Fact(Timeout = 30_000)]
@@ -223,6 +231,98 @@ public sealed class WorkspaceLinkIdentityTests
             "a fingerprint-less record is verified by path, as before the amendment");
         Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project"))
             .Should().BeTrue("path-only remount still repairs the physical link");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ClosedThenRenamedProjectResurrectsItsNameOnReopen()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        using var workspace = TemporaryWorkspace.Create();
+        var project = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "project")).FullName;
+        await File.WriteAllTextAsync(
+            Path.Combine(project, "marker.txt"),
+            "reopened after a rename",
+            TestContext.Current.CancellationToken);
+        var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        var context = Workspace.Create(home);
+        context.OpenLink(project, null);
+        context.CloseLink("project");
+
+        var movedPath = Path.Combine(workspace.ParentPath, "renamed");
+        Directory.Move(project, movedPath);
+        var reopened = context.OpenLink(movedPath, null);
+        var links = reopened.Links ?? throw new InvalidOperationException("missing links");
+        var record = links.Records.Should().ContainSingle().Which;
+        record.Name.Should().Be("project",
+            "the tombstone belongs to the same object, so the name its transcripts cite returns");
+        record.Target.Should().Be(movedPath);
+
+        context.Capture().Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
+            .Should().NotThrow();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task WithheldEntryRecoversWhenTheOriginalObjectReturns()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        using var workspace = TemporaryWorkspace.Create();
+        var project = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "project")).FullName;
+        await File.WriteAllTextAsync(
+            Path.Combine(project, "marker.txt"),
+            "original project",
+            TestContext.Current.CancellationToken);
+        var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        Workspace.Create(home).OpenLink(project, null);
+
+        // Park the original outside the searched parent so the withhold below cannot be
+        // resolved by relocation, then occupy the registered path with another directory.
+        var parking = Directory.CreateDirectory(
+            Path.Combine(workspace.ParentPath, "elsewhere")).FullName;
+        var parked = Path.Combine(parking, "parked-original");
+        Directory.Move(project, parked);
+        Directory.CreateDirectory(project);
+        var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        var links = Workspace.Create(remounted).Capture().Links
+                    ?? throw new InvalidOperationException("missing links");
+        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.IdentityChanged);
+
+        Directory.Delete(project);
+        Directory.Move(parked, project);
+        var recovered = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        var recoveredLinks = Workspace.Create(recovered).Capture().Links
+                             ?? throw new InvalidOperationException("missing links");
+
+        recoveredLinks.HealthByName["project"].State.Should().Be(WorkspaceLinkState.Verified,
+            "the registered object is back at the registered path");
+        Directory.Exists(Path.Combine(recovered.ProjectsRoot, "project"))
+            .Should().BeTrue("the withheld link is recreated once identity verifies again");
+        Workspace.Create(recovered).Capture()
+            .Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
+            .Should().NotThrow();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public void RegistryToleratesUnknownFutureFields()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        using var workspace = TemporaryWorkspace.Create();
+        var project = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "project")).FullName;
+        var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        Workspace.Create(home).OpenLink(project, null);
+
+        // A future format writes members this build has never heard of; the registry must
+        // load and keep working (ADR 0027 §4: unknown fields tolerated).
+        var registryPath = Path.Combine(
+            workspace.Path,
+            WorkspaceHome.StateDirectoryName,
+            "registry.json");
+        var text = File.ReadAllText(registryPath);
+        File.WriteAllText(
+            registryPath,
+            text.Insert(text.IndexOf('{') + 1, " \"futureField\": true,"));
+
+        var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
+        remounted.LinksView().Records.Should().ContainSingle().Which.Target.Should().Be(project);
     }
 
     [Fact(Timeout = 30_000)]

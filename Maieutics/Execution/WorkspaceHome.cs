@@ -16,9 +16,10 @@ internal enum WorkspaceLinkState
     /// stays dangling until the target reappears.</summary>
     TargetMissing,
 
-    /// <summary>The registered path now holds a different directory (or a relocation was
-    /// found at a disallowed location). The physical link is withheld so tools cannot read
-    /// the wrong project; the name stays reserved for the registered object.</summary>
+    /// <summary>The registered path now holds a different directory. The physical link is
+    /// withheld so tools cannot read the wrong project; the name stays reserved for the
+    /// registered object. A relocation candidate found at a disallowed location is ignored
+    /// (it falls through to <see cref="TargetMissing"/> or this state as appropriate).</summary>
     IdentityChanged,
 
     /// <summary>The remount itself failed (link creation, I/O); the error detail is
@@ -184,10 +185,12 @@ internal sealed class WorkspaceHome
         if (moved is not null)
         {
             // The same project object, opened where it now lives after a rename or move:
-            // the record follows it, and transcripts keep citing projects/<name>.
-            registry.UpdateTarget(moved.Name, target);
+            // the record follows it, and transcripts keep citing projects/<name>. The
+            // physical link is repaired first so a failure here leaves the registry
+            // describing the state the file system is actually in.
             var record = moved with { Target = target };
             EnsurePhysicalLink(record);
+            registry.UpdateTarget(moved.Name, target);
             SetHealth(moved.Name, new WorkspaceLinkHealth(
                 WorkspaceLinkState.Relocated,
                 $"relocated to {target}"));

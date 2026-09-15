@@ -218,11 +218,20 @@ replacement without notice, exactly the silent drift §4 exists to prevent.
 
 - Re-pointing updates `${var.project.<name>}` for future renders only; children already
   launched keep their earlier grants, consistent with §7's separation of opening and
-  granting.
-- Identity capture requires `fstat` (glibc ≥ 2.33 on Linux distributions without `statx`
-  wrappers degrade to path-only), and file systems with unstable or absent identities
-  (network file systems, FAT-family) degrade to path-only the same way — the feature
-  sharpens identity where the platform supports it and changes nothing where it does not.
+  granting. Re-opening the same object through a different path form (for example through
+  a symlinked ancestor) re-points the stored form the same way; the object, name, and
+  identity are unchanged, and transcripts keep citing the logical URI.
+- Identity capture uses `fstat` (macOS) or `statx` (Linux; the libc wrapper exists since
+  glibc 2.28 and musl 1.1.24; older or exotic platforms fail the call and degrade to
+  path-only) and `GetFileInformationByHandle` (Windows; a zero file index on FAT-family
+  volumes degrades to path-only). File systems whose identities are *unstable* rather
+  than absent (a network file system across server failover) do not degrade cleanly:
+  the next remount sees a fingerprint mismatch and withholds the link pending an explicit
+  close-and-re-open — a false alarm in the conservative direction, never a silent wrong
+  read. A capture that *fails* at remount verifies path-only, so a swap that defeats
+  capture is caught by the managed hop's final-target validation rather than by health.
+- `%workspace` is the identity-health surface; a wire or extension view of link health
+  can follow and is deliberately not part of this amendment.
 - The silent-follow behavior on same-path replacement is gone: a replaced directory is a
   typed "identity changed" state requiring an explicit close-and-re-open. That is a
   deliberate behavior change; the old behavior was the defect.

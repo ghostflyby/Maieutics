@@ -283,7 +283,7 @@ If the module is embedded into the executable, the implementation must update al
 2. `Maieutics/Maieutics.csproj` embedded resources;
 3. `Maieutics/DenoRepl/DenoReplModule.cs` `Entries`.
 
-The shared runtime module should not be added to `Maieutics.Jupyter.Shared`, `Maieutics.Jupyter.Client`, `Maieutics.Jupyter.Kernel`, or the public plugin SDK. It is product-owned runtime composition.
+The shared runtime module should not be added to the extracted JupyterSharp libraries or the public plugin SDK. It is product-owned runtime composition.
 
 ## Lifecycle and failure semantics
 
@@ -335,8 +335,8 @@ Extend the existing REPL and host-derived coverage in:
 
 - `deno/maieutics-deno-repl/repl_test.ts`;
 - `deno/maieutics-deno-repl/repl_sync_input_test.ts`;
-- `Maieutics.Jupyter.Tests/DenoReplSessionTests.cs`;
-- `Maieutics.Jupyter.Tests/DenoReplHostDeriveTests.cs`.
+- `Maieutics.Product.Tests/DenoReplSessionTests.cs`;
+- `Maieutics.Product.Tests/DenoReplHostDeriveTests.cs`.
 
 The tests should compare kernel-derived and host-derived REPL behavior, exercise nested Worker creation, verify bootstrap failure during generation startup, and verify concurrent disposal does not retain child Workers.
 

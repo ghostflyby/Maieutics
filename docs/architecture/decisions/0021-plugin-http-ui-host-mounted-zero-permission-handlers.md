@@ -228,7 +228,7 @@ aggregation-failure states for this contract.
   (ADR 0018) is an open item.
 - The host gains its first inbound listener. Its address, token, and registry
   reporting need kernel wiring (env var, control-bus message family,
-  `AllowedEnvironmentNames` extension) and a `Maieutics.Jupyter` surfacing
+  `AllowedEnvironmentNames` extension) and a frontend surfacing
   decision for links shown to users.
 - Hot reload inherits mount lifecycle for free (provider withdrawal), but the
   host needs a bounded drain before worker replacement so in-flight requests

@@ -6,19 +6,24 @@ Date: 2026-07-16
 
 > **Historical — partially superseded by ADR 0023**
 > (`0023-custom-web-frontend-protocol-and-vscode-notebook.md`). The product frontend is the custom web protocol and
-> the VSCode notebook extension; the executable no longer hosts a user-facing Jupyter kernel. The model, REPL,
-> extension, and execution boundaries described here remain. This record is preserved as written.
+> the VSCode notebook extension; the executable no longer hosts a user-facing Jupyter kernel, and the reusable Jupyter
+> libraries were extracted to the standalone JupyterSharp repository. The model, REPL, extension, and execution
+> boundaries described here remain. The Jupyter-hosted deployment shape in "System shape" and every `Maieutics.Jupyter*`
+> entry in the invariants, module, and dependency sections are historical. This record is otherwise preserved as written.
 
 ## Purpose
 
-Maieutics is a notebook-native agent hosted as a Jupyter kernel. The architecture must support multiple model APIs,
-a stateful TypeScript REPL backed by `deno jupyter`, out-of-process Deno extensions, and execution targets located on
-other machines or inside containers.
+Maieutics is a notebook-native agent. When this record was written it was hosted as a Jupyter kernel; it is now
+fronted by the custom web protocol (ADR 0023). The architecture must support multiple model APIs, a stateful
+TypeScript REPL, out-of-process Deno extensions, and execution targets located on other machines or inside containers.
 
 This document records the stable boundaries required before those features are implemented. It does not prescribe
 their complete implementation.
 
 ## System shape
+
+> **Historical shape.** The `Maieutics Jupyter kernel` node below is the retired deployment shape; the frontend is now
+> the custom web protocol. The runtime and model boundaries shown are unchanged.
 
 ```mermaid
 flowchart LR
@@ -47,17 +52,18 @@ flowchart LR
     Presentation --> Kernel
 ```
 
-The .NET process remains the user-facing Jupyter kernel. It is also a Jupyter client when communicating with a Deno
-REPL kernel. Model requests, credentials, the canonical transcript, policy decisions, and notebook output routing stay
-in the local control plane. Filesystem and process tools may execute on a selected local or remote execution target.
+The .NET process was the user-facing Jupyter kernel when this record was written. The frontend is now the custom web
+protocol, and no Jupyter kernel or client remains in the executable. Model requests, credentials, the canonical
+transcript, policy decisions, and notebook output routing stay in the local control plane. Filesystem and process tools
+may execute on a selected local or remote execution target.
 
 ## Architectural invariants
 
 1. The canonical transcript is provider-neutral and is the authoritative conversation state.
 2. Provider continuation identifiers are optional checkpoints, not the only copy of conversation state.
 3. Agent Core does not depend on provider SDKs, Jupyter, extension IPC, SSH, containers, or a worker transport.
-4. Jupyter Client and Kernel libraries remain independent and never reference each other.
-5. The executable composition root may reference both Client-backed and Kernel-backed adapters.
+4. (historical) Jupyter Client and Kernel libraries remain independent and never reference each other.
+5. (historical) The executable composition root may reference both Client-backed and Kernel-backed adapters.
 6. Rich tool output has separate model-facing and notebook-facing projections.
 7. Large or binary values cross boundaries through artifact references rather than repeated base64 payloads.
 8. Filesystem paths are scoped to an execution target and are not assumed to be local paths.
@@ -71,10 +77,15 @@ in the local control plane. Filesystem and process tools may execute on a select
 
 ## Target logical modules
 
+> **Historical module map.** The `Maieutics.Agent.Deno` and `Maieutics.Jupyter` entries below predate the extraction;
+> the Deno REPL adapter now lives in the executable as `Maieutics.DenoRepl`, and the Jupyter libraries are in
+> JupyterSharp. The extraction principle stated here still governs the surviving entries.
+
 The boundaries below are logical ownership boundaries. A logical module starts as a namespace unless it has an
 independent consumer, publication or deployment target, target framework, or dependency boundary that requires a
-separate assembly. The reusable Jupyter Client and Kernel libraries and future worker executables remain separate
-assemblies. Product-specific provider wiring and the user-facing Jupyter adapter currently live in the executable.
+separate assembly. Future worker executables remain separate assemblies; the reusable Jupyter libraries gained such
+a publication target and were extracted to JupyterSharp. Product-specific provider wiring currently lives in the
+executable.
 
 ```text
 Maieutics.Agent
@@ -97,11 +108,11 @@ Maieutics.Providers.Anthropic
 Maieutics.Notebook
     Ordered presentation events, artifacts, display correlation, and component contracts
 
-Maieutics.Agent.Deno
-    IReplSession implementation backed by Maieutics.Jupyter.Client
+Maieutics.Agent.Deno (historical — the adapter is now Maieutics.DenoRepl in the executable)
+    IReplSession implementation backed by the extracted JupyterSharp client
 
-Maieutics.Jupyter
-    Executable-owned user-facing kernel adapter backed by Maieutics.Jupyter.Kernel
+Maieutics.Jupyter (historical — removed with the extraction)
+    Executable-owned user-facing kernel adapter backed by the extracted JupyterSharp kernel
 
 Maieutics.Extensions.Deno
     Out-of-process Deno extension discovery, lifecycle hooks, REPL contributions, and versioned IPC
@@ -125,18 +136,25 @@ Maieutics
 ```text
 Maieutics.Providers.* ------> Maieutics.Agent through IChatClient
 Execution adapters --------> Maieutics.Execution + Maieutics.Agent
-Maieutics.Agent.Deno ------> Maieutics.Agent + Maieutics.Notebook + Jupyter.Client
-Maieutics.Jupyter ----------> Maieutics.Agent + Maieutics.Notebook + Jupyter.Kernel
+Deno REPL adapter ---------> Maieutics.Agent + Maieutics.Notebook (executable-side Maieutics.DenoRepl)
 Maieutics executable ------> selected libraries and future independently reusable adapters
 ```
 
-No reverse references are allowed. In particular, the Deno REPL adapter must not reference the Jupyter Kernel project,
-and the user-facing kernel adapter must not reference the Jupyter Client project merely to control Deno.
+The historical edges below reflect the pre-extraction layout, in which the Deno REPL adapter was backed by the Jupyter
+client library and the executable hosted a Jupyter kernel:
+
+```text
+Maieutics.Agent.Deno ------> Maieutics.Agent + Maieutics.Notebook + Jupyter.Client   (historical)
+Maieutics.Jupyter ----------> Maieutics.Agent + Maieutics.Notebook + Jupyter.Kernel   (historical)
+```
+
+No reverse references are allowed between the surviving layers.
 
 ## Relationship to AGENTS.md
 
-`AGENTS.md` summarizes the active implementation constraints from these decisions. ADR 0003 establishes that the
-primary stateful TypeScript REPL is a real `deno jupyter` kernel and Maieutics connects to it as a Jupyter client.
+`AGENTS.md` summarizes the active implementation constraints from these decisions. ADR 0003 established the stateful
+TypeScript REPL boundary; the executable now owns it directly as `Maieutics.DenoRepl`, and the REPL runs as a
+supervised `deno run` child rather than through a Jupyter kernel or client (ADR 0023, ADR 0020).
 
 ADR 0004 retains a separate process boundary for independently deployable Deno script extensions. They extend REPL
 behavior or observe host lifecycle events through a dedicated IPC protocol. They are not MCP servers and are not exposed
@@ -189,6 +207,7 @@ transcript.
 - [ADR 0001](decisions/0001-provider-neutral-model-boundary.md): Provider-neutral model boundary
 - [ADR 0002](decisions/0002-agent-session-run-content-model.md): Agent sessions, runs, and content
 - [ADR 0003](decisions/0003-deno-jupyter-repl-output-bridge.md): Deno Jupyter REPL and notebook output bridge
+  (historical — the IOPub output bridge is superseded by ADR 0023; the REPL boundary remains)
 - [ADR 0004](decisions/0004-deno-extension-protocol.md): Out-of-process Deno extensions and lifecycle hooks
 - [ADR 0005](decisions/0005-distributed-execution.md): Distributed execution control and worker planes
 - [ADR 0006](decisions/0006-selective-microsoft-agent-framework-adoption.md): Selective Microsoft Agent Framework
@@ -208,8 +227,23 @@ transcript.
 - [ADR 0015](decisions/0015-turn-budget-and-truncation.md): Turn budgets and truncated turn commits
 - [ADR 0016](decisions/0016-script-plugins-and-extension-points.md): Out-of-process script plugins and
   symbol-identified extension points
+- [ADR 0017](decisions/0017-terminal-tool-protocol-and-session-lifecycle.md): Terminal tool protocol and session
+  lifecycle
+- [ADR 0018](decisions/0018-declarative-permission-store-and-deno-execution-module.md): Declarative permission store,
+  variable interpolation, and the internal Deno execution module
+- [ADR 0020](decisions/0020-repl-extension-host-actor-boundary.md): Deno REPL under the extension host — process
+  ownership, permissions, and call direction
 - [ADR 0021](decisions/0021-plugin-http-ui-host-mounted-zero-permission-handlers.md): Plugin HTTP UI —
   host-mounted zero-permission fetch handlers
+- [ADR 0022](decisions/0022-plugin-web-storage-and-application-directories.md): Plugin web storage and platform
+  application directories
+- [ADR 0023](decisions/0023-custom-web-frontend-protocol-and-vscode-notebook.md): Custom web frontend protocol and the
+  VSCode notebook frontend
+- [ADR 0024](decisions/0024-frontend-comm-plane-and-widgets.md): Frontend comm plane for interactive widgets
+- [ADR 0025](decisions/0025-server-owned-session-turn-queue.md): Server-owned session turn queue
+- [ADR 0026](decisions/0026-virtual-resource-urls.md): Virtual resource URLs
+- [ADR 0027](decisions/0027-fixed-workspace-home-and-managed-project-links.md): Fixed workspace home and managed
+  project links
 
 ## Explicitly deferred
 

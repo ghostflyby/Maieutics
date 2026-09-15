@@ -4,13 +4,13 @@ Use `.agents/skills/maieutics-dotnet-testing/SKILL.md` for shared xUnit, asserti
 
 ## Ownership
 
-This project owns deterministic unit tests for `Maieutics.Agent`. It does not own Jupyter adapter, socket, executable,
-or real-provider integration tests.
+This project owns deterministic unit tests for `Maieutics.Agent`. It does not own frontend, socket, executable, or
+real-provider integration tests.
 
 ## Local coverage
 
 - Use deterministic fake `IChatClient` implementations and fake tools. This project must not access external model
-  services, Jupyter sockets, or the network.
+  services, sockets, or the network.
 - Cover IDs, event sequence, single-consumer bounded streams, backpressure cancellation, one-run enforcement, repeated
   cancellation/disposal, and release of the session before completion.
 - Cover run-local profiles, capability checks, model identity attribution, transcript versions, cross-provider replay,

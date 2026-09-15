@@ -1,14 +1,13 @@
 ---
 name: maieutics-dotnet-testing
-description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, ZmqSharp sockets, Jupyter Client/Kernel integration, fake model providers, real Deno kernels, external processes, configuration reload, or NativeAOT publishing.
+description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, sockets, fake model providers, Deno execution, external processes, configuration reload, or NativeAOT publishing.
 ---
 
 # Maieutics .NET Testing
 
 ## Test Placement
 
-- `Maieutics.Agent.Tests` owns Jupyter-independent Agent runtime unit tests.
-- `Maieutics.Jupyter.Tests` owns retained-library tests only (Shared, Client, Kernel, self-hosted, real Deno Jupyter interop) and references no Agent or executable project.
+- `Maieutics.Agent.Tests` owns Agent runtime unit tests.
 - `Maieutics.Product.Tests` owns executable and product integration tests: frontend web API, provider conformance, configuration reload, permissions, Deno execution/REPL, plugins, control plane, persistence, and process-level smoke tests.
 - Use deterministic fake providers and tools. Default tests must not call external model services.
 

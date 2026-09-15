@@ -1,7 +1,7 @@
 # Maieutics Documentation
 
 The product frontend is the custom web protocol consumed by the VSCode notebook extension (ADR 0023). The reusable
-Jupyter libraries are retained as standalone libraries with no executable consumer.
+Jupyter libraries were extracted to the standalone JupyterSharp repository and are no longer part of this solution.
 
 ## Frontend
 

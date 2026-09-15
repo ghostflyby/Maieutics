@@ -36,10 +36,10 @@ Do not create fire-and-forget tasks. Constructors remain side-effect free when s
 ## Shutdown And Processes
 
 - Use one total timeout budget across request, graceful exit, forced termination, and cleanup. Do not reset the full timeout per stage.
-- Send Jupyter shutdown replies before stopping the host.
-- Keep control interrupt and heartbeat independent from serialized shell execution.
+- Send protocol shutdown replies before stopping the owning host.
+- Keep control interrupt responsive and independent from serialized request execution.
 - Escalate cooperative child cancellation to process-tree termination only after the configured budget.
-- Delete owned temporary connection files even when shutdown fails.
+- Delete owned temporary files even when shutdown fails.
 
 ## Failure Tests
 

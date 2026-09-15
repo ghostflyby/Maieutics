@@ -7,9 +7,8 @@ verification rules.
 
 This project owns tests for the `Maieutics` executable and its product composition: the frontend web API and process
 smoke surfaces, provider adapters, configuration reload, permissions, processes, Deno execution/REPL, plugins, control
-plane, commands, and persistence. It references `Maieutics` and `Maieutics.Agent` and must not reference the retained
-`Maieutics.Jupyter.*` libraries. Jupyter library tests belong in `Maieutics.Jupyter.Tests`; Agent runtime-only unit
-tests belong in `Maieutics.Agent.Tests`.
+plane, commands, and persistence. It references `Maieutics` and `Maieutics.Agent` and must not reference the extracted
+JupyterSharp libraries; Agent runtime-only unit tests belong in `Maieutics.Agent.Tests`.
 
 ## Coverage ownership
 

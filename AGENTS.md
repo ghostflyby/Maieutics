@@ -3,8 +3,10 @@
 ## Repository purpose
 
 Maieutics is a notebook-native LLM agent. Its primary frontend is the custom web protocol (HTTP + WebSocket,
-`docs/web-frontend-protocol.md`) consumed by the VSCode notebook extension (`deno/maieutics-vscode`); the reusable
-Jupyter implementation is retained as standalone libraries with no executable consumer (ADR 0023).
+`docs/web-frontend-protocol.md`) consumed by the VSCode notebook extension (`deno/maieutics-vscode`). The reusable
+Jupyter implementation no longer lives here: it was extracted to the standalone
+[JupyterSharp](https://github.com/ghostflyby/JupyterSharp) repository, which owns the wire protocol, client, and kernel
+host and publishes them to NuGet (ADR 0023). Nothing in this solution may depend on it.
 
 The user model is:
 
@@ -15,17 +17,13 @@ The user model is:
 - notebook frontends provide editing, execution, history, and rich rendering;
 - a `.maieuticsnb` file is a portable interaction snapshot, not the runtime database.
 
-The reusable Jupyter implementation must remain independent of the Agent runtime. Agent-specific behavior is composed
-above the protocol and kernel-host layers.
+The Agent runtime stays independent of Jupyter. Agent-specific behavior is composed above the frontend protocol, and
+the Jupyter libraries in the separate repository consume neither this solution nor the Agent runtime.
 
 ## Solution structure
 
 | Path | Role |
 |---|---|
-| `Maieutics.Jupyter.Shared` | Reusable, transport-independent Jupyter wire models and serialization |
-| `Maieutics.Jupyter.Client` | Reusable Jupyter client, protocol session, ZmqSharp transport, and local kernel manager |
-| `Maieutics.Jupyter.Kernel` | Reusable server-side Jupyter host and ZmqSharp transport |
-| `Maieutics.Jupyter.Tests` | Retained Jupyter library unit, transport, and interoperability tests |
 | `Maieutics.Product.Tests` | Executable and product integration tests (frontend, providers, configuration, permissions, Deno, plugins, control, persistence, smoke) |
 | `Maieutics.Agent` | Jupyter-independent Agent facade, run lifecycle, transcript, and tool runtime |
 | `Maieutics.Agent.Tests` | Agent runtime unit tests |
@@ -40,17 +38,6 @@ Do not assume that future Provider, Tool, Notebook, Execution, Worker, Extension
 exist. Preserve those conceptual boundaries without creating assemblies merely to represent namespaces.
 
 ## Dependency direction
-
-The reusable Jupyter dependency rule is:
-
-```text
-Maieutics.Jupyter.Shared
-    ^
-    |-- Maieutics.Jupyter.Client
-    `-- Maieutics.Jupyter.Kernel
-```
-
-`Client` and `Kernel` must never reference each other.
 
 The Agent composition direction is:
 
@@ -77,10 +64,10 @@ Maieutics executable
             `-- Configuration
 ```
 
-The Agent runtime must not depend on Jupyter. Jupyter libraries must not depend on Agent concepts.
-Microsoft.Extensions.AI function orchestration is an internal implementation dependency of `Maieutics.Agent`;
-provider-specific types must not cross into Jupyter, provider-neutral public contracts, Deno IPC, worker protocols, or
-persisted formats.
+The Agent runtime must not depend on Jupyter, and the extracted JupyterSharp libraries must not depend on Agent
+concepts, provider types, or this solution. Microsoft.Extensions.AI function orchestration is an internal
+implementation dependency of `Maieutics.Agent`; provider-specific types must not cross into frontend contracts,
+provider-neutral public contracts, Deno IPC, worker protocols, or persisted formats.
 
 Do not solve a boundary problem with a reverse project reference. Put a small interface in the lower-level owning layer.
 
@@ -91,20 +78,18 @@ Every change must preserve these invariants:
 1. The executable owns the authoritative live conversation history.
 2. One ordinary notebook cell corresponds to one submitted Agent turn.
 3. Protocol requests are correlated by their protocol's correlation identity (run and message ids on the
-    frontend wire; message ID, channel, and expected reply type inside the retained Jupyter libraries).
+    frontend wire).
 4. Agent turns are serialized by the session's single-run gate unless explicit parallel semantics are designed and tested.
 5. Control interrupt and shutdown remain responsive during run execution.
-6. Frontend event frames retain wire order and carry run-local sequence numbers; the retained Jupyter libraries keep
-   causal parent IDs on IOPub.
+6. Frontend event frames retain wire order and carry run-local sequence numbers.
 7. Lifecycle frames lead output (run started/busy before deltas); terminal frames precede idle.
 8. Completion follows protocol state, never fixed delays or guessed ordering.
 9. Cancellation is cooperative through all layers and may escalate to owned child-process termination.
-10. Raw ZeroMQ frames do not cross transport boundaries.
+10. Raw transport frames do not cross transport boundaries.
 11. Provider SDK objects do not cross provider adapters.
 12. Tool results remain structured until an output adapter renders them.
 13. Notebook snapshot creation does not mutate the live session it was taken from.
-14. Binary data remains binary until its target representation requires encoding (base64 inside a Jupyter
-    MimeBundle is permitted only inside the retained Jupyter libraries).
+14. Binary data remains binary until its target representation requires encoding.
 15. Disposal stops owned loops, closes sockets, completes streams, and fails pending operations exactly once.
 16. Backpressure never silently drops protocol messages or Agent events.
 17. Unknown protocol messages cannot crash long-running receive loops.
@@ -132,8 +117,7 @@ Every change must preserve these invariants:
     (ADR 0020). The reverse-call mechanism stays a library capability reserved for the distributed host.
 26. Internal data transfer never carries binary payloads through text, base64, or JSON: binary crosses process
     boundaries as native binary frames or byte streams, and binary transfer and processing are stream-first;
-    the only permitted encoding is a target representation that itself requires it, such as a Jupyter
-    MimeBundle inside the retained Jupyter libraries (invariant 14).
+    the only permitted encoding is a target representation that itself requires it (invariant 14).
 27. Inter-process communication between the main process and its children is designed as an internal web
     application API surface, not as one or two multiplexed buses: any number of HTTP and WebSocket endpoints,
     each with an explicit direction (simplex, half-duplex, full-duplex) and any number of connections per
@@ -147,14 +131,9 @@ calls, stdin, bounded queues, transport sends, or process exit. Multi-stage shut
 ## Compatibility boundaries
 
 The frontend protocol is versioned (`docs/web-frontend-protocol.md`): the discovery file, REST payloads, and event
-frames tolerate unknown fields; the events endpoint accepts `sinceSequence` resume and rejects nothing silently. The
-retained Jupyter libraries target classic messaging protocol 5.5 and classic connection files: readers tolerate
-unknown optional fields and compatible older protocol announcements, writers avoid unsupported fields, unsupported
-capabilities return protocol-valid errors or fallback statuses, and CurveZMQ plus unsupported signature schemes fail
-explicitly.
-
-Unless explicitly requested, do not add history, comm, debug, subshell, Jupyter 5.6 registration, automatic reconnect,
-remote provisioners, or another ZeroMQ implementation to the retained Jupyter libraries.
+frames tolerate unknown fields; the events endpoint accepts `sinceSequence` resume and rejects nothing silently.
+Jupyter protocol compatibility (classic messaging 5.5, classic connection files, CurveZMQ rejection) is the extracted
+JupyterSharp repository's concern and is out of scope here.
 
 The canonical Agent transcript is local and provider-neutral. Provider-side conversation state must not silently replace
 it. Disable provider storage where supported. Do not introduce Agent Framework Workflows, A2A, AG-UI, Durable Task, MCP,
@@ -247,16 +226,12 @@ Rules apply cumulatively from this file down to the nearest child `AGENTS.md`.
 
 | Scope | Local instructions |
 |---|---|
-| Jupyter wire types | `Maieutics.Jupyter.Shared/AGENTS.md` |
-| Jupyter client | `Maieutics.Jupyter.Client/AGENTS.md` |
-| Jupyter kernel host | `Maieutics.Jupyter.Kernel/AGENTS.md` |
 | Agent runtime | `Maieutics.Agent/AGENTS.md` |
 | Executable composition | `Maieutics/AGENTS.md` |
 | Runtime configuration | `Maieutics/Configuration/AGENTS.md` |
 | Provider adapters | `Maieutics/Providers/AGENTS.md` |
 | Frontend web API | `Maieutics/Frontend/AGENTS.md` |
 | Agent tests | `Maieutics.Agent.Tests/AGENTS.md` |
-| Jupyter library tests | `Maieutics.Jupyter.Tests/AGENTS.md` |
 | Product integration tests | `Maieutics.Product.Tests/AGENTS.md` |
 
 Project-local reusable guidance belongs under `.agents/skills/<skill-name>/SKILL.md`. Skills describe domain practices
@@ -265,7 +240,6 @@ When a scoped file references a skill, follow both. Do not duplicate a skill ver
 
 | Skill | Use for |
 |---|---|
-| `.agents/skills/maieutics-jupyter-protocol/SKILL.md` | Wire DTOs, Client/Kernel protocol behavior, ZeroMQ channels, output ordering, cursors, and Deno interoperability |
 | `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and frontend protocol semantics |
 | `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, processes, and shutdown |
 | `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3, FluentAssertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |

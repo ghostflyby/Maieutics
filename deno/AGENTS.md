@@ -40,8 +40,8 @@
 - Named exports are the public contract because scripts interact through the bound namespace; keep
   them stable and documented. `connect()` returns the same client shape for standalone use.
 - The bus protocol is versioned with `correlationId`; unknown envelope fields are tolerated;
-  failures are typed. Comm payloads use the channel's own vocabulary — Jupyter wire mapping is a
-  kernel-side frontend-bridge concern, not a bus property.
+  failures are typed. Comm payloads use the channel's own vocabulary — any mapping onto a
+  foreign wire protocol is a host-side concern, not a bus property.
 - Keep modules self-contained and offline: no runtime package downloads, no external dependencies
   without review. The module is embedded in the kernel, so versions are lockstep and no capability
   negotiation exists.

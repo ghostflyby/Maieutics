@@ -1,6 +1,6 @@
 ---
 name: maieutics-agent-runtime
-description: Use when changing Maieutics Agent sessions, runs, events, transcripts, Microsoft.Extensions.AI function orchestration, tools, model capabilities, provider profiles, provider switching, canonical history, or Agent-to-Jupyter behavior across Maieutics.Agent and the Maieutics executable.
+description: Use when changing Maieutics Agent sessions, runs, events, transcripts, Microsoft.Extensions.AI function orchestration, tools, model capabilities, provider profiles, provider switching, canonical history, or Agent-to-frontend behavior across Maieutics.Agent and the Maieutics executable.
 ---
 
 # Maieutics Agent Runtime
@@ -11,8 +11,8 @@ description: Use when changing Maieutics Agent sessions, runs, events, transcrip
 - `Microsoft.Extensions.AI.IChatClient` is the only model-provider boundary. Do not add a parallel model-client abstraction.
 - `AIFunction` is the provider-visible function definition and invocation contract. Do not add a parallel tool descriptor, arguments, or outcome hierarchy.
 - `FunctionInvokingChatClient` and `RecordingChatClient` are internal orchestration. Provider SDK, authentication, and response types must not cross Maieutics contracts.
-- The executable owns provider construction, configuration, DI, hosting, and Agent-to-Jupyter adaptation.
-- The Agent runtime must not depend on Jupyter. Only the executable adapter understands both domains.
+- The executable owns provider construction, configuration, DI, hosting, and Agent-to-frontend adaptation.
+- The Agent runtime must not depend on Jupyter. The Jupyter libraries live in the separate JupyterSharp repository and are not part of this solution.
 
 ## Run And Transcript Semantics
 
@@ -41,16 +41,16 @@ description: Use when changing Maieutics Agent sessions, runs, events, transcrip
 - Capability-check streaming text and function calling before the first provider request.
 - Profile switching affects the next run, never an active run, and does not reset canonical history.
 
-## Agent-To-Jupyter Mapping
+## Agent-To-Frontend Mapping
 
-- Map semantic Agent events to ordered Jupyter messages without exposing ZeroMQ implementation types or wire envelopes to Agent code.
+- Map semantic Agent events to ordered frontend frames without exposing transport or provider implementation types to Agent code.
 - Preserve partial display output after cancellation or failure, but do not commit the failed turn.
 - `%maieutics` control cells do not call a model or enter the transcript.
 - Never emit private chain-of-thought. Only explicitly permitted provider reasoning summaries may be exposed.
 
 ## Workflow
 
-1. Identify whether the change belongs to Agent contracts, Microsoft.Extensions.AI function orchestration, provider construction, configuration, or the Jupyter adapter.
+1. Identify whether the change belongs to Agent contracts, Microsoft.Extensions.AI function orchestration, provider construction, configuration, or the frontend adapter.
 2. Preserve run-local leases, complete iteration recording, atomic commit, and typed error boundaries.
-3. Add deterministic Agent tests; add Jupyter integration coverage only for adapter-visible behavior.
+3. Add deterministic Agent tests; add frontend integration coverage only for adapter-visible behavior.
 4. Use `maieutics-structured-concurrency` for lifetime changes and `maieutics-dotnet-testing` for verification, including a real published-process function invocation for NativeAOT-affecting changes.

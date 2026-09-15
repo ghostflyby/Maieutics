@@ -30,8 +30,8 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
 
 ## Forbidden responsibilities
 
-- Do not place reusable Jupyter protocol, client, or kernel-host logic here; the retained `Maieutics.Jupyter.*`
-  libraries are standalone and have no executable consumer.
+- Do not place reusable Jupyter protocol, client, or kernel-host logic here. Those libraries were extracted to the
+  standalone [JupyterSharp](https://github.com/ghostflyby/JupyterSharp) repository and must not be reintroduced.
 - Do not expose product provider or configuration implementation types as reusable public API.
 - Do not move provider SDK types into `Maieutics.Agent`.
 - The executable hosts the frontend web API on the shared Kestrel host; do not add another HTTP server.

@@ -345,7 +345,7 @@ Deno side:
 - `Maieutics/Plugins/PluginHostManager.cs` — spawn-based start, watcher, reload, registry states.
 - `Maieutics/Control/ReplControlMessages.cs` — deletes `extension.*` messages; adds `plugin.reload`.
 - `Maieutics/Configuration` / `MaieuticsHost.cs` — `Maieutics:Plugins` section.
-- Tests under `Maieutics.Jupyter.Tests/`.
+- Tests under `Maieutics.Product.Tests/`.
 
 ## 12. Verification
 

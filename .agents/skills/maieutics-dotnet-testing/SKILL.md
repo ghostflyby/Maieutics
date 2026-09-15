@@ -1,14 +1,13 @@
 ---
 name: maieutics-dotnet-testing
-description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, ZmqSharp sockets, Jupyter Client/Kernel integration, fake model providers, real Deno kernels, external processes, configuration reload, or NativeAOT publishing.
+description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, sockets, fake model providers, Deno execution, external processes, configuration reload, or NativeAOT publishing.
 ---
 
 # Maieutics .NET Testing
 
 ## Test Placement
 
-- `Maieutics.Agent.Tests` owns Jupyter-independent Agent runtime unit tests.
-- `Maieutics.Jupyter.Tests` owns retained-library tests only (Shared, Client, Kernel, self-hosted, real Deno Jupyter interop) and references no Agent or executable project.
+- `Maieutics.Agent.Tests` owns Agent runtime unit tests.
 - `Maieutics.Product.Tests` owns executable and product integration tests: frontend web API, provider conformance, configuration reload, permissions, Deno execution/REPL, plugins, control plane, persistence, and process-level smoke tests.
 - Use deterministic fake providers and tools. Default tests must not call external model services.
 
@@ -39,10 +38,10 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 
 ## Coverage By Boundary
 
-- Shared: frames, HMAC, JSON names, source-generated round trips, unknown fields, buffers, connection validation, MIME, display IDs, and cursor conversion.
-- Client: socket ownership, five channels, correlation, reply/idle ordering, stdin parents, output order, late output, cancellation, disconnect, and backpressure.
-- Kernel: busy/reply/idle, shell serialization, control responsiveness, heartbeat, interrupt, shutdown, silent execution, stdin, language services, and display updates.
-- Agent: run reservation, event backpressure, provider-iteration recording, transcript commit, tools, limits, capabilities, provider switching, and rollback.
+- Agent (`Maieutics.Agent.Tests`): run reservation, event backpressure, provider-iteration recording, transcript commit, tools, limits, capabilities, provider switching, and rollback.
+- Frontend and product (`Maieutics.Product.Tests`): discovery, auth, turn lifecycle, replay/resume, cancel, commands, sessions/forks, comm plane, and the published-executable smoke tests.
+- Providers, configuration, permissions, and processes: deterministic fake HTTP/SSE servers, layered overlays, variable interpolation, reload, and process environment allowlists.
+- Deno execution/REPL, plugins, and control plane: eval/output/control IPC, comm channels, host derive, policy broker, plugin lifecycle, and persistence stores.
 
 ## Verification Sequence
 

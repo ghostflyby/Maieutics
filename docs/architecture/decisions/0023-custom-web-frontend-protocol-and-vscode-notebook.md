@@ -58,12 +58,14 @@ numbers, a terminal `Completion` task).
    adapter.** Command parsing/execution, status capture/rendering, and
    completion move to a `Maieutics.Commands` domain consumed by every
    frontend, so command semantics cannot drift between frontends.
-5. **Jupyter support exits in two steps.** First the web API and the extension
+5. **Jupyter support exits in three steps.** First the web API and the extension
    ship while the Jupyter kernel keeps working (coexistence). Then the
    executable's Jupyter wiring is removed (`Maieutics/Jupyter/` adapter,
-   `JupyterKernelHostedService`, the kernelspec, SIGINT-as-interrupt); the
-   three `Maieutics.Jupyter.*` library projects are retained as reusable
-   libraries with their own tests but have no product consumer. The Agent
+   `JupyterKernelHostedService`, the kernelspec, SIGINT-as-interrupt). Finally
+   the three `Maieutics.Jupyter.*` library projects and their tests are
+   extracted from this solution into the standalone
+   [JupyterSharp](https://github.com/ghostflyby/JupyterSharp) repository, where
+   they are renamed, published to NuGet, and owned independently. The Agent
    runtime never depended on Jupyter and is untouched throughout.
 6. **The extension toolchain is pure Deno.** The extension lives in the
    `deno/` workspace; dependencies live in `deno.json` and the manifest
@@ -97,9 +99,10 @@ numbers, a terminal `Completion` task).
   only serialization point, and any frontend can rebuild its view from the
   transcript endpoint plus sequence-based replay.
 - The executable's frontend surface is self-owned and versioned; Jupyter
-  interoperability survives only in the retained library projects.
-- Command semantics live in one place; the Jupyter adapter and the web API
-  both delegate to `Maieutics.Commands`.
+  interoperability lives entirely in the standalone JupyterSharp repository, so
+  this solution carries no Jupyter or ZeroMQ dependency.
+- Command semantics live in one place; the web API delegates to
+  `Maieutics.Commands`.
 - The extension owns the notebook snapshot format; `.ipynb` import/export is
   deferred until there is a consumer.
 - Interactive outputs (tool approval buttons, input requests) are not first-
@@ -117,3 +120,7 @@ numbers, a terminal `Completion` task).
   F5 run of the notebook round trip.
 - Phase 5: `dotnet test Maieutics.slnx`, `dotnet build -warnaserror`, and the
   supported-RID NativeAOT publish check after Jupyter wiring removal.
+- Phase 6 (extraction): the extracted repository builds with `-warnaserror`,
+  passes its full test suite, passes its format gate, and completes a
+  published-and-run NativeAOT round trip; this solution builds and tests green
+  with the projects and the ZmqSharp dependency removed.

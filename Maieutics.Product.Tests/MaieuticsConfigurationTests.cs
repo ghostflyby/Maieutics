@@ -204,7 +204,9 @@ internal static void DeleteDirectoryWithRetry(string path)
             {
                 ["Maieutics"] = new JsonObject
                 {
-                    ["Jupyter"] = new JsonObject
+                    // An unknown section must be tolerated rather than rejected; the point of the
+                    // test is that a configuration with no model or provider still initializes.
+                    ["UnknownSection"] = new JsonObject
                     {
                     }
                 }

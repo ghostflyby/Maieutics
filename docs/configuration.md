@@ -92,10 +92,9 @@ setting. WebSocket fragments count toward the current message only; the count re
 a long-lived connection may carry any number of separately bounded messages. Large values belong behind the future
 artifact or streaming boundary rather than a larger control envelope.
 
-`deno jupyter` is privileged local code execution, not an untrusted-code sandbox. The child receives an allowlisted
+The Deno REPL is privileged local code execution, not an untrusted-code sandbox. The child receives an allowlisted
 operational environment rather than the complete Maieutics environment; provider credentials such as
-`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited. The first implementation has no worker, target, isolation,
-pooling, retry, or automatic code-replay setting.
+`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are not inherited.
 
 The terminal tools (`terminal_input`, `terminal_run`, `terminal_snapshot`, `terminal_paste`, `terminal_list`,
 `terminal_close`, `terminal_interrupt`) are registered only when the selected model endpoint resolves
@@ -121,7 +120,7 @@ The terminal configuration is captured once when the Maieutics host builder is c
 | `Maieutics:Terminal:GracefulExitTimeout`  |     `00:00:10` |
 | `Maieutics:Terminal:MaxSnapshotCharacters`|         `16384` |
 
-Jupyter output types define their audience. stdout and the final expression return only to the Agent; display/update/
+Display output types define their audience. stdout and the final expression return only to the Agent; display/update/
 clear output goes only to the notebook; stderr and execution errors go to both. Deno input requests are forwarded to the
 notebook user. The model can intentionally publish user-visible output with the standard `Deno.jupyter.display`
 API; Maieutics does not inject a proprietary Deno API.
@@ -218,8 +217,9 @@ never change during an active model/tool loop:
 - system prompt;
 - Agent limits and event-buffer capacity.
 
-Jupyter flush settings are captured at the beginning of each execution. `Jupyter:ConnectionFile` is captured once at
-startup; changing it only logs that a restart is required.
+Deno REPL display rate limits are captured at the beginning of each execution; changing them applies to the next
+execution, not one already running. The active configuration path and the transcript-persistence flag are captured at
+startup; changing either only logs that a restart is required.
 
 Every added or changed profile client is constructed before a candidate catalog is published. One construction failure
 rejects the entire candidate. Unchanged profile generations are reused; removed or replaced clients remain alive until
@@ -237,11 +237,11 @@ The following control cells select the profile used by the next Agent run:
 %model reset
 ```
 
-Control cells do not call a model and do not enter the Agent transcript. A manual selection lasts for the Kernel
+Control cells do not call a model and do not enter the Agent transcript. A manual selection lasts for the session's
 lifetime while that profile exists. Configuration default changes affect sessions without an override; removing the
 selected profile clears the override and falls back to the new default. Commands never display credentials or endpoints.
 
-The Kernel provides Jupyter completion for `%model`, `%workspace`, `%mcp`, and `%status`, their subcommands, and the
+The frontend provides completion for `%model`, `%workspace`, `%mcp`, and `%status`, their subcommands, and the
 currently configured profile IDs accepted by `%model use <profile>`. Typing a leading `/` (for example `/model`) offers
 the same canonical `%` commands through completion; accepting a candidate replaces the slash token with the `%` form.
 Slash-prefixed text that is not completed remains ordinary input and never executes as a command.
@@ -270,7 +270,7 @@ enumerated for completion. The legacy `%maieutics workspace ...` form remains ac
 
 ## Notebook runtime status
 
-`%status` renders an immediate read-only snapshot of the current Kernel process. It reports the selected model
+`%status` renders an immediate read-only snapshot of the current server process. It reports the selected model
 profile/source, active configuration version and last reload outcome, workspace selection, PluginHost lifecycle and
 control-channel state, configured MCP server states, and Deno REPL session generations.
 
@@ -314,7 +314,7 @@ Example:
 ```bash
 OPENAI_API_KEY=... \
 maieutics \
-  --connection-file /path/to/connection.json \
+  --config /path/to/maieutics.json \
   --profile gpt
 ```
 

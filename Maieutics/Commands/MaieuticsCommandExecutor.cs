@@ -568,6 +568,21 @@ internal sealed class MaieuticsCommandExecutor(
                 .Append(" → ")
                 .Append(MarkdownText.CodeSpan(record.Target));
             if (record.Alias is not null) output.Append(" (alias)");
+
+            if (links.HealthByName.TryGetValue(record.Name, out var health) &&
+                health.State is not WorkspaceLinkState.Verified)
+            {
+                output.Append(" — ").Append(health.State switch
+                {
+                    WorkspaceLinkState.Relocated => "relocated; the link now follows the project",
+                    WorkspaceLinkState.TargetMissing => "target missing; the entry stays reserved",
+                    WorkspaceLinkState.IdentityChanged =>
+                        "identity changed — the path holds a different directory, " +
+                        "so the link is withheld; close and re-open",
+                    _ => "remount failed: " + (health.Detail ?? "unknown error")
+                });
+            }
+
             output.AppendLine();
         }
 

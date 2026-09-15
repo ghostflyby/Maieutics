@@ -7,17 +7,21 @@ namespace Maieutics.Execution;
 
 /// <summary>One open managed project link (ADR 0027). <paramref name="Target"/> is the
 /// canonical final target path; the link name is bound to it for the lifetime of the
-/// registry.</summary>
+/// registry. <paramref name="Identity"/> is the rename-surviving file fingerprint captured
+/// at open; null on capture failure or a pre-amendment registry, which keeps path-only
+/// semantics.</summary>
 internal sealed record WorkspaceLinkRecord(
     string Name,
     string Target,
     string? Alias,
-    DateTimeOffset OpenedUtc);
+    DateTimeOffset OpenedUtc,
+    WorkspaceFileIdentity? Identity = null);
 
 /// <summary>A closed link. The name is never reused for a different target, so persisted
 /// <c>workspace://local/projects/&lt;name&gt;/...</c> URIs keep pointing at the same project
-/// or fail loudly — they never silently read a different project.</summary>
-internal sealed record WorkspaceRetiredLink(string Name, string Target);
+/// or fail loudly — they never silently read a different project. When both sides carry a
+/// fingerprint, "same target" means the same file-system object, wherever it now lives.</summary>
+internal sealed record WorkspaceRetiredLink(string Name, string Target, WorkspaceFileIdentity? Identity = null);
 
 internal sealed record WorkspaceLinkRegistryState(
     int Version,
@@ -130,6 +134,16 @@ internal sealed class WorkspaceLinkRegistry
         }
     }
 
+    /// <summary>The open link bound to this file-system object, wherever it currently
+    /// lives; null when no open record carries a matching fingerprint.</summary>
+    internal WorkspaceLinkRecord? FindByFingerprint(WorkspaceFileIdentity identity)
+    {
+        lock (gate)
+        {
+            return links.FirstOrDefault(link => link.Identity?.Matches(identity) == true);
+        }
+    }
+
     internal WorkspaceLinkRecord? FindByName(string name)
     {
         lock (gate)
@@ -139,17 +153,40 @@ internal sealed class WorkspaceLinkRegistry
         }
     }
 
+    /// <summary>Re-points an open record to the current location of the same object,
+    /// keeping the name, alias, opening time, and fingerprint (ADR 0027 amendment). The
+    /// fingerprint is what makes this a move and not a re-binding.</summary>
+    internal WorkspaceLinkRecord UpdateTarget(string name, string target)
+    {
+        lock (gate)
+        {
+            var index = links.FindIndex(link =>
+                string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+                throw new ArgumentException($"No open workspace link is named '{name}'.");
+
+            links[index] = links[index] with { Target = target };
+            Persist();
+            return links[index];
+        }
+    }
+
     /// <summary>Chooses the link name for a new target: an explicit alias, else the target
     /// basename; a name already bound to a different target gets a path-hash suffix. A name
-    /// retired while bound to this same target is reused, keeping identities stable across
-    /// close/reopen cycles.</summary>
-    internal string AllocateName(string canonicalTarget, string? alias)
+    /// retired while bound to this same object is reused, keeping identities stable across
+    /// close/reopen cycles — including a close, a rename, and a reopen at the new path —
+    /// where "same object" is the fingerprint when both sides carry one, and the path alone
+    /// for legacy fingerprint-less tombstones.</summary>
+    internal string AllocateName(
+        string canonicalTarget,
+        string? alias,
+        WorkspaceFileIdentity? identity = null)
     {
         lock (gate)
         {
             var boundName = retired.FirstOrDefault(retiredLink =>
-                    PathsEqual(retiredLink.Target, canonicalTarget) &&
-                    !IsOccupied(retiredLink.Name, excludeTarget: canonicalTarget))
+                    RetiredNameMatches(retiredLink, canonicalTarget, identity) &&
+                    !IsOccupied(retiredLink.Name, excludeTarget: canonicalTarget, identity))
                 ?.Name;
             if (boundName is not null) return boundName;
 
@@ -159,18 +196,29 @@ internal sealed class WorkspaceLinkRegistry
                     "The workspace link name derived from the target path is empty or " +
                     "reserved; open the project with an explicit alias.");
 
-            if (!IsOccupied(baseName, excludeTarget: null)) return baseName;
+            if (!IsOccupied(baseName, excludeTarget: null, identity)) return baseName;
 
             for (var length = HashCharacters; length <= HashCharacters * 3; length++)
             {
                 var candidate = $"{baseName}-{TargetHash(canonicalTarget, length)}";
-                if (!IsOccupied(candidate, excludeTarget: null)) return candidate;
+                if (!IsOccupied(candidate, excludeTarget: null, identity)) return candidate;
             }
 
             throw new InvalidOperationException(
                 "The workspace link name space for this target is exhausted; " +
                 "open the project with an explicit alias.");
         }
+    }
+
+    private static bool RetiredNameMatches(
+        WorkspaceRetiredLink retiredLink,
+        string canonicalTarget,
+        WorkspaceFileIdentity? identity)
+    {
+        if (identity is not null && retiredLink.Identity is not null)
+            return identity.Matches(retiredLink.Identity);
+
+        return PathsEqual(retiredLink.Target, canonicalTarget);
     }
 
     internal void CommitNew(WorkspaceLinkRecord record)
@@ -193,7 +241,7 @@ internal sealed class WorkspaceLinkRegistry
 
             var record = links[index];
             links.RemoveAt(index);
-            retired.Add(new WorkspaceRetiredLink(record.Name, record.Target));
+            retired.Add(new WorkspaceRetiredLink(record.Name, record.Target, record.Identity));
             Persist();
             return record;
         }
@@ -234,14 +282,25 @@ internal sealed class WorkspaceLinkRegistry
         return hex[..characters].ToLowerInvariant();
     }
 
-    private bool IsOccupied(string name, string? excludeTarget)
+    private bool IsOccupied(
+        string name,
+        string? excludeTarget,
+        WorkspaceFileIdentity? excludeIdentity = null)
     {
         return links.Any(link =>
                    string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase) &&
                    (excludeTarget is null || !PathsEqual(link.Target, excludeTarget))) ||
                retired.Any(link =>
                    string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase) &&
-                   (excludeTarget is null || !PathsEqual(link.Target, excludeTarget)));
+                   (excludeTarget is null || !PathsEqual(link.Target, excludeTarget)) &&
+                   !IsOwnFormerBinding(link, excludeIdentity));
+    }
+
+    /// <summary>Whether this tombstone is the same object reclaiming its old name at a new
+    /// path: an identity match means the name is not occupied, it is waiting.</summary>
+    private static bool IsOwnFormerBinding(WorkspaceRetiredLink link, WorkspaceFileIdentity? identity)
+    {
+        return identity is not null && link.Identity is not null && identity.Matches(link.Identity);
     }
 
     private void Persist()

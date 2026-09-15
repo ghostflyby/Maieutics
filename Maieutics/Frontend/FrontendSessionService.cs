@@ -393,11 +393,25 @@ internal sealed class FrontendSessionService
         }
         catch (AgentTurnInProgressException exception)
         {
+            // The session's single-run gate is held by an in-flight run. This is the typed
+            // "direct turns are never queued" rejection (invariant 4) and shares its
+            // agent_busy code with the still-settling path below, which is a different cause
+            // with a different remedy; name which one this is.
+            logger.LogWarning(
+                "Rejected a direct turn for session {SessionId}: another run holds the single-run gate ({Code}).",
+                sessionId,
+                FrontendErrors.Busy);
             throw new FrontendFailureException(FrontendErrors.Busy, exception.Message);
         }
         catch (AgentException exception)
         {
-            throw new FrontendFailureException(FrontendErrors.MapAgentException(exception), exception.Message);
+            var code = FrontendErrors.MapAgentException(exception);
+            logger.LogWarning(
+                exception,
+                "Rejected a direct turn for session {SessionId} with agent code {Code}.",
+                sessionId,
+                code);
+            throw new FrontendFailureException(code, exception.Message);
         }
 
         var stream = FrontendRunStream.Create(session.Id, run, presentationRouter, logger);
@@ -406,13 +420,19 @@ internal sealed class FrontendSessionService
         {
             scope = presentationRouter.Attach(session.Id, stream);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
             // The previous run's stream is still detaching its presentation scope (a
             // just-settled run). The started run must not linger unwired: it would hold
             // the session's single-run gate and commit its turn with no stream serving
             // it, so fail it (a cancelled run commits nothing) and answer the typed busy
             // code — the submission is recoverable once the settle completes.
+            logger.LogWarning(
+                exception,
+                "Session {SessionId} rejected run {RunId} as {Code}: the previous run's presentation scope was still attached, so the newly started run was cancelled unwired (it commits nothing).",
+                sessionId,
+                run.Id,
+                FrontendErrors.Busy);
             await FailUnwiredRunAsync(run).ConfigureAwait(false);
             throw new FrontendFailureException(
                 FrontendErrors.Busy,
@@ -430,7 +450,7 @@ internal sealed class FrontendSessionService
     /// cooperative cancellation settles it without committing, which releases the
     /// session's single-run gate for the next turn. The budget bounds a wedged
     /// provider, mirroring the run stream's own settlement path.</summary>
-    private static async Task FailUnwiredRunAsync(IAgentRun run)
+    private async Task FailUnwiredRunAsync(IAgentRun run)
     {
         try
         {
@@ -438,19 +458,26 @@ internal sealed class FrontendSessionService
             budget.CancelAfter(TimeSpan.FromSeconds(15));
             await run.CancelAsync(budget.Token).ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // The run's own executor releases the gate in its finally regardless; this
-            // teardown must not mask the caller's original failure.
+            // teardown must not mask the caller's original failure. It must not vanish
+            // either: if the gate is not actually released, every retry keeps answering
+            // agent_busy and the cause is otherwise invisible.
+            logger.LogWarning(
+                exception,
+                "Cancelling unwired run {RunId} did not settle; the session's turn gate may stay held.",
+                run.Id);
         }
 
         try
         {
             await run.DisposeAsync().ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // Same: disposal observation must not mask the caller's original failure.
+            logger.LogWarning(exception, "Disposing unwired run {RunId} failed.", run.Id);
         }
     }
 

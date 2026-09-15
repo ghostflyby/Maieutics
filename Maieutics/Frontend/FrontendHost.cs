@@ -1049,9 +1049,34 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
     }
 
-    private static async Task WriteErrorAsync(HttpContext context, string code, string message)
+    /// <summary>
+    ///     Renders one typed frontend failure as its JSON error response. Every rejected
+    ///     request funnels through here, so this is also the single place a rejection is
+    ///     recorded: without it a 4xx leaves no trace at all when the originating decision
+    ///     point does not log. Kept at Debug — a client-caused rejection is diagnostic
+    ///     detail, not an operator-visible anomaly; CI raises the Maieutics category to
+    ///     Debug, where an unexplained 4xx would otherwise be undiagnosable. Rejections that
+    ///     are anomalies worth seeing in production log at their own decision point.
+    /// </summary>
+    private async Task WriteErrorAsync(HttpContext context, string code, string message)
     {
-        if (context.Response.HasStarted) return;
+        if (context.Response.HasStarted)
+        {
+            // The handler already began a response, so this error cannot reach the client:
+            // the request ends with whatever was partially written.
+            logger.LogWarning(
+                "Frontend route {Method} {Path} failed with {Code} after the response had started; the client received a partial response.",
+                context.Request.Method,
+                context.Request.Path.Value,
+                code);
+            return;
+        }
+
+        logger.LogDebug(
+            "Frontend route {Method} {Path} rejected with {Code}.",
+            context.Request.Method,
+            context.Request.Path.Value,
+            code);
 
         context.Response.StatusCode = code switch
         {

@@ -247,6 +247,30 @@ internal sealed class WorkspaceLinkRegistry
         }
     }
 
+    /// <summary>Undoes a just-committed open whose physical link could not be created.
+    /// The name never entered circulation — no tombstone is recorded, so the next open is
+    /// free to allocate it as if this attempt never happened. Best effort: if the persist
+    /// itself fails, the committed entry survives without a link and the next startup's
+    /// remount repairs it.</summary>
+    internal void Rollback(string name)
+    {
+        lock (gate)
+        {
+            var index = links.FindIndex(link =>
+                string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (index < 0) return;
+
+            links.RemoveAt(index);
+            try
+            {
+                Persist();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
     /// <summary>Windows-invalid characters become underscores, trailing dots and spaces are
     /// stripped, and reserved device names are rejected; the result must stay unique
     /// case-insensitively, which <see cref="IsOccupied"/> enforces at allocation.</summary>

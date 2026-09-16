@@ -200,16 +200,31 @@ internal sealed class WorkspaceHome
         var name = registry.AllocateName(target, alias, identity);
         var linkPath = LinkPath(name);
         RemoveStrayLink(linkPath);
-        ManagedWorkspaceLink.Create(linkPath, target);
         var created = new WorkspaceLinkRecord(name, target, alias, DateTimeOffset.UtcNow, identity);
         registry.CommitNew(created);
+        try
+        {
+            ManagedWorkspaceLink.Create(linkPath, target);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The registry is the authority and the link is derived state (ADR 0027 §4):
+            // committing it first means a crash leaves at most a registered link the next
+            // startup's remount repairs — never an unregistered link nothing owns.
+            registry.Rollback(name);
+            ForgetHealth(name);
+            throw;
+        }
+
         SetHealth(name, WorkspaceLinkHealth.Verified);
         return created;
     }
 
-    /// <summary>Closes a link: removes the physical reparse point (never a real directory)
-    /// and retires the name↔target binding so the name is never reused for a different
-    /// target.</summary>
+    /// <summary>Closes a link: retires the name↔target binding first, then removes the
+    /// physical reparse point (never a real directory). Committing the tombstone before
+    /// the delete means a crash leaves at most an inert unregistered link — rejected by
+    /// traversal and swept by the next open at this name — never a link that remount
+    /// would resurrect after the user closed it.</summary>
     internal WorkspaceLinkRecord Close(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -217,16 +232,23 @@ internal sealed class WorkspaceHome
                      ?? throw new ArgumentException($"No open workspace link is named '{name}'.");
 
         var linkPath = LinkPath(record.Name);
-        if (TryGetAttributes(linkPath, out var attributes))
-        {
-            if ((attributes & FileAttributes.ReparsePoint) == 0)
-                throw new IOException(
-                    $"The workspace link path '{linkPath}' is not a link; refusing to delete it.");
-            Directory.Delete(linkPath, false);
-        }
+        if (TryGetAttributes(linkPath, out var attributes) &&
+            (attributes & FileAttributes.ReparsePoint) == 0)
+            throw new IOException(
+                $"The workspace link path '{linkPath}' is not a link; refusing to delete it.");
 
         registry.Remove(record.Name);
         ForgetHealth(record.Name);
+        try
+        {
+            ManagedWorkspaceLink.Delete(linkPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The binding is already dead in the authoritative registry, so a lingering
+            // reparse point is inert; reopening this target sweeps it (RemoveStrayLink).
+        }
+
         return record;
     }
 

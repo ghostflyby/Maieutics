@@ -591,13 +591,23 @@ internal sealed class FrontendHost : IAsyncDisposable
             {
                 FrontendRunStream? previous = null;
                 var queueVersion = 0L;
+
+                // The pending run wait is carried across loop iterations instead of being
+                // recreated each time. The announcements channel hands each item to exactly
+                // one waiter, so an abandoned-but-still-pending wait stays queued ahead of a
+                // freshly created one and takes the next announcement with it: the run would
+                // never be served (a direct POST /turns run has no queue mutation to wake the
+                // loop and recover it). One wait exists at a time; it is replaced only after
+                // it completes.
+                Task<FrontendRunStream>? pendingRunWait = null;
                 while (!peer.IsCancellationRequested && socket.State == WebSocketState.Open)
                 {
                     // One wait race per loop iteration: a run wake serves that run exactly
                     // once (queue wakes never touch the `previous` tracking, so a run can
                     // neither be missed nor double-served); a queue wake writes one
                     // full-state queue.updated frame straight on the socket.
-                    var runWait = service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
+                    var runWait = pendingRunWait ??=
+                        service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
                     var queueWait = turnQueue.WaitForChangeAsync(sessionId, queueVersion, peer.Token);
                     var settled = await Task.WhenAny(queueWait, runWait).ConfigureAwait(false);
 
@@ -624,25 +634,21 @@ internal sealed class FrontendHost : IAsyncDisposable
 
                     if (ReferenceEquals(settled, runWait))
                     {
+                        // The wait is consumed: the next iteration starts a fresh one against
+                        // the run just served.
+                        pendingRunWait = null;
                         var stream = await runWait.ConfigureAwait(false);
                         await ServeStreamAsync(socket, stream, since, peer.Token).ConfigureAwait(false);
                         previous = stream;
                         // Replay offsets are per run; later runs stream live from their start.
                         since = 0;
                     }
-                    else
-                    {
-                        // The run wait stays pending across queue wakes; the announcements
-                        // channel it reads is never completed, so it cannot fault — but a
-                        // late fault or cancellation must still be observed (WhenAny leaves
-                        // the loser unobserved).
-                        _ = runWait.ContinueWith(
-                            static abandoned => _ = abandoned.Exception,
-                            CancellationToken.None,
-                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                            TaskScheduler.Default);
-                    }
                 }
+
+                // The loop ends with a wait possibly still outstanding (client disconnect or
+                // host shutdown cancelled it). Observe it so a late fault cannot surface as an
+                // unobserved task exception; its stream is not served — the socket is gone.
+                DiscardPendingRunWait(pendingRunWait);
             }
         }
         catch (OperationCanceledException) when (peer.IsCancellationRequested)
@@ -664,6 +670,24 @@ internal sealed class FrontendHost : IAsyncDisposable
                     WebSocketCloseStatus.NormalClosure,
                     "stream ended").ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Observes a run wait that was still pending when the events loop ended.
+    /// Its run cannot be served (the socket is gone or the host is shutting down), and the
+    /// wait is deliberately not awaited: at loop exit the peer token may not be cancelled
+    /// yet, and blocking on an announcement that may never arrive would stall the socket's
+    /// own teardown. The announcements channel it reads is never completed, so the wait
+    /// cannot fault in practice — the continuation only ensures a late fault or cancellation
+    /// is observed rather than left as an unobserved task exception.</summary>
+    private static void DiscardPendingRunWait(Task<FrontendRunStream>? pendingRunWait)
+    {
+        if (pendingRunWait is null) return;
+
+        _ = pendingRunWait.ContinueWith(
+            static abandoned => _ = abandoned.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <summary>Sends the close frame with a bounded write: the events endpoint closes

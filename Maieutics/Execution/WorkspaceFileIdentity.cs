@@ -53,6 +53,107 @@ internal static partial class WorkspaceFileIdentityReader
         }
     }
 
+    /// <summary>Reads the identity of an already-open POSIX descriptor — the pin check for
+    /// a managed hop opened through the no-follow walk. Null on failure, which skips the
+    /// pin rather than failing the read (a capture that cannot run cannot be enforced).</summary>
+    internal static WorkspaceFileIdentity? TryReadFromDescriptor(int descriptor)
+    {
+        try
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                if (FStat(descriptor, out var stat) != 0) return null;
+                return new WorkspaceFileIdentity(
+                    stat.Device,
+                    stat.Inode,
+                    BirthTime(stat.BirthSeconds, stat.BirthNanoseconds));
+            }
+
+            if (OperatingSystem.IsLinux())
+            {
+                if (StatX(
+                        descriptor,
+                        string.Empty,
+                        AtEmptyPath,
+                        StatXBasicStats | StatXBirthTime,
+                        out var stat) != 0)
+                    return null;
+
+                if (stat.Inode == 0) return null;
+                return new WorkspaceFileIdentity(
+                    ((ulong)stat.DeviceMajor << 32) | stat.DeviceMinor,
+                    stat.Inode,
+                    (stat.Mask & StatXBirthTime) == 0
+                        ? null
+                        : BirthTime(stat.BirthSeconds, stat.BirthNanoseconds));
+            }
+
+            return null;
+        }
+        catch (Exception exception) when (
+            exception is IOException or
+            DllNotFoundException or
+            EntryPointNotFoundException or
+            ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Opens a directory on Windows for attribute inspection: with
+    /// <c>FILE_FLAG_OPEN_REPARSE_POINT</c> the handle is the reparse point itself (tag
+    /// checks), without it the handle follows one link traversal (identity pins). An
+    /// invalid handle is returned as-is; callers treat it as "cannot validate".</summary>
+    internal static Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectoryHandle(
+        string path,
+        bool followReparse)
+    {
+        var flags = FileFlagBackupSemantics;
+        if (!followReparse) flags |= FileFlagOpenReparsePoint;
+        return CreateFile(
+            path,
+            FileReadAttributes,
+            FileShareReadWriteDelete,
+            IntPtr.Zero,
+            OpenExisting,
+            flags,
+            IntPtr.Zero);
+    }
+
+    /// <summary>Whether the directory handle is a reparse point (junction or symlink).</summary>
+    internal static bool HasReparseTag(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
+    {
+        return GetFileInformationByHandleEx(
+                handle,
+                FileAttributeTagInfoClass,
+                out var info,
+                (uint)Marshal.SizeOf<FileAttributeTagInfo>()) &&
+               (info.FileAttributes & 0x400) != 0; // FILE_ATTRIBUTE_REPARSE_POINT
+    }
+
+    /// <summary>Reads the identity of an already-open Windows handle — the pin check for a
+    /// managed hop opened through the registered target path. Null on failure, which skips
+    /// the pin rather than failing the read.</summary>
+    internal static WorkspaceFileIdentity? TryRead(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
+    {
+        try
+        {
+            if (!GetFileInformationByHandle(handle, out var info)) return null;
+
+            var inode = ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow;
+            if (inode == 0) return null;
+
+            return new WorkspaceFileIdentity(
+                info.VolumeSerialNumber,
+                inode,
+                info.CreationTime == 0 ? null : FromFileTime(info.CreationTime));
+        }
+        catch (Exception exception) when (exception is IOException or ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
     private static WorkspaceFileIdentity? TryReadMacOS(string directoryPath)
     {
         var descriptor = OpenUnix(
@@ -150,6 +251,7 @@ internal static partial class WorkspaceFileIdentityReader
     }
 
     private const int AtFdcwd = -100;
+    private const int AtEmptyPath = 0x1000;
     private const int AtSymlinkNoFollow = 0x100;
     private const uint StatXBasicStats = 0x7FF;
     private const uint StatXBirthTime = 0x800;
@@ -159,6 +261,7 @@ internal static partial class WorkspaceFileIdentityReader
     private const int OpenExisting = 3;
     private const int FileFlagBackupSemantics = 0x02000000;
     private const int FileFlagOpenReparsePoint = 0x00200000;
+    private const int FileAttributeTagInfoClass = 2;
 
     /// <summary>The struct the macOS <c>fstat</c> writes: 144 bytes with 16-byte timespecs;
     /// only the identity fields are read.</summary>
@@ -252,6 +355,21 @@ internal static partial class WorkspaceFileIdentityReader
         int creationDisposition,
         int flagsAndAttributes,
         IntPtr templateFile);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FileAttributeTagInfo
+    {
+        public uint FileAttributes;
+        public uint ReparseTag;
+    }
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetFileInformationByHandleEx(
+        Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+        int informationClass,
+        out FileAttributeTagInfo info,
+        uint bufferSize);
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

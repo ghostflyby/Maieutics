@@ -251,3 +251,18 @@ startup's remount repairs — never an unregistered link nothing owns. `Close` r
 tombstone before deleting the physical link: a crash leaves an inert unregistered link
 that traversal rejects and the next open at this name sweeps — never a link that remount
 would resurrect after the user closed it.
+
+## Follow-up (2026-09-16): the managed hop is pinned by file identity at every open
+
+Remount and open verify identity, but a directory swapped in *between* verifications was
+still read silently: the link validates by its target string, so only the content
+changed. Every traversal of the managed hop now pins the opened project directory
+against the registered fingerprint — on POSIX in the no-follow walk's hop open, on
+Windows before every read and write (where the final open re-walks the whole path and
+would otherwise follow a swap). A mismatch fails typed
+(`workspace_link_identity_changed`); fingerprint-less records and captures that cannot
+run skip the pin, keeping the documented path-only degradation. Windows additionally
+re-checks every physical component strictly below the traversal base for a reparse point
+at operation time (`FILE_FLAG_OPEN_REPARSE_POINT` + tag query). These narrow the swap
+windows to the residual final-open race on Windows; the handle-relative walk
+(`NtCreateFile`) that closes it entirely remains deferred design work.

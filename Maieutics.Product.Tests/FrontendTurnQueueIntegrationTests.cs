@@ -57,6 +57,38 @@ public sealed class FrontendTurnQueueIntegrationTests
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
 
+    /// <summary>Deterministic regression for the release bookkeeping that made
+    /// <see cref="QueuedTurnsRunSeriallyInTheEnqueuedOrder" /> time out on CI. The gated
+    /// provider used to leave a released request listed until the server-side continuation
+    /// removed it, so a release issued inside that window hit the stale head and silently
+    /// no-opped while the request that was really parked stayed parked forever. Synthetic
+    /// entries pin that window shut: with the old bookkeeping the second release necessarily
+    /// lands on the already-released head and the still-parked request is never completed.</summary>
+    [Fact(Timeout = 30_000)]
+    public async Task ReleasesReachOnlyRequestsStillAwaitingRelease()
+    {
+        _ = TestContext.Current.CancellationToken;
+        await using var provider = new GatedOpenAiServer();
+        var first = provider.ParkForTest();
+        var second = provider.ParkForTest();
+        provider.ParkedRequests.Should().Be(2);
+
+        provider.ReleaseNext();
+        first.Task.IsCompleted.Should().BeTrue("the oldest awaiting request is the one released");
+        provider.ParkedRequests.Should().Be(
+            1,
+            "a released request is no longer awaiting release, and must not be re-reported");
+
+        provider.ReleaseNext();
+        second.Task.IsCompleted.Should().BeTrue(
+            "the second release must reach the request that is still parked instead of "
+            + "completing an already-released entry again");
+        provider.ParkedRequests.Should().Be(0);
+
+        provider.ReleaseAll();
+        provider.ParkedRequests.Should().Be(0);
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task DirectTurnStaysBusyRejectedWhileTheQueueIsActive()
     {
@@ -823,22 +855,60 @@ public sealed class FrontendTurnQueueIntegrationTests
             }
         }
 
-        /// <summary>Releases the oldest parked provider request.</summary>
+        /// <summary>Releases the oldest provider request that is still awaiting release.
+        /// <para>
+        /// The released entry leaves <see cref="parked" /> under the same lock that releases
+        /// it, so the list holds exactly the requests that are still awaiting a release.
+        /// The earlier version removed an entry from the server-side continuation instead,
+        /// which left a released entry listed until that continuation ran: during that window
+        /// <see cref="ParkedRequests" /> over-reported, <c>ReleaseNext</c> hit the stale head
+        /// and silently no-opped (completing a completed source does nothing), and the request
+        /// that was really parked was never released — the CI timeout this guards.
+        /// </para></summary>
         public void ReleaseNext()
         {
+            TaskCompletionSource? release = null;
             lock (gate)
             {
-                if (parked.Count > 0) parked[0].TrySetResult();
+                while (parked.Count > 0)
+                {
+                    var next = parked[0];
+                    parked.RemoveAt(0);
+                    if (next.Task.IsCompleted) continue;
+                    release = next;
+                    break;
+                }
             }
+
+            // Completed outside the lock: the entry is no longer listed, so only this call
+            // can complete it.
+            release?.TrySetResult();
         }
 
-        /// <summary>Releases every currently parked provider request.</summary>
+        /// <summary>Releases every provider request currently awaiting release.</summary>
         public void ReleaseAll()
         {
+            TaskCompletionSource[] releases;
             lock (gate)
             {
-                foreach (var parkedRequest in parked) parkedRequest.TrySetResult();
+                releases = [.. parked];
+                parked.Clear();
             }
+
+            foreach (var release in releases) release.TrySetResult();
+        }
+
+        /// <summary>Parks a synthetic request so the release bookkeeping can be exercised
+        /// without a live socket. The returned source completes when a release reaches it.</summary>
+        internal TaskCompletionSource ParkForTest()
+        {
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (gate)
+            {
+                parked.Add(release);
+            }
+
+            return release;
         }
 
         public async ValueTask DisposeAsync()
@@ -910,11 +980,9 @@ public sealed class FrontendTurnQueueIntegrationTests
                         parked.Add(release);
                     }
 
+                    // The release call owns removing the entry; the response is written only
+                    // after the release arrives, so this loop never touches `parked`.
                     await release.Task.ConfigureAwait(false);
-                    lock (gate)
-                    {
-                        parked.Remove(release);
-                    }
 
                     if (cancellationToken.IsCancellationRequested) return;
 

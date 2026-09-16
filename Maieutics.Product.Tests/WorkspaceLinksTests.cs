@@ -19,6 +19,11 @@ public sealed class WorkspaceLinksTests
     [InlineData("app/variant", "app_variant")]
     [InlineData("trailing.", "trailing")]
     [InlineData("CON", "")]
+    // The Windows-invalid character set is fixed (ADR 0027 §5), so these sanitize
+    // identically on every host instead of via Path.GetInvalidFileNameChars.
+    [InlineData("a:b", "a_b")]
+    [InlineData("x*y?z|w", "x_y_z_w")]
+    [InlineData("say \"hi\"", "say _hi_")]
     public void RegistrySanitizesNameCandidates(string candidate, string expected)
     {
         WorkspaceLinkRegistry.SanitizeName(candidate).Should().Be(expected);

@@ -272,15 +272,16 @@ internal sealed class WorkspaceLinkRegistry
     }
 
     /// <summary>Windows-invalid characters become underscores, trailing dots and spaces are
-    /// stripped, and reserved device names are rejected; the result must stay unique
+    /// stripped, and reserved device names are rejected — with the character set fixed here
+    /// (ADR 0027 §5) rather than the host's <c>Path.GetInvalidFileNameChars</c>, so the same
+    /// target sanitizes to the same name on every platform. The result must stay unique
     /// case-insensitively, which <see cref="IsOccupied"/> enforces at allocation.</summary>
     internal static string SanitizeName(string candidate)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(candidate);
         var builder = new StringBuilder(candidate.Length);
         foreach (var character in candidate.Trim())
-            builder.Append(Array.IndexOf(Path.GetInvalidFileNameChars(), character) >= 0 ||
-                           char.IsControl(character)
+            builder.Append(IsWindowsReservedCharacter(character) || char.IsControl(character)
                 ? '_'
                 : character);
 
@@ -290,6 +291,11 @@ internal sealed class WorkspaceLinkRegistry
             return string.Empty;
 
         return name;
+    }
+
+    private static bool IsWindowsReservedCharacter(char character)
+    {
+        return character is '<' or '>' or ':' or '"' or '/' or '\\' or '|' or '?' or '*';
     }
 
     private static string Basename(string canonicalTarget)

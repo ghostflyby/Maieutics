@@ -20,7 +20,10 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
 
     private readonly Lock gate = new();
     private readonly StreamWriter writer = OpenWriter(logDirectory);
-    private int disposed;
+
+    /// <summary>Read and written only under <see cref="gate" />, so it cannot be observed as
+    /// stale against the writer it guards.</summary>
+    private bool disposed;
 
     /// <inheritdoc />
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);
@@ -28,8 +31,17 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
     /// <inheritdoc />
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
-        writer.Dispose();
+        // Dispose under the same gate that serializes writes. Disposing the writer outside it
+        // let a record that had already entered `Write` — or that read `disposed` just before it
+        // was set — reach a disposed StreamWriter and throw ObjectDisposedException into the
+        // logging pipeline, the opposite of what `Write` promises. Holding the gate also makes
+        // concurrent disposers safe without a separate flag dance.
+        lock (gate)
+        {
+            if (disposed) return;
+            disposed = true;
+            writer.Dispose();
+        }
     }
 
     /// <inheritdoc />
@@ -57,7 +69,9 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
         lock (gate)
         {
             // A record racing disposal is dropped rather than thrown into the logging pipeline.
-            if (Volatile.Read(ref disposed) != 0) return;
+            // The check is authoritative: disposal sets the flag and disposes the writer under
+            // this same gate, so a writer that is visible here is not yet disposed.
+            if (disposed) return;
             writer.WriteLine(line);
             if (exception is not null)
             {

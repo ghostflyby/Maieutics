@@ -198,7 +198,7 @@ internal sealed partial record WorkspaceSnapshot(
         string linkPath)
     {
         if (index != 1 || Links is null || segments.Count <= index ||
-            !segments[0].Equals(WorkspaceHome.ProjectsDirectoryName, StringComparison.Ordinal))
+            !segments[0].Equals(WorkspaceHome.ProjectsDirectoryName, StringComparison.OrdinalIgnoreCase))
             return null;
 
         if (!Links.TargetsByName.TryGetValue(segments[index], out var target)) return null;
@@ -611,7 +611,7 @@ internal sealed partial record WorkspaceSnapshot(
     private WorkspaceLinkRecord? RegisteredRecordFor(IReadOnlyList<string> segments)
     {
         if (segments.Count < 2 ||
-            !segments[0].Equals(WorkspaceHome.ProjectsDirectoryName, StringComparison.Ordinal) ||
+            !segments[0].Equals(WorkspaceHome.ProjectsDirectoryName, StringComparison.OrdinalIgnoreCase) ||
             Links is not { } links)
             return null;
 
@@ -919,6 +919,12 @@ internal sealed partial record WorkspaceSnapshot(
                 throw new WorkspaceException(
                     "workspace_symbolic_link_not_allowed",
                     "Workspace tools cannot read or traverse symbolic links.",
+                    new Win32Exception(error));
+
+            if (error == 2)
+                throw new WorkspaceException(
+                    "workspace_path_not_found",
+                    "The workspace URI does not identify an existing path.",
                     new Win32Exception(error));
 
             throw new IOException(

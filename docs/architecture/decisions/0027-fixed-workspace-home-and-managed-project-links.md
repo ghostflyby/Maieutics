@@ -240,3 +240,14 @@ replacement without notice, exactly the silent drift §4 exists to prevent.
 - The silent-follow behavior on same-path replacement is gone: a replaced directory is a
   typed "identity changed" state requiring an explicit close-and-re-open. That is a
   deliberate behavior change; the old behavior was the defect.
+
+## Follow-up (2026-09-16): derived-state ordering
+
+The §4 rule — the registry is authoritative, links are derived state — now orders every
+mutation so the registry commit lands first. `Open` persists the record before creating
+the physical link: a failed creation rolls the record back (no tombstone; the name never
+entered circulation), and a crash leaves at most a registered link that the next
+startup's remount repairs — never an unregistered link nothing owns. `Close` retires the
+tombstone before deleting the physical link: a crash leaves an inert unregistered link
+that traversal rejects and the next open at this name sweeps — never a link that remount
+would resurrect after the user closed it.

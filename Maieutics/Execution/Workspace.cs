@@ -506,6 +506,8 @@ internal sealed partial record WorkspaceSnapshot(
     private FileStream OpenRead(string path, IReadOnlyList<string> segments)
     {
         if (OperatingSystem.IsWindows())
+        {
+            ValidateForWindows(path, segments);
             return new FileStream(
                 path,
                 new FileStreamOptions
@@ -516,6 +518,7 @@ internal sealed partial record WorkspaceSnapshot(
                     Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
                     BufferSize = 4_096
                 });
+        }
 
         var segmentsLocal = segments;
         using var rootHandle = OpenUnixHandle(
@@ -584,10 +587,119 @@ internal sealed partial record WorkspaceSnapshot(
         IReadOnlyList<string> segments)
     {
         if (ResolveRegisteredLink(segments, index, LinkPathForHop(index, segments)) is { } hopTarget)
-            return OpenUnixHandle(hopTarget, UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+        {
+            // The walk opens the registered target rather than the junction, so swapping
+            // the junction cannot redirect this open — but a different directory placed at
+            // the registered path can. The fingerprint pins the open to the registered
+            // project (ADR 0027 follow-up); a capture that cannot run skips the check.
+            var handle = OpenUnixHandle(hopTarget, UnixOpenFlags.Directory | UnixOpenFlags.NoFollow);
+            PinLinkIdentity(
+                segments[index],
+                WorkspaceFileIdentityReader.TryReadFromDescriptor(
+                    handle.DangerousGetHandle().ToInt32()));
+            return handle;
+        }
 
         ExceptionDispatchInfo.Capture(original).Throw();
         throw new UnreachableException("ExceptionDispatchInfo.Throw never returns.");
+    }
+
+    private const string LinkIdentityChangedCode = "workspace_link_identity_changed";
+
+    /// <summary>The registered record when the segments traverse the managed hop, else
+    /// null.</summary>
+    private WorkspaceLinkRecord? RegisteredRecordFor(IReadOnlyList<string> segments)
+    {
+        if (segments.Count < 2 ||
+            !segments[0].Equals(WorkspaceHome.ProjectsDirectoryName, StringComparison.Ordinal) ||
+            Links is not { } links)
+            return null;
+
+        foreach (var record in links.Records)
+        {
+            if (string.Equals(record.Name, segments[1], StringComparison.OrdinalIgnoreCase))
+                return record;
+        }
+
+        return null;
+    }
+
+    /// <summary>Pins an opened managed hop to the registered project. A fingerprint-less
+    /// record (legacy registry, capture failure) or a capture that cannot run skips the
+    /// check; a mismatch means the open no longer reaches the project that was registered,
+    /// whatever replaced it, and fails typed instead of reading the wrong directory.</summary>
+    private void PinLinkIdentity(string name, WorkspaceFileIdentity? actual)
+    {
+        if (Links is not { } links)
+            return;
+        WorkspaceLinkRecord? record = null;
+        foreach (var candidate in links.Records)
+        {
+            if (string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                record = candidate;
+                break;
+            }
+        }
+
+        if (record?.Identity is not { } expected || actual is null) return;
+        if (expected.Matches(actual)) return;
+
+        throw new WorkspaceException(
+            LinkIdentityChangedCode,
+            $"The project link '{name}' no longer opens the project directory it was " +
+            "registered with. Remount the workspace or close and reopen the link.");
+    }
+
+    /// <summary>Windows open-time discipline (ADR 0027 follow-up). When the URI traverses
+    /// the managed hop, the registered target directory is opened and pinned by
+    /// fingerprint; then every physical component strictly below the traversal base is
+    /// re-checked for a reparse point, fresh at operation time. The final open still
+    /// re-walks the whole path — a handle-relative walk is the remaining Tier B — so this
+    /// narrows the swap windows; it does not close the last one.</summary>
+    private void ValidateForWindows(string path, IReadOnlyList<string> segments)
+    {
+        var record = RegisteredRecordFor(segments);
+        if (record is not null &&
+            Links is { } links &&
+            links.TargetsByName.TryGetValue(record.Name, out var target))
+        {
+            using var handle = WorkspaceFileIdentityReader.OpenDirectoryHandle(
+                target,
+                followReparse: true);
+            PinLinkIdentity(record.Name, WorkspaceFileIdentityReader.TryRead(handle));
+        }
+
+        ValidateComponentsForWindows(path, record?.Target ?? RootPath);
+    }
+
+    private void ValidateComponentsForWindows(string physicalPath, string baseRoot)
+    {
+        if (!physicalPath.StartsWith(baseRoot, StringComparison.OrdinalIgnoreCase)) return;
+
+        var separator = Path.DirectorySeparatorChar;
+        var start = baseRoot.Length;
+        if (start < physicalPath.Length && (physicalPath[start] == separator ||
+            physicalPath[start] == Path.AltDirectorySeparatorChar))
+            start++;
+
+        for (var index = start; index < physicalPath.Length;)
+        {
+            var next = physicalPath.IndexOf(separator, index);
+            var prefix = next < 0 ? physicalPath : physicalPath[..next];
+            using var handle = WorkspaceFileIdentityReader.OpenDirectoryHandle(
+                prefix,
+                followReparse: false);
+            if (handle.IsInvalid) return; // the operation itself fails typed on this path
+
+            if (WorkspaceFileIdentityReader.HasReparseTag(handle))
+                throw new WorkspaceException(
+                    "workspace_symbolic_link_not_allowed",
+                    "Workspace tools cannot read or traverse symbolic links.");
+
+            if (next < 0) break;
+            index = next + 1;
+        }
     }
 
     /// <summary>Opens a write handle to a workspace file. Creation uses an exclusive create so a
@@ -598,6 +710,7 @@ internal sealed partial record WorkspaceSnapshot(
     {
         if (OperatingSystem.IsWindows())
         {
+            ValidateForWindows(path, segments);
             var stream = new FileStream(path, new FileStreamOptions
             {
                 Mode = create ? FileMode.CreateNew : FileMode.Create,
@@ -695,6 +808,7 @@ internal sealed partial record WorkspaceSnapshot(
     {
         if (OperatingSystem.IsWindows())
         {
+            ValidateForWindows(path, segments);
             EnsureRegular(File.GetAttributes(path));
             File.Delete(path);
             return;

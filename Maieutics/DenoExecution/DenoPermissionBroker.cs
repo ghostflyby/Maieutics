@@ -118,7 +118,15 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     /// <summary>Completes the registration slot with the effective policy for one child, captured
     /// once at launch (AGENTS.md invariant 19: the policy never changes mid-operation). A request
     /// that arrives before registration waits on the slot (see <see cref="GetPolicyAsync"/>), so
-    /// there is no spawn-to-register window.</summary>
+    /// there is no spawn-to-register window.
+    ///     <para>
+    ///     A slot that is already completed belongs to a child that has exited: its owner retires
+    ///     it through <see cref="UnregisterProcess"/> when the child's completion is observed, but
+    ///     a registration can still arrive for a recycled pid — the OS may reuse the id before the
+    ///     exit was observed. A pid identifies exactly one live process, so the new policy replaces
+    ///     the dead child's slot rather than silently completing an already-completed source (which
+    ///     would leave the new child evaluated against the old child's policy).
+    ///     </para></summary>
     internal void RegisterPolicy(int processId, EffectivePolicy policy)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
@@ -126,7 +134,20 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         var slot = registrations.GetOrAdd(
             processId,
             static _ => new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously));
-        slot.TrySetResult(policy);
+        if (slot.TrySetResult(policy)) return;
+
+        // The existing slot is already settled (a dead child's policy, or a cancellation from
+        // the arrival timeout). Replace it, but only if the stale entry is still the one mapped
+        // to this pid: TryUpdate compares by reference, so a concurrent replacement wins and this
+        // registration re-runs against the winner instead of clobbering a live sibling's slot.
+        var fresh = new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (registrations.TryUpdate(processId, fresh, slot))
+        {
+            fresh.TrySetResult(policy);
+            return;
+        }
+
+        RegisterPolicy(processId, policy);
     }
 
     internal void UnregisterProcess(int processId)

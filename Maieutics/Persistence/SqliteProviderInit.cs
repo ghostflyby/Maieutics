@@ -15,7 +15,12 @@ internal static class SqliteProviderInit
     /// <c>SQLITE_CONFIG_SERIALIZED</c>). Accepted only before any connection is open.</summary>
     private const int SqliteConfigSerialized = 3;
 
-    private static int initialized;
+    /// <summary>Guards initialization so a caller cannot proceed until the provider is
+    ///     registered and the serialized default has been requested. Held only across those
+    ///     two synchronous calls.</summary>
+    private static readonly Lock initGate = new();
+
+    private static bool initialized;
 
     /// <summary>Module load is the first opportunity, so a process whose composition opens a
     ///     store without touching this type explicitly is still covered.</summary>
@@ -25,19 +30,37 @@ internal static class SqliteProviderInit
         EnsureInitialized();
     }
 
-    /// <summary>Idempotently registers the provider and requests SQLite's serialized default.
+    /// <summary>Registers the provider and requests SQLite's serialized default, once, and
+    ///     waits for that work to finish before returning.
+    ///     <para>
     ///     Called from module load and again from the store constructor, so correctness does not
     ///     depend on which type the runtime happened to touch first (a test host, for example,
     ///     can reach the Microsoft.Data.Sqlite API before this assembly's module initializer
-    ///     runs).</summary>
+    ///     runs).
+    ///     </para>
+    ///     <para>
+    ///     A plain flag is not enough: setting it before the work ran would let a second caller
+    ///     return and open a connection while the first is still inside
+    ///     <see cref="SetProvider"/> or <c>sqlite3_config</c>. The connection would then carry
+    ///     no mutex on the OS engine (the macOS SIGSEGV), and <c>sqlite3_config</c> is only
+    ///     accepted while no connection is open, so losing that race can silently fail to
+    ///     apply. The lock makes the flag mean "initialization completed", not "started".
+    ///     </para>
+    ///     <para>
+    ///     Re-entrancy is safe: the critical section calls no code that re-enters this method,
+    ///     so a concurrent in-flight module initializer cannot deadlock against it.
+    ///     </para></summary>
     internal static void EnsureInitialized()
     {
-        // Interlocked rather than a plain flag: two stores can be constructed concurrently, and
-        // SetProvider must not race.
-        if (Interlocked.Exchange(ref initialized, 1) != 0) return;
+        lock (initGate)
+        {
+            if (initialized) return;
 
-        SetProvider();
-        RequestSerializedDefault();
+            SetProvider();
+            RequestSerializedDefault();
+            // Set last: a caller that observes it true has a fully initialized provider.
+            initialized = true;
+        }
     }
 
     private static void SetProvider()

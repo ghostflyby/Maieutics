@@ -77,6 +77,15 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
                 throw new InvalidOperationException("Cannot resolve the object fan-out directory.");
             Directory.CreateDirectory(fanout);
 
+            // Publication is a compare-and-set on the destination, not a check-then-act: two
+            // concurrent ingests of identical bytes can both observe the destination absent, and
+            // then both attempt to publish. The store is shared by the Agent tool-result ingest
+            // and the REPL display-object store, so identical payloads racing here is ordinary.
+            //
+            // POSIX rename replaces the destination atomically, so on Unix the loser simply
+            // overwrites the winner with byte-identical content and nothing needs handling. On
+            // Windows the destination's existence makes the move fail instead, and the loser must
+            // be treated as the hit path rather than surfaced as a failure.
             if (File.Exists(finalPath))
             {
                 // CAS hit: the identical bytes are already published; discard the temporary.
@@ -84,9 +93,19 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
             }
             else
             {
-                // Same-volume rename: atomic publication. The directory entry is not fsynced
-                // separately (see the type remarks for the accepted power-loss window).
-                File.Move(tempPath, finalPath);
+                try
+                {
+                    // Same-volume rename: atomic publication. The directory entry is not fsynced
+                    // separately (see the type remarks for the accepted power-loss window).
+                    File.Move(tempPath, finalPath);
+                }
+                catch (IOException) when (File.Exists(finalPath))
+                {
+                    // A concurrent ingest published the identical content between the check and
+                    // the move. Content-addressed, so the published file is the same object:
+                    // treat it as the hit path.
+                    TryDelete(tempPath);
+                }
             }
 
             return new IngestedObject(sha256, size);

@@ -135,4 +135,39 @@ public sealed class SqliteProviderInitTests
             }
         }
     }
+
+    /// <summary>Initialization is a barrier, not a flag: a caller that returns from
+    /// <see cref="SqliteProviderInit.EnsureInitialized" /> must find a fully initialized
+    /// provider. Setting the flag before the work ran let a second caller proceed to open a
+    /// connection while the first was still inside <c>SetProvider</c>/<c>sqlite3_config</c> —
+    /// the latter is accepted only while no connection is open, so losing that race could
+    /// silently leave connections without a mutex.</summary>
+    [Fact(Timeout = 30_000)]
+    public async Task ConcurrentInitializationObserversAllSeeACompletedInitialization()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        const int callers = 16;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrived = 0;
+
+        var tasks = Enumerable.Range(0, callers).Select(_ => Task.Run(async () =>
+        {
+            if (Interlocked.Increment(ref arrived) == callers) ready.TrySetResult();
+            await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            SqliteProviderInit.EnsureInitialized();
+
+            // Every observer must find a usable provider: this connection would fail — or
+            // carry no mutex — had the caller returned before initialization completed.
+            using var connection = new SqliteConnection("Data Source=:memory:");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT sqlite_version();";
+            command.ExecuteScalar().Should().NotBeNull();
+        }, cancellationToken)).ToArray();
+
+        await ready.Task.WaitAsync(cancellationToken);
+        gate.TrySetResult();
+        await Task.WhenAll(tasks).WaitAsync(cancellationToken);
+    }
 }

@@ -187,6 +187,97 @@ public sealed class DenoPermissionBrokerTests
         DenoPermissionResolver.Resolve(policy, "net", "localhost:8080").IsAllowed.Should().BeTrue();
     }
 
+    /// <summary>A later registration for the same pid must replace an already-settled slot.
+    /// <para>
+    /// The broker keys registrations by pid and resolves a connection's policy once, at accept.
+    /// A slot whose owner never retired it — the recycled-pid case: the OS hands a new child the
+    /// id of a child whose registration outlived it — would otherwise be found already completed,
+    /// and completing a completed source does nothing. Every request from the new child would then
+    /// be evaluated against the dead child's policy for its whole lifetime, which can over-grant.
+    /// </para>
+    /// <para>
+    /// The test drives the broker's real request path over its socket from this process, so the
+    /// peer pid is this process's own id: a stable, known pid across both connections. Each
+    /// connection re-resolves the policy, so the second connection observes whether the
+    /// replacement took effect.
+    /// </para></summary>
+    [Fact(Timeout = 30_000)]
+    public async Task ALaterRegistrationForTheSameProcessReplacesASettledOne()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The broker socket harness is a Unix domain socket.");
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), $"mc-broker-reregister-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var firstPath = Path.Combine(root, "first.txt");
+            var secondPath = Path.Combine(root, "second.txt");
+            await File.WriteAllTextAsync(firstPath, "payload", cancellationToken);
+            await File.WriteAllTextAsync(secondPath, "payload", cancellationToken);
+
+            var broker = DenoPermissionBroker.Create(new CollectingLogger<DenoPermissionBroker>());
+            var pid = Environment.ProcessId;
+
+            // First registration settles the slot for this pid.
+            broker.RegisterPolicy(
+                pid,
+                Build((PermissionKind.Read, new PermissionKindRules { Allow = [firstPath] })));
+
+            (await AskAsync(broker, firstPath, cancellationToken)).Should().Be(
+                "allow",
+                "the first policy allows the first path");
+            (await AskAsync(broker, secondPath, cancellationToken)).Should().Be(
+                "deny",
+                "the first policy does not allow the second path");
+
+            // Second registration for the same pid, without retiring the slot first: the state a
+            // recycled pid would find. Only the replacement policy allows the second path.
+            broker.RegisterPolicy(
+                pid,
+                Build((PermissionKind.Read, new PermissionKindRules { Allow = [firstPath, secondPath] })));
+
+            (await AskAsync(broker, secondPath, cancellationToken)).Should().Be(
+                "allow",
+                "a later registration for the same pid must replace the settled one; a silently "
+                + "dropped registration would leave the request evaluated against the old policy");
+
+            broker.UnregisterProcess(pid);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    /// <summary>Opens one broker connection and asks it to resolve one read permission. The
+    /// connection is what makes the policy observable: the broker captures the pid's policy when
+    /// the connection is accepted.</summary>
+    private static async Task<string> AskAsync(
+        DenoPermissionBroker broker,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        using var socket = new System.Net.Sockets.Socket(
+            System.Net.Sockets.AddressFamily.Unix,
+            System.Net.Sockets.SocketType.Stream,
+            System.Net.Sockets.ProtocolType.Unspecified);
+        await socket.ConnectAsync(
+            new System.Net.Sockets.UnixDomainSocketEndPoint(broker.Address),
+            cancellationToken);
+
+        var request = System.Text.Encoding.UTF8.GetBytes(
+            $"{{\"v\":1,\"pid\":{Environment.ProcessId},\"id\":1,\"permission\":\"read\",\"value\":\"{path}\"}}\n");
+        await socket.SendAsync(request, System.Net.Sockets.SocketFlags.None, cancellationToken);
+
+        var buffer = new byte[1024];
+        var read = await socket.ReceiveAsync(buffer, System.Net.Sockets.SocketFlags.None, cancellationToken);
+        var response = System.Text.Encoding.UTF8.GetString(buffer, 0, read);
+        using var document = JsonDocument.Parse(response.TrimEnd('\n'));
+        return document.RootElement.GetProperty("result").GetString() ?? string.Empty;
+    }
+
     private static EffectivePolicy CreatePolicy(string readableRoot)
     {
         return Build(

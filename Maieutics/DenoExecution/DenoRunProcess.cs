@@ -39,7 +39,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         InternalDenoProcessKind kind,
         ILogger logger,
         TimeSpan stopBudget,
-        TaskCompletionSource<string>? standardError)
+        TaskCompletionSource<string>? standardError,
+        DenoPermissionBroker? broker)
     {
         this.process = process;
         this.logger = logger;
@@ -50,9 +51,35 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", logger, null);
         var stderrDrain = DrainAsync(process.StandardError, "stderr", logger, standardError);
         Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
+        if (broker is not null)
+        {
+            // Retire the registration with the child, on every exit path (normal exit, stop,
+            // failed start, disposal): Completion observes the process's end whichever way it
+            // happened, and it cannot complete before this continuation is attached — if the
+            // child is already gone the continuation runs immediately.
+            //
+            // Without this the slot outlives the child and the OS can recycle the pid: the
+            // next child's RegisterPolicy would find that completed slot and silently no-op
+            // (completing a completed source does nothing), leaving the new child evaluated
+            // against the dead child's policy for its whole lifetime.
+            _ = Completion.ContinueWith(
+                static (_, state) =>
+                {
+                    var registration = (PolicyRegistration)state!;
+                    registration.Broker.UnregisterProcess(registration.ProcessId);
+                },
+                new PolicyRegistration(broker, processId),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
     }
 
     internal int ProcessId => processId;
+
+    /// <summary>What a child's completion must retire from the permission broker: the policy
+    /// registration is keyed by pid, so it has to leave with the process that owns it.</summary>
+    private sealed record PolicyRegistration(DenoPermissionBroker Broker, int ProcessId);
 
     internal Task Completion { get; }
 
@@ -105,7 +132,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
             stopBudget ?? DefaultStopBudget,
             captureStandardError
                 ? new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
-                : null);
+                : null,
+            broker);
     }
 
     internal Task StopAsync()

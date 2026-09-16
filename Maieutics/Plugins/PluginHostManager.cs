@@ -383,10 +383,16 @@ internal sealed class PluginHostManager(
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Discovery waits on child processes and touches no gated state, so it runs
+            // before the lifecycle gate. Holding that gate across it blocked GetStatus for
+            // the whole scan (the gate is also what serializes startup against dispose).
+            var plan = DiscoverPlugins();
+
             lock (lifecycleGate)
             {
                 ObjectDisposedException.ThrowIf(stopping is not null, this);
-                Start();
+                Start(plan);
                 readiness.TrySetResult();
             }
         }
@@ -470,40 +476,62 @@ internal sealed class PluginHostManager(
         }
     }
 
-    private void Start()
+    /// <summary>The plugin set discovery resolved, ready to publish. Discovery shells out to
+    /// the Deno toolchain and the npm/jsr registries, so it is deliberately separate from
+    /// <see cref="Start"/>: it runs outside both the lifecycle gate and the state gate, and
+    /// only its result is published under them.</summary>
+    private readonly record struct PluginStartupPlan(
+        IReadOnlyList<PluginDescriptor> Enabled,
+        PluginImportMergeResult ImportMerge);
+
+    /// <summary>Resolves the plugin set from the plugins root. Waits on child processes for up
+    /// to a minute per registry entry, and touches none of the gated state, so callers must run
+    /// it before taking <c>lifecycleGate</c> or <c>gate</c>: holding either across the scan
+    /// stalls every control-plane reader — status, registrations, and each control-bus frame —
+    /// and spends a thread-pool thread on blocking waits inside async startup.</summary>
+    private PluginStartupPlan DiscoverPlugins()
     {
         EnsurePluginsRoot();
-        PluginGraphResult graph;
-        PluginImportMergeResult importMerge;
+        var scanned = ScanPlugins();
+        var graph = PluginDependencyGraph.Validate(scanned);
+        foreach (var exclusion in graph.Exclusions)
+        {
+            logger.LogWarning(
+                "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
+                exclusion.PluginId,
+                exclusion.Reason,
+                exclusion.Detail);
+        }
+
+        var importMerge = PluginImportMerger.Merge(graph.Enabled, PluginHostModule.ReservedImportKeys);
+        foreach (var warning in importMerge.Warnings)
+        {
+            logger.LogWarning("Plugin import merge: {Warning}.", warning);
+        }
+
+        foreach (var exclusion in importMerge.Exclusions)
+        {
+            logger.LogWarning(
+                "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
+                exclusion.PluginId,
+                exclusion.Reason,
+                exclusion.Detail);
+        }
+
+        var enabled = graph.Enabled
+            .Where(plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id))
+            .ToArray();
+        return new PluginStartupPlan(enabled, importMerge);
+    }
+
+    private void Start(PluginStartupPlan plan)
+    {
+        // Publication stays under one lock: a concurrent GetStatus/PushAsync reader must
+        // never observe a half-replaced registry.
         lock (gate)
         {
             descriptors.Clear();
-            var scanned = ScanPlugins();
-            graph = PluginDependencyGraph.Validate(scanned);
-            foreach (var exclusion in graph.Exclusions)
-            {
-                logger.LogWarning(
-                    "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
-                    exclusion.PluginId,
-                    exclusion.Reason,
-                    exclusion.Detail);
-            }
-
-            importMerge = PluginImportMerger.Merge(graph.Enabled, PluginHostModule.ReservedImportKeys);
-            foreach (var warning in importMerge.Warnings)
-            {
-                logger.LogWarning("Plugin import merge: {Warning}.", warning);
-            }
-            foreach (var exclusion in importMerge.Exclusions)
-            {
-                logger.LogWarning(
-                    "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
-                    exclusion.PluginId,
-                    exclusion.Reason,
-                    exclusion.Detail);
-            }
-            descriptors.AddRange(graph.Enabled.Where(
-                plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id)));
+            descriptors.AddRange(plan.Enabled);
             capabilityGrants.Clear();
             RecordCapabilityGrants(descriptors);
             descriptorExtensions.Clear();
@@ -520,7 +548,7 @@ internal sealed class PluginHostManager(
         // The root deno.json must exist before the host process starts: it carries the
         // process import map (host machinery plus the merged plugin entries) that the
         // host and every plugin worker resolve against.
-        modules.WriteRootConfig(importMerge.Imports);
+        modules.WriteRootConfig(plan.ImportMerge.Imports);
         configPath = WriteConfigFile(descriptors);
         process = PluginHostProcess.Start(
             new PluginHostProcessOptions(

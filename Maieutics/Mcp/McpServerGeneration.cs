@@ -656,7 +656,9 @@ internal sealed class McpServerGeneration
                     continue;
                 }
 
-                exposed.Add(new TimeoutAIFunction(tool, definition.RequestTimeout));
+                exposed.Add(new TimeoutAIFunction(
+                    new ProgressReportingAIFunction(tool, definition.Id, logger),
+                    definition.RequestTimeout));
                 info.Add(new MaieuticsMcpToolInfo(name, name, true));
             }
 

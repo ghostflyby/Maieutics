@@ -308,7 +308,7 @@ public sealed class McpServerGenerationTests
             .Throw<JsonException>();
     }
 
-    private static McpServerDefinition CreateStdioDefinition()
+    private static McpServerDefinition CreateStdioDefinition(bool rootsEnabled = false)
     {
         var transport = new StdioMcpTransportDefinition(
             "unused",
@@ -322,15 +322,85 @@ public sealed class McpServerGenerationTests
             TimeSpan.FromSeconds(5),
             TimeSpan.FromSeconds(5),
             TimeSpan.Zero,
+            rootsEnabled,
             McpServerDefinition.CreateGenerationKey(
                 transport,
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
-                TimeSpan.Zero));
+                TimeSpan.Zero,
+                rootsEnabled));
     }
 
-    private sealed class StreamServerFactory(bool reportProgress = false) : IAsyncDisposable
+    private sealed class StubRootsSource(string? rootPath) : IMcpWorkspaceRootsSource
+    {
+        public string? GetRootPath() => rootPath;
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task RootsCapabilityExposesTheLiveWorkspaceRoot()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        using var workspace = TemporaryWorkspace.Create();
+        await using var serverFactory = new StreamServerFactory(requestRoots: true);
+        var generation = await McpServerGeneration.CreateAsync(
+            CreateStdioDefinition(rootsEnabled: true),
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            rootsSource: new StubRootsSource(workspace.Path));
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        var lease = acquired;
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "roots" });
+
+        var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
+        await lease.DisposeAsync();
+
+        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        var echoed = resultElement.GetProperty("structuredContent").GetProperty("value").GetString();
+        // The client answered the server's roots query with the live workspace root, so the
+        // server-side tool observed it mid-call. Compare URIs: the wire form is a file URI,
+        // which is not byte-identical to the platform path on Windows.
+        echoed.Should().StartWith("roots:file://").And.Contain(
+            new Uri(Path.GetFullPath(workspace.Path)).AbsoluteUri);
+        await generation.Retire().WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ServersWithoutRootsEnabledCannotRequestRoots()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory(requestRoots: true);
+        var generation = await McpServerGeneration.CreateAsync(
+            CreateStdioDefinition(rootsEnabled: false),
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            rootsSource: new StubRootsSource(Directory.GetCurrentDirectory()));
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        var lease = acquired;
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "roots" });
+
+        var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
+        await lease.DisposeAsync();
+
+        // No capability was declared, so the server-side roots request fails and surfaces as
+        // a tool error instead of a client answer.
+        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        resultElement.TryGetProperty("isError", out var isError).Should().BeTrue();
+        isError.GetBoolean().Should().BeTrue();
+        await generation.Retire().WaitAsync(deadline.Token);
+    }
+
+    private sealed class StreamServerFactory(bool reportProgress = false, bool requestRoots = false) : IAsyncDisposable
     {
         private readonly CancellationTokenSource lifetime = new();
         private readonly List<(McpServer Server, Task Completion)> servers = [];
@@ -377,9 +447,18 @@ public sealed class McpServerGenerationTests
                         Description = "Echoes one value.",
                         UseStructuredContent = true
                     })
-                : McpServerTool.Create(
-                    AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
-                    new McpServerToolCreateOptions { UseStructuredContent = true });
+                : requestRoots
+                    ? McpServerTool.Create(
+                        (Func<string, McpServer, CancellationToken, Task<EchoResult>>)RootsEcho,
+                        new McpServerToolCreateOptions
+                        {
+                            Name = "echo",
+                            Description = "Echoes one value.",
+                            UseStructuredContent = true
+                        })
+                    : McpServerTool.Create(
+                        AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
+                        new McpServerToolCreateOptions { UseStructuredContent = true });
             var server = McpServer.Create(
                 serverTransport,
                 new McpServerOptions
@@ -413,6 +492,18 @@ public sealed class McpServerGenerationTests
             progress.Report(new ProgressNotificationValue { Progress = 100, Total = 100 });
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             return new EchoResult(value);
+        }
+
+        private static async Task<EchoResult> RootsEcho(
+            string value,
+            McpServer server,
+            CancellationToken cancellationToken)
+        {
+#pragma warning disable MCP9005
+            var roots = await server.RequestRootsAsync(new ListRootsRequestParams(), cancellationToken)
+                .ConfigureAwait(false);
+            return new EchoResult($"{value}:{string.Join("|", roots.Roots.Select(static root => root.Uri))}");
+#pragma warning restore MCP9005
         }
     }
 

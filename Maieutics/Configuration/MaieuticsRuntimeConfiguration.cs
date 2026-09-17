@@ -39,6 +39,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly ILogger<MaieuticsRuntimeConfiguration> logger;
     private readonly ILoggerFactory loggerFactory;
     private readonly McpClientTransportFactory? mcpTransportFactory;
+    private readonly IMcpWorkspaceRootsSource? workspaceRootsSource;
     private PluginHostManager? pluginHosts;
 
     // The bounded channel is only an edge trigger. reloadRequest remains authoritative when duplicate
@@ -79,7 +80,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
-        McpClientTransportFactory? mcpTransportFactory = null)
+        McpClientTransportFactory? mcpTransportFactory = null,
+        IMcpWorkspaceRootsSource? workspaceRootsSource = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -89,6 +91,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.startupDirectory = startupDirectory ?? throw new ArgumentNullException(nameof(startupDirectory));
         this.mcpTransportFactory = mcpTransportFactory;
+        this.workspaceRootsSource = workspaceRootsSource;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
@@ -989,7 +992,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     timeProvider,
                     cancellationToken,
                     mcpTransportFactory,
-                    reservedToolNames).ConfigureAwait(false);
+                    reservedToolNames,
+                    workspaceRootsSource).ConfigureAwait(false);
                 createdMcp.Add(generation);
                 mcpServers.Add(server.Id, generation);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1267,17 +1271,23 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 ? new[]
                 {
                     "Enabled", "Type", "Transport", "Command", "Arguments", "Args", "WorkingDirectory",
-                    "EnvironmentVariables", "Env", "InitializationTimeout", "RequestTimeout", "ShutdownTimeout"
+                    "EnvironmentVariables", "Env", "InitializationTimeout", "RequestTimeout", "ShutdownTimeout",
+                    "Roots"
                 }
                 :
                 [
                     "Enabled", "Type", "Transport", "Url", "Headers", "ConnectionTimeout",
-                    "InitializationTimeout", "RequestTimeout"
+                    "InitializationTimeout", "RequestTimeout", "Roots"
                 ];
             ValidateConfigurationKeys(serverSection, $"MCP server '{serverId}'", allowedKeys);
 
             ValidatePositiveTimeout(serverOptions.InitializationTimeout, serverId, "InitializationTimeout");
             ValidatePositiveTimeout(serverOptions.RequestTimeout, serverId, "RequestTimeout");
+
+            // Maieutics extension keys default by transport: a stdio server is launched through the
+            // permission module (same trust line), a remote HTTP server gets nothing until opted in
+            // (ADR 0029 decision 1).
+            var rootsEnabled = serverOptions.Roots ?? transport == McpServerTransportKind.Stdio;
 
             McpTransportDefinition transportDefinition;
             var shutdownTimeout = TimeSpan.Zero;
@@ -1340,7 +1350,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 serverOptions.InitializationTimeout,
                 serverOptions.RequestTimeout,
                 shutdownTimeout,
-                connectionTimeout);
+                connectionTimeout,
+                rootsEnabled);
             result.Add(new McpServerDefinition(
                 serverId,
                 transportDefinition,
@@ -1348,6 +1359,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 serverOptions.RequestTimeout,
                 shutdownTimeout,
                 connectionTimeout,
+                rootsEnabled,
                 generationKey));
         }
 

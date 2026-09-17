@@ -6,12 +6,14 @@
         "-y",
         "example-mcp-server"
       ],
-      "env": {}
+      "env": {},
+      "roots": true
     },
     "remote": {
       "type": "http",
       "url": "https://example.test/mcp",
-      "headers": {}
+      "headers": {},
+      "roots": false
     }
   }
 }

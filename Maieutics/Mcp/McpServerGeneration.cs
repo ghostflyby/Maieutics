@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Maieutics.Execution;
@@ -61,6 +62,7 @@ internal sealed record McpServerDefinition(
     TimeSpan RequestTimeout,
     TimeSpan ShutdownTimeout,
     TimeSpan ConnectionTimeout,
+    bool RootsEnabled,
     string GenerationKey)
 {
     internal static string CreateGenerationKey(
@@ -68,7 +70,8 @@ internal sealed record McpServerDefinition(
         TimeSpan initializationTimeout,
         TimeSpan requestTimeout,
         TimeSpan shutdownTimeout,
-        TimeSpan connectionTimeout)
+        TimeSpan connectionTimeout,
+        bool rootsEnabled)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
@@ -120,6 +123,7 @@ internal sealed record McpServerDefinition(
         Add(requestTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         Add(shutdownTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         Add(connectionTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
+        Add(rootsEnabled ? "roots" : string.Empty);
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 }
@@ -138,6 +142,7 @@ internal sealed class McpServerGeneration
     private readonly List<Task> retiredConnections = [];
     private readonly TimeProvider timeProvider;
     private readonly McpClientTransportFactory transportFactory;
+    private readonly IMcpWorkspaceRootsSource? rootsSource;
     private McpConnectionGeneration? current;
     private TimeSpan? nextReconnectDelay;
     private Task? retirement;
@@ -149,6 +154,7 @@ internal sealed class McpServerGeneration
         TimeProvider timeProvider,
         McpClientTransportFactory transportFactory,
         IReadOnlySet<string>? reservedToolNames,
+        IMcpWorkspaceRootsSource? rootsSource,
         McpConnectionGeneration connection)
     {
         this.definition = definition;
@@ -156,6 +162,7 @@ internal sealed class McpServerGeneration
         this.timeProvider = timeProvider;
         this.transportFactory = transportFactory;
         this.reservedToolNames = reservedToolNames;
+        this.rootsSource = rootsSource;
         logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
         current = connection;
     }
@@ -170,7 +177,8 @@ internal sealed class McpServerGeneration
         TimeProvider timeProvider,
         CancellationToken cancellationToken,
         McpClientTransportFactory? transportFactory = null,
-        IReadOnlySet<string>? reservedToolNames = null)
+        IReadOnlySet<string>? reservedToolNames = null,
+        IMcpWorkspaceRootsSource? rootsSource = null)
     {
         transportFactory ??= CreateTransportAsync;
         var connection = await CreateConnectionAsync(
@@ -178,13 +186,15 @@ internal sealed class McpServerGeneration
             loggerFactory,
             transportFactory,
             cancellationToken,
-            reservedToolNames).ConfigureAwait(false);
+            reservedToolNames,
+            rootsSource).ConfigureAwait(false);
         var generation = new McpServerGeneration(
             definition,
             loggerFactory,
             timeProvider,
             transportFactory,
             reservedToolNames,
+            rootsSource,
             connection);
         generation.supervisor = generation.SuperviseAsync();
         return generation;
@@ -399,7 +409,8 @@ internal sealed class McpServerGeneration
                     loggerFactory,
                     transportFactory,
                     lifetime.Token,
-                    reservedToolNames).ConfigureAwait(false);
+                    reservedToolNames,
+                    rootsSource).ConfigureAwait(false);
                 lock (gate)
                 {
                     if (retirement is null)
@@ -438,7 +449,8 @@ internal sealed class McpServerGeneration
         ILoggerFactory loggerFactory,
         McpClientTransportFactory transportFactory,
         CancellationToken cancellationToken,
-        IReadOnlySet<string>? reservedToolNames)
+        IReadOnlySet<string>? reservedToolNames,
+        IMcpWorkspaceRootsSource? rootsSource = null)
     {
         var refreshSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
         {
@@ -456,9 +468,29 @@ internal sealed class McpServerGeneration
                     {
                         refreshSignals.Writer.TryWrite(0);
                         return ValueTask.CompletedTask;
+                    }),
+                new KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>(
+                    NotificationMethods.ResourceListChangedNotification,
+                    (_, _) =>
+                    {
+                        refreshSignals.Writer.TryWrite(0);
+                        return ValueTask.CompletedTask;
                     })
             ]
         };
+        // Roots are deprecated by SEP-2577 as of the 2026-07-28 revision (12-month window) but
+        // remain how today's installed filesystem-style servers learn their operating boundary;
+        // we adopt the surface for the transition and revisit when the replacement stabilizes
+        // (ADR 0029 decision 2).
+#pragma warning disable MCP9005
+        if (definition.RootsEnabled && rootsSource is not null)
+        {
+            // Capability follows handler presence (ADR 0029 decision 1): a server that never
+            // opted into roots sees no roots capability and must not ask.
+            handlers.RootsHandler = (_, cancellationToken) => BuildRootsAsync(rootsSource, cancellationToken);
+        }
+#pragma warning restore MCP9005
+
         var clientOptions = new McpClientOptions
         {
             InitializationTimeout = definition.InitializationTimeout,
@@ -479,6 +511,7 @@ internal sealed class McpServerGeneration
             loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}"));
         try
         {
+            connection.StartSubscriptionListener();
             await connection.RefreshToolsAsync(cancellationToken).ConfigureAwait(false);
             return connection;
         }
@@ -488,6 +521,39 @@ internal sealed class McpServerGeneration
             throw;
         }
     }
+
+    /// <summary>Answers a roots query with the single live workspace root (ADR 0029 decision 2);
+    /// no open workspace yields an empty result, never an error.</summary>
+#pragma warning disable MCP9005
+    private static ValueTask<ListRootsResult> BuildRootsAsync(
+        IMcpWorkspaceRootsSource rootsSource,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var rootPath = rootsSource.GetRootPath();
+        if (string.IsNullOrWhiteSpace(rootPath))
+            return ValueTask.FromResult(new ListRootsResult { Roots = [] });
+
+        try
+        {
+            var fullPath = Path.GetFullPath(rootPath);
+            if (!Directory.Exists(fullPath))
+                return ValueTask.FromResult(new ListRootsResult { Roots = [] });
+
+            var name = Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            var root = new Root
+            {
+                Uri = new Uri(fullPath).AbsoluteUri,
+                Name = string.IsNullOrEmpty(name) ? fullPath : name
+            };
+            return ValueTask.FromResult(new ListRootsResult { Roots = [root] });
+        }
+        catch (Exception exception) when (exception is ArgumentException or UriFormatException or IOException)
+        {
+            return ValueTask.FromResult(new ListRootsResult { Roots = [] });
+        }
+    }
+#pragma warning restore MCP9005
 
     private static ValueTask<IClientTransport> CreateTransportAsync(
         McpServerDefinition definition,
@@ -595,6 +661,7 @@ internal sealed class McpServerGeneration
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock gate = new();
         private readonly ILogger logger = logger;
+        private CancellationTokenSource? subscriptionLifetime;
         private int references = 1;
         private bool retired;
         private ImmutableArray<MaieuticsMcpToolInfo> toolInfo = [];
@@ -602,6 +669,55 @@ internal sealed class McpServerGeneration
         private McpResourceCatalog resourceCatalog = McpResourceCatalog.Empty;
 
         internal McpClient Client { get; } = client;
+
+        /// <summary>Opens the SEP-2575 subscriptions/listen stream for this connection: a
+        /// server may deliver list-changed notifications only for types opted in here (the
+        /// unsolicited path of older revisions no longer covers them). The request stays
+        /// pending until the connection is disposed, which is the unsubscribe. Failure is
+        /// tolerated — older servers answer MethodNotFound and the capability-driven
+        /// notification path keeps working (ADR 0029 decision 4).</summary>
+        internal void StartSubscriptionListener()
+        {
+            var lifetime = new CancellationTokenSource();
+            Volatile.Write(ref subscriptionLifetime, lifetime);
+            _ = ListenSubscriptionsAsync(lifetime.Token);
+        }
+
+        private async Task ListenSubscriptionsAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                var request = new JsonRpcRequest
+                {
+                    Method = RequestMethods.SubscriptionsListen,
+                    Params = JsonSerializer.SerializeToNode(
+                        new SubscriptionsListenRequestParams
+                        {
+                            Notifications = new SubscriptionsListenNotifications
+                            {
+                                ToolsListChanged = true,
+                                ResourcesListChanged = true
+                            }
+                        },
+                        McpJsonUtilities.GetTypeInfo<SubscriptionsListenRequestParams>(McpJsonUtilities.DefaultOptions))
+                };
+                // The response arrives only when the server closes the stream; cancelling the
+                // token cancels the pending request and ends the subscription.
+                await Client.SendRequestAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Connection retirement: the unsubscribe itself.
+            }
+            catch (Exception exception)
+            {
+                logger.LogDebug(
+                    exception,
+                    "MCP server {ServerId} subscription stream unavailable ({FailureType}); relying on capability-driven notifications.",
+                    definition.Id,
+                    exception.GetType().Name);
+            }
+        }
 
         internal McpServerLease Acquire()
         {
@@ -776,6 +892,8 @@ internal sealed class McpServerGeneration
             try
             {
                 refreshSignals.Writer.TryComplete();
+                if (Volatile.Read(ref subscriptionLifetime) is { } subscriptions)
+                    await subscriptions.CancelAsync().ConfigureAwait(false);
                 await Client.DisposeAsync().ConfigureAwait(false);
                 disposed.TrySetResult();
             }

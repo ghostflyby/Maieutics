@@ -163,12 +163,14 @@ public sealed class PluginMcpCoordinatorTests
             TimeSpan.FromSeconds(5),
             TimeSpan.FromSeconds(5),
             TimeSpan.Zero,
+            false,
             McpServerDefinition.CreateGenerationKey(
                 transport,
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
-                TimeSpan.Zero));
+                TimeSpan.Zero,
+                rootsEnabled: false));
     }
 
     private sealed class TestGenerationFactory : IAsyncDisposable

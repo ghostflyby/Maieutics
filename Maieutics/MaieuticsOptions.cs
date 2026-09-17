@@ -53,6 +53,10 @@ public sealed class MaieuticsMcpServerOptions
     public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    // Maieutics extension keys (unknown to Claude/Cursor-format files). Null resolves by
+    // transport: stdio servers default to true, HTTP servers to false (ADR 0029 decision 1).
+    public bool? Roots { get; set; }
 }
 
 public sealed class MaieuticsModelProfileOptions

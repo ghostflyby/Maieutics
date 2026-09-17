@@ -195,6 +195,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IMaieuticsMcpController>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton(Workspace.Create(workspaceHome));
+        builder.Services.AddSingleton<IMcpWorkspaceRootsSource>(static services =>
+            new WorkspaceRootsSource(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton(denoReplOptions);
         builder.Services.AddSingleton(terminalOptions);
         builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();
@@ -546,4 +548,12 @@ public static class MaieuticsHost
             using var _ = JsonDocument.Parse(stream);
         }
     }
+}
+
+/// <summary>Exposes the live workspace root to MCP servers granted the roots capability
+/// (ADR 0029 decision 2): every query reads the current capture, so a workspace switch
+/// takes effect at the server's next query.</summary>
+internal sealed class WorkspaceRootsSource(Workspace workspace) : IMcpWorkspaceRootsSource
+{
+    public string? GetRootPath() => workspace.Capture().RootPath;
 }

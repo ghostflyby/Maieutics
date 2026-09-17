@@ -2037,12 +2037,14 @@ internal sealed class PluginHostManager(
                     TimeSpan.FromMinutes(2),
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromSeconds(30),
+                    true,
                     McpServerDefinition.CreateGenerationKey(
                         stdio,
                         TimeSpan.FromSeconds(30),
                         TimeSpan.FromMinutes(2),
                         TimeSpan.FromSeconds(5),
-                        TimeSpan.FromSeconds(30)));
+                        TimeSpan.FromSeconds(30),
+                        true));
                 return true;
 
             case HttpMcpTransportDefinition { Endpoint.IsAbsoluteUri: true } http:
@@ -2053,12 +2055,14 @@ internal sealed class PluginHostManager(
                     TimeSpan.FromMinutes(2),
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromSeconds(30),
+                    false,
                     McpServerDefinition.CreateGenerationKey(
                         http,
                         TimeSpan.FromSeconds(30),
                         TimeSpan.FromMinutes(2),
                         TimeSpan.FromSeconds(5),
-                        TimeSpan.FromSeconds(30)));
+                        TimeSpan.FromSeconds(30),
+                        false));
                 return true;
 
             default:

@@ -5,6 +5,15 @@ internal interface IMaieuticsMcpController
     IReadOnlyList<MaieuticsMcpServerInfo> GetMcpServers();
 }
 
+/// <summary>Supplies the current workspace root path to MCP servers that were granted the
+/// roots capability (ADR 0029): one root, read live on every server query so workspace
+/// switches take effect without notification machinery.</summary>
+internal interface IMcpWorkspaceRootsSource
+{
+    /// <summary>Gets the current workspace root path, or null when no workspace is open.</summary>
+    string? GetRootPath();
+}
+
 internal sealed record MaieuticsMcpServerInfo(
     string Id,
     string Transport,

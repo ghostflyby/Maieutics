@@ -370,7 +370,7 @@ public sealed class McpServerGenerationTests
             // for the SDK to inject its IProgress<ProgressNotificationValue> parameter.
             McpServerTool tool = reportProgress
                 ? McpServerTool.Create(
-                    (Func<string, IProgress<ProgressNotificationValue>, EchoResult>)ProgressingEcho,
+                    (Func<string, IProgress<ProgressNotificationValue>, CancellationToken, Task<EchoResult>>)ProgressingEcho,
                     new McpServerToolCreateOptions
                     {
                         Name = "echo",
@@ -397,10 +397,21 @@ public sealed class McpServerGenerationTests
             return ValueTask.FromResult(clientTransport);
         }
 
-        private static EchoResult ProgressingEcho(string value, IProgress<ProgressNotificationValue> progress)
+        private static async Task<EchoResult> ProgressingEcho(
+            string value,
+            IProgress<ProgressNotificationValue> progress,
+            CancellationToken cancellationToken)
         {
+            // The SDK processes each inbound message independently and disposes the per-call
+            // progress registration when the response is processed, so a progress notification
+            // that arrives simultaneously with the response races that disposal and can be
+            // dropped (observed deterministically on slow CI runners). Real servers report
+            // progress while the call is genuinely in flight, so the reports are spaced from
+            // the response instead of sent back-to-back with it.
             progress.Report(new ProgressNotificationValue { Progress = 25, Total = 100, Message = "quarter" });
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             progress.Report(new ProgressNotificationValue { Progress = 100, Total = 100 });
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             return new EchoResult(value);
         }
     }

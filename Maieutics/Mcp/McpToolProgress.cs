@@ -27,9 +27,18 @@ internal sealed class ProgressReportingAIFunction(McpClientTool tool, string ser
         // binds the sink to this call's context (the discovered tool instance is shared across
         // runs), and the SDK sends a progress token only while a sink is attached.
         var forwarder = new McpToolProgressForwarder(toolContext, serverId, logger);
-        return await tool.WithProgress(forwarder)
+        var result = await tool.WithProgress(forwarder)
             .InvokeAsync(arguments, cancellationToken)
             .ConfigureAwait(false);
+
+        // Drain notifications the SDK already dispatched before returning: their frames then
+        // reach the run channel before tool.finished. The SDK's per-call progress registration
+        // is disposed when the response is processed, and each inbound message is processed
+        // independently, so a notification racing the response can be dropped by the SDK
+        // (observed deterministically on slow CI runners) — draining narrows that window to
+        // notifications simultaneous with the response, whose progress is superseded anyway.
+        await forwarder.FlushAsync().ConfigureAwait(false);
+        return result;
     }
 }
 

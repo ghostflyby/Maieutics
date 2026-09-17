@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Commands;
@@ -24,7 +25,7 @@ internal sealed class FrontendFailureException(string code, string message) : Ex
 ///     WebSocket. Runs are owned by their <see cref="FrontendRunStream" />, which keeps
 ///     events flowing and replayable regardless of connections.
 /// </summary>
-internal sealed class FrontendSessionService
+internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 {
     private readonly MaieuticsCommandExecutor commandExecutor;
     private readonly FrontendDenoReplPresentationRouter presentationRouter;
@@ -507,6 +508,16 @@ internal sealed class FrontendSessionService
     public bool TryCompleteInput(string requestId, string value)
     {
         return presentationRouter.TryCompleteInput(requestId, value);
+    }
+
+    /// <inheritdoc />
+    public bool TryPublishPresentation(AgentSessionId sessionId, string type, JsonElement data)
+    {
+        var stream = HubFor(sessionId).Latest;
+        if (stream is null) return false;
+
+        stream.PublishPresentation(type, null, data, CancellationToken.None);
+        return true;
     }
 
     /// <summary>Cancels a run cooperatively and waits for its termination.</summary>

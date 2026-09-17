@@ -308,7 +308,7 @@ public sealed class McpServerGenerationTests
             .Throw<JsonException>();
     }
 
-    private static McpServerDefinition CreateStdioDefinition(bool rootsEnabled = false)
+    private static McpServerDefinition CreateStdioDefinition(bool rootsEnabled = false, bool elicitationEnabled = false)
     {
         var transport = new StdioMcpTransportDefinition(
             "unused",
@@ -323,13 +323,15 @@ public sealed class McpServerGenerationTests
             TimeSpan.FromSeconds(5),
             TimeSpan.Zero,
             rootsEnabled,
+            elicitationEnabled,
             McpServerDefinition.CreateGenerationKey(
                 transport,
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.Zero,
-                rootsEnabled));
+                rootsEnabled,
+                elicitationEnabled));
     }
 
     private sealed class StubRootsSource(string? rootPath) : IMcpWorkspaceRootsSource
@@ -400,7 +402,97 @@ public sealed class McpServerGenerationTests
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
-    private sealed class StreamServerFactory(bool reportProgress = false, bool requestRoots = false) : IAsyncDisposable
+    private sealed class StubElicitationPresenter(Func<McpElicitationRequest, McpElicitationAnswer> answer)
+        : IMcpElicitationPresenter
+    {
+        public ValueTask<McpElicitationAnswer> PresentAsync(
+            McpElicitationRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(answer(request));
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ElicitationRequestsRouteThroughThePresenterAndMapBack()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        McpElicitationRequest? presented = null;
+        await using var serverFactory = new StreamServerFactory(elicit: true);
+        var generation = await McpServerGeneration.CreateAsync(
+            CreateStdioDefinition(elicitationEnabled: true),
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            elicitationPresenter: new StubElicitationPresenter(request =>
+            {
+                presented = request;
+                return new McpElicitationAnswer("accept", "{\"token\":\"t0k\"}");
+            }));
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        var lease = acquired;
+        // Attribution rides the AgentToolContext the run attaches to every tool call; a call
+        // without one is a script-tool invocation and cannot be attributed.
+        var context = new AgentToolContext(
+            AgentSessionId.Create(),
+            AgentRunId.Create(),
+            AgentToolCallId.Create(),
+            (_, _) => ValueTask.CompletedTask);
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "echo" })
+        {
+            Context = new Dictionary<object, object?> { [typeof(AgentToolContext)] = context }
+        };
+
+        var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
+        await lease.DisposeAsync();
+
+        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        resultElement.GetProperty("structuredContent").GetProperty("value").GetString()
+            .Should().Be("echo:accept:t0k");
+        presented.Should().NotBeNull();
+        presented!.Message.Should().Be("echo token");
+        presented.Password.Should().BeFalse();
+        await generation.Retire().WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ServersWithoutElicitationEnabledCannotElicit()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory(elicit: true);
+        var generation = await McpServerGeneration.CreateAsync(
+            CreateStdioDefinition(elicitationEnabled: false),
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            elicitationPresenter: new StubElicitationPresenter(_ =>
+                new McpElicitationAnswer("accept", "{}")));
+
+        var acquired = generation.TryAcquire();
+        acquired.Should().NotBeNull();
+        var lease = acquired;
+        var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "echo" });
+
+        var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
+        await lease.DisposeAsync();
+
+        // No capability was declared, so the server-side elicitation fails and surfaces as a
+        // tool error instead of a presenter round trip.
+        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        resultElement.TryGetProperty("isError", out var isError).Should().BeTrue();
+        isError.GetBoolean().Should().BeTrue();
+        await generation.Retire().WaitAsync(deadline.Token);
+    }
+
+    private sealed class StreamServerFactory(bool reportProgress = false, bool requestRoots = false, bool elicit = false)
+        : IAsyncDisposable
     {
         private readonly CancellationTokenSource lifetime = new();
         private readonly List<(McpServer Server, Task Completion)> servers = [];
@@ -456,6 +548,15 @@ public sealed class McpServerGenerationTests
                             Description = "Echoes one value.",
                             UseStructuredContent = true
                         })
+                : elicit
+                    ? McpServerTool.Create(
+                        (Func<string, McpServer, CancellationToken, Task<EchoResult>>)ElicitingEcho,
+                        new McpServerToolCreateOptions
+                        {
+                            Name = "echo",
+                            Description = "Echoes one value.",
+                            UseStructuredContent = true
+                        })
                     : McpServerTool.Create(
                         AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
                         new McpServerToolCreateOptions { UseStructuredContent = true });
@@ -492,6 +593,31 @@ public sealed class McpServerGenerationTests
             progress.Report(new ProgressNotificationValue { Progress = 100, Total = 100 });
             await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             return new EchoResult(value);
+        }
+
+        private static async Task<EchoResult> ElicitingEcho(
+            string value,
+            McpServer server,
+            CancellationToken cancellationToken)
+        {
+            var result = await server.ElicitAsync(
+                new ElicitRequestParams
+                {
+                    Message = "echo token",
+                    RequestedSchema = new ElicitRequestParams.RequestSchema
+                    {
+                        Properties =
+                        {
+                            ["token"] = new ElicitRequestParams.StringSchema { Description = "The token" }
+                        }
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+            var token = result.Content is not null &&
+                        result.Content.TryGetValue("token", out var tokenElement)
+                ? tokenElement.GetString()
+                : null;
+            return new EchoResult($"{value}:{result.Action}:{token ?? "-"}");
         }
 
         private static async Task<EchoResult> RootsEcho(

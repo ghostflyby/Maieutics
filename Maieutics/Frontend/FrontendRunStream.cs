@@ -192,7 +192,9 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 type,
                 RequestId: request.RequestId,
                 Prompt: request.Prompt,
-                Password: request.Password));
+                Password: request.Password,
+                Schema: request.Schema,
+                ServerId: request.ServerId));
             return;
         }
 

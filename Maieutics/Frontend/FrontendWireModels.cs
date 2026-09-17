@@ -144,15 +144,22 @@ internal sealed record FrontendModelProfile(
 /// <summary>A status answer.</summary>
 internal sealed record FrontendStatusResponse([property: JsonPropertyName("markdown")] string Markdown);
 
-/// <summary>An input request announcement (server to frontend).</summary>
+/// <summary>An input request announcement (server to frontend). The optional schema and
+/// server id ride along for MCP elicitation requests (ADR 0029); older clients ignore
+/// unknown fields and can still decline.</summary>
 internal sealed record FrontendInputRequest(
     [property: JsonPropertyName("requestId")] string RequestId,
     [property: JsonPropertyName("prompt")] string Prompt,
-    [property: JsonPropertyName("password")] bool Password);
+    [property: JsonPropertyName("password")] bool Password,
+    [property: JsonPropertyName("schema")] JsonElement? Schema = null,
+    [property: JsonPropertyName("serverId")] string? ServerId = null);
 
-/// <summary>An input answer body (frontend to server).</summary>
+/// <summary>An input answer body (frontend to server). The optional action carries the
+/// elicitation terminal choice ("accept" default, "decline", "cancel"); REPL stdin answers
+/// omit it.</summary>
 internal sealed record FrontendInputAnswer(
-    [property: JsonPropertyName("value")] string Value);
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("action")] string? Action = null);
 
 /// <summary>A typed protocol error body.</summary>
 internal sealed record FrontendError(
@@ -229,7 +236,9 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("replayed")] bool? Replayed = null,
     [property: JsonPropertyName("model")] FrontendModelIdentity? Model = null,
     [property: JsonPropertyName("usage")] FrontendUsage? Usage = null,
-    [property: JsonPropertyName("queue")] FrontendQueueSnapshot? Queue = null);
+    [property: JsonPropertyName("queue")] FrontendQueueSnapshot? Queue = null,
+    [property: JsonPropertyName("schema")] JsonElement? Schema = null,
+    [property: JsonPropertyName("serverId")] string? ServerId = null);
 
 /// <summary>Source-generated JSON binding for the frontend wire (NativeAOT path).</summary>
 [JsonSourceGenerationOptions(

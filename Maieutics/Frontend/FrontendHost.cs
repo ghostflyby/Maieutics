@@ -37,6 +37,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private readonly FrontendOptions options;
     private readonly FrontendSessionService service;
+    private readonly FrontendElicitationPresenter elicitationPresenter;
     private readonly FrontendTurnQueue turnQueue;
     private readonly ObjectStore? objectStore;
     private readonly FrontendCommRouter? commRouter;
@@ -50,6 +51,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendSessionService service,
         FrontendTurnQueue turnQueue,
         ILogger<FrontendHost> logger,
+        FrontendElicitationPresenter? elicitationPresenter = null,
         ObjectStore? objectStore = null,
         FrontendCommRouter? commRouter = null)
     {
@@ -57,6 +59,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         this.service = service;
         this.turnQueue = turnQueue;
         this.logger = logger;
+        this.elicitationPresenter = elicitationPresenter
+            ?? new FrontendElicitationPresenter(NoFramesPublisher.Instance);
         this.objectStore = objectStore;
         this.commRouter = commRouter;
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
@@ -426,7 +430,12 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        if (!service.TryCompleteInput(requestId, request.Value))
+        // Elicitation answers carry the terminal action and complete against the elicitation
+        // presenter; REPL stdin answers (no action) route through the presentation router.
+        var completed = request.Action is not null
+            ? elicitationPresenter.TryCompleteInput(requestId, request.Action, request.Value)
+            : service.TryCompleteInput(requestId, request.Value);
+        if (!completed)
         {
             await WriteErrorAsync(
                 context,
@@ -1161,5 +1170,18 @@ internal sealed class FrontendHostedService(
                 "Could not publish the frontend discovery file; stopping the host.");
             lifetime.StopApplication();
         }
+    }
+}
+
+/// <summary>Fallback presenter sink used when the host is composed without an elicitation
+/// presenter (tests, tools-only frontends): nothing is ever pending, so every elicitation
+/// answer 404s at the input endpoint and the MCP side answers cancel.</summary>
+file sealed class NoFramesPublisher : IFrontendSessionFramePublisher
+{
+    internal static readonly NoFramesPublisher Instance = new();
+
+    public bool TryPublishPresentation(AgentSessionId sessionId, string type, JsonElement data)
+    {
+        return false;
     }
 }

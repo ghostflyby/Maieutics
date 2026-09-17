@@ -7,13 +7,15 @@
         "example-mcp-server"
       ],
       "env": {},
-      "roots": true
+      "roots": true,
+      "elicitation": true
     },
     "remote": {
       "type": "http",
       "url": "https://example.test/mcp",
       "headers": {},
-      "roots": false
+      "roots": false,
+      "elicitation": false
     }
   }
 }

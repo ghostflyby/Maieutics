@@ -1,3 +1,5 @@
+using Maieutics.Agent;
+
 namespace Maieutics.Execution;
 
 /// <summary>Fixed limits and defaults for the terminal tooling.</summary>
@@ -93,6 +95,18 @@ internal sealed record TerminalInfo(
     string Kind,
     int? ExitCode);
 
+/// <summary>The live state of one one-shot terminal session as a task resource handle
+/// (ADR 0028): timed-out one-shots stay readable at their task URI until closed.</summary>
+/// <param name="OwnerSessionId">The Agent session owning the terminal session.</param>
+/// <param name="SessionId">The terminal session id (the terminal_* tool handle).</param>
+/// <param name="State">The session's wire state ("running", "completed", ...).</param>
+/// <param name="ExitCode">The child's exit code once the one-shot settled.</param>
+internal sealed record TerminalTaskHandle(
+    AgentSessionId OwnerSessionId,
+    string SessionId,
+    string State,
+    int? ExitCode);
+
 /// <summary>The result of <c>terminal_close</c>: no payload, the session is gone.</summary>
 internal sealed record TerminalCloseResult;
 
@@ -131,14 +145,15 @@ internal sealed record TerminalSnapshotResult(
     int? ExitCode,
     TerminalFrame Frame);
 
-/// <summary>The outcome of one one-shot command call. <c>Running</c> carries the session handle to poll;
-/// <c>Completed</c> carries the exit code and the final frame.</summary>
+/// <summary>The outcome of one one-shot command call. <c>Running</c> carries the session handle to poll
+/// and its task resource URI (ADR 0028); <c>Completed</c> carries the exit code and the final frame.</summary>
 internal sealed record TerminalRunResult(
     string SessionId,
     string State,
     int? ExitCode,
     bool Settled,
-    TerminalFrame Frame);
+    TerminalFrame Frame,
+    string? TaskUri = null);
 
 internal sealed record TerminalInputResult(
     int ExecutedLines,

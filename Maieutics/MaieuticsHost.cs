@@ -405,9 +405,10 @@ public static class MaieuticsHost
     }
 
     /// <summary>Composes the resource plane in resolution order: the built-in workspace
-    /// provider, custom config-declared bridges, then the MCP resource provider whose
-    /// catalog source resolves lazily (the runtime configuration is still being built
-    /// when this registration runs; ADR 0026).</summary>
+    /// provider, the built-in task:// provider over terminal one-shots (ADR 0028), custom
+    /// config-declared bridges, then the MCP resource provider whose catalog source resolves
+    /// lazily (the runtime configuration is still being built when this registration runs;
+    /// ADR 0026).</summary>
     private static IReadOnlyList<Execution.IResourceProvider> BuildResourceProviders(IServiceProvider services)
     {
         var options = services.GetRequiredService<ResourceProviderOptions>();
@@ -415,6 +416,10 @@ public static class MaieuticsHost
         var providers = new List<Execution.IResourceProvider>
         {
             new WorkspaceResourceProvider(services.GetRequiredService<Workspace>()),
+            new Execution.TaskResourceProvider(
+            [
+                new Execution.TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>())
+            ]),
             new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
         };
         foreach (var custom in options.CustomProviders)

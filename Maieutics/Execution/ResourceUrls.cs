@@ -115,12 +115,14 @@ internal sealed class ResourceRegistry
 {
     // Only the owning class may claim a reserved scheme; a null owner means the scheme
     // is unallocatable (file:// stays closed so OS paths cannot bypass workspace
-    // containment). The workspace plane cannot be shadowed and the MCP escape-hatch
-    // scheme is owned by the MCP provider (ADR 0026 decision 2).
+    // containment). The workspace plane cannot be shadowed, the task plane is built-in
+    // (ADR 0028), and the MCP escape-hatch scheme is owned by the MCP provider
+    // (ADR 0026 decision 2).
     private static readonly IReadOnlyDictionary<string, ResourceProviderClass?> ReservedSchemeOwners =
         new Dictionary<string, ResourceProviderClass?>(StringComparer.OrdinalIgnoreCase)
         {
             ["workspace"] = ResourceProviderClass.BuiltIn,
+            ["task"] = ResourceProviderClass.BuiltIn,
             ["mcp"] = ResourceProviderClass.Mcp,
             ["file"] = null
         };

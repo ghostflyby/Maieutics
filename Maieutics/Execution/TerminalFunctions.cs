@@ -45,7 +45,9 @@ internal sealed class TerminalFunctions
                 "the program as a one-shot command: state 'completed' with the exitCode and final frame when " +
                 "it finishes in time, or state 'running' with sessionId as a live handle to poll with " +
                 "terminal_snapshot, feed input with terminal_input, interrupt with terminal_interrupt, or " +
-                "close with terminal_close. The one-shot session reports 'completed' after the program exits."),
+                "close with terminal_close; a running one-shot also returns taskUri, a " +
+                "task://terminal/... resource whose read_text snapshot shows its current status. The " +
+                "one-shot session reports 'completed' after the program exits."),
             CreateFunction(
                 (Func<AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalSnapshotResult>>)
                 SnapshotAsync,

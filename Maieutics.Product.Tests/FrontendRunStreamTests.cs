@@ -5,6 +5,7 @@ using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Frontend;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
@@ -248,6 +249,91 @@ public sealed class FrontendRunStreamTests
         }
     }
 
+    /// <summary>
+    ///     An Agent fault is observable only through the frontend: `Maieutics.Agent` emits no
+    ///     log records by design (docs/logging.md), and the `run.failed` frame carries its
+    ///     code only to clients still attached. Pin the log record, or a failed run becomes
+    ///     an unexplained 4xx/timeout for whoever investigates.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task AnAgentFailureLogsItsProtocolCode()
+    {
+        var logger = new CapturingLogger();
+        var run = ScriptedRun.FaultingWith(
+            count: 2,
+            new AgentContentCompatibilityException("text/unknown", new InvalidOperationException("boom")));
+        var stream = FrontendRunStream.Create(AgentSessionId.Create(), run, presentationRouter: null, logger);
+        stream.Start(null);
+
+        var (_, channel) = stream.Subscribe(sinceSequence: 0);
+        await foreach (var frame in channel.Reader.ReadAllAsync(TestContext.Current.CancellationToken))
+            if (frame.Type == "run.failed")
+                break;
+        stream.Unsubscribe(channel);
+        await stream.DisposeAsync();
+
+        var runId = run.Id.Value.ToString("N");
+        var record = logger.Records.Should()
+            .ContainSingle(entry => entry.Message.Contains("agent_unsupported_response", StringComparison.Ordinal))
+            .Subject;
+        record.Level.Should().Be(LogLevel.Warning);
+        record.Message.Should().Contain(runId);
+        record.Exception.Should().BeOfType<AgentContentCompatibilityException>();
+    }
+
+    /// <summary>
+    ///     When the pump stops with the run still incomplete, the settlement cancels it, so
+    ///     the outcome a caller observes is that cancellation rather than the run's own
+    ///     result. Without a record the two are indistinguishable in the logs.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task AnIncompletePumpSettlementLogsThatItCancelledTheRun()
+    {
+        var logger = new CapturingLogger();
+        var run = ScriptedRun.FaultingAfter(2);
+        var stream = FrontendRunStream.Create(AgentSessionId.Create(), run, presentationRouter: null, logger);
+        stream.Start(null);
+
+        var (_, channel) = stream.Subscribe(sinceSequence: 0);
+        await foreach (var frame in channel.Reader.ReadAllAsync(TestContext.Current.CancellationToken))
+            if (frame.Type == "run.failed")
+                break;
+        stream.Unsubscribe(channel);
+        await stream.DisposeAsync();
+
+        var runId = run.Id.Value.ToString("N");
+        logger.Records.Should().Contain(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains(runId, StringComparison.Ordinal) &&
+            entry.Message.Contains("still incomplete", StringComparison.Ordinal));
+        // The settle line must state the outcome; the cancellation the sweep issues is what
+        // the run's completion reports, so a reader can tell it apart from the run's own result.
+        logger.Records.Should().Contain(entry =>
+            entry.Message.Contains(runId, StringComparison.Ordinal) &&
+            entry.Message.Contains("settled with outcome", StringComparison.Ordinal));
+    }
+
+    /// <summary>Captures records so tests can assert on the diagnostic surface.</summary>
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message, Exception? Exception)> Records { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Records.Add((logLevel, formatter(state, exception), exception));
+        }
+    }
+
     /// <summary>A run whose pump is never started; presentation publishing only needs
     /// the identity and the replay buffer.</summary>
     private sealed class NeverCompletingRun : IAgentRun
@@ -323,6 +409,13 @@ public sealed class FrontendRunStreamTests
             return new ScriptedRun(run => Iterate(run, count, gate: null, faultAfter: count));
         }
 
+        /// <summary>A run whose event stream faults with a typed <see cref="AgentException" />,
+        /// modeling a run that fails with a protocol-visible cause.</summary>
+        public static ScriptedRun FaultingWith(int count, Exception failure)
+        {
+            return new ScriptedRun(run => Iterate(run, count, gate: null, faultAfter: count, failure: failure));
+        }
+
         public async Task CancelAsync(CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref cancelCount);
@@ -351,14 +444,15 @@ public sealed class FrontendRunStreamTests
             ScriptedRun run,
             int count,
             TaskCompletionSource? gate,
-            int? faultAfter)
+            int? faultAfter,
+            Exception? failure = null)
         {
             var messageId = AgentMessageId.Create();
             for (var sequence = 1; sequence <= count; sequence++)
             {
                 yield return new AgentTextDelta(run.Id, sequence, messageId, $"d{sequence}");
                 if (faultAfter is { } fault && sequence == fault)
-                    throw new InvalidOperationException("The content mapping failed unexpectedly.");
+                    throw failure ?? new InvalidOperationException("The content mapping failed unexpectedly.");
             }
 
             if (gate is not null) await gate.Task.ConfigureAwait(false);

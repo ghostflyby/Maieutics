@@ -257,8 +257,21 @@ public sealed class FrontendApiIntegrationTests
         var error = await second.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         error.GetProperty("code").GetString().Should().Be("agent_busy");
 
+        // "busy" has two causes with different remedies: the first run holding the
+        // session's single-run gate (what this test is about), or the previous run still
+        // detaching its presentation scope. The code alone cannot tell them apart, so pin
+        // the intended one — the first run must still be in flight against the hanging
+        // provider. Without this, a race satisfies the assertion for the wrong reason and
+        // the real failure lands later as an opaque wait timeout.
+        harness.SessionService.TryGetRun(first, out var firstStream).Should().BeTrue();
+        if (firstStream is null)
+            throw new InvalidOperationException(
+                $"Run {first} is not retained; the busy rejection cannot be attributed to an in-flight run.");
+        firstStream.Completion.IsCompleted.Should().BeFalse(
+            "the first turn must still be running when the second submission is rejected as busy");
+
         harness.ReleaseProvider();
-        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId: first);
     }
 
     [Fact(Timeout = 60_000)]
@@ -1648,7 +1661,10 @@ public sealed class FrontendApiIntegrationTests
 
         public void ReleaseProvider() => hangingProvider?.Release();
 
-        public async Task WaitForTurnCommittedAsync(string sessionId, CancellationToken cancellationToken)
+        public async Task WaitForTurnCommittedAsync(
+            string sessionId,
+            CancellationToken cancellationToken,
+            string? runId = null)
         {
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             wait.CancelAfter(TimeSpan.FromSeconds(20));
@@ -1659,8 +1675,42 @@ public sealed class FrontendApiIntegrationTests
                     wait.Token);
                 if (transcript.GetProperty("turns").GetArrayLength() > 0) return;
 
+                // A run that already settled can never commit a turn, so polling until the
+                // budget expires only rewrites the real cause as an empty
+                // TaskCanceledException. Name it instead: the run's retained stream carries
+                // the protocol code the pump published.
+                if (runId is not null && DescribeSettledRunWithoutCommit(runId) is { } settled)
+                    throw new InvalidOperationException(
+                        $"Run {runId} settled ({settled}) without committing a turn to session {sessionId}; the turn can never appear in the transcript.");
+
                 await Task.Delay(50, wait.Token);
             }
+        }
+
+        /// <summary>Describes a run that has already settled, or returns null when it is
+        /// still in flight (or evicted from the retained registry). Converts a bare wait
+        /// timeout into the run's actual outcome and protocol code.</summary>
+        private string? DescribeSettledRunWithoutCommit(string runId)
+        {
+            if (!SessionService.TryGetRun(runId, out var stream) || stream is null) return null;
+
+            var completion = stream.Completion;
+            if (!completion.IsCompleted) return null;
+
+            var outcome = completion.Status switch
+            {
+                TaskStatus.RanToCompletion => "completed",
+                TaskStatus.Faulted => "faulted",
+                TaskStatus.Canceled => "cancelled",
+                _ => "pending"
+            };
+            if (completion.Exception?.GetBaseException() is not { } cause)
+                return $"{outcome}, no failure recorded";
+
+            var code = cause is Maieutics.Agent.AgentException agentException
+                ? Maieutics.Frontend.FrontendErrors.MapAgentException(agentException)
+                : "agent_error";
+            return $"{outcome}, code={code}, cause={cause.GetType().Name}: {cause.Message}";
         }
 
         public async ValueTask DisposeAsync()

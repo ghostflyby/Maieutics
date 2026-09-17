@@ -300,26 +300,45 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
+            // Shutdown; CancelForShutdownAsync records the cancellation source.
             await CancelForShutdownAsync().ConfigureAwait(false);
         }
         catch (OperationCanceledException exception)
         {
             // The run itself was cancelled (frontend cancel endpoint); the completion task
             // already carried the failure, so only the pump's own observation path lands here.
+            logger.LogInformation(
+                exception,
+                "Frontend run {RunId} of session {SessionId} was cancelled during execution; publishing run.failed with code {Code}.",
+                run.Id,
+                sessionId,
+                RunFailedCodes.Cancelled);
             Publish(new FrontendEventFrame(
                 "run.failed",
                 RunId: run.Id.Value.ToString("N"),
-                Code: "run_cancelled",
+                Code: RunFailedCodes.Cancelled,
                 Message: exception.Message));
             Publish(new FrontendEventFrame("run.status", State: "idle"));
             await SettleRunAsync().ConfigureAwait(false);
         }
         catch (AgentException exception)
         {
+            var code = FrontendErrors.MapAgentException(exception);
+            // The run faulted, so the pump could not drain it to a terminal result. This
+            // record is the only place the typed cause is observable: Maieutics.Agent emits
+            // no log records of its own by design (docs/logging.md), the wire frame carries
+            // the code but only to attached clients, and the run settles as "failed" with no
+            // further detail. Without it a failed run is a silent 4xx/timeout to the caller.
+            logger.LogWarning(
+                exception,
+                "Frontend run {RunId} of session {SessionId} failed with agent code {Code}; publishing run.failed.",
+                run.Id,
+                sessionId,
+                code);
             Publish(new FrontendEventFrame(
                 "run.failed",
                 RunId: run.Id.Value.ToString("N"),
-                Code: FrontendErrors.MapAgentException(exception),
+                Code: code,
                 Message: exception.Message));
             Publish(new FrontendEventFrame("run.status", State: "idle"));
             await SettleRunAsync().ConfigureAwait(false);
@@ -330,7 +349,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             Publish(new FrontendEventFrame(
                 "run.failed",
                 RunId: run.Id.Value.ToString("N"),
-                Code: "agent_error",
+                Code: RunFailedCodes.AgentError,
                 Message: "The agent turn failed."));
             Publish(new FrontendEventFrame("run.status", State: "idle"));
             await SettleRunAsync().ConfigureAwait(false);
@@ -375,6 +394,17 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         if (Interlocked.Exchange(ref settleState, 1) != 0) return;
         if (!run.Completion.IsCompleted)
         {
+            // The pump exited without the run reaching a terminal state: either an
+            // unanticipated failure, or shutdown racing a wedged provider. The sweep below
+            // cancels it so the session's single-run gate is released — which means the
+            // "failed"/"cancelled" outcome a caller observes may be this cancellation, not
+            // the run's own result. Record it, or a settled-as-failed run is indistinguishable
+            // from a provider fault in the logs.
+            logger.LogWarning(
+                "Frontend run {RunId} of session {SessionId} was still incomplete when the pump stopped draining it ({Status}); cancelling it to release the session's turn gate. The resulting outcome is this settlement, not the run's own result.",
+                run.Id,
+                sessionId,
+                DescribeCompletion(run.Completion));
             try
             {
                 using var budget = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
@@ -392,15 +422,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
         await ObserveCompletionAsync().ConfigureAwait(false);
         logger.LogDebug(
-            "Frontend run {RunId} settled with outcome {Outcome}.",
+            "Frontend run {RunId} settled with outcome {Outcome}{FailureCode}.",
             run.Id,
-            run.Completion.Status switch
-            {
-                TaskStatus.RanToCompletion => "completed",
-                TaskStatus.Faulted => "failed",
-                TaskStatus.Canceled => "cancelled",
-                _ => "pending"
-            });
+            DescribeCompletion(run.Completion),
+            DescribeFailure(run.Completion));
         try
         {
             await run.DisposeAsync().ConfigureAwait(false);
@@ -415,10 +440,15 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private async Task CancelForShutdownAsync()
     {
+        logger.LogInformation(
+            "Frontend run {RunId} of session {SessionId} is being cancelled because the host is shutting down; publishing run.failed with code {Code}.",
+            run.Id,
+            sessionId,
+            RunFailedCodes.Cancelled);
         Publish(new FrontendEventFrame(
             "run.failed",
             RunId: run.Id.Value.ToString("N"),
-            Code: "run_cancelled",
+            Code: RunFailedCodes.Cancelled,
             Message: "The host is shutting down."));
         Publish(new FrontendEventFrame("run.status", State: "idle"));
         try
@@ -445,6 +475,30 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         {
             // The terminal frame already carries the failure; this only observes the task.
         }
+    }
+
+    private static string DescribeCompletion(Task<AgentRunResult> completion)
+    {
+        return completion.Status switch
+        {
+            TaskStatus.RanToCompletion => "completed",
+            TaskStatus.Faulted => "failed",
+            TaskStatus.Canceled => "cancelled",
+            _ => "pending"
+        };
+    }
+
+    /// <summary>Renders the run's typed failure as <c> (code=…)</c> so a settled-as-failed
+    /// line names the protocol code directly, or an empty string when nothing failed.
+    /// <see cref="Task.Exception" /> never throws, so this is safe on any status.</summary>
+    private static string DescribeFailure(Task<AgentRunResult> completion)
+    {
+        if (completion.Exception is not { } aggregate) return string.Empty;
+        var cause = aggregate.GetBaseException();
+        var code = cause is AgentException agentException
+            ? FrontendErrors.MapAgentException(agentException)
+            : RunFailedCodes.AgentError;
+        return $" (code={code}, cause={cause.GetType().Name})";
     }
 
     private void PublishTerminal(AgentRunResult result, bool truncated)
@@ -670,7 +724,19 @@ internal static class FrontendErrors
             AgentContentCompatibilityException => "agent_unsupported_response",
             AgentUnsupportedResponseException => "agent_unsupported_response",
             AgentTurnInProgressException => Busy,
-            _ => "agent_error"
+            _ => RunFailedCodes.AgentError
         };
     }
+}
+
+/// <summary>
+///     The <c>run.failed</c> codes the frontend emits that are not derived from an
+///     <see cref="AgentException" />. Single-sourced so a log record and the wire frame it
+///     describes can never disagree; the values are frontend protocol surface
+///     (<c>docs/web-frontend-protocol.md</c>) and must not change.
+/// </summary>
+internal static class RunFailedCodes
+{
+    internal const string Cancelled = "run_cancelled";
+    internal const string AgentError = "agent_error";
 }

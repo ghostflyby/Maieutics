@@ -49,3 +49,22 @@ retention; `if-no-files-found: ignore` keeps passing runs clean.
 `Maieutics.Agent` deliberately emits no log records: its typed event stream is the observable
 surface for runs, turns, and tool activity. Hosts and adapters that compose the Agent log on its
 behalf.
+
+## Maieutics.Frontend run failures
+
+Because `Maieutics.Agent` is silent, the frontend adapter is the only place a run's typed cause
+becomes observable. `FrontendRunStream` logs every path that produces a terminal `run.failed`
+frame, and the frontend logs every rejected request:
+
+| Event | Level | Why |
+|---|---|---|
+| Run failed with an `AgentException` (with its protocol code) | Warning | A user-visible failure whose cause exists nowhere else; the wire frame carries the code only to clients still attached |
+| Run cancelled during execution, or by host shutdown | Information | Names which of the two cancellation sources ended the run |
+| Pump stopped with the run still incomplete, so settlement cancels it | Warning | The outcome a caller observes is this cancellation, not the run's own result |
+| A direct turn rejected as `agent_busy` | Warning | Records which `agent_busy` cause applied: another run holding the single-run gate, or a previous run still detaching its presentation scope |
+| An unwired run's cancellation or disposal failed | Warning | If the gate is not actually released, every retry keeps answering `agent_busy` with no other trace |
+| Every rejected frontend request (`FrontendHost.WriteErrorAsync`) | Debug | Blanket coverage for 4xx codes whose decision point does not log. A rejection after the response started is a Warning: the client received a partial response |
+| Run settled (outcome, plus code and cause when it failed) | Debug | Lifecycle detail; the failure itself was already logged at Warning above |
+
+Run and session identifiers are correlation ids, never secrets; no record on this path carries a
+request body, prompt text, or the bearer token.

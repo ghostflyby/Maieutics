@@ -107,7 +107,7 @@ always object references — never base64, regardless of payload size
 (invariant 26); a value under a binary mime that is not a reference carries
 no renderable data and clients fall back to the bundle's other mimes.
 
-## Input requests (REPL stdin)
+## Input requests (REPL stdin and MCP elicitation)
 
 A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
 with:
@@ -117,7 +117,14 @@ POST /v1/agent/inputs/{requestId}   body: {"value": "..."}   → 200 {} | 404
 ```
 
 The answer completes the pending request; a second answer for the same id is
-`404`. If the run ends (or the presentation scope detaches) before an answer
+`404`.
+
+MCP elicitation requests (ADR 0029) use the same frame with two optional
+fields, `schema` (the server's primitive form schema object) and `serverId`
+(the configured server that raised it); older clients ignore them and can
+still answer. Their answers additionally carry `action`: omit it (or
+`"accept"`) with `value` set to a JSON object of field values for form
+elicitation, or send `{"value":"", "action":"decline"|"cancel"}` to refuse. If the run ends (or the presentation scope detaches) before an answer
 arrives, the request is cancelled server-side and any late answer is `404`.
 Dismissing the input box should post an empty value.
 
@@ -328,6 +335,7 @@ JSON text:
 {"type": "repl.updateDisplay", "displayId": "…", "mime": "text/markdown", "data": "…"}
 {"type": "run.status", "state": "busy" | "idle"}
 {"type": "input.request", "requestId": "input-<unique>-1", "prompt": "Name:", "password": false}
+{"type": "input.request", "requestId": "elicit-<unique>-1", "prompt": "Pick:", "password": false, "schema": {"type":"object","properties":{…}}, "serverId": "srv"}
 ```
 
 Rules:

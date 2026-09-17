@@ -40,6 +40,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly ILoggerFactory loggerFactory;
     private readonly McpClientTransportFactory? mcpTransportFactory;
     private readonly IMcpWorkspaceRootsSource? workspaceRootsSource;
+    private readonly IMcpElicitationPresenter? elicitationPresenter;
     private PluginHostManager? pluginHosts;
 
     // The bounded channel is only an edge trigger. reloadRequest remains authoritative when duplicate
@@ -81,7 +82,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
         McpClientTransportFactory? mcpTransportFactory = null,
-        IMcpWorkspaceRootsSource? workspaceRootsSource = null)
+        IMcpWorkspaceRootsSource? workspaceRootsSource = null,
+        IMcpElicitationPresenter? elicitationPresenter = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -92,6 +94,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.startupDirectory = startupDirectory ?? throw new ArgumentNullException(nameof(startupDirectory));
         this.mcpTransportFactory = mcpTransportFactory;
         this.workspaceRootsSource = workspaceRootsSource;
+        this.elicitationPresenter = elicitationPresenter;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
@@ -993,7 +996,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     cancellationToken,
                     mcpTransportFactory,
                     reservedToolNames,
-                    workspaceRootsSource).ConfigureAwait(false);
+                    workspaceRootsSource,
+                    elicitationPresenter).ConfigureAwait(false);
                 createdMcp.Add(generation);
                 mcpServers.Add(server.Id, generation);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1272,12 +1276,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 {
                     "Enabled", "Type", "Transport", "Command", "Arguments", "Args", "WorkingDirectory",
                     "EnvironmentVariables", "Env", "InitializationTimeout", "RequestTimeout", "ShutdownTimeout",
-                    "Roots"
+                    "Roots", "Elicitation"
                 }
                 :
                 [
                     "Enabled", "Type", "Transport", "Url", "Headers", "ConnectionTimeout",
-                    "InitializationTimeout", "RequestTimeout", "Roots"
+                    "InitializationTimeout", "RequestTimeout", "Roots", "Elicitation"
                 ];
             ValidateConfigurationKeys(serverSection, $"MCP server '{serverId}'", allowedKeys);
 
@@ -1288,6 +1292,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             // permission module (same trust line), a remote HTTP server gets nothing until opted in
             // (ADR 0029 decision 1).
             var rootsEnabled = serverOptions.Roots ?? transport == McpServerTransportKind.Stdio;
+            var elicitationEnabled = serverOptions.Elicitation ?? transport == McpServerTransportKind.Stdio;
 
             McpTransportDefinition transportDefinition;
             var shutdownTimeout = TimeSpan.Zero;
@@ -1351,7 +1356,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 serverOptions.RequestTimeout,
                 shutdownTimeout,
                 connectionTimeout,
-                rootsEnabled);
+                rootsEnabled,
+                elicitationEnabled);
             result.Add(new McpServerDefinition(
                 serverId,
                 transportDefinition,
@@ -1360,6 +1366,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 shutdownTimeout,
                 connectionTimeout,
                 rootsEnabled,
+                elicitationEnabled,
                 generationKey));
         }
 

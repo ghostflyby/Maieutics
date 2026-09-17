@@ -242,13 +242,15 @@ public sealed class McpResourceIntegrationTests
                 TimeSpan.FromSeconds(5),
                 TimeSpan.Zero,
                 false,
+                false,
                 McpServerDefinition.CreateGenerationKey(
                     transportDefinition,
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromSeconds(5),
                     TimeSpan.Zero,
-                    rootsEnabled: false));
+                    rootsEnabled: false,
+                    elicitationEnabled: false));
             var generation = await McpServerGeneration.CreateAsync(
                 definition,
                 NullLoggerFactory.Instance,

@@ -63,6 +63,7 @@ internal sealed record McpServerDefinition(
     TimeSpan ShutdownTimeout,
     TimeSpan ConnectionTimeout,
     bool RootsEnabled,
+    bool ElicitationEnabled,
     string GenerationKey)
 {
     internal static string CreateGenerationKey(
@@ -71,7 +72,8 @@ internal sealed record McpServerDefinition(
         TimeSpan requestTimeout,
         TimeSpan shutdownTimeout,
         TimeSpan connectionTimeout,
-        bool rootsEnabled)
+        bool rootsEnabled,
+        bool elicitationEnabled)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
@@ -124,6 +126,7 @@ internal sealed record McpServerDefinition(
         Add(shutdownTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         Add(connectionTimeout.Ticks.ToString(CultureInfo.InvariantCulture));
         Add(rootsEnabled ? "roots" : string.Empty);
+        Add(elicitationEnabled ? "elicitation" : string.Empty);
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 }
@@ -143,6 +146,7 @@ internal sealed class McpServerGeneration
     private readonly TimeProvider timeProvider;
     private readonly McpClientTransportFactory transportFactory;
     private readonly IMcpWorkspaceRootsSource? rootsSource;
+    private readonly McpElicitationCoordinator? elicitationCoordinator;
     private McpConnectionGeneration? current;
     private TimeSpan? nextReconnectDelay;
     private Task? retirement;
@@ -155,6 +159,7 @@ internal sealed class McpServerGeneration
         McpClientTransportFactory transportFactory,
         IReadOnlySet<string>? reservedToolNames,
         IMcpWorkspaceRootsSource? rootsSource,
+        McpElicitationCoordinator? elicitationCoordinator,
         McpConnectionGeneration connection)
     {
         this.definition = definition;
@@ -163,6 +168,7 @@ internal sealed class McpServerGeneration
         this.transportFactory = transportFactory;
         this.reservedToolNames = reservedToolNames;
         this.rootsSource = rootsSource;
+        this.elicitationCoordinator = elicitationCoordinator;
         logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
         current = connection;
     }
@@ -178,16 +184,23 @@ internal sealed class McpServerGeneration
         CancellationToken cancellationToken,
         McpClientTransportFactory? transportFactory = null,
         IReadOnlySet<string>? reservedToolNames = null,
-        IMcpWorkspaceRootsSource? rootsSource = null)
+        IMcpWorkspaceRootsSource? rootsSource = null,
+        IMcpElicitationPresenter? elicitationPresenter = null)
     {
         transportFactory ??= CreateTransportAsync;
+        var coordinator = elicitationPresenter is null
+            ? null
+            : new McpElicitationCoordinator(
+                elicitationPresenter,
+                loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}"));
         var connection = await CreateConnectionAsync(
             definition,
             loggerFactory,
             transportFactory,
             cancellationToken,
             reservedToolNames,
-            rootsSource).ConfigureAwait(false);
+            rootsSource,
+            coordinator).ConfigureAwait(false);
         var generation = new McpServerGeneration(
             definition,
             loggerFactory,
@@ -195,6 +208,7 @@ internal sealed class McpServerGeneration
             transportFactory,
             reservedToolNames,
             rootsSource,
+            coordinator,
             connection);
         generation.supervisor = generation.SuperviseAsync();
         return generation;
@@ -410,7 +424,8 @@ internal sealed class McpServerGeneration
                     transportFactory,
                     lifetime.Token,
                     reservedToolNames,
-                    rootsSource).ConfigureAwait(false);
+                    rootsSource,
+                    elicitationCoordinator).ConfigureAwait(false);
                 lock (gate)
                 {
                     if (retirement is null)
@@ -450,7 +465,8 @@ internal sealed class McpServerGeneration
         McpClientTransportFactory transportFactory,
         CancellationToken cancellationToken,
         IReadOnlySet<string>? reservedToolNames,
-        IMcpWorkspaceRootsSource? rootsSource = null)
+        IMcpWorkspaceRootsSource? rootsSource = null,
+        McpElicitationCoordinator? elicitationCoordinator = null)
     {
         var refreshSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
         {
@@ -490,6 +506,14 @@ internal sealed class McpServerGeneration
             handlers.RootsHandler = (_, cancellationToken) => BuildRootsAsync(rootsSource, cancellationToken);
         }
 #pragma warning restore MCP9005
+        if (definition.ElicitationEnabled && elicitationCoordinator is { IsEnabled: true })
+        {
+            handlers.ElicitationHandler = (request, cancellationToken) =>
+                elicitationCoordinator.HandleElicitationAsync(
+                    definition.Id,
+                    request ?? new ElicitRequestParams { Message = string.Empty },
+                    cancellationToken);
+        }
 
         var clientOptions = new McpClientOptions
         {
@@ -508,7 +532,8 @@ internal sealed class McpServerGeneration
             definition,
             refreshSignals,
             reservedToolNames,
-            loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}"));
+            loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}"),
+            elicitationCoordinator);
         try
         {
             connection.StartSubscriptionListener();
@@ -656,7 +681,8 @@ internal sealed class McpServerGeneration
         McpServerDefinition definition,
         Channel<byte> refreshSignals,
         IReadOnlySet<string>? reservedToolNames,
-        ILogger logger)
+        ILogger logger,
+        McpElicitationCoordinator? elicitationCoordinator = null)
     {
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock gate = new();
@@ -773,7 +799,7 @@ internal sealed class McpServerGeneration
                 }
 
                 exposed.Add(new TimeoutAIFunction(
-                    new ProgressReportingAIFunction(tool, definition.Id, logger),
+                    new ProgressReportingAIFunction(tool, definition.Id, logger, elicitationCoordinator),
                     definition.RequestTimeout));
                 info.Add(new MaieuticsMcpToolInfo(name, name, true));
             }

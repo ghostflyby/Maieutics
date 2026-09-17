@@ -2038,12 +2038,14 @@ internal sealed class PluginHostManager(
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromSeconds(30),
                     true,
+                    true,
                     McpServerDefinition.CreateGenerationKey(
                         stdio,
                         TimeSpan.FromSeconds(30),
                         TimeSpan.FromMinutes(2),
                         TimeSpan.FromSeconds(5),
                         TimeSpan.FromSeconds(30),
+                        true,
                         true));
                 return true;
 
@@ -2056,12 +2058,14 @@ internal sealed class PluginHostManager(
                     TimeSpan.FromSeconds(5),
                     TimeSpan.FromSeconds(30),
                     false,
+                    false,
                     McpServerDefinition.CreateGenerationKey(
                         http,
                         TimeSpan.FromSeconds(30),
                         TimeSpan.FromMinutes(2),
                         TimeSpan.FromSeconds(5),
                         TimeSpan.FromSeconds(30),
+                        false,
                         false));
                 return true;
 

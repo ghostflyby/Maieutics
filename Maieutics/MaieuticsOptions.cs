@@ -57,6 +57,8 @@ public sealed class MaieuticsMcpServerOptions
     // Maieutics extension keys (unknown to Claude/Cursor-format files). Null resolves by
     // transport: stdio servers default to true, HTTP servers to false (ADR 0029 decision 1).
     public bool? Roots { get; set; }
+
+    public bool? Elicitation { get; set; }
 }
 
 public sealed class MaieuticsModelProfileOptions

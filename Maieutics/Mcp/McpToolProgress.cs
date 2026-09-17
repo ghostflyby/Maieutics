@@ -9,10 +9,16 @@ using ModelContextProtocol.Client;
 namespace Maieutics.Mcp;
 
 /// <summary>Wraps one discovered MCP tool so the server's progress notifications reach the owning
-/// Agent tool call as bounded progress content (the same channel built-in tools report through).
-/// The wrapper is inert outside a Maieutics tool call: script-tool invocations carry no
-/// <see cref="AgentToolContext"/>, so those calls keep the plain transport behavior.</summary>
-internal sealed class ProgressReportingAIFunction(McpClientTool tool, string serverId, ILogger logger)
+/// Agent tool call as bounded progress content (the same channel built-in tools report through),
+/// and so the call's session is attributed while in flight for reverse requests like
+/// elicitation (ADR 0029 decision 3). The wrapper is inert outside a Maieutics tool call:
+/// script-tool invocations carry no <see cref="AgentToolContext"/>, so those calls keep the
+/// plain transport behavior.</summary>
+internal sealed class ProgressReportingAIFunction(
+    McpClientTool tool,
+    string serverId,
+    ILogger logger,
+    McpElicitationCoordinator? attribution = null)
     : DelegatingAIFunction(tool)
 {
     protected override async ValueTask<object?> InvokeCoreAsync(
@@ -23,22 +29,30 @@ internal sealed class ProgressReportingAIFunction(McpClientTool tool, string ser
             value is not AgentToolContext toolContext)
             return await tool.InvokeAsync(arguments, cancellationToken).ConfigureAwait(false);
 
-        // WithProgress copies the tool with one progress sink attached; a per-invocation copy
-        // binds the sink to this call's context (the discovered tool instance is shared across
-        // runs), and the SDK sends a progress token only while a sink is attached.
-        var forwarder = new McpToolProgressForwarder(toolContext, serverId, logger);
-        var result = await tool.WithProgress(forwarder)
-            .InvokeAsync(arguments, cancellationToken)
-            .ConfigureAwait(false);
+        attribution?.RegisterCall(toolContext.CallId, toolContext.SessionId);
+        try
+        {
+            // WithProgress copies the tool with one progress sink attached; a per-invocation copy
+            // binds the sink to this call's context (the discovered tool instance is shared across
+            // runs), and the SDK sends a progress token only while a sink is attached.
+            var forwarder = new McpToolProgressForwarder(toolContext, serverId, logger);
+            var result = await tool.WithProgress(forwarder)
+                .InvokeAsync(arguments, cancellationToken)
+                .ConfigureAwait(false);
 
-        // Drain notifications the SDK already dispatched before returning: their frames then
-        // reach the run channel before tool.finished. The SDK's per-call progress registration
-        // is disposed when the response is processed, and each inbound message is processed
-        // independently, so a notification racing the response can be dropped by the SDK
-        // (observed deterministically on slow CI runners) — draining narrows that window to
-        // notifications simultaneous with the response, whose progress is superseded anyway.
-        await forwarder.FlushAsync().ConfigureAwait(false);
-        return result;
+            // Drain notifications the SDK already dispatched before returning: their frames then
+            // reach the run channel before tool.finished. The SDK's per-call progress registration
+            // is disposed when the response is processed, and each inbound message is processed
+            // independently, so a notification racing the response can be dropped by the SDK
+            // (observed deterministically on slow CI runners) — draining narrows that window to
+            // notifications simultaneous with the response, whose progress is superseded anyway.
+            await forwarder.FlushAsync().ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            attribution?.UnregisterCall(toolContext.CallId);
+        }
     }
 }
 

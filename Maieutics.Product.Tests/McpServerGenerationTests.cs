@@ -161,12 +161,18 @@ public sealed class McpServerGenerationTests
         acquired.Should().NotBeNull();
         var lease = acquired;
         var reported = new List<JsonElement>();
+        var bothForwarded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var context = CreateProgressContext((content, _) =>
         {
             var data = content.Should().BeOfType<DataContent>().Subject;
             data.MediaType.Should().Be("application/json");
             using var document = JsonDocument.Parse(data.Data);
-            reported.Add(document.RootElement.Clone());
+            lock (reported)
+            {
+                reported.Add(document.RootElement.Clone());
+                if (reported.Count == 2) bothForwarded.TrySetResult();
+            }
+
             return ValueTask.CompletedTask;
         });
         var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "hello" })
@@ -175,6 +181,10 @@ public sealed class McpServerGenerationTests
         };
 
         var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
+        // The invoke completing does not happen after the notification handlers run: the SDK
+        // dispatches them on the thread pool, and the forwarder reports asynchronously. Wait
+        // for both notifications to land before asserting (bounded; CI runners expose the gap).
+        await bothForwarded.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await lease.DisposeAsync();
 
         result.Should().BeOfType<JsonElement>();

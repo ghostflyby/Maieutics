@@ -184,7 +184,7 @@ public sealed class McpServerGenerationTests
         // The invoke completing does not happen after the notification handlers run: the SDK
         // dispatches them on the thread pool, and the forwarder reports asynchronously. Wait
         // for both notifications to land before asserting (bounded; CI runners expose the gap).
-        await bothForwarded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await bothForwarded.Task.WaitAsync(TimeSpan.FromSeconds(5), deadline.Token);
         await lease.DisposeAsync();
 
         result.Should().BeOfType<JsonElement>();

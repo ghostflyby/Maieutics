@@ -363,8 +363,10 @@ public sealed class McpServerGenerationTests
         var resultElement = result.Should().BeOfType<JsonElement>().Subject;
         var echoed = resultElement.GetProperty("structuredContent").GetProperty("value").GetString();
         // The client answered the server's roots query with the live workspace root, so the
-        // server-side tool observed it mid-call.
-        echoed.Should().StartWith("roots:file://").And.Contain(workspace.Path.TrimEnd('/'));
+        // server-side tool observed it mid-call. Compare URIs: the wire form is a file URI,
+        // which is not byte-identical to the platform path on Windows.
+        echoed.Should().StartWith("roots:file://").And.Contain(
+            new Uri(Path.GetFullPath(workspace.Path)).AbsoluteUri);
         await generation.Retire().WaitAsync(deadline.Token);
     }
 

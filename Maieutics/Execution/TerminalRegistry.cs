@@ -89,11 +89,21 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
             }
 
             // A timed-out one-shot stays registered: the result carries the session id as the
-            // pollable handle. A settled one-shot has exited and captured its result, so nothing
-            // else can ever use the session again — remove it instead of leaking a dead PTY
-            // against MaxSessionsPerAgent.
+            // pollable handle and the task URI as its readable snapshot (ADR 0028). A settled
+            // one-shot has exited and captured its result, so nothing else can ever use the
+            // session again — remove it instead of leaking a dead PTY against
+            // MaxSessionsPerAgent.
             if (result.Settled)
+            {
                 await RemoveFinishedOneShotAsync(ownerSessionId, session).ConfigureAwait(false);
+            }
+            else
+            {
+                result = result with
+                {
+                    TaskUri = TerminalTaskResourceSource.ComposeUri(ownerSessionId, session.SessionId)
+                };
+            }
 
             return result;
         }
@@ -106,6 +116,43 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
             null,
             true,
             session.Snapshot(snapshotRequest).Frame);
+    }
+
+    /// <summary>Lists every Agent session's timed-out one-shots as task-resource handles
+    /// (ADR 0028): these stay readable at their task URI until closed.</summary>
+    internal TerminalTaskHandle[] ListOneShotTasks()
+    {
+        lock (gate)
+        {
+            ThrowIfDisposed();
+            return sessions
+                .SelectMany(static owned => owned.Value.Values.Select(session => (owned.Key, Session: session)))
+                .Where(static entry => entry.Session.Kind == TerminalSessionKind.OneShot)
+                .Select(static entry => ToTaskHandle(entry.Key, entry.Session))
+                .ToArray();
+        }
+    }
+
+    /// <summary>Reads one one-shot's live state for its task snapshot (ADR 0028); null when
+    /// the ids name no registered one-shot.</summary>
+    internal TerminalTaskHandle? TryGetOneShotTask(AgentSessionId ownerSessionId, string sessionId)
+    {
+        lock (gate)
+        {
+            ThrowIfDisposed();
+            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+                owned.TryGetValue(sessionId, out var session) &&
+                session.Kind == TerminalSessionKind.OneShot)
+                return ToTaskHandle(ownerSessionId, session);
+
+            return null;
+        }
+    }
+
+    private static TerminalTaskHandle ToTaskHandle(AgentSessionId ownerSessionId, TerminalSession session)
+    {
+        var snapshot = session.GetSnapshot();
+        return new TerminalTaskHandle(ownerSessionId, snapshot.SessionId, snapshot.State, snapshot.ExitCode);
     }
 
     internal TerminalInfo[] List(AgentSessionId ownerSessionId)

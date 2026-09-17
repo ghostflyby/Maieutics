@@ -26,6 +26,22 @@ public readonly record struct AgentSessionId
         return new AgentSessionId(Guid.CreateVersion7());
     }
 
+    /// <summary>Parses the canonical 32-character lowercase hexadecimal form produced by
+    /// <see cref="ToString" />. Returns false for any other shape or the empty guid.</summary>
+    public static bool TryParse(string? text, out AgentSessionId sessionId)
+    {
+        if (!string.IsNullOrEmpty(text) &&
+            Guid.TryParseExact(text, "N", out var value) &&
+            value != Guid.Empty)
+        {
+            sessionId = new AgentSessionId(value);
+            return true;
+        }
+
+        sessionId = default;
+        return false;
+    }
+
     /// <inheritdoc />
     public override string ToString()
     {

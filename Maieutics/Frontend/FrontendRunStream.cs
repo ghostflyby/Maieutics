@@ -134,6 +134,30 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         return (initial, channel);
     }
 
+    /// <summary>Failure-diagnostics view of the retained frames: one line per frame with
+    /// type and sequence (capped), read under the replay lock.</summary>
+    internal IReadOnlyList<string> DescribeFrames()
+    {
+        lock (gate)
+        {
+            var lines = new List<string>(replay.Count);
+            var index = 0;
+            foreach (var frame in replay)
+            {
+                if (lines.Count >= 32)
+                {
+                    lines.Add($"… ({replay.Count - 32} more)");
+                    break;
+                }
+
+                lines.Add($"#{frame.Sequence}: {frame.Type}");
+                index++;
+            }
+
+            return lines;
+        }
+    }
+
     /// <summary>Builds the replay snapshot for a subscriber resuming from
     /// <paramref name="sinceSequence" /> under the gate.</summary>
     private List<FrontendEventFrame> BuildSnapshot(long sinceSequence)

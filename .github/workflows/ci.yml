@@ -146,7 +146,7 @@ jobs:
           if [ -n "$TEST_FILTER" ]; then args+=(--filter "$TEST_FILTER"); fi
           for pass in $(seq 1 "$TEST_REPEATS"); do
             echo "=== test pass $pass/$TEST_REPEATS ==="
-            dotnet test Maieutics.slnx "${args[@]}" || exit 1
+            dotnet test "${args[@]}" || exit 1
           done
 
       - name: Upload test logs

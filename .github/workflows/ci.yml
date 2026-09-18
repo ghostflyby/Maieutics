@@ -6,6 +6,15 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      test_repeat:
+        description: "Times the Test job repeats the suite (flake hunting)"
+        required: false
+        default: "1"
+      test_filter:
+        description: "Optional --filter expression for the Test job"
+        required: false
+        default: ""
   schedule:
     # Daily build+test at 19:37 UTC (03:37 Beijing) — prime hour and minute, off the
     # top-of-the-hour CI crunch. The scheduled run on an idle day also surfaces
@@ -71,7 +80,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     # File-sink logging for diagnostics (docs/logging.md): captured to test-logs/ and
     # uploaded when the job fails (or on scheduled runs).
     env:
@@ -115,7 +124,21 @@ jobs:
         run: dotnet build Maieutics.slnx --configuration Release --no-restore -warnaserror
 
       - name: Test
-        run: dotnet test Maieutics.slnx --configuration Release --no-restore --no-build
+        shell: bash
+        env:
+          # Scheduled idle-day runs repeat the suite to expose scheduling flakes that a
+          # single masked pass would hide; PRs stay at one pass for fast feedback. A
+          # workflow_dispatch can pick both a repeat count and a test filter for targeted
+          # hunts (any failing pass fails the job and keeps the run red).
+          TEST_REPEATS: ${{ github.event_name == 'schedule' && 3 || github.event.inputs.test_repeat || 1 }}
+          TEST_FILTER: ${{ github.event.inputs.test_filter }}
+        run: |
+          args=(--configuration Release --no-restore --no-build)
+          if [ -n "$TEST_FILTER" ]; then args+=(--filter "$TEST_FILTER"); fi
+          for pass in $(seq 1 "$TEST_REPEATS"); do
+            echo "=== test pass $pass/$TEST_REPEATS ==="
+            dotnet test Maieutics.slnx "${args[@]}" || exit 1
+          done
 
       - name: Upload test logs
         if: failure() || github.event_name == 'schedule'

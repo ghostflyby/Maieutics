@@ -1680,8 +1680,16 @@ public sealed class FrontendApiIntegrationTests
                 // TaskCanceledException. Name it instead: the run's retained stream carries
                 // the protocol code the pump published.
                 if (runId is not null && DescribeSettledRunWithoutCommit(runId) is { } settled)
+                {
+                    var retained = SessionService.TryGetRun(runId, out var settledStream) && settledStream is not null
+                        ? string.Join(" | ", settledStream.DescribeFrames())
+                        : "(evicted)";
+                    var providerState = hangingProvider?.DescribeState() ?? "(none)";
                     throw new InvalidOperationException(
-                        $"Run {runId} settled ({settled}) without committing a turn to session {sessionId}; the turn can never appear in the transcript.");
+                        $"Run {runId} settled ({settled}) without committing a turn to session {sessionId}; "
+                        + $"the turn can never appear in the transcript. transcript={transcript.GetRawText()} "
+                        + $"provider={providerState} frames=[{retained}]");
+                }
 
                 await Task.Delay(50, wait.Token);
             }
@@ -1840,6 +1848,17 @@ public sealed class FrontendApiIntegrationTests
 
         public void Release() => release.TrySetResult();
 
+        /// <summary>Failure diagnostics: how many provider connections were accepted, how
+        /// many reached the park point, and whether a release was already requested.</summary>
+        internal string DescribeState()
+        {
+            return $"connections={Volatile.Read(ref connectionsOpened)} "
+                + $"parked={Volatile.Read(ref parkedCount)} released={release.Task.IsCompleted}";
+        }
+
+        private int connectionsOpened;
+        private int parkedCount;
+
         public async ValueTask DisposeAsync()
         {
             await cancellation.CancelAsync();
@@ -1882,7 +1901,9 @@ public sealed class FrontendApiIntegrationTests
             try
             {
                 await using var stream = client.GetStream();
+                Interlocked.Increment(ref connectionsOpened);
                 _ = DrainAsync(stream, cancellationToken);
+                Interlocked.Increment(ref parkedCount);
                 await release.Task;
                 var body = Encoding.UTF8.GetBytes(
                     "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\ndata: [DONE]\n\n");

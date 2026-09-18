@@ -78,7 +78,9 @@ public sealed class SqliteProviderInitTests
         }
     }
 
-    [Fact(Timeout = 30_000)]
+    // A multi-threaded engine stress test: 30s was lost once to a slow contended windows
+    // runner even though the work itself completes in seconds locally.
+    [Fact(Timeout = 60_000)]
     public void ManyConnectionsAcrossThreadsDoNotCorruptTheEngine()
     {
         // The reported symptom was a native SIGSEGV from the engine itself, so this exercises

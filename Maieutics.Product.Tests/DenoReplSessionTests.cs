@@ -95,7 +95,10 @@ public sealed class DenoReplSessionTests
         await using var session = CreateSession(
             AgentSessionId.Create(),
             "timeout",
-            LongRunningOptions(TimeSpan.FromMilliseconds(25)),
+            // 25ms lost the race against slow CI scheduling (the cancel landed before the
+            // fake execution registered, escalating to terminate); 150ms keeps the test
+            // fast while giving contended runners room to reach the drain.
+            LongRunningOptions(TimeSpan.FromMilliseconds(150)),
             factory);
 
         var execution = session.ExecuteAsync(
@@ -444,6 +447,10 @@ public sealed class DenoReplSessionTests
             Complete(new ReplEvalCancelledTerminal(Execution.ExecutionId));
         }
 
+        internal bool EventsCompleted => events.Reader.Completion.IsCompleted;
+
+        internal TaskStatus TerminalStatus => completion.Task.Status;
+
         private void Complete(ReplEvalTerminal terminal)
         {
             if (Interlocked.Exchange(ref terminalState, 1) != 0) return;
@@ -503,7 +510,7 @@ public sealed class DenoReplSessionTests
         }
     }
 
-    private sealed class NoopPresentationSink : IDenoReplPresentationSink
+    internal sealed class NoopPresentationSink : IDenoReplPresentationSink
     {
         public ValueTask DisplayAsync(
             ReplDisplayBundle data,

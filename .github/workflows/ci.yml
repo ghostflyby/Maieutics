@@ -138,7 +138,11 @@ jobs:
           TEST_FILTER: ${{ github.event.inputs.test_filter }}
           TEST_PROJECTS: ${{ github.event.inputs.test_projects || 'Maieutics.slnx' }}
         run: |
-          args=("$TEST_PROJECTS" --configuration Release --no-restore --no-build)
+          # The default solution scope reuses the build step via --no-build; a scoped
+          # project hunt builds itself, because `dotnet test <csproj> --no-build` fails
+          # test-host resolution under the .NET 10 MTP bridge (zero tests, no RID).
+          args=("$TEST_PROJECTS" --configuration Release)
+          if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--no-restore --no-build); fi
           if [ -n "$TEST_FILTER" ]; then args+=(--filter "$TEST_FILTER"); fi
           for pass in $(seq 1 "$TEST_REPEATS"); do
             echo "=== test pass $pass/$TEST_REPEATS ==="

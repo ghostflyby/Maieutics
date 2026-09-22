@@ -729,6 +729,52 @@ public sealed class AgentSubagentTests
             .Should().ThrowAsync<AgentSubagentNotFoundException>();
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ActiveRunSpawnerResolvesDuringTheTurnAndJoinsItsChildren()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var collector = new EventCollector();
+        var sessionRef = new SessionRef();
+        AgentSubagentStatus orchestrationStatus = default;
+
+        var orchestrateTool = CreateSpawnTool("orchestrate", async (arguments, token) =>
+        {
+            // Inside the tool call the session's run is in flight: the orchestration surface
+            // resolves to the run-owned spawner, and the child it spawns is joined before the
+            // turn commits.
+            if (sessionRef.Session is not { } owner)
+                return SpawnValue("no-session", null, null);
+            var spawner = owner.TryCreateActiveRunSpawner();
+            if (spawner is null)
+                return SpawnValue("no-active-run", null, null);
+            var handle = await spawner
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .ConfigureAwait(false);
+            var result = await handle.Completion.WaitAsync(token).ConfigureAwait(false);
+            orchestrationStatus = result.Status;
+            return SpawnValue(result.Status.ToString(), result.Report, null);
+        });
+
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "orchestrate")),
+            (_, _) => StreamAsync("child report"),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
+        }, [orchestrateTool]);
+        sessionRef.Session = session;
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        orchestrationStatus.Should().Be(AgentSubagentStatus.Completed);
+        events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
+            .GetProperty("report").GetString().Should().Be("child report");
+        session.TryCreateActiveRunSpawner().Should().BeNull();
+    }
+
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -924,6 +970,11 @@ public sealed class AgentSubagentTests
         public void Dispose()
         {
         }
+    }
+
+    private sealed class SessionRef
+    {
+        public AgentSession? Session { get; set; }
     }
 
     private sealed class OrderedLifecycleSink : IAgentSubagentEventSink, IAgentSubagentLifecycleSink

@@ -20,6 +20,7 @@ public sealed class AgentSession : IAgentSession
     private readonly Lock transcriptGate = new();
     private AgentTranscriptState canonicalState;
     private int runInProgress;
+    private AgentRun? activeRun;
 
     /// <summary>Initializes an Agent session.</summary>
     public AgentSession(
@@ -208,6 +209,7 @@ public sealed class AgentSession : IAgentSession
                 profile,
                 tools,
                 profile.Options.EventBufferCapacity);
+            Volatile.Write(ref activeRun, run);
             run.Start();
             return run;
         }
@@ -516,7 +518,19 @@ public sealed class AgentSession : IAgentSession
 
     private void ReleaseRun()
     {
+        Volatile.Write(ref activeRun, null);
         Volatile.Write(ref runInProgress, 0);
+    }
+
+    /// <summary>Exposes a spawner bound to the session's in-flight run, or null when no run
+    /// is active. An orchestration surface outside the agent (the control channel's model
+    /// endpoints) resolves its spawn to this spawner first, so a child spawned while a turn
+    /// executes is a run-owned child with the full ADR 0030 semantics — join-before-complete,
+    /// per-turn budget — instead of a detached one.</summary>
+    internal IAgentSubagentSpawner? TryCreateActiveRunSpawner()
+    {
+        if (Volatile.Read(ref activeRun) is not { } run) return null;
+        return subagentHost.CreateSpawner(run.Id, run.Tools, run.Profile.Options);
     }
 
     private sealed class FixedAgentRunProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider

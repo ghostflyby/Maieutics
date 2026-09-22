@@ -35,29 +35,35 @@ Two hard problems had to be designed rather than skipped:
    spawns a child run; `GET /v1/model/subagents/{runId}?timeoutMs=` waits (bounded) and
    returns the terminal snapshot; `POST /v1/model/subagents/{runId}/cancel` cancels and waits.
    The same peer-authenticated middleware guards them as the existing tool-invoke and
-   resource-read endpoints. v1 scope is subagent orchestration — the model-run primitive.
-   Sessions and their turns stay owned by the user and the single-run gate; an orchestration
-   spawn never submits a turn to an existing session.
+   resource-read endpoints; they are ordinary invariant-27 endpoints, not an ADR 0020
+   exception. v1 scope is subagent orchestration — the model-run primitive. Sessions and
+   their turns stay owned by the user and the single-run gate; an orchestration spawn never
+   submits a turn to an existing session.
 
-2. **Deno-spawned children are detached (session-scoped); this designs the deferred detach.**
-   The child runs on its own session — the single-run gate is per session, so nothing
-   collides — owned by the calling Deno process's owning Agent session, not by any run. There
-   is no join: the child's lifetime is the process or an explicit cancel. Its transcript stays
-   in memory only (the phase 3 policy), its report is the waiter's product, its events flow to
-   the display-plane sink, and it is addressable on the task plane like every other child.
-   `MaxDetachedChildren` bounds the session's retained state; settled children stay
-   addressable and count toward the cap.
+2. **Ownership resolves to the calling context, run first.** The REPL carries an agent
+   identity: the control channel resolves the calling Deno process to its owning Agent
+   session, and the primary flow — the model orchestrating from a REPL cell — executes inside
+   that session's live run (the eval is a tool call on the model's tool loop). A spawn made
+   from that context is a **run-owned child of the live run**: join-before-complete holds
+   (the cell cannot outlive the turn that hosts it), the per-turn budget applies, and the
+   full ADR 0030 child semantics are inherited with no new machinery. Only when no run is in
+   flight — host extension code outside any turn — does the child fall back to **detached
+   (session-scoped)** ownership as designed below: own session, no join, process lifetime or
+   explicit cancel, in-memory transcript, task-plane addressability, and
+   `MaxDetachedChildren` as the retained-state bound (settled children stay addressable and
+   count toward the cap).
 
 3. **Permission scope inherits.** A Deno-spawned child registers under the owning Agent
    session in the permission override registry (ADR 0030 decision 3), so the acquisition
    overlay composes the owning session's override for everything the child launches. Deno
    orchestration cannot widen a session's policy.
 
-4. **ADR 0020 is amended for this surface and only this surface.** Extensions and REPL code
-   may drive model capabilities through the control channel's orchestration endpoints; they
-   still cannot call REPL or host internals, spawn processes outside the permission module, or
-   reach any endpoint the control channel does not deliberately map. The one-way rule keeps its
-   force everywhere else.
+4. **ADR 0020 stands unchanged.** Its one-way rule governs the REPL/extension actor boundary
+   and never constrained the kernel's web endpoints. Extensions and REPL code may drive model
+   capabilities through the orchestration endpoints exactly as they already drive tool
+   invocation and resource reads; they still cannot call REPL or host internals, spawn
+   processes outside the permission module, or reach any endpoint the control channel does not
+   deliberately map.
 
 5. **The Deno SDK exposes orchestration as a first-class section** of the REPL client
    (`model.spawnSubagent` / `model.waitForSubagent` / `model.cancelSubagent`), speaking the

@@ -18,7 +18,7 @@ public sealed class SubagentFrontendFramesTests
     public async Task ChildFramesFlowOnTheParentStreamUnderTheChildRunId()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
-        var harness = CreateHarness(postToolParentResponse: "done");
+        var harness = CreateHarness(postToolParentResponse: "done", useTaskWait: true);
 
         var accepted = await harness.Service.StartTurnAsync(
             harness.Manager.Id.ToString(), "Spawn", deadline.Token);
@@ -87,24 +87,39 @@ public sealed class SubagentFrontendFramesTests
 
     private static Harness CreateHarness(
         string postToolParentResponse,
-        Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>? childResponse = null)
+        Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>? childResponse = null,
+        bool useTaskWait = false)
     {
         var buffer = new SubagentEventBuffer();
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-
-        async ValueTask<JsonElement> SpawnAsync(AIFunctionArguments arguments, CancellationToken token)
+        var taskWaitCalls = 0;
+        var probeTool = CreateSpawnTool("agent_probe", (arguments, token) =>
         {
-            var handle = await AgentSubagentContext.GetRequired(arguments)
+            var handle = AgentSubagentContext.GetRequired(arguments)
                 .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
-                .ConfigureAwait(false);
-            handleSource.TrySetResult(handle);
-            return JsonSerializer.SerializeToElement(
+                .AsTask();
+            handle.ContinueWith(
+                static (completed, state) => ((TaskCompletionSource<IAgentSubagentHandle>)state!).TrySetResult(completed.Result),
+                handleSource,
+                TaskContinuationOptions.ExecuteSynchronously);
+            return new ValueTask<JsonElement>(JsonSerializer.SerializeToElement(
                 new SpawnValue("started"),
+                SubagentFrameJsonContext.Default.SpawnValue));
+        });
+
+        async ValueTask<JsonElement> ProbeWaitAsync(AIFunctionArguments arguments, CancellationToken token)
+        {
+            var handle = await handleSource.Task.WaitAsync(token).ConfigureAwait(false);
+            var result = await AgentSubagentContext.GetRequired(arguments)
+                .WaitChildAsync(handle.RunId, Timeout.InfiniteTimeSpan, token)
+                .ConfigureAwait(false);
+            return JsonSerializer.SerializeToElement(
+                new SpawnValue(result.Status.ToString()),
                 SubagentFrameJsonContext.Default.SpawnValue);
         }
 
-        var spawnTool = CreateSpawnTool("agent_spawn", SpawnAsync);
+        var probeWait = CreateSpawnTool("agent_probe_wait", ProbeWaitAsync);
 
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
         {
@@ -114,18 +129,39 @@ public sealed class SubagentFrontendFramesTests
                     ? childResponse(messages, token)
                     : StreamAsync("child report");
 
-            return StreamAsync(postToolParentResponse);
+            // The first post-tool request continues the scripted flow; with useTaskWait the
+            // parent waits on the child in-turn, so the child settles before the turn ends
+            // and join-before-complete never cancels a still-running child.
+            return Interlocked.Increment(ref taskWaitCalls) == 1 && useTaskWait
+                ? StreamAsync(ToolCallUpdate("wait", "agent_probe_wait"))
+                : StreamAsync(postToolParentResponse);
         }
+
+        var spawnTool = CreateSpawnTool("agent_spawn", (arguments, token) =>
+        {
+            var handle = AgentSubagentContext.GetRequired(arguments)
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .AsTask();
+            handle.ContinueWith(
+                static (completed, state) => ((TaskCompletionSource<IAgentSubagentHandle>)state!).TrySetResult(completed.Result),
+                handleSource,
+                TaskContinuationOptions.ExecuteSynchronously);
+            return new ValueTask<JsonElement>(JsonSerializer.SerializeToElement(
+                new SpawnValue("started"),
+                SubagentFrameJsonContext.Default.SpawnValue));
+        });
+        var tools = useTaskWait ? new[] { spawnTool, probeWait } : new[] { spawnTool };
 
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("spawn", "agent_spawn", ("input", "child task"))),
+            Route,
             Route,
             Route);
         var manager = new MaieuticsAgentSessionManager(
             new FixedProfileProvider(new AgentRunProfile(
                 client,
                 new AgentSessionOptions(),
-                tools: [spawnTool])),
+                tools: tools)),
             familiesRoot: null,
             storeFactory: null,
             NullLogger<MaieuticsAgentSessionManager>.Instance,

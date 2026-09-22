@@ -85,7 +85,6 @@ public sealed class SubagentFrontendFramesTests
         var buffer = new SubagentEventBuffer();
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var postToolCalls = 0;
 
         async ValueTask<JsonElement> SpawnAsync(AIFunctionArguments arguments, CancellationToken token)
         {

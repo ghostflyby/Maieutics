@@ -160,6 +160,16 @@ internal sealed class TerminalSession : IAsyncDisposable
             if (current is TerminalSessionState.Idle or TerminalSessionState.Busy) return;
 
             if (current == TerminalSessionState.Faulted) throw CreateFaultedException();
+            if (current == TerminalSessionState.Completed)
+            {
+                // A one-shot session is a one-run object: its single-run bookkeeping
+                // (exitObserved/exitCode/exitCompletion) is spent, so a restart would spawn
+                // a second child whose exit can never be recorded. Reject instead of
+                // corrupting the session — the model's remedy is to start a new session.
+                throw new AgentToolException(
+                    "terminal_session_completed",
+                    $"The one-shot terminal session '{SessionId}' has already completed and cannot be restarted.");
+            }
 
             SetState(TerminalSessionState.Starting);
             try

@@ -372,7 +372,8 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
 
     private void ReleaseLeaseWhenDrainedLocked(SessionQueue state)
     {
-        if (state.Items.Count == 0 && state.Running is null) ReleaseLeaseLocked(state);
+        if (state.Items.Count == 0 && state.Running is null && !state.DequeueInFlight)
+            ReleaseLeaseLocked(state);
     }
 
     private void EnsureWorkerLocked(string sessionId, SessionQueue state)
@@ -414,6 +415,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
 
                     item = state.Items[0];
                     state.Items.RemoveAt(0);
+                    state.DequeueInFlight = true;
                 }
 
                 // Dequeue transition: the item left the pending queue. It is not visible
@@ -432,6 +434,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                     lock (state.Gate)
                     {
                         state.Running = new RunningItem(item.Id, runId);
+                        state.DequeueInFlight = false;
                     }
 
                     PublishChange(state);
@@ -462,6 +465,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                     lock (state.Gate)
                     {
                         if (state.Running is { } running && running.ItemId == item.Id) state.Running = null;
+                        state.DequeueInFlight = false;
 
                         ReleaseLeaseWhenDrainedLocked(state);
                     }
@@ -498,6 +502,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         {
             state.Items.Clear();
             state.Running = null;
+            state.DequeueInFlight = false;
             state.Worker = null;
             ReleaseLeaseLocked(state);
         }
@@ -606,6 +611,12 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     private sealed class SessionQueue
     {
         public Lock Gate { get; } = new();
+
+        /// <summary>An item has been dequeued but has not yet become Running (the submission
+        /// handshake is in flight). In this window the item is in neither Items nor Running,
+        /// so the drained-lease check must not fire — releasing the eviction pin here would
+        /// leave the session evictable while its run executes, with nothing to re-acquire.</summary>
+        public bool DequeueInFlight;
 
         public List<QueuedItem> Items { get; } = [];
 

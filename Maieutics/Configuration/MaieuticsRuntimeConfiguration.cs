@@ -909,6 +909,13 @@ internal sealed class MaieuticsRuntimeConfiguration :
         {
             lock (gate)
             {
+                // The drain in DisposeAsync is only a bounded wait: a reload whose snapshot
+                // build outran it (MCP stdio initialization can take tens of seconds) must not
+                // commit a fresh snapshot into a disposed runtime — that would resurrect
+                // GetCurrent, hand out leases from retired generations, and strand the
+                // replacement's own generations outside every retirement list. Throwing here
+                // routes the replacement into the catch's retirement below.
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
                 previous = GetCurrent();
                 current = replacement;
                 committed = true;
@@ -2099,7 +2106,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
             bool dispose;
             lock (gate)
             {
-                if (references <= 0) return ValueTask.CompletedTask;
+                // The lease's own Interlocked guard makes an underflow unreachable today; if a
+                // future change breaks that, fail loudly instead of silently leaking the
+                // provider client.
+                if (references <= 0)
+                    throw new InvalidOperationException(
+                        "The model profile generation lease was released more times than it was acquired.");
 
                 dispose = --references == 0 && retired;
             }

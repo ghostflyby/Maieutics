@@ -832,6 +832,7 @@ internal sealed class PluginHostManager(
             }
 
             await stop.ConfigureAwait(false);
+            Task startupTask;
             lock (lifecycleGate)
             {
                 // A dispose that raced the restart wins: if a stop was requested while this
@@ -846,7 +847,9 @@ internal sealed class PluginHostManager(
                 // Reset the terminal lifecycle state StopCoreAsync left behind so the manager
                 // can start a fresh host generation: new lifetime, readiness, and registry
                 // channel; per-generation state (descriptors, grants, registrations) is
-                // repopulated by Start(plan).
+                // repopulated by Start(plan). The new startup task is assigned under the same
+                // lock, so GetStatus never observes the NotStarted blip between reset and
+                // start.
                 starting = null;
                 stopping = null;
                 restart = null;
@@ -854,12 +857,20 @@ internal sealed class PluginHostManager(
                 lifetime = new CancellationTokenSource();
                 RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
                     new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
+                var startupToken = lifetime.Token;
+                logger.LogInformation("Starting a fresh plugin host generation with the recomputed plugin set.");
+                // Bound the new generation's discovery to its own lifetime: a dispose racing
+                // the restart cancels the scan instead of letting it complete against a stopped
+                // manager. StartCoreAsync yields immediately, so assigning under the lock is
+                // safe and closes the NotStarted observation window.
+                startupTask = StartCoreAsync(startupToken);
+                starting = startupTask;
             }
 
-            logger.LogInformation("Starting a fresh plugin host generation with the recomputed plugin set.");
-            // Bound the new generation's discovery to its own lifetime: a dispose racing the
-            // restart cancels the scan instead of letting it complete against a stopped manager.
-            await StartAsync(lifetime.Token).ConfigureAwait(false);
+            // Wait for the new generation to be ready before the re-check below: descriptors
+            // are only populated by Start(plan), so an earlier diff would see an empty set and
+            // loop restarts forever.
+            await startupTask.ConfigureAwait(false);
 
             // Watcher events fired between the old watcher's disposal and the new one arming
             // are lost (FileSystemWatcher has no replay). One post-start re-check closes the

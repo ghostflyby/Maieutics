@@ -495,10 +495,35 @@ public sealed class TerminalSessionTests
         fake.EndOfOutput();
         fake.RaiseExited(7);
 
+
         var completed = await run;
         completed.State.Should().Be("completed");
         var snapshot = session.Snapshot(new TerminalSnapshotRequest());
         snapshot.ExitCode.Should().Be(7);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotSessionRejectsRestartAfterCompletion()
+    {
+        var fake = new FakeTerminalProcess();
+        await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "echo", ["done"]);
+        var run = session.RunOnceAsync(
+            TimeSpan.FromSeconds(5),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+        fake.Emit("done\r\n");
+        fake.EndOfOutput();
+        fake.RaiseExited(0);
+        await run;
+
+        // The one-shot's single-run bookkeeping is spent: a restart would spawn a second
+        // child whose exit can never be recorded. It must be rejected, not corrupt the
+        // session into a permanent "running" handle with a stale exit code.
+        var restart = () => session.StartAsync(TestContext.Current.CancellationToken);
+        await restart.Should().ThrowAsync<AgentToolException>()
+            .Where(static exception => exception.Code == "terminal_session_completed");
+
+        session.GetSnapshot().State.Should().Be("completed");
     }
 
     [Fact(Timeout = 10_000)]

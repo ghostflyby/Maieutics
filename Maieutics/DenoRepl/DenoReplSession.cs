@@ -126,7 +126,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     cancellationToken).ConfigureAwait(false);
                 runtime = started;
                 StartGenerationMonitor(started);
-                SetState(DenoReplSessionState.Idle);
+                SetStateIdleIfInTransition(DenoReplSessionState.Starting);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -256,7 +256,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                     cancellationToken).ConfigureAwait(false);
                 runtime = started;
                 StartGenerationMonitor(started);
-                SetState(DenoReplSessionState.Idle);
+                SetStateIdleIfInTransition(DenoReplSessionState.Restarting);
                 return GetSnapshot();
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -418,6 +418,18 @@ internal sealed class DenoReplSession : IAsyncDisposable
         lock (stateGate)
         {
             return state;
+        }
+    }
+
+    /// <summary>Moves a session out of the caller's own transient state (Starting for a
+    /// start, Restarting for a restart) into idle without erasing a terminal state the
+    /// generation monitor may have already recorded synchronously — a child that died during
+    /// the startup handshake reports Faulted before the startup code completes.</summary>
+    private void SetStateIdleIfInTransition(DenoReplSessionState expected)
+    {
+        lock (stateGate)
+        {
+            if (state == expected) state = DenoReplSessionState.Idle;
         }
     }
 

@@ -58,6 +58,36 @@ public sealed class DenoReplSessionTests
         reference.GetProperty("byteLength").GetInt64().Should().Be(png.Length);
     }
 
+    [Fact(Timeout = 15_000)]
+    public async Task AChildDyingDuringStartupLeavesTheSessionFaultedNotIdle()
+    {
+        var factory = new ControlledFactory(() => new ControlledGeneration());
+        var owner = AgentSessionId.Create();
+        await using var session = CreateSession(owner, "default", LongRunningOptions(), factory);
+
+        var execution = session.ExecuteAsync(
+            "anything",
+            AgentToolCallId.Create(),
+            TestContext.Current.CancellationToken);
+        var generation = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
+
+        // The child dies while the session is still starting: the generation's completion
+        // is already finished when the session's monitor observes it, so the monitor marks
+        // Faulted synchronously. The follow-up idle write must not erase that state.
+        await generation.ShutdownAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            await execution;
+        }
+        catch (AgentToolException)
+        {
+            // The execution fails on the dead generation; the assertion below is the point.
+        }
+
+        session.GetSnapshot().State.Should().Be("faulted");
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task SameSessionSerializesWhileDifferentSessionsCanExecuteConcurrently()
     {

@@ -33,6 +33,10 @@ public sealed class SubagentFrontendFramesTests
         // Subscribing after the run completed returns the whole replay as the snapshot.
         var (initialList, _) = stream.Subscribe(0);
         var initial = initialList.ToList();
+        var trace = string.Join("|", initial.Select(static frame =>
+            $"{frame.Type}@{frame.RunId?[..6]}"))
+            + $"; settledNotifications={harness.Buffer.SettledNotifications}";
+
         var parentRunId = accepted.RunId;
         var childRunId = handle.RunId.Value.ToString("N");
 
@@ -40,7 +44,7 @@ public sealed class SubagentFrontendFramesTests
         initial.Should().Contain(frame => frame.Type == "tool.finished" && frame.RunId == parentRunId);
         initial.Should().Contain(frame => frame.Type == "run.started" && frame.RunId == childRunId);
         initial.Should().Contain(frame => frame.Type == "text.delta" && frame.RunId == childRunId);
-        initial.Should().Contain(frame => frame.Type == "run.completed" && frame.RunId == childRunId);
+        initial.Should().Contain(frame => frame.Type == "run.completed" && frame.RunId == childRunId, "frames: {0}", trace);
         initial.Should().Contain(frame => frame.Type == "run.completed" && frame.RunId == parentRunId);
 
         // The child settled before the parent committed (join-before-complete), and the

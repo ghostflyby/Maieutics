@@ -20,6 +20,11 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     private readonly Dictionary<AgentRunId, AgentSessionId> parentByChildRun = new();
     private FrontendRunStream? stream;
 
+    /// <summary>Diagnostic counter of settled notifications this tap accepted; incremented
+    /// before the terminal frame is published so a missing frame with a count of one points
+    /// at the stream, not at the Agent host.</summary>
+    internal int SettledNotifications { get; private set; }
+
     /// <summary>Attaches the parent run stream that child frames forward into, replacing any
     /// previous attachment. Children never outlive their parent run (join-before-complete),
     /// so a stale attachment publishes nothing; each new run re-attaches.</summary>
@@ -90,6 +95,7 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
         {
             target = stream;
             parentByChildRun.Remove(childRunId);
+            SettledNotifications++;
         }
 
         // A child's terminal frame carries no sequence, mirroring the parent stream's

@@ -52,23 +52,36 @@ public sealed class FrontendEventsSocketRunWaitTests
         var enqueued = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
         enqueued.Should().HaveCount(2);
 
-        // The queue is fully drained once the API reports no running item and no pending items.
-        var lastQueuedRunId = await WaitForQueueDrainedAsync(harness, sessionId, deadline.Token);
-        Trace("queue drained; waiting for the last queued run to settle before the direct turn");
-
-        // Deterministic readiness: a run stream's Settled completes only after the
-        // single-run gate released and the presentation scope detached (the pump's
-        // disposal signal is the last step of its finally), so once it is observed the
-        // direct submission cannot race either busy cause. A run that already left the
-        // retained registry has already settled.
-        if (lastQueuedRunId is not null &&
-            harness.SessionService.TryGetRun(lastQueuedRunId, out var lastStream) &&
-            lastStream is not null)
+        // Deterministic readiness: the queue snapshot can present "drained" (no running, no
+        // pending) inside the worker's dequeue handshake — the head is dequeued and its run
+        // is about to start, so nothing is observable yet. Readiness therefore requires a
+        // stable cycle: observe drained, settle every run seen so far, re-read, and only
+        // submit when the re-read is still drained and surfaced no new run. A run stream's
+        // Settled completes only after the single-run gate released and the presentation
+        // scope detached, so the direct submission cannot race either busy cause.
+        var seenRunIds = new HashSet<string>();
+        while (true)
         {
-            await lastStream.Settled.WaitAsync(deadline.Token);
+            var observed = await WaitForQueueDrainedAsync(harness, sessionId, deadline.Token);
+            if (observed is not null) seenRunIds.Add(observed);
+
+            foreach (var seenRunId in seenRunIds)
+            {
+                if (harness.SessionService.TryGetRun(seenRunId, out var seenStream) && seenStream is not null)
+                    await seenStream.Settled.WaitAsync(deadline.Token);
+            }
+
+            if (await IsQueueEmptyAsync(harness, sessionId, deadline.Token) &&
+                !await HasNewRunningAsync(harness, sessionId, seenRunIds, deadline.Token))
+            {
+                Trace("queue drained stably; submitting a direct turn");
+                break;
+            }
+
+            Trace("drain observation was not stable; re-reading");
         }
 
-        Trace("last queued run settled; submitting a direct turn");
+        Trace("submitting a direct turn");
         using var response = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "direct after drain" },
@@ -111,9 +124,9 @@ public sealed class FrontendEventsSocketRunWaitTests
     }
 
     /// <summary>Waits for the queue to report drained and returns the runId of the last
-    /// running item observed on the way there — the deterministic readiness signal for a
-    /// subsequent direct submission (the run stream's Settled task completes only after the
-    /// single-run gate released and the presentation scope detached).</summary>
+    /// running item observed on the way there. A single drained observation is not readiness
+    /// by itself: the dequeue handshake window presents as an empty queue while the next
+    /// item's run is about to hold the single-run gate.</summary>
     private async Task<string?> WaitForQueueDrainedAsync(Harness harness, string sessionId, CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -141,6 +154,37 @@ public sealed class FrontendEventsSocketRunWaitTests
 
             await Task.Delay(50, wait.Token).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Reads the queue once; true when it reports no running item and no pending
+    /// items.</summary>
+    private static async Task<bool> IsQueueEmptyAsync(Harness harness, string sessionId, CancellationToken cancellationToken)
+    {
+        using var response = await harness.Client
+            .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
+            .ConfigureAwait(false);
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        var queue = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
+        return queue.GetProperty("items").GetArrayLength() == 0 &&
+               !queue.TryGetProperty("running", out _);
+    }
+
+    /// <summary>Reads the queue once; true when it is running an item whose run has not been
+    /// seen and settled yet.</summary>
+    private static async Task<bool> HasNewRunningAsync(
+        Harness harness,
+        string sessionId,
+        HashSet<string> seenRunIds,
+        CancellationToken cancellationToken)
+    {
+        using var response = await harness.Client
+            .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
+            .ConfigureAwait(false);
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        var queue = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
+        return queue.TryGetProperty("running", out var running) &&
+               running.GetProperty("runId").GetString() is { } runId &&
+               !seenRunIds.Contains(runId);
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)

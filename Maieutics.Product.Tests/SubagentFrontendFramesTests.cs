@@ -25,7 +25,10 @@ public sealed class SubagentFrontendFramesTests
         var handle = await harness.HandleSource.Task.WaitAsync(deadline.Token);
         if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
             throw new InvalidOperationException("The submitted run left no retained stream.");
-        await stream.Completion.WaitAsync(deadline.Token);
+        // Settled, not Completion: the run's completion task settles while the pump may
+        // still be draining the last buffered events into the replay; Settled completes
+        // strictly after the terminal frames are published, so the snapshot below is whole.
+        await stream.Settled.WaitAsync(deadline.Token);
 
         // Subscribing after the run completed returns the whole replay as the snapshot.
         var (initialList, _) = stream.Subscribe(0);
@@ -75,7 +78,7 @@ public sealed class SubagentFrontendFramesTests
 
         var result = await handle.Completion.WaitAsync(deadline.Token);
         result.Status.Should().Be(AgentSubagentStatus.Cancelled);
-        await stream.Completion.WaitAsync(deadline.Token);
+        await stream.Settled.WaitAsync(deadline.Token);
     }
 
     private static Harness CreateHarness(

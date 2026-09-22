@@ -25,6 +25,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private readonly List<Subscriber> subscribers = [];
     private readonly CancellationTokenSource lifetime = new();
     private readonly AgentSessionId sessionId;
+    private readonly string ownRunId;
     private readonly IAgentRun run;
     private readonly FrontendDenoReplPresentationRouter? presentationRouter;
     private readonly ILogger logger;
@@ -47,6 +48,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         this.sessionId = sessionId;
         this.run = run;
+        ownRunId = run.Id.Value.ToString("N");
         this.presentationRouter = presentationRouter;
         this.presentationScope = presentationScope;
         this.logger = logger;
@@ -76,6 +78,9 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     /// <summary>Gets the owning run identifier.</summary>
     internal AgentRunId RunId => run.Id;
+
+    /// <summary>Gets the owning session identifier.</summary>
+    internal AgentSessionId SessionId => sessionId;
 
     internal IAgentRun Run => run;
 
@@ -263,64 +268,19 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         logger.LogDebug("Frontend event pump started for run {RunId}.", run.Id);
         try
         {
-            Publish(new FrontendEventFrame("run.started", RunId: run.Id.Value.ToString("N")));
+            Publish(new FrontendEventFrame("run.started", RunId: ownRunId));
             Publish(new FrontendEventFrame("run.status", State: "busy"));
             var truncated = false;
             await foreach (var agentEvent in run.Events
                                .WithCancellation(lifetime.Token)
                                .ConfigureAwait(false))
-                switch (agentEvent)
-                {
-                    case AgentTextDelta { Text.Length: > 0 } delta:
-                        Publish(new FrontendEventFrame(
-                            "text.delta",
-                            RunId: run.Id.Value.ToString("N"),
-                            Sequence: delta.Sequence,
-                            MessageId: delta.MessageId.Value.ToString("N"),
-                            Text: delta.Text));
-                        break;
-                    case AgentMessageCompleted Message:
-                        Publish(new FrontendEventFrame(
-                            "message.completed",
-                            RunId: run.Id.Value.ToString("N"),
-                            Sequence: Message.Sequence,
-                            MessageId: Message.AgentMessageId.Value.ToString("N"),
-                            AgentMessage: FrontendTranscriptMapper.ToMessage(Message.Message)));
-                        break;
-                    case AgentToolStarted started:
-                        Publish(new FrontendEventFrame(
-                            "tool.started",
-                            RunId: run.Id.Value.ToString("N"),
-                            Sequence: started.Sequence,
-                            CallId: started.CallId.Value.ToString("N"),
-                            Tool: started.ToolName,
-                            Arguments: started.Arguments));
-                        presentationRouter?.OpenCall(sessionId, started.CallId);
-                        break;
-                    case AgentToolProgress progress:
-                        Publish(new FrontendEventFrame(
-                            "tool.progress",
-                            RunId: run.Id.Value.ToString("N"),
-                            Sequence: progress.Sequence,
-                            CallId: progress.CallId.Value.ToString("N"),
-                            Content: FrontendTranscriptMapper.ToProgressContent(progress.Content)));
-                        break;
-                    case AgentToolFinished finished:
-                        Publish(new FrontendEventFrame(
-                            "tool.finished",
-                            RunId: run.Id.Value.ToString("N"),
-                            Sequence: finished.Sequence,
-                            CallId: finished.CallId.Value.ToString("N"),
-                            Result: finished.Result));
-                        break;
-                    case AgentTurnTruncated turnTruncated:
-                        truncated = true;
-                        Publish(new FrontendEventFrame(
-                            "turn.truncated",
-                            RunId: run.Id.Value.ToString("N"),
-                            Sequence: turnTruncated.Sequence));
-                        break;
-                }
+            {
+                if (agentEvent is AgentTurnTruncated) truncated = true;
+                if (agentEvent is AgentToolStarted startedEvent)
+                    presentationRouter?.OpenCall(sessionId, startedEvent.CallId);
+                var rendered = AgentEventFrameMapper.Render(agentEvent);
+                if (rendered is not null) Publish(rendered);
+            }
 
             PublishTerminal(await run.Completion.ConfigureAwait(false), truncated);
         }
@@ -550,12 +510,14 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         return new FrontendEventFrame("run.missing", RunId: run.Id.Value.ToString("N"));
     }
 
-    private static bool IsReplayable(FrontendEventFrame frame, long sinceSequence)
+    private bool IsReplayable(FrontendEventFrame frame, long sinceSequence)
     {
-        // A fresh subscriber (since 0) receives the full buffer including lifecycle
-        // announcements; a resuming subscriber only needs sequenced frames past its last
-        // observed sequence plus the terminal frames, which carry no sequence and must always
-        // reach the client.
+        // A child run's frames ride this stream for display only: replay them from retention
+        // best-effort — live delivery and terminal frames are exact, while a client that
+        // missed child history refetches the report from the spawn tool's persisted result
+        // (ADR 0030 decision 8). The parent run's own frames follow the strict contract.
+        if (frame.RunId is { } frameRun && frameRun != ownRunId)
+            return true;
         if (sinceSequence <= 0) return true;
         if (frame.Sequence is { } sequence) return sequence > sinceSequence;
 
@@ -577,9 +539,24 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private void Publish(FrontendEventFrame frame)
     {
+        PublishCore(frame, trackSequence: true);
+    }
+
+    /// <summary>Publishes a child run's frame into this stream's replay and live queues
+    /// without touching the parent run's sequence bookkeeping: child sequences are
+    /// child-run-local, so the stream's oldest/latest tracking and the resume gap check stay
+    /// parent-scoped. Child frames replay best-effort from retention (ADR 0030 decision 8);
+    /// live delivery is never dropped (invariant 16).</summary>
+    internal void PublishChildFrame(FrontendEventFrame frame)
+    {
+        PublishCore(frame, trackSequence: false);
+    }
+
+    private void PublishCore(FrontendEventFrame frame, bool trackSequence)
+    {
         lock (gate)
         {
-            if (frame.Sequence is { } sequence)
+            if (trackSequence && frame.Sequence is { } sequence)
             {
                 if (oldestSequence == 0) oldestSequence = sequence;
                 if (sequence > latestSequence) latestSequence = sequence;
@@ -594,12 +571,14 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 // sequence must follow the eviction: if it kept the all-time minimum,
                 // resumed clients behind the eviction would look current and silently
                 // receive a truncated replay (invariant 16's only permitted loss must
-                // surface as run.missing).
-                if (evicted.Sequence is { } evictedSequence && evictedSequence == oldestSequence)
+                // surface as run.missing). Child frames are skipped: their sequences live
+                // in their own run-local spaces.
+                if (trackSequence &&
+                    evicted.Sequence is { } evictedSequence && evictedSequence == oldestSequence)
                 {
                     oldestSequence = 0;
                     foreach (var retained in replay)
-                        if (retained.Sequence is { } retainedSequence)
+                        if (retained.RunId == ownRunId && retained.Sequence is { } retainedSequence)
                         {
                             oldestSequence = retainedSequence;
                             break;

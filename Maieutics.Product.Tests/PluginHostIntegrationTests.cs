@@ -864,10 +864,10 @@ public sealed class PluginHostIntegrationTests
 
             while (manager.GetStatus().State is PluginHostState.Ready)
             {
-                await Task.Delay(100, timeout.Token).ConfigureAwait(false);
+                await Task.Delay(100, timeout.Token);
             }
 
-            await manager.DisposeAsync().ConfigureAwait(false);
+            await manager.DisposeAsync();
             // The terminal state depends on where the race landed (a startup cancelled by the
             // stop reports Canceled, a faulted one Failed); what it must never be is a live
             // generation again.

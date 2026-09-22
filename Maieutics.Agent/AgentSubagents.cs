@@ -96,6 +96,44 @@ public interface IAgentSubagentSpawner
     ValueTask<IAgentSubagentHandle> StartChildAsync(
         AgentSubagentSpec spec,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Waits for one child of the current parent run to reach a terminal state and
+    /// returns its result. Waiting on a child that already terminated returns immediately.
+    /// Only children of the current parent run are addressable: the parent run's terminal
+    /// path joins and forgets its children, and later runs refetch reports from the parent
+    /// transcript instead.</summary>
+    /// <param name="childRunId">The run identifier the spawn returned.</param>
+    /// <param name="timeout">
+    ///     How long to wait for the child's terminal state; <see cref="Timeout.InfiniteTimeSpan" />
+    ///     waits unboundedly within the parent turn's own budget.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the wait, leaving the child run untouched.</param>
+    /// <returns>The child's terminal result.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The timeout is not positive or infinite.</exception>
+    /// <exception cref="AgentSubagentNotFoundException">
+    ///     No child of the current parent run matches the identifier.
+    /// </exception>
+    /// <exception cref="AgentSubagentWaitTimeoutException">
+    ///     The child did not reach a terminal state within the timeout.
+    /// </exception>
+    ValueTask<AgentSubagentResult> WaitChildAsync(
+        AgentRunId childRunId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Cancels one child of the current parent run and waits for its termination.
+    /// Cancelling an already-terminated child returns its result unchanged, so the operation
+    /// is idempotent.</summary>
+    /// <param name="childRunId">The run identifier the spawn returned.</param>
+    /// <param name="cancellationToken">Cancels waiting for the child's termination; the
+    /// cancellation request itself stays issued.</param>
+    /// <returns>The child's terminal result.</returns>
+    /// <exception cref="AgentSubagentNotFoundException">
+    ///     No child of the current parent run matches the identifier.
+    /// </exception>
+    ValueTask<AgentSubagentResult> CancelChildAsync(
+        AgentRunId childRunId,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>Provides access to the subagent spawn context of the current Agent tool call.</summary>
@@ -229,6 +267,18 @@ internal sealed class AgentSubagentHost(
         return new Spawner(this, sessionId, parentRunId, parentTools, parentOptions);
     }
 
+    /// <summary>Looks up a child of one parent run by its run identifier, or null when the
+    /// run has no such child.</summary>
+    public ChildRecord? FindChild(AgentRunId parentRunId, AgentRunId childRunId)
+    {
+        lock (gate)
+        {
+            return childrenByParent.TryGetValue(parentRunId, out var children)
+                ? children.FirstOrDefault(record => record.RunId == childRunId)
+                : null;
+        }
+    }
+
     /// <summary>Terminates and observes every child of one parent run. Children the parent turn
     /// left unsettled are cancelled before joining, so the parent run's terminal path always
     /// observes their termination; the primary terminal cause of the parent run is never masked.</summary>
@@ -349,6 +399,38 @@ internal sealed class AgentSubagentHost(
 
             record.Start(eventSink);
             return record;
+        }
+
+        public async ValueTask<AgentSubagentResult> WaitChildAsync(
+            AgentRunId childRunId,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(
+                    nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
+
+            var record = host.FindChild(parentRunId, childRunId) ??
+                throw new AgentSubagentNotFoundException(childRunId);
+            try
+            {
+                return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException exception)
+            {
+                throw new AgentSubagentWaitTimeoutException(childRunId, timeout, exception);
+            }
+        }
+
+        public async ValueTask<AgentSubagentResult> CancelChildAsync(
+            AgentRunId childRunId,
+            CancellationToken cancellationToken = default)
+        {
+            var record = host.FindChild(parentRunId, childRunId) ??
+                throw new AgentSubagentNotFoundException(childRunId);
+            if (!record.Completion.IsCompleted)
+                await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
+            return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private IReadOnlyList<AIFunction> ResolveTools(IReadOnlyList<string>? allowlist)

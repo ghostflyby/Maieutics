@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -331,6 +332,305 @@ public sealed class AgentSubagentTests
             .Should().ThrowAsync<ArgumentException>();
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task AsyncSpawnThenWaitReturnsTheChildReportWhenTheChildCompletesMidTurn()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var collector = new EventCollector();
+        IAgentSubagentHandle? spawned = null;
+        var postToolCalls = 0;
+        var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
+        {
+            spawned = await AgentSubagentContext.GetRequired(arguments)
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .ConfigureAwait(false);
+            return SpawnValue("started", spawned.RunId.Value.ToString("N"), null);
+        });
+        var waitTool = CreateSpawnTool("agent_wait", async (arguments, token) =>
+        {
+            var result = await AgentSubagentContext.GetRequired(arguments)
+                .WaitChildAsync(spawned!.RunId, Timeout.InfiniteTimeSpan, token)
+                .ConfigureAwait(false);
+            return SpawnValue(result.Status.ToString(), result.Report, null);
+        });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "agent_spawn")),
+            // Every slot after the first routes by shape: a single user message is a child
+            // request, any request carrying a function result is a parent post-tool request.
+            // Never mix explicit mid-slots with a racing child.
+            Route, Route, Route);
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
+        }, [spawnTool, waitTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        var result = await run.Completion.WaitAsync(deadline.Token);
+
+        result.AssistantMessage.Text.Should().Be("done");
+        spawned.Should().NotBeNull();
+        events.OfType<AgentToolFinished>().Last().Result.GetProperty("value")
+            .GetProperty("report").GetString().Should().Be("async report");
+        collector.Events.Should().Contain(pair => pair.Event is AgentTextDelta);
+
+        IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
+        {
+            return messages.Any(message =>
+                       message.Contents.Any(content => content is FunctionResultContent))
+                ? Interlocked.Increment(ref postToolCalls) == 1
+                    ? StreamAsync(ToolCallUpdate("wait", "agent_wait"))
+                    : StreamAsync("done")
+                : StreamAsync("async report");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task WaitTimesOutTypedWhileTheChildKeepsRunningUntilTheTurnJoinsIt()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
+        {
+            var spawner = AgentSubagentContext.GetRequired(arguments);
+            var handle = await spawner
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .ConfigureAwait(false);
+            handleSource.TrySetResult(handle);
+            try
+            {
+                await spawner.WaitChildAsync(handle.RunId, TimeSpan.FromMilliseconds(500), token)
+                    .ConfigureAwait(false);
+                return SpawnValue("completed", null, null);
+            }
+            catch (AgentSubagentWaitTimeoutException)
+            {
+                return SpawnValue("timeout", null, null);
+            }
+        });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "agent_spawn")),
+            (_, token) => WaitWithoutOutputAsync(childStarted, token),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
+        }, [spawnTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
+            .GetProperty("status").GetString().Should().Be("timeout");
+        var handle = await handleSource.Task.WaitAsync(deadline.Token);
+        var childResult = await handle.Completion.WaitAsync(deadline.Token);
+        childResult.Status.Should().Be(AgentSubagentStatus.Cancelled);
+        session.GetTranscriptSnapshot().Turns.Should().ContainSingle();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CancelChildTerminatesTheRunningChildAndReturnsItsResult()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
+        {
+            var spawner = AgentSubagentContext.GetRequired(arguments);
+            var handle = await spawner
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .ConfigureAwait(false);
+            handleSource.TrySetResult(handle);
+            var result = await spawner.CancelChildAsync(handle.RunId, token).ConfigureAwait(false);
+            return SpawnValue(result.Status.ToString(), null, null);
+        });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "agent_spawn")),
+            (_, token) => WaitWithoutOutputAsync(childStarted, token),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
+        }, [spawnTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
+            .GetProperty("status").GetString().Should().Be(nameof(AgentSubagentStatus.Cancelled));
+        var handle = await handleSource.Task.WaitAsync(deadline.Token);
+        var childResult = await handle.Completion.WaitAsync(deadline.Token);
+        childResult.Status.Should().Be(AgentSubagentStatus.Cancelled);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CancelOnATerminalChildReturnsItsResultUnchanged()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var postToolCalls = 0;
+        IAgentSubagentHandle? spawned = null;
+        var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
+        {
+            spawned = await AgentSubagentContext.GetRequired(arguments)
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .ConfigureAwait(false);
+            var result = await spawned.Completion.WaitAsync(token).ConfigureAwait(false);
+            return SpawnValue(result.Status.ToString(), result.Report, null);
+        });
+        var cancelTool = CreateSpawnTool("agent_cancel", async (arguments, token) =>
+        {
+            var result = await AgentSubagentContext.GetRequired(arguments)
+                .CancelChildAsync(spawned!.RunId, token).ConfigureAwait(false);
+            return SpawnValue(result.Status.ToString(), result.Report, null);
+        });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("spawn", "agent_spawn")),
+            Route, Route, Route);
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
+        }, [spawnTool, cancelTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        var finishes = events.OfType<AgentToolFinished>().ToList();
+        finishes.Should().HaveCount(2);
+        finishes[0].Result.GetProperty("value").GetProperty("report").GetString().Should().Be("b report");
+        finishes[1].Result.GetProperty("value").GetProperty("status").GetString()
+            .Should().Be(nameof(AgentSubagentStatus.Completed));
+        finishes[1].Result.GetProperty("value").GetProperty("report").GetString().Should().Be("b report");
+
+        IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
+        {
+            return messages.Any(message =>
+                       message.Contents.Any(content => content is FunctionResultContent))
+                ? Interlocked.Increment(ref postToolCalls) == 1
+                    ? StreamAsync(ToolCallUpdate("call", "agent_cancel"))
+                    : StreamAsync("done")
+                : StreamAsync("b report");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task UnknownChildRunIdFailsTypedOnWaitAndCancel()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var unknown = AgentRunId.Create();
+        var probeTool = CreateSpawnTool("agent_wait", async (arguments, token) =>
+        {
+            var spawner = AgentSubagentContext.GetRequired(arguments);
+            try
+            {
+                await spawner.WaitChildAsync(unknown, TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+                return SpawnValue("waited", null, null);
+            }
+            catch (AgentSubagentNotFoundException)
+            {
+                try
+                {
+                    await spawner.CancelChildAsync(unknown, token).ConfigureAwait(false);
+                    return SpawnValue("cancelled", null, null);
+                }
+                catch (AgentSubagentNotFoundException)
+                {
+                    return SpawnValue("not_found", null, null);
+                }
+            }
+        });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "agent_wait")),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
+        }, [probeTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Probe"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
+            .GetProperty("status").GetString().Should().Be("not_found");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task OverlappingChildrenReportOnlyAfterBothHaveStarted()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var collector = new EventCollector();
+        var startedSignals = new ConcurrentQueue<TaskCompletionSource>(
+        [
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        ]);
+        var bothStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var childrenStarted = 0;
+        IAgentSubagentHandle? first = null;
+        IAgentSubagentHandle? second = null;
+        var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
+        {
+            var spawner = AgentSubagentContext.GetRequired(arguments);
+            first = await spawner.StartChildAsync(new AgentSubagentSpec { Input = "child a" }, token)
+                .ConfigureAwait(false);
+            second = await spawner.StartChildAsync(new AgentSubagentSpec { Input = "child b" }, token)
+                .ConfigureAwait(false);
+            return SpawnValue("spawned", null, null);
+        });
+        var waitTool = CreateSpawnTool("agent_wait", async (arguments, token) =>
+        {
+            var spawner = AgentSubagentContext.GetRequired(arguments);
+            var firstResult = await spawner.WaitChildAsync(first!.RunId, Timeout.InfiniteTimeSpan, token)
+                .ConfigureAwait(false);
+            var secondResult = await spawner.WaitChildAsync(second!.RunId, Timeout.InfiniteTimeSpan, token)
+                .ConfigureAwait(false);
+            return SpawnPair(
+                firstResult.Status.ToString(),
+                secondResult.Status.ToString(),
+                firstResult.Report,
+                secondResult.Report);
+        });
+        var postToolCalls = 0;
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "agent_spawn")),
+            // Every slot after the first routes by shape. A child signals its own start and
+            // then holds until BOTH children started, so a sequential runtime deadlocks into
+            // the test deadline instead of passing.
+            Route, Route, Route, Route);
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
+        }, [spawnTool, waitTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        var events = await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        var finishes = events.OfType<AgentToolFinished>().ToList();
+        finishes.Should().HaveCount(2);
+        finishes[1].Result.GetProperty("value").GetProperty("reportA").GetString().Should().Be("overlap report");
+        finishes[1].Result.GetProperty("value").GetProperty("reportB").GetString().Should().Be("overlap report");
+        finishes[1].Result.GetProperty("value").GetProperty("statusA").GetString()
+            .Should().Be(nameof(AgentSubagentStatus.Completed));
+        finishes[1].Result.GetProperty("value").GetProperty("statusB").GetString()
+            .Should().Be(nameof(AgentSubagentStatus.Completed));
+        collector.Events.Select(pair => pair.SessionId).Distinct().Should().HaveCount(2);
+
+        IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
+        {
+            return messages.Any(message =>
+                       message.Contents.Any(content => content is FunctionResultContent))
+                ? Interlocked.Increment(ref postToolCalls) == 1
+                    ? StreamAsync(ToolCallUpdate("wait", "agent_wait"))
+                    : StreamAsync("done")
+                : WaitBothStartedAsync(startedSignals, bothStarted, () => Interlocked.Increment(ref childrenStarted), token);
+        }
+    }
+
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -363,6 +663,28 @@ public sealed class AgentSubagentTests
         return JsonSerializer.SerializeToElement(
             new SpawnToolValue(status, report, failureType),
             SubagentTestJsonContext.Default.SpawnToolValue);
+    }
+
+    private static JsonElement SpawnPair(string statusA, string statusB, string? reportA, string? reportB)
+    {
+        return JsonSerializer.SerializeToElement(
+            new SpawnPairValue(statusA, statusB, reportA, reportB),
+            SubagentTestJsonContext.Default.SpawnPairValue);
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> WaitBothStartedAsync(
+        ConcurrentQueue<TaskCompletionSource> startedSignals,
+        TaskCompletionSource bothStarted,
+        Func<int> countStarted,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (!startedSignals.TryDequeue(out var started))
+            throw new InvalidOperationException("The test scripted more child requests than children.");
+        started.TrySetResult();
+        if (countStarted() == 2)
+            bothStarted.TrySetResult();
+        await bothStarted.Task.WaitAsync(cancellationToken);
+        yield return new ChatResponseUpdate(ChatRole.Assistant, "overlap report");
     }
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(IAgentRun run, CancellationToken cancellationToken)
@@ -509,6 +831,9 @@ public sealed class AgentSubagentTests
 
 internal sealed record SpawnToolValue(string Status, string? Report, string? FailureType);
 
+internal sealed record SpawnPairValue(string StatusA, string StatusB, string? ReportA, string? ReportB);
+
 [JsonSerializable(typeof(SpawnToolValue))]
+[JsonSerializable(typeof(SpawnPairValue))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 internal sealed partial class SubagentTestJsonContext : JsonSerializerContext;

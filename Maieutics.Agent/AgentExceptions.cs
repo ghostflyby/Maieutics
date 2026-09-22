@@ -124,3 +124,23 @@ public sealed class AgentSubagentBudgetExceededException(string limitName, int m
     /// <summary>Gets the configured maximum.</summary>
     public int Maximum { get; } = maximum;
 }
+
+/// <summary>Indicates that a run identifier does not match any child of the addressed parent run.</summary>
+public sealed class AgentSubagentNotFoundException(AgentRunId childRunId)
+    : AgentException($"No subagent child run matches '{childRunId.Value.ToString("N")}' on this parent run.")
+{
+    /// <summary>Gets the unmatched child run identifier.</summary>
+    public AgentRunId ChildRunId { get; } = childRunId;
+}
+
+/// <summary>Indicates that a subagent wait gave up before the child run reached a terminal state.
+/// The child run keeps running; the waiter may retry, cancel it, or let the parent turn join it.</summary>
+public sealed class AgentSubagentWaitTimeoutException(AgentRunId childRunId, TimeSpan timeout, Exception? innerException = null)
+    : AgentException($"The subagent child run '{childRunId.Value.ToString("N")}' did not reach a terminal state within {timeout}.", innerException)
+{
+    /// <summary>Gets the child run identifier that was waited on.</summary>
+    public AgentRunId ChildRunId { get; } = childRunId;
+
+    /// <summary>Gets the configured wait timeout.</summary>
+    public TimeSpan Timeout { get; } = timeout;
+}

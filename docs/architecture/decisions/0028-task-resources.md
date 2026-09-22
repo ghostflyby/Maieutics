@@ -52,6 +52,9 @@ read-only view of spawned work.
    owning subsystem's typed tools (`terminal_interrupt`, `terminal_close`); the fetch bridge
    already rejects non-GET methods on virtual schemes, and no resource write surface exists.
    This keeps the plane's one-way nature enforceable at the transport, not by convention.
+   (Amended by ADR 0030: the plane carries a uniform control contract — sources implement wait
+   and cancel, exposed as `task_wait`/`task_cancel`, and a source lacking either may not register
+   an authority. The typed subsystem tools remain alongside.)
 
 5. **Scope and visibility.** The catalog lists the live one-shots of every Agent session —
    the plane is process-global like the workspace plane, since one user owns every session;

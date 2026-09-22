@@ -16,6 +16,7 @@ public sealed class AgentSession : IAgentSession
     private readonly IAgentRunProfileProvider profileProvider;
     private readonly IAgentTranscriptStore? transcriptStore;
     private readonly IAgentObjectStore? objectStore;
+    private readonly AgentSubagentHost subagentHost;
     private readonly Lock transcriptGate = new();
     private AgentTranscriptState canonicalState;
     private int runInProgress;
@@ -68,6 +69,7 @@ public sealed class AgentSession : IAgentSession
 
         Id = sessionId ?? AgentSessionId.Create();
         canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
+        subagentHost = new AgentSubagentHost(Id, profileProvider, objectStore);
     }
 
     /// <summary>Creates a session whose canonical history is restored from a stored transcript.</summary>
@@ -169,6 +171,10 @@ public sealed class AgentSession : IAgentSession
 
     /// <inheritdoc />
     public bool IsRunInProgress => Volatile.Read(ref runInProgress) != 0;
+
+    /// <summary>Gets the session's subagent owner. It holds no state between runs: children
+    /// are tracked per parent run and terminated when the parent run terminates.</summary>
+    internal AgentSubagentHost SubagentHost => subagentHost;
 
     /// <inheritdoc />
     public async Task<IAgentRun> StartTurnAsync(
@@ -631,6 +637,11 @@ public sealed class AgentSession : IAgentSession
 
             invocation.Arguments.Context ??= new Dictionary<object, object?>();
             invocation.Arguments.Context[typeof(AgentToolContext)] = context;
+            if (options.Subagents is { MaxDepth: > 0 })
+            {
+                invocation.Arguments.Context[typeof(IAgentSubagentSpawner)] =
+                    owner.SubagentHost.CreateSpawner(run.Id, run.Tools, options);
+            }
 
             JsonElement envelope;
             var successResult = true;
@@ -1139,6 +1150,19 @@ public sealed class AgentSession : IAgentSession
             }
             finally
             {
+                try
+                {
+                    await owner.SubagentHost.TerminateChildrenAsync(Id).ConfigureAwait(false);
+                }
+                catch (Exception) when (failure is not null || canceled)
+                {
+                    // Preserve the run's primary terminal cause after child termination.
+                }
+                catch (Exception exception)
+                {
+                    failure = exception;
+                }
+
                 events.Writer.TryComplete();
                 try
                 {

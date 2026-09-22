@@ -85,8 +85,10 @@ public sealed class PermissionAcquisitionTests
 
         var policy = acquirer.Acquire(PermissionLayer.Empty);
 
-        policy.For(PermissionKind.Read).Allow.Should().Equal(
-            Path.Combine("/tmp/ws", "notes"));
+        // Variable expansion is pure string substitution; the pattern's own
+        // separator is kept verbatim, so the expectation is a literal, not a
+        // platform Path.Combine result.
+        policy.For(PermissionKind.Read).Allow.Should().Equal("/tmp/ws/notes");
     }
 
     [Fact]

@@ -129,6 +129,106 @@ public sealed class TaskResourceTests
         result.TaskUri.Should().BeNull();
     }
 
+    [Fact(Timeout = 10_000)]
+    public async Task WaitResolvesWithTheTerminalSnapshotWhenTheProcessExits()
+    {
+        await using var harness = new TaskHarness();
+        var owner = AgentSessionId.Create();
+        var result = await StartTimedOutOneShotAsync(harness, owner);
+        var wait = harness.Provider.WaitTaskAsync(
+            result.TaskUri!, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Either ordering is valid: a wait that starts before the exit awaits the signal, and
+        // one that starts after it returns immediately.
+        harness.Process.EndOfOutput();
+        harness.Process.RaiseExited(0);
+        var snapshot = await wait;
+
+        snapshot.Status.Should().Be("complete");
+        snapshot.Terminal!.ExitCode.Should().Be(0);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task WaitTimesOutTypedWhileTheTaskSurvives()
+    {
+        await using var harness = new TaskHarness();
+        var owner = AgentSessionId.Create();
+        var result = await StartTimedOutOneShotAsync(harness, owner);
+
+        var timeout = () => harness.Provider.WaitTaskAsync(
+            result.TaskUri!, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+        (await timeout.Should().ThrowAsync<ResourceException>())
+            .Which.Code.Should().Be("task_wait_timeout");
+
+        harness.Process.EndOfOutput();
+        harness.Process.RaiseExited(0);
+        var snapshot = await ReadSnapshotAsync(harness, result.TaskUri!);
+        snapshot.GetProperty("status").GetString().Should().Be("complete");
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task CancelSettlesTheTaskAndRemovesItFromThePlane()
+    {
+        await using var harness = new TaskHarness();
+        var owner = AgentSessionId.Create();
+        var result = await StartTimedOutOneShotAsync(harness, owner);
+
+        var snapshot = await harness.Provider.CancelTaskAsync(
+            result.TaskUri!, owner, TestContext.Current.CancellationToken);
+        snapshot.Status.Should().Be("cancel");
+        snapshot.Terminal!.State.Should().Be("closed");
+
+        var gone = () => harness.Provider.ReadAsync(
+            result.TaskUri!, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
+        (await gone.Should().ThrowAsync<ResourceException>())
+            .Which.Code.Should().Be("resource_not_found");
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task CancelIsIdempotentOnATerminalTask()
+    {
+        await using var harness = new TaskHarness();
+        var owner = AgentSessionId.Create();
+        var result = await StartTimedOutOneShotAsync(harness, owner);
+        harness.Process.EndOfOutput();
+        harness.Process.RaiseExited(0);
+
+        var snapshot = await harness.Provider.CancelTaskAsync(
+            result.TaskUri!, owner, TestContext.Current.CancellationToken);
+        snapshot.Status.Should().Be("complete");
+        snapshot.Terminal!.ExitCode.Should().Be(0);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task CancelRejectsACallerSessionMismatch()
+    {
+        await using var harness = new TaskHarness();
+        var owner = AgentSessionId.Create();
+        var result = await StartTimedOutOneShotAsync(harness, owner);
+
+        var forbidden = () => harness.Provider.CancelTaskAsync(
+            result.TaskUri!, AgentSessionId.Create(), TestContext.Current.CancellationToken);
+        (await forbidden.Should().ThrowAsync<ResourceException>())
+            .Which.Code.Should().Be("task_forbidden");
+
+        var stillWorking = await ReadSnapshotAsync(harness, result.TaskUri!);
+        stillWorking.GetProperty("status").GetString().Should().Be("working");
+    }
+
+    private static async Task<TerminalRunResult> StartTimedOutOneShotAsync(TaskHarness harness, AgentSessionId owner)
+    {
+        var result = await harness.Registry.RunOnceAsync(
+            owner,
+            "sh",
+            ["-c", "sleep 60"],
+            TimeSpan.FromMilliseconds(200),
+            new TerminalSnapshotRequest(),
+            TestContext.Current.CancellationToken);
+        result.Settled.Should().BeFalse();
+        result.TaskUri.Should().NotBeNull();
+        return result;
+    }
+
     private static async Task<JsonElement> ReadSnapshotAsync(TaskHarness harness, string taskUri)
     {
         var invocation = await InvokeReadTextAsync(harness.WorkspaceFunctions, taskUri);
@@ -185,10 +285,11 @@ public sealed class TaskResourceTests
                 new FakeTerminalProcessFactory(Process),
                 NullLogger<TerminalSession>.Instance,
                 TestPermissionPolicies.Unconfigured());
+            Provider = new TaskResourceProvider([new TerminalTaskResourceSource(Registry)]);
             Resources = new ResourceRegistry(
             [
                 new WorkspaceResourceProvider(workspace),
-                new TaskResourceProvider([new TerminalTaskResourceSource(Registry)])
+                Provider
             ]);
             WorkspaceFunctions = new WorkspaceFunctions(workspace, resources: Resources);
             ResourceFunctions = new ResourceFunctions(Resources);
@@ -199,6 +300,8 @@ public sealed class TaskResourceTests
         internal FakeTerminalProcess Process { get; }
 
         internal TerminalRegistry Registry { get; }
+
+        internal TaskResourceProvider Provider { get; }
 
         internal ResourceRegistry Resources { get; }
 

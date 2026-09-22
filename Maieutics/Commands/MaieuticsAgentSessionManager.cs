@@ -39,6 +39,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly string? viewSessionsRoot;
     private readonly string? objectsRoot;
     private readonly ILogger<MaieuticsAgentSessionManager> logger;
+    private readonly AgentSubagentOptions? subagents;
     private readonly Lock gate = new();
     private readonly Dictionary<string, LiveSession> live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
@@ -53,7 +54,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         IObjectReclaimer? reclaimer = null,
         string? viewSessionsRoot = null,
         string? objectsRoot = null,
-        IMaieuticsRuntimeConfiguration? runtimeConfiguration = null)
+        IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
+        AgentSubagentOptions? subagents = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.runtimeConfiguration = runtimeConfiguration;
@@ -64,6 +66,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         this.viewSessionsRoot = viewSessionsRoot;
         this.objectsRoot = objectsRoot;
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.subagents = subagents;
         foreground = CreateLive(AgentSessionId.Create());
     }
 
@@ -105,6 +108,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         lock (gate)
         {
             return live.ContainsKey(sessionId.Value.ToString("N"));
+        }
+    }
+
+    /// <summary>Enumerates the identities of every currently live session. Used by the task
+    /// plane's catalog, which lists live subagent runs across all sessions of the process
+    /// (ADR 0028 decision 5).</summary>
+    internal AgentSessionId[] ListLiveSessionIds()
+    {
+        lock (gate)
+        {
+            return [.. live.Keys.Select(static key => new AgentSessionId(Guid.ParseExact(key, "N")))];
         }
     }
 
@@ -505,7 +519,39 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
     private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper)
     {
-        return wrapper ?? profileProvider;
+        var inner = wrapper ?? profileProvider;
+        return subagents is null ? inner : new SubagentsProfileProvider(inner, subagents);
+    }
+
+    /// <summary>Decorates every lease with the composition-root subagent configuration while
+    /// keeping the profile's own client, tools, and per-profile limits. When the configuration
+    /// is disabled (null) the profile passes through untouched.</summary>
+    private sealed class SubagentsProfileProvider(
+        IAgentRunProfileProvider inner,
+        AgentSubagentOptions subagents) : IAgentRunProfileProvider
+    {
+        public async Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
+        {
+            var lease = await inner.AcquireAsync(cancellationToken).ConfigureAwait(false) ??
+                        throw new InvalidOperationException("The Agent run profile provider returned a null lease.");
+            var profile = lease.Profile;
+            var adjusted = new AgentRunProfile(
+                profile.ChatClient,
+                profile.Options with { Subagents = subagents },
+                profile.ModelIdentity,
+                profile.Capabilities,
+                profile.HostedCapabilities,
+                profile.Tools,
+                profile.HostedTools);
+            return new Lease(lease, adjusted);
+        }
+
+        private sealed class Lease(IAgentRunProfileLease inner, AgentRunProfile profile) : IAgentRunProfileLease
+        {
+            public AgentRunProfile Profile { get; } = profile;
+
+            public ValueTask DisposeAsync() => inner.DisposeAsync();
+        }
     }
 
     /// <summary>Creates and registers a fresh live session (its own family database), making
@@ -514,7 +560,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     {
         var wrapper = CreateWrapper();
         var session = new AgentSession(
-            wrapper is null ? profileProvider : ProviderFor(wrapper),
+            ProviderFor(wrapper),
             transcriptStore: OpenStore(sessionId),
             objectStore: objectStore,
             sessionId: sessionId);

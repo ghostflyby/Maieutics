@@ -562,7 +562,10 @@ public sealed class WorkspaceToolsTests
                     "repl_create",
                     "repl_list",
                     "repl_restart",
-                    "repl_close");
+                    "repl_close",
+                    "agent_spawn",
+                    "task_wait",
+                    "task_cancel");
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>

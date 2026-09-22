@@ -51,6 +51,14 @@ is what makes the plane worth addressing generically.
    19–21): spawn arguments can only narrow, never widen, and the clamp happens server-side at the
    permission layer, not by trusting model output. The child's tool registry is a validated
    subset of the parent's under the existing unique-name and object-schema registration rules.
+   Mechanically, a spawn registers the child session under the calling session in the permission
+   override registry, and lookups for a child scope walk to the owning session, so the overlay
+   composes the parent's session override for every process the child launches — a session-scoped
+   deny cannot be bypassed by delegating work to a child run. The map is capped (oldest
+   evicted) because child runs leave no join callback at the permissions layer; a late launch
+   after eviction composes the plain configuration overlay, which is never wider than the
+   parent's own configuration-derived layers. Permission-hint arguments beyond the tool
+   allowlist are not modeled yet; when they are, this registry clamp is where they narrow.
 
 4. **Child-run lifecycle is task semantics; this amends ADR 0028 decision 5 for child runs.**
    A running child is addressable as `task://agent/{agentSessionId}/{subagentRunId}`, served by an
@@ -115,10 +123,12 @@ is what makes the plane worth addressing generically.
    and 26 hold unchanged; no new display channel exists.
 
 10. **Transcript, snapshots, and budgets.** The parent canonical transcript records the spawn
-    tool call and its structured result; child conversation history never enters it. Child
-    committed turns may persist under the child's own identity for audit and debugging, behind
-    the normal transcript store and persistence-policy decision at implementation time. Notebook
-    snapshots are unaffected: they carry reports, never live child state. Child runs inherit
+    tool call and its structured result; child conversation history never enters it. The v1
+    persistence policy is decided: child transcripts stay in memory only — they die with the
+    process and are never written to a transcript store — while the report persists in the
+    parent transcript and survives there. Persisting child turns under the child's own
+    identity remains a future option for audit and debugging. Notebook snapshots are
+    unaffected: they carry reports, never live child state. Child runs inherit
     per-run limits and add recursion dimensions — a depth cap and a per-parent-turn total child
     budget. Budget exhaustion and `task_wait` timeouts are typed recoverable errors to the parent
     model, not turn rollback; hung children remain inspectable as cancelled/fail snapshots,

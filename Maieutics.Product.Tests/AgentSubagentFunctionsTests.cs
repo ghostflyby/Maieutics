@@ -5,6 +5,7 @@ using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Execution;
 using Maieutics.Frontend;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -57,6 +58,52 @@ public sealed class AgentSubagentFunctionsTests
             taskUri!, TimeSpan.FromSeconds(1), deadline.Token);
         (await gone.Should().ThrowAsync<ResourceException>())
             .Which.Code.Should().Be("resource_not_found");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task SpawnRegistersTheChildScopeWithThePermissionRegistry()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var buffer = new SubagentEventBuffer();
+        var reference = new SessionRef();
+        var overrides = new PermissionOverrideRegistry();
+        var source = new AgentTaskResourceSource(
+            sessionId => reference.Session is { } live && live.Id == sessionId ? live : null,
+            () => reference.Session is { } live ? [live.Id] : []);
+        var provider = new TaskResourceProvider([source]);
+        // The REAL agent_spawn adapter: the child-scope registration lives inside it, so the
+        // session must run the adapter, not a test-local stand-in.
+        var functions = new AgentSubagentFunctions(provider, overrides);
+        var parentLayer = new PermissionLayer
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Read] = new PermissionKindRules { Deny = ["/secret"] }
+            }
+        };
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("spawn", "agent_spawn", ("input", "child task"))),
+            (_, _) => StreamAsync("done"),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(
+            client,
+            new AgentSessionOptions
+            {
+                Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = buffer }
+            },
+            functions.Functions);
+        reference.Session = session;
+        overrides.Set(session.Id, parentLayer);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+
+        // The real agent_spawn adapter registered the child scope under the calling session
+        // (ADR 0030 decision 3), so the child resolves through the parent's override.
+        overrides.ChildScopes.Should().ContainSingle();
+        overrides.ChildScopes[0].Parent.Should().Be(session.Id);
+        overrides.TryGet(overrides.ChildScopes[0].Child).Should().BeSameAs(parentLayer);
     }
 
     [Fact(Timeout = 30_000)]
@@ -200,6 +247,26 @@ public sealed class AgentSubagentFunctionsTests
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         return deadline;
+    }
+
+    private static AIFunction CreateSpawnTool(
+        string name,
+        Func<AIFunctionArguments, CancellationToken, Task<JsonElement>> body)
+    {
+        ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
+        {
+            return new ValueTask<JsonElement>(body(arguments, cancellationToken));
+        }
+
+        return AIFunctionFactory.Create(
+            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)Invoke,
+            new AIFunctionFactoryOptions
+            {
+                Name = name,
+                Description = $"Test spawn tool {name}.",
+                SerializerOptions = SubagentFrameJsonContext.Default.Options,
+                ExcludeResultSchema = true
+            });
     }
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(IAgentRun run, CancellationToken cancellationToken)

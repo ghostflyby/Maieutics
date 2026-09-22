@@ -106,6 +106,115 @@ public sealed class PermissionAcquisitionTests
     }
 
     [Fact]
+    public void ChildScopeInheritsTheParentSessionOverride()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+        var layer = Layer("net", deny: ["evil.example.com:443"]);
+        registry.Set(parent, layer);
+        registry.RegisterChildScope(child, parent);
+
+        registry.TryGet(child).Should().BeSameAs(layer);
+
+        // The acquisition for the child scope composes the parent's override: a session-scoped
+        // deny cannot be bypassed by delegating work to a child run (ADR 0030 decision 3).
+        var source = new RegistryLayerSource(registry);
+        var acquirer = new PermissionPolicyAcquirer(() => source, new NullVariableSource());
+        acquirer.Acquire(Layer("net", allow: ["localhost:80"]), child).For(PermissionKind.Net).Deny
+            .Should().Equal("evil.example.com:443");
+    }
+
+    [Fact]
+    public void ChildScopeWithoutAParentOverrideComposesNothing()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+        registry.RegisterChildScope(child, parent);
+
+        registry.TryGet(child).Should().BeNull();
+    }
+
+    [Fact]
+    public void GrandchildScopeWalksToTheOwningAncestor()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+        var grandchild = AgentSessionId.Create();
+        var layer = Layer("read", deny: ["/secret"]);
+        registry.Set(parent, layer);
+        registry.RegisterChildScope(child, parent);
+        registry.RegisterChildScope(grandchild, child);
+
+        registry.TryGet(grandchild).Should().BeSameAs(layer);
+    }
+
+    [Fact]
+    public void ChildOwnOverrideIsAuthoritativeOverTheParentChain()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+        var parentLayer = Layer("read", deny: ["/secret"]);
+        var childLayer = Layer("read", allow: ["/public"]);
+        registry.Set(parent, parentLayer);
+        registry.Set(child, childLayer);
+        registry.RegisterChildScope(child, parent);
+
+        registry.TryGet(child).Should().BeSameAs(childLayer);
+    }
+
+    [Fact]
+    public void RegistrationCyclesTerminateAtTheDepthCap()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var first = AgentSessionId.Create();
+        var second = AgentSessionId.Create();
+        registry.RegisterChildScope(first, second);
+        registry.RegisterChildScope(second, first);
+
+        registry.TryGet(first).Should().BeNull();
+        registry.TryGet(second).Should().BeNull();
+    }
+
+    [Fact]
+    public void ReleaseChildScopeRemovesTheInheritance()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+        registry.Set(parent, Layer("read", deny: ["/secret"]));
+        registry.RegisterChildScope(child, parent);
+        registry.ReleaseChildScope(child);
+
+        registry.TryGet(child).Should().BeNull();
+        // Re-spawning a fresh child under the same parent registers cleanly again.
+        var fresh = AgentSessionId.Create();
+        registry.RegisterChildScope(fresh, parent);
+        registry.TryGet(fresh).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ChildScopeRegistrationIsCappedAndEvictsTheOldest()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var parent = AgentSessionId.Create();
+        registry.Set(parent, Layer("read", deny: ["/secret"]));
+        var firstChild = AgentSessionId.Create();
+        registry.RegisterChildScope(firstChild, parent);
+
+        for (var index = 0; index < 256; index++)
+            registry.RegisterChildScope(AgentSessionId.Create(), parent);
+
+        registry.TryGet(firstChild).Should().BeNull();
+        var lastChild = AgentSessionId.Create();
+        registry.RegisterChildScope(lastChild, parent);
+        registry.TryGet(lastChild).Should().NotBeNull();
+    }
+
+    [Fact]
     public void OverrideRegistryStoresClearsAndScopesBySession()
     {
         var registry = new PermissionOverrideRegistry();

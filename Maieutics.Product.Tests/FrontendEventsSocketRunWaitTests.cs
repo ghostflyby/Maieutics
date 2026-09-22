@@ -53,16 +53,29 @@ public sealed class FrontendEventsSocketRunWaitTests
         enqueued.Should().HaveCount(2);
 
         // The queue is fully drained once the API reports no running item and no pending items.
-        await WaitForQueueDrainedAsync(harness, sessionId, deadline.Token);
-        Trace("queue drained; submitting a direct turn");
+        var lastQueuedRunId = await WaitForQueueDrainedAsync(harness, sessionId, deadline.Token);
+        Trace("queue drained; waiting for the last queued run to settle before the direct turn");
 
-        // A 409 here is the documented busy window's tail, not a queue bug: the drained
-        // snapshot is published when the worker clears the running item, and the previous
-        // run's gate release / presentation detach becomes visible to a direct submission
-        // a beat later. "Busy" has two causes with different remedies (gate held vs.
-        // detach in flight); the direct submission retries briefly and only a persistent
-        // rejection fails the test.
-        using var response = await SubmitDirectUntilAcceptedAsync(harness, sessionId, deadline.Token);
+        // Deterministic readiness: a run stream's Settled completes only after the
+        // single-run gate released and the presentation scope detached (the pump's
+        // disposal signal is the last step of its finally), so once it is observed the
+        // direct submission cannot race either busy cause. A run that already left the
+        // retained registry has already settled.
+        if (lastQueuedRunId is not null &&
+            harness.SessionService.TryGetRun(lastQueuedRunId, out var lastStream) &&
+            lastStream is not null)
+        {
+            await lastStream.Settled.WaitAsync(deadline.Token);
+        }
+
+        Trace("last queued run settled; submitting a direct turn");
+        using var response = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/turns",
+            new { text = "direct after drain" },
+            deadline.Token);
+        response.StatusCode.Should().Be(
+            System.Net.HttpStatusCode.Accepted,
+            "the last queued run settled, so a direct turn is accepted rather than busy-rejected");
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var runId = body.GetProperty("runId").GetString();
         runId.Should().NotBeNullOrEmpty();
@@ -79,32 +92,6 @@ public sealed class FrontendEventsSocketRunWaitTests
     }
 
 
-    /// <summary>Submits one direct turn, retrying bounded when the drained queue's busy
-    /// window (gate release / presentation detach propagation) rejects it as busy.</summary>
-    private static async Task<HttpResponseMessage> SubmitDirectUntilAcceptedAsync(
-        Harness harness,
-        string sessionId,
-        CancellationToken cancellationToken)
-    {
-        var deadline = TimeSpan.FromSeconds(5);
-        while (true)
-        {
-            var response = await harness.Client.PostAsJsonAsync(
-                $"/v1/agent/sessions/{sessionId}/turns",
-                new { text = "direct after drain" },
-                cancellationToken);
-            if (response.StatusCode != System.Net.HttpStatusCode.Conflict || deadline <= TimeSpan.Zero)
-            {
-                response.StatusCode.Should().Be(
-                    System.Net.HttpStatusCode.Accepted,
-                    "the queue has drained, so a direct turn is accepted rather than busy-rejected");
-                return response;
-            }
-
-            await Task.Delay(100, cancellationToken);
-            deadline -= TimeSpan.FromMilliseconds(100);
-        }
-    }
 
     private static async Task<string[]> EnqueueAsync(
         Harness harness,
@@ -123,10 +110,15 @@ public sealed class FrontendEventsSocketRunWaitTests
             .ToArray()];
     }
 
-    private async Task WaitForQueueDrainedAsync(Harness harness, string sessionId, CancellationToken cancellationToken)
+    /// <summary>Waits for the queue to report drained and returns the runId of the last
+    /// running item observed on the way there — the deterministic readiness signal for a
+    /// subsequent direct submission (the run stream's Settled task completes only after the
+    /// single-run gate released and the presentation scope detached).</summary>
+    private async Task<string?> WaitForQueueDrainedAsync(Harness harness, string sessionId, CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(45));
+        string? lastRunningRunId = null;
         while (true)
         {
             using var response = await harness.Client
@@ -135,11 +127,16 @@ public sealed class FrontendEventsSocketRunWaitTests
             response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
             var queue = await response.Content.ReadFromJsonAsync<JsonElement>(wait.Token).ConfigureAwait(false);
             var pending = queue.GetProperty("items").GetArrayLength();
-            var running = queue.TryGetProperty("running", out _);
-            if (pending == 0 && !running)
+            if (queue.TryGetProperty("running", out var running))
+            {
+                lastRunningRunId = running.GetProperty("runId").GetString();
+                continue;
+            }
+
+            if (pending == 0)
             {
                 Trace("queue reported drained");
-                return;
+                return lastRunningRunId;
             }
 
             await Task.Delay(50, wait.Token).ConfigureAwait(false);

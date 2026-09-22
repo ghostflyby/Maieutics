@@ -1369,6 +1369,39 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ResponsesBuiltinCallsBeyondTheEndpointLimitFailTheTurn()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
+        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, webSearchFlow: true, webSearchCalls: 2);
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: null,
+            transformConfiguration: body => DeclareEndpointCapabilityWithLimit(
+                body.Replace("ChatCompletions", "Responses"),
+                provider.Endpoint,
+                "WebSearch",
+                limit: 1));
+        try
+        {
+            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+            await events.ReceiveFrameAsync(deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", deadline.Token);
+            var frames = await events.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.failed",
+                deadline.Token);
+
+            // The response surfaced two built-in searches against a per-request ceiling of one;
+            // the OpenAI wire has no cap parameter, so the client enforces it and fails the turn.
+            frames.Last().GetProperty("code").GetString().Should().Be("agent_tool_limit_exceeded");
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task AnthropicWebSearchStreamsTheServerToolAndCommitsTheTranscript()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
@@ -1423,6 +1456,16 @@ public sealed class FrontendApiIntegrationTests
             "\"Maieutics\": {",
             "\"Maieutics\": {\n            \"Endpoints\": [ { \"Url\": " +
             $"{JsonSerializer.Serialize(withoutTrailingSlash)}, \"Capabilities\": [ \"{capability}\" ] }} ],");
+    }
+
+    private static string DeclareEndpointCapabilityWithLimit(string body, Uri endpoint, string capability, int limit)
+    {
+        var withoutTrailingSlash = endpoint.ToString().TrimEnd('/');
+        return body.Replace(
+            "\"Maieutics\": {",
+            "\"Maieutics\": {\n            \"Endpoints\": [ { \"Url\": " +
+            $"{JsonSerializer.Serialize(withoutTrailingSlash)}, \"Capabilities\": [ \"{capability}\" ], " +
+            $"\"Limits\": {{ \"MaxBuiltinToolCalls\": {limit} }} }} ],");
     }
 
 
@@ -1678,16 +1721,24 @@ public sealed class FrontendApiIntegrationTests
                 // A run that already settled can never commit a turn, so polling until the
                 // budget expires only rewrites the real cause as an empty
                 // TaskCanceledException. Name it instead: the run's retained stream carries
-                // the protocol code the pump published.
+                // the protocol code the pump published. The two reads race the commit (the
+                // GET may land just before it and the settled check just after), so the
+                // verdict is only trustworthy after one fresh re-read in
+                // settled-first order.
                 if (runId is not null && DescribeSettledRunWithoutCommit(runId) is { } settled)
                 {
+                    var confirmation = await Client.GetFromJsonAsync<JsonElement>(
+                        $"/v1/agent/sessions/{sessionId}/transcript",
+                        wait.Token);
+                    if (confirmation.GetProperty("turns").GetArrayLength() > 0) return;
+
                     var retained = SessionService.TryGetRun(runId, out var settledStream) && settledStream is not null
                         ? string.Join(" | ", settledStream.DescribeFrames())
                         : "(evicted)";
                     var providerState = hangingProvider?.DescribeState() ?? "(none)";
                     throw new InvalidOperationException(
                         $"Run {runId} settled ({settled}) without committing a turn to session {sessionId}; "
-                        + $"the turn can never appear in the transcript. transcript={transcript.GetRawText()} "
+                        + $"the turn can never appear in the transcript. transcript={confirmation.GetRawText()} "
                         + $"provider={providerState} frames=[{retained}]");
                 }
 

@@ -38,6 +38,12 @@ public sealed record AgentSessionOptions
     /// <summary>Gets the maximum number of progress events emitted by one tool call.</summary>
     public int MaxToolProgressEventsPerCall { get; init; } = 256;
 
+    /// <summary>Gets the maximum number of provider-side (hosted) built-in tool calls one
+    /// model request may perform, or null when no endpoint limit is configured. Anthropic
+    /// enforces the limit on the wire; other providers count the observed built-in calls and
+    /// fail the request once the ceiling is exceeded.</summary>
+    public int? MaxBuiltinToolCalls { get; init; }
+
     /// <summary>Gets the capacity of each run's bounded event stream.</summary>
     public int EventBufferCapacity { get; init; } = 128;
 
@@ -55,4 +61,14 @@ public sealed record AgentSessionOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
     }
+}
+
+/// <summary>Well-known <see cref="Microsoft.Extensions.AI.ChatOptions.AdditionalProperties" />
+/// keys the runtime sets per model request. Provider adapters read these to honor per-request
+/// ceilings that have no dedicated Microsoft.Extensions.AI surface.</summary>
+internal static class AgentChatOptionKeys
+{
+    /// <summary>The per-request ceiling on provider-side built-in tool calls
+    /// (<see cref="AgentSessionOptions.MaxBuiltinToolCalls" />).</summary>
+    internal const string MaxBuiltinToolCalls = "maieutics.maxBuiltinToolCalls";
 }

@@ -1,9 +1,9 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
+using Maieutics.Persistence;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
@@ -11,6 +11,54 @@ namespace Maieutics.Product.Tests;
 public sealed class DenoReplSessionTests
 {
     [Fact(Timeout = 15_000)]
+    public async Task BinaryDisplaysFlowIntoTheContentAddressedObjectStore()
+    {
+        var png = new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02 };
+        var display = JsonDocument.Parse(
+            """{"image/png":{"$buffer":0},"text/plain":"binary display"}""").RootElement.Clone();
+        var output = new ControlledOutputConnection();
+        var factory = new ControlledFactory(() => new ControlledGeneration(output: output));
+        var store = new ReplDisplayObjectStore(new ObjectStore(
+            Path.Combine(Path.GetTempPath(), $"maieutics-objects-{Guid.NewGuid():N}")));
+        var sink = new DenoReplExecutionCollectorTests.RecordingPresentationSink();
+        var owner = AgentSessionId.Create();
+        await using var session = CreateSession(
+            owner,
+            "default",
+            LongRunningOptions(),
+            factory,
+            new ImmediatePresentationRouter(sink),
+            store);
+
+        var execution = session.ExecuteAsync(
+            "display",
+            AgentToolCallId.Create(),
+            TestContext.Current.CancellationToken);
+        var generation = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
+        var eval = await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
+        output.Publish(new ReplOutputDisplayFrame(
+            1,
+            eval.Execution.ExecutionId,
+            display.EnumerateObject().ToDictionary(static property => property.Name, static property => property.Value.Clone()),
+            new Dictionary<string, JsonElement>(),
+            null,
+            false,
+            [png]));
+        output.End();
+        eval.CompleteResult(0);
+        await execution;
+
+        // The session passes the display object store through to the collector, so the binary
+        // mime becomes an object reference on the wire instead of being dropped (invariant 26).
+        sink.BinaryDisplays.Should().ContainSingle();
+        var reference = sink.BinaryDisplays.Single().Data["image/png"];
+        reference.ValueKind.Should().Be(JsonValueKind.Object);
+        var url = reference.GetProperty("$object").GetString()!;
+        url.Should().StartWith("/v1/objects/");
+        reference.GetProperty("byteLength").GetInt64().Should().Be(png.Length);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task SameSessionSerializesWhileDifferentSessionsCanExecuteConcurrently()
     {
         var probe = new ConcurrencyProbe();
@@ -183,7 +231,8 @@ public sealed class DenoReplSessionTests
         string id,
         DenoReplOptions options,
         IDenoReplSessionFactory factory,
-        IDenoReplPresentationRouter? presentationRouter = null)
+        IDenoReplPresentationRouter? presentationRouter = null,
+        IReplDisplayObjectStore? displayObjectStore = null)
     {
         return new DenoReplSession(
             owner,
@@ -193,7 +242,8 @@ public sealed class DenoReplSessionTests
             options,
             factory,
             presentationRouter ?? new ImmediatePresentationRouter(),
-            NullLogger<DenoReplSession>.Instance);
+            NullLogger<DenoReplSession>.Instance,
+            displayObjectStore);
     }
 
     internal sealed class ControlledFactory(Func<ControlledGeneration>? create = null) : IDenoReplSessionFactory
@@ -208,6 +258,7 @@ public sealed class DenoReplSessionTests
         public Task<IDenoReplGeneration> StartAsync(
             string workingDirectory,
             string sessionId,
+            AgentSessionId ownerSessionId,
             int generation,
             CancellationToken cancellationToken)
         {
@@ -499,14 +550,6 @@ public sealed class DenoReplSessionTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(sink);
-        }
-
-        public bool TryGetCurrentSink(
-            AgentSessionId sessionId,
-            [NotNullWhen(true)] out IDenoReplPresentationSink? current)
-        {
-            current = sink;
-            return true;
         }
     }
 

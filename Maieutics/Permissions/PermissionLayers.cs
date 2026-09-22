@@ -2,16 +2,6 @@ using Maieutics.Execution;
 
 namespace Maieutics.Permissions;
 
-/// <summary>One optional layer of the permission overlay. Layers are merged in strict order
-/// (built-in baseline, app-wide defaults, workspace profile, session override) and each may
-/// contribute per-kind grants and denials (ADR 0018 §2). A layer is the declarative shape; the
-/// effective policy is computed once per owning scope by <see cref="PermissionLayerStore"/>.</summary>
-internal sealed record PermissionLayer
-{
-    internal IReadOnlyDictionary<PermissionKind, PermissionKindRules> Kinds { get; init; } =
-        new Dictionary<PermissionKind, PermissionKindRules>();
-}
-
 /// <summary>Computes the effective permission for a scope by overlaying layers in order.
 /// Semantics: denials always win over grants; within one kind, later allowlists and deny lists are
 /// appended to earlier ones and <c>AllowAll</c>/<c>DenyAll</c> are preserved. Patterns with

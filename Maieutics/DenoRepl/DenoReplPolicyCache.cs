@@ -1,3 +1,4 @@
+using Maieutics.Agent;
 using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
@@ -51,6 +52,8 @@ internal static class DenoReplPolicyCache
         string ipcAddress,
         string? windowsPipeName,
         string sessionId,
+        AgentSessionId ownerSessionId,
+        PermissionPolicyAcquirer acquirer,
         ILogger logger,
         CancellationToken cancellationToken = default)
     {
@@ -65,6 +68,8 @@ internal static class DenoReplPolicyCache
                     lockFile,
                     ipcAddress,
                     windowsPipeName,
+                    acquirer,
+                    ownerSessionId,
                     logger,
                     cancellationToken)
                 .ConfigureAwait(false);

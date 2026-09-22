@@ -262,6 +262,11 @@ public sealed class AgentSession : IAgentSession
             Tools = requestTools,
             AllowMultipleToolCalls = true
         };
+        if (options.MaxBuiltinToolCalls is { } maxBuiltinToolCalls)
+        {
+            chatOptions.AdditionalProperties ??= [];
+            chatOptions.AdditionalProperties[AgentChatOptionKeys.MaxBuiltinToolCalls] = maxBuiltinToolCalls;
+        }
         try
         {
             await foreach (var _ in functionClient

@@ -285,12 +285,14 @@ public sealed class DenoReplHostDeriveTests
             credentials,
             NullLogger<DenoReplProcess>.Instance,
             DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance),
+            TestPermissionPolicies.Unconfigured(),
             pluginHosts: harness.Manager);
 
         var credential = credentials.Issue("half-integration-session");
         var start = factory.StartAsync(
             Directory.GetCurrentDirectory(),
             "half-integration-session",
+            AgentSessionId.Create(),
             1,
             deadline.Token);
 
@@ -358,11 +360,13 @@ public sealed class DenoReplHostDeriveTests
             credentials,
             NullLogger<DenoReplProcess>.Instance,
             DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance),
+            TestPermissionPolicies.Unconfigured(),
             pluginHosts: harness.Manager);
 
         var start = factory.StartAsync(
             Directory.GetCurrentDirectory(),
             "fallback-session",
+            AgentSessionId.Create(),
             1,
             deadline.Token);
 
@@ -452,6 +456,7 @@ public sealed class DenoReplHostDeriveTests
             credentials,
             NullLogger<DenoReplProcess>.Instance,
             DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance),
+            TestPermissionPolicies.Unconfigured(),
             pluginHosts: harness.Manager);
 
         var session = new DenoReplSession(

@@ -41,6 +41,11 @@ internal sealed class TerminalSession : IAsyncDisposable
     private TaskCompletionSource screenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long screenVersion;
     private ITerminalProcess? process;
+
+    /// <summary>Ensures the child's exit is observed exactly once even though it can arrive
+    /// through two paths: the reaper's <c>Exited</c> event and the post-spawn catch-up that
+    /// replays an exit which fired before the handler was attached.</summary>
+    private int exitObserved;
     private Task? pump;
     private CancellationTokenSource? pumpLifetime;
     private TerminalSessionState state = TerminalSessionState.Created;
@@ -161,14 +166,51 @@ internal sealed class TerminalSession : IAsyncDisposable
             {
                 EnsureExecutableAllowed();
                 var environment = ProcessEnvironment.Capture(policy);
-                var started = factory.Start(
-                    executable,
-                    launchArguments,
-                    workingDirectory,
-                    environment,
-                    options.Columns,
-                    options.Rows);
-                started.GracefulExitTimeout = options.GracefulExitTimeout;
+                // The spawn itself is a synchronous fork/exec; the start budget bounds how long
+                // StartAsync (and with it the lifecycle gate) can stall on a pathological PTY
+                // allocation. Exited is attached inside the task — before the awaiting caller
+                // resumes — so a child that dies immediately cannot fire into the void; a spawn
+                // that finishes after its budget is disposed, not leaked.
+                var spawnTask = Task.Factory.StartNew(
+                    () =>
+                    {
+                        var spawned = factory.Start(
+                            executable,
+                            launchArguments,
+                            workingDirectory,
+                            environment,
+                            options.Columns,
+                            options.Rows);
+                        spawned.GracefulExitTimeout = options.GracefulExitTimeout;
+                        spawned.Exited += OnProcessExited;
+                        return spawned;
+                    },
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default);
+                ITerminalProcess started;
+                try
+                {
+                    started = await spawnTask
+                        .WaitAsync(options.StartupTimeout, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    _ = ReclaimLateSpawnAsync(spawnTask);
+                    throw new AgentToolException(
+                        "terminal_start_failed",
+                        $"The terminal session '{SessionId}' exceeded its " +
+                        $"{options.StartupTimeout.TotalSeconds:0.###}s start budget.");
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Caller cancellation must surface as cancellation, not as a start failure
+                    // (invariant 9); the not-yet-adopted spawn is reclaimed in case it lands late.
+                    _ = ReclaimLateSpawnAsync(spawnTask);
+                    throw;
+                }
+
                 lock (terminalGate)
                 {
                     terminal.Reset();
@@ -178,14 +220,22 @@ internal sealed class TerminalSession : IAsyncDisposable
                     cursorBlink = false;
                 }
 
+                Volatile.Write(ref process, started);
+                // The reaper may have raised Exited before the in-task handler attach; the
+                // published exit fields are the durable record, so replay that observation once.
+                if (started.ExitCode is not null || started.TerminationSignal is not null)
+                    OnProcessExited(started);
+
                 lastRowTexts = null;
-                process = started;
-                // The pty read may stay open while a background job still holds the terminal even though the
-                // shell itself exited; the reaper event is the reliable child-exit signal and marks the session
-                // faulted so later input fails loudly instead of writing into the void.
-                started.Exited += OnProcessExited;
                 StartPump(started);
-                SetState(TerminalSessionState.Idle);
+                // The child may have exited while the spawn awaited: a one-shot is then already
+                // completed and a persistent session already faulted; only a live child turns idle.
+                SetStateIdleIfStarting();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                SetState(TerminalSessionState.Faulted);
+                throw;
             }
             catch (AgentToolException)
             {
@@ -205,6 +255,28 @@ internal sealed class TerminalSession : IAsyncDisposable
         {
             lifecycleGate.Release();
         }
+    }
+
+    /// <summary>Disposes a spawn that completes after its start budget elapsed, so the late
+    /// PTY child is reaped instead of leaking. A spawn that faults instead has no process to
+    /// reclaim; the fault is observed here so it cannot vanish.</summary>
+    private async Task ReclaimLateSpawnAsync(Task<ITerminalProcess> spawnTask)
+    {
+        ITerminalProcess? late;
+        try
+        {
+            late = await spawnTask.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(
+                exception,
+                "The terminal spawn for {SessionId} failed after its start budget had already elapsed.",
+                SessionId);
+            return;
+        }
+
+        await late.DisposeAsync().ConfigureAwait(false);
     }
 
     internal async Task<TerminalInputResult> ExecuteInputAsync(
@@ -482,10 +554,18 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private void OnProcessExited(ITerminalProcess exited)
     {
-        // Fired on the pty reaper thread; must not block. A persistent session faults because its
-        // completion is undefined and the shell is gone; a one-shot command completes by definition.
-        // A Unix signal termination has no exit code; the signal is logged and the snapshot reports
-        // completion with a null exit code rather than a synthetic one.
+        // Fired on the pty reaper thread; must not block. The reaper event — not stream EOF — is
+        // the reliable child-exit signal: the pty read may stay open while a background job still
+        // holds the terminal even though the shell itself exited. A persistent session faults
+        // because its completion is undefined and the shell is gone; a one-shot command completes
+        // by definition. A Unix signal termination has no exit code; the signal is logged and the
+        // snapshot reports completion with a null exit code rather than a synthetic one.
+        // Exits are ignored for any process the session did not adopt (a spawn that lost its
+        // start budget races and is disposed unowned), and observed exactly once across the
+        // event path and the post-spawn catch-up replay.
+        if (!ReferenceEquals(exited, Volatile.Read(ref process))) return;
+        if (Interlocked.Exchange(ref exitObserved, 1) != 0) return;
+
         lock (stateGate)
         {
             if (state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
@@ -826,6 +906,17 @@ internal sealed class TerminalSession : IAsyncDisposable
         lock (stateGate)
         {
             state = value;
+        }
+    }
+
+    /// <summary>Moves a starting session to idle without regressing a terminal state the
+    /// reaper may have already recorded while the spawn was still awaiting (a one-shot child
+    /// that completed, or a persistent child that faulted, during startup).</summary>
+    private void SetStateIdleIfStarting()
+    {
+        lock (stateGate)
+        {
+            if (state == TerminalSessionState.Starting) state = TerminalSessionState.Idle;
         }
     }
 

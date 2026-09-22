@@ -650,6 +650,9 @@ internal sealed class WorkspaceEditFunctions
         {
             WorkspaceException workspaceException =>
                 new AgentToolException(workspaceException.Code, workspaceException.Message),
+            FileNotFoundException or DirectoryNotFoundException => new AgentToolException(
+                "workspace_path_not_found",
+                "The workspace URI does not identify an existing path."),
             UnauthorizedAccessException => new AgentToolException(
                 "workspace_access_denied",
                 "The operating system denied access to the requested workspace path."),

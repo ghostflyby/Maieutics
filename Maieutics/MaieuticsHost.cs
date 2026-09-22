@@ -85,6 +85,22 @@ public static class MaieuticsHost
                 context.Ignore = true;
             };
         });
+        // permissions.json rides the same watcher convention as mcp.json: the config source is
+        // only the change trigger (and its unknown root keys bind to nothing); the Deno-shaped
+        // content is parsed by PermissionProfileLoader in the reload pipeline, where an invalid
+        // file rejects the reload and keeps the last-known-good snapshot (ADR 0018 Phase 5).
+        builder.Configuration.AddJsonFile(source =>
+        {
+            source.FileProvider = fileProvider.Provider;
+            source.Path = "permissions.json";
+            source.Optional = true;
+            source.ReloadOnChange = true;
+            source.OnLoadException = context =>
+            {
+                fileErrors.Record(context.Exception);
+                context.Ignore = true;
+            };
+        });
         builder.Configuration
             .AddInMemoryCollection(GetEnvironmentAliases())
             .AddEnvironmentVariables()
@@ -176,6 +192,12 @@ public static class MaieuticsHost
                 services.GetRequiredService<ObjectStore>());
             builder.Services.AddSingleton<IObjectReclaimer>(static services =>
                 services.GetRequiredService<ObjectStore>());
+            // Large binary REPL display payloads are stored content-addressed and referenced
+            // by a stable relative URL the frontend fetches natively (frontend-migration-gaps.md
+            // #2); the /v1/objects route shares the persistence object store's root, so the
+            // display object store exists only alongside it.
+            builder.Services.AddSingleton<IReplDisplayObjectStore>(static services =>
+                new ReplDisplayObjectStore(services.GetRequiredService<ObjectStore>()));
             builder.Services.AddSingleton<AgentObjectFunctions>();
         }
 
@@ -187,7 +209,15 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(applicationPaths);
         builder.Services.AddSingleton(workspaceHome);
         builder.Services.AddSingleton<IConfiguredChatClientFactory, OpenAiChatClientFactory>();
-        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();
+        builder.Services.AddSingleton<PermissionOverrideRegistry>();
+        builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
+        builder.Services.AddSingleton<IPermissionVariableSource>(static services =>
+            services.GetRequiredService<Workspace>());
+        builder.Services.AddSingleton(static services =>
+            new PermissionPolicyAcquirer(
+                () => services.GetRequiredService<IPermissionLayerSource>(),
+                services.GetRequiredService<IPermissionVariableSource>()));
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IAgentRunProfileProvider>(static services =>
@@ -200,9 +230,10 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(denoReplOptions);
         builder.Services.AddSingleton(terminalOptions);
         builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();
-        // Phase 5 replaces this fixed default with the layered acquisition path; for now every
-        // terminal session captures the default policy (ADR 0018 §7, decision 2: run unrestricted).
-        builder.Services.AddSingleton(EffectivePolicy.Default);
+        // ADR 0018 Phase 5: every consumer acquires its effective policy per owning scope from
+        // the full four-layer path (built-in baseline, Maieutics:Permissions defaults, the
+        // workspace permissions.json profile, and the in-memory session override registry);
+        // denials win and the variable table expands configuration patterns at acquisition.
         builder.Services.AddSingleton<TerminalRegistry>();
         builder.Services.AddSingleton<TerminalFunctions>();
         // One shared HTTP client for every custom resource bridge; per-provider request
@@ -344,14 +375,21 @@ public static class MaieuticsHost
                 services.GetRequiredService<ReplControlCredentialRegistry>(),
                 services.GetRequiredService<ILogger<DenoReplProcess>>(),
                 services.GetRequiredService<DenoPermissionBroker>(),
-                services.GetService<IReplPolicyRegistrar>(),
-                services.GetService<PluginHostManager>()));
-        builder.Services.AddSingleton<DenoReplRegistry>();
+                services.GetRequiredService<PermissionPolicyAcquirer>(),
+                services.GetService<PluginHostManager>(),
+                services.GetService<IReplPolicyRegistrar>()));
+        builder.Services.AddSingleton(static services =>
+            new DenoReplRegistry(
+                services.GetRequiredService<Workspace>(),
+                services.GetRequiredService<DenoReplOptions>(),
+                services.GetRequiredService<IDenoReplSessionFactory>(),
+                services.GetRequiredService<IDenoReplPresentationRouter>(),
+                services.GetRequiredService<ILogger<DenoReplSession>>(),
+                // The display object store exists only when Agent persistence does (the
+                // /v1/objects route shares its root); without it the collector keeps the
+                // drop-binary-mime fallback instead of violating invariant 26.
+                services.GetService<IReplDisplayObjectStore>()));
         builder.Services.AddSingleton<DenoReplFunctions>();
-        // Large binary REPL display payloads are stored content-addressed and referenced
-        // by a stable relative URL the frontend fetches natively (frontend-migration-gaps.md #2).
-        builder.Services.AddSingleton<IReplDisplayObjectStore>(static services =>
-            new ReplDisplayObjectStore(services.GetRequiredService<ObjectStore>()));
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();
         builder.Services.AddHostedService<DenoModuleGraphWarmer>();
         builder.Services.AddSingleton(static services =>

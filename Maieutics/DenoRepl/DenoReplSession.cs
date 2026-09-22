@@ -16,6 +16,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly ILogger<DenoReplSession> logger;
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
+    private readonly IReplDisplayObjectStore? displayObjectStore;
     /// <summary>Session-lifetime display rate limiter, shared by every execution so the sliding
     /// budget accumulates across turns (aligned with jupyter_server's global iopub rate limit).
     /// A restart intentionally keeps the window: it is not a new frontend, and the window prunes
@@ -37,7 +38,8 @@ internal sealed class DenoReplSession : IAsyncDisposable
         DenoReplOptions options,
         IDenoReplSessionFactory factory,
         IDenoReplPresentationRouter presentationRouter,
-        ILogger<DenoReplSession> logger)
+        ILogger<DenoReplSession> logger,
+        IReplDisplayObjectStore? displayObjectStore = null)
     {
         OwnerSessionId = ownerSessionId;
         SessionId = sessionId;
@@ -47,6 +49,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         this.factory = factory;
         this.presentationRouter = presentationRouter;
         this.logger = logger;
+        this.displayObjectStore = displayObjectStore;
         rateLimiter = new ReplOutputRateLimiter(options);
     }
 
@@ -118,6 +121,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 var started = await factory.StartAsync(
                     WorkingDirectory,
                     SessionId,
+                    OwnerSessionId,
                     GetGeneration(),
                     cancellationToken).ConfigureAwait(false);
                 runtime = started;
@@ -177,6 +181,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 displayIds,
                 execution.ExecutionId,
                 rateLimiter,
+                displayObjectStore,
                 logger: logger);
             var completion = collector.ConsumeAsync(activeRuntime.Connection, execution, outputEvents, wait.Token);
             try
@@ -246,6 +251,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
                 var started = await factory.StartAsync(
                     WorkingDirectory,
                     SessionId,
+                    OwnerSessionId,
                     GetGeneration(),
                     cancellationToken).ConfigureAwait(false);
                 runtime = started;

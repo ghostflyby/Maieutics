@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Agent;
 
@@ -49,6 +48,4 @@ internal interface IDenoReplPresentationRouter
         AgentSessionId sessionId,
         AgentToolCallId callId,
         CancellationToken cancellationToken);
-
-    bool TryGetCurrentSink(AgentSessionId sessionId, [NotNullWhen(true)] out IDenoReplPresentationSink? sink);
 }

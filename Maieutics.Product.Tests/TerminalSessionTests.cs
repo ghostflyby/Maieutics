@@ -80,6 +80,39 @@ public sealed class TerminalSessionTests
     }
 
     [Fact(Timeout = 10_000)]
+    public async Task StartBudgetExceededFailsTheSessionWithStartFailed()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = TestOptions();
+        options.StartupTimeout = TimeSpan.FromMilliseconds(100);
+        var session = new TerminalSession(
+            AgentSessionId.Create(),
+            Guid.NewGuid().ToString("N"),
+            true,
+            Directory.GetCurrentDirectory(),
+            TerminalSessionKind.Persistent,
+            "sh",
+            [],
+            EffectivePolicy.Default,
+            options,
+            new StalledTerminalProcessFactory(release.Task),
+            NullLogger<TerminalSession>.Instance);
+        try
+        {
+            var start = () => session.StartAsync(TestContext.Current.CancellationToken);
+
+            await start.Should().ThrowAsync<AgentToolException>()
+                .Where(static exception => exception.Code == "terminal_start_failed");
+            session.GetSnapshot().State.Should().Be("faulted");
+        }
+        finally
+        {
+            release.SetResult();
+            await session.DisposeAsync();
+        }
+    }
+
+    [Fact(Timeout = 10_000)]
     public async Task DefaultPolicyAllowsTheConfiguredExecutable()
     {
         var fake = new FakeTerminalProcess();
@@ -525,6 +558,24 @@ internal sealed class FakeTerminalProcessFactory(FakeTerminalProcess process) : 
         int rows)
     {
         return process;
+    }
+}
+
+/// <summary>Blocks Start until released, simulating a pathological PTY allocation that
+/// exceeds the session's start budget. The product runs Start on a dedicated thread, so
+/// blocking there is safe.</summary>
+internal sealed class StalledTerminalProcessFactory(Task pendingRelease) : ITerminalProcessFactory
+{
+    public ITerminalProcess Start(
+        string shell,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string?> environment,
+        int columns,
+        int rows)
+    {
+        pendingRelease.Wait();
+        return new FakeTerminalProcess();
     }
 }
 

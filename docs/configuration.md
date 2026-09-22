@@ -278,6 +278,33 @@ The command does not call a model, enter the Agent transcript, refresh discovery
 ready. It omits credentials, provider endpoints, connection details, Deno working directories, and the absolute
 workspace path. Use the explicit `%workspace current` command when the absolute selected root is needed.
 
+## Permissions
+
+The effective permission of every terminal session and Deno REPL is the layered overlay of the
+built-in baseline, the app-wide defaults, the workspace `permissions.json` profile, and the
+per-session override; denials always win over grants (ADR 0018 Phase 5).
+
+`Maieutics:Permissions` holds the app-wide defaults. Each kind accepts `allow`/`deny` pattern
+lists plus `allowAll`/`denyAll`; patterns expand `${env.*}` and `${var.workspace}` at acquisition
+time, and an unresolvable token rejects the acquisition instead of silently widening a grant:
+
+```json
+{
+  "Maieutics": {
+    "Permissions": {
+      "Write": { "deny": ["${var.workspace}/.git"] },
+      "Net": { "allow": ["localhost:80", "api.example.com:443"] }
+    }
+  }
+}
+```
+
+The workspace profile is an optional `permissions.json` beside the active maieutics.json (the
+mcp.json convention), format aligned with Deno's config permissions: per-kind
+`{"allow":[...],"deny":[...]}` inside named sets, the `default` set applied unless another is
+selected, and relative paths resolved against the profile file's directory. The file is watched
+like mcp.json; an invalid file rejects the reload and keeps the last-known-good profile.
+
 ## Agent limits
 
 | Setting                                        |    Default |
@@ -427,8 +454,10 @@ digits, empty segments, more than one dot) reject the configuration and keep the
 URL matching is exact after normalization: scheme and host are case-insensitive, default ports are ignored, and a
 trailing slash is insignificant. URLs must be absolute HTTP or HTTPS URIs without user information, query strings, or
 fragments, and each normalized URL may appear only once. A provider source endpoint that cannot be normalized (for
-example one that carries a query string) is treated as unmatched. The `Limits` section is parsed and validated now and
-becomes an input for hosted built-in tool mapping in a later step (hosted web search currently declares no limits).
+example one that carries a query string) is treated as unmatched. The `Limits` section caps the provider-side built-in
+tool calls one model request may perform. Anthropic enforces the cap on the wire (`max_uses` on the server tool
+block); providers whose wire has no native cap parameter — OpenAI — count the built-in calls the response surfaces
+and fail the request with a typed error once the ceiling is exceeded.
 
 `%status` reports each configured model profile's resolved capabilities, hosted capability names, potential
 capabilities, and whether the source matched an explicit endpoint profile, is a known vendor, or is a declared baseline

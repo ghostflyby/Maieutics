@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
@@ -244,6 +243,7 @@ public sealed class DenoReplRegistryTests
         public Task<IDenoReplGeneration> StartAsync(
             string workingDirectory,
             string sessionId,
+            AgentSessionId ownerSessionId,
             int generation,
             CancellationToken cancellationToken)
         {
@@ -265,14 +265,6 @@ public sealed class DenoReplRegistryTests
             CancellationToken cancellationToken)
         {
             throw new NotSupportedException();
-        }
-
-        public bool TryGetCurrentSink(
-            AgentSessionId sessionId,
-            [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
-        {
-            sink = null;
-            return false;
         }
     }
 }

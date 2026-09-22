@@ -536,6 +536,14 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         }
     }
 
+    /// <summary>Requests cancellation of every retained run so process shutdown does not wait
+    /// on a provider stream. The host-lifetime callback is synchronous, so the cancellation
+    /// requests are observed by the runs rather than awaited by the caller.</summary>
+    internal void BeginShutdown()
+    {
+        registry.BeginShutdown();
+    }
+
     /// <summary>
     ///     Waits for the addressed session's next run to serve on its events WebSocket.
     ///     When <paramref name="previous" /> is not that session's latest announced run it

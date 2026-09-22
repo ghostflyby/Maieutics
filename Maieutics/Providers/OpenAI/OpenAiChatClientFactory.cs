@@ -76,6 +76,11 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
                 _ => throw new UnreachableException()
             };
 
+            // The Responses API executes built-in tools server-side and has no wire cap for
+            // them, so a configured endpoint limit is enforced by counting the built-in calls
+            // the response surfaces. It wraps the raw mapping so no projection can hide a call.
+            client = new BuiltinToolCallLimitChatClient(client);
+
             // The Responses flavor declares OpenAI's built-in apply_patch tool and keeps the
             // same-named local function off the wire; the adapter projects the built-in call onto
             // the function contract so the runtime's apply_patch function executes it. It wraps

@@ -195,6 +195,10 @@ internal sealed class ReplOutputWebSocketHost(
     ///     session must be consistent with the peer process identity (Unix) or the bearer
     ///     credential header (Windows): when both are present they must agree, and a credential is
     ///     required on Windows where peer process identity is unavailable over loopback TCP.
+    ///     This is deliberately stricter than the control-bus and comm hellos, which accept a
+    ///     peer with no attestable identity when the claimed session is live in the registry
+    ///     (ReplControlHost.ReceiveHelloAsync / ReceiveCommHelloAsync); the three postures are
+    ///     a known divergence — align them only as a deliberate trust redesign.
     /// </summary>
     private async Task<(string? SessionId, int Generation)> ReadHelloAsync(
         WebSocket socket,

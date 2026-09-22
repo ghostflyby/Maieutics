@@ -26,6 +26,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
     private readonly bool applyPatchFlow;
     private readonly string? applyPatchOperationJson;
     private readonly bool webSearchFlow;
+    private readonly int webSearchCalls;
     private readonly string toolName;
 
     public FakeOpenAiServer(
@@ -40,7 +41,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         string? expectedToolResultText = null,
         bool applyPatchFlow = false,
         string? applyPatchOperationJson = null,
-        bool webSearchFlow = false)
+        bool webSearchFlow = false,
+        int webSearchCalls = 1)
     {
         this.apiFlavor = apiFlavor;
         this.toolFlow = toolFlow;
@@ -53,6 +55,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         this.applyPatchFlow = applyPatchFlow;
         this.applyPatchOperationJson = applyPatchOperationJson;
         this.webSearchFlow = webSearchFlow;
+        this.webSearchCalls = webSearchCalls;
         this.requestCount = requestCount ?? (toolFlow || applyPatchFlow ? 2 : 1);
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
@@ -159,7 +162,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                         toolName,
                         toolArgumentsJson),
                     (OpenAiApiFlavor.Responses, _, _) when webSearchFlow && served == 0 =>
-                        CreateResponsesWebSearchStream(),
+                        CreateResponsesWebSearchStream(webSearchCalls),
                     (OpenAiApiFlavor.Responses, false, 0) when applyPatchFlow =>
                         CreateResponsesApplyPatchStream(applyPatchOperationJson!),
                     (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
@@ -306,14 +309,20 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
             "\"response\":" + completedResponse + "}\n\n";
     }
 
-    /// <summary>A Responses turn where the provider ran a web search: a web_search_call item,
+    /// <summary>A Responses turn where the provider ran a web search: web_search_call items,
     /// then the assistant message with a url_citation annotation. Server-executed, so no
-    /// tool-result round trip follows.</summary>
-    private static string CreateResponsesWebSearchStream()
+    /// tool-result round trip follows. The stream carries <paramref name="calls"/> search
+    /// items so a per-request built-in call ceiling can be exercised.</summary>
+    private static string CreateResponsesWebSearchStream(int calls)
     {
-        const string searchItem =
-            "{\"id\":\"ws1\",\"type\":\"web_search_call\",\"status\":\"completed\"," +
-            "\"action\":{\"type\":\"search\",\"query\":\"zhipu ai\"}}";
+        var searchItems = new List<string>();
+        for (var index = 0; index < calls; index++)
+        {
+            searchItems.Add(
+                "{\"id\":\"ws" + index + "\",\"type\":\"web_search_call\",\"status\":\"completed\"," +
+                "\"action\":{\"type\":\"search\",\"query\":\"zhipu ai\"}}");
+        }
+
         const string messageItem =
             "{\"id\":\"msg1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\"," +
             "\"content\":[{\"type\":\"output_text\",\"text\":\"Zhipu AI is a Chinese AI company.\"," +
@@ -330,28 +339,50 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         var completed =
             "{\"id\":\"resp-ws\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\"," +
             "\"error\":null,\"incomplete_details\":null,\"instructions\":null,\"max_output_tokens\":null," +
-            "\"model\":\"test-model\",\"output\":[" + searchItem + "," + messageItem + "]," +
+            "\"model\":\"test-model\",\"output\":[" + string.Join(",", searchItems) + "," + messageItem + "]," +
             "\"parallel_tool_calls\":true,\"previous_response_id\":null,\"reasoning\":null,\"store\":false," +
             "\"temperature\":null,\"text\":{\"format\":{\"type\":\"text\"}},\"tool_choice\":\"auto\"," +
             "\"tools\":[],\"top_p\":null,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":1," +
             "\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1," +
             "\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":2},\"metadata\":{}}";
 
-        return
-            "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0," +
-            "\"response\":" + inProgress + "}\n\n" +
-            "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
-            "\"sequence_number\":1,\"output_index\":0,\"item\":" + searchItem + "}\n\n" +
+        var stream = new StringBuilder();
+        var sequence = 0;
+        stream.Append(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":" +
+            sequence + "," + "\"response\":" + inProgress + "}\n\n");
+        sequence++;
+        for (var index = 0; index < searchItems.Count; index++)
+        {
+            stream.Append(
+                "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
+                "\"sequence_number\":" + sequence + ",\"output_index\":" + index +
+                ",\"item\":" + searchItems[index] + "}\n\n");
+            sequence++;
+        }
+
+        var messageIndex = searchItems.Count;
+        stream.Append(
             "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"," +
-            "\"sequence_number\":2,\"output_index\":1,\"item\":{\"id\":\"msg1\",\"type\":\"message\"," +
-            "\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n" +
+            "\"sequence_number\":" + sequence + ",\"output_index\":" + messageIndex +
+            ",\"item\":{\"id\":\"msg1\",\"type\":\"message\",\"status\":\"in_progress\"," +
+            "\"role\":\"assistant\",\"content\":[]}}\n\n");
+        sequence++;
+        stream.Append(
             "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\"," +
-            "\"sequence_number\":3,\"item_id\":\"msg1\",\"output_index\":1,\"content_index\":0," +
-            "\"delta\":\"Zhipu AI is a Chinese AI company.\"}\n\n" +
+            "\"sequence_number\":" + sequence + ",\"item_id\":\"msg1\",\"output_index\":" + messageIndex +
+            ",\"content_index\":0,\"delta\":\"Zhipu AI is a Chinese AI company.\"}\n\n");
+        sequence++;
+        stream.Append(
             "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"," +
-            "\"sequence_number\":4,\"output_index\":1,\"item\":" + messageItem + "}\n\n" +
-            "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":5," +
-            "\"response\":" + completed + "}\n\n";
+            "\"sequence_number\":" + sequence + ",\"output_index\":" + messageIndex +
+            ",\"item\":" + messageItem + "}\n\n");
+        sequence++;
+        stream.Append(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":" +
+            sequence + "," + "\"response\":" + completed + "}\n\n");
+
+        return stream.ToString();
     }
 
     private static string CreateResponsesApplyPatchStream(string operationJson)

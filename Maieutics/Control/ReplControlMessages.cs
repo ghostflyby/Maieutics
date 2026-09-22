@@ -58,14 +58,13 @@ internal sealed record ToolInvokePayload(string Tool, JsonElement Arguments);
 
 /// <summary>
 ///     Versioned message envelope shared by every control channel bus message. Payloads are
-///     domain-shaped JSON; binary data rides the <see cref="Buffers" /> list as base64 for now.
+///     domain-shaped JSON; binary data never rides this envelope (native binary frames carry it).
 /// </summary>
 internal sealed record ReplEnvelope(
     int Version,
     string Type,
     string? CorrelationId = null,
-    JsonElement? Payload = null,
-    IReadOnlyList<string>? Buffers = null);
+    JsonElement? Payload = null);
 
 internal static class ReplMessageType
 {

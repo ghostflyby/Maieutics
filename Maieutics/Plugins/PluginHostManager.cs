@@ -124,11 +124,24 @@ internal sealed class PluginHostManager(
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
     private readonly List<PluginDescriptor> descriptors = [];
     private readonly Lock gate = new();
-    private readonly CancellationTokenSource lifetime = new();
     private readonly Lock lifecycleGate = new();
 
-    private readonly TaskCompletionSource readiness =
+    // Restartable lifecycle state: a plugin-set change tears the host process down and starts a
+    // fresh one, so these are replaced per generation instead of being readonly-once.
+    private CancellationTokenSource lifetime = new();
+    private TaskCompletionSource readiness =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>The in-flight plugin-set restart, coalescing watcher events that arrive while
+    /// one restart is already running. Null when the manager is in its normal running state.</summary>
+    private Task? restart;
+
+    /// <summary>Set only by an EXTERNAL stop (DisposeAsync / StopAsync), never by the restart
+    /// machinery's own teardown. A restart's lifecycle reset checks this under the same lock:
+    /// when an external stop raced the restart, the reset stays stopped instead of
+    /// resurrecting the manager with a fresh generation. (The restart's own
+    /// EnsureStoppedAsync call must not set this — that would make every restart abort.)</summary>
+    private bool externallyStopped;
 
     /// <summary>Internal test observability: completed by the detach finally of the live host
     /// connection, in the same locked section that clears the attach slot. Replaced with a fresh
@@ -188,24 +201,27 @@ internal sealed class PluginHostManager(
     /// task exceptions behind.</summary>
     private readonly List<Task> watcherReloads = [];
 
-    /// <summary>Paths of watched changes awaiting an explicit reload apply
-    /// (the automatic-reload option is off).</summary>
-    private readonly HashSet<string> pendingReloadPaths = new(StringComparer.Ordinal);
+    /// <summary>Internal test observability: completes when a debounced watcher reload has been
+    /// applied — the same transition that finishes the reload task — so tests can await the
+    /// application deterministically instead of sleeping past the debounce. A completed task is
+    /// replaced on the next read, so the property is safe to await repeatedly (one await observes
+    /// one applied reload). Capture it before the watched change and await it after. Await it
+    /// under the caller's deadline.</summary>
+    private TaskCompletionSource reloadApplied = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <summary>Internal test observability: completed by the transition that records a pending
-    /// reload (see <see cref="PendingReloadRecorded"/>); replaced with a fresh source after each
-    /// completion so the property stays safe to await repeatedly.</summary>
-    private TaskCompletionSource pendingReloadRecorded = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    /// <summary>Whether watcher-detected plugin changes reload automatically.
-    /// Default off (docs/plugin-import-resolution.md §4.3): changes are recorded
-    /// as pending and applied by <see cref="ApplyPendingReloadsAsync"/>. Opting in
-    /// restores automatic in-process reloads for local edits; import-map changes
-    /// still only warn (the process map is fixed at host start).</summary>
-    public bool AutomaticReload { get; set; }
-
-    /// <summary>Number of watched changes awaiting an explicit apply.</summary>
-    public int PendingReloadCount { get { lock (gate) return pendingReloadPaths.Count; } }
+    internal Task ReloadApplied
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (reloadApplied.Task.IsCompleted)
+                    reloadApplied = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                return reloadApplied.Task;
+            }
+        }
+    }
 
     /// <summary>Internal test observability: completes when the live host connection's receive
     /// loop releases the attach slot — the same locked transition that clears the slot, so an
@@ -220,31 +236,12 @@ internal sealed class PluginHostManager(
         get { lock (gate) return hostConnectionReleased.Task; }
     }
 
-    /// <summary>Internal test observability: completes when a watched plugin change is recorded
-    /// as a pending reload — the same transition that increments <see cref="PendingReloadCount"/>
-    /// — so tests can await the record deterministically instead of sleeping past the debounce.
-    /// A completed task is replaced on the next read, so the property is safe to await repeatedly
-    /// (one await observes one recorded change). Await it under the caller's deadline.</summary>
-    internal Task PendingReloadRecorded
-    {
-        get
-        {
-            lock (gate)
-            {
-                if (pendingReloadRecorded.Task.IsCompleted)
-                    pendingReloadRecorded = new TaskCompletionSource(
-                        TaskCreationOptions.RunContinuationsAsynchronously);
-                return pendingReloadRecorded.Task;
-            }
-        }
-    }
-
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
     ///     registration without polling. Completed when the manager is disposed. Bounded and
     ///     drop-oldest so an unconsumed production stream retains only the newest snapshot.
     /// </summary>
-    internal readonly Channel<PluginRegistration[]> RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
+    internal Channel<PluginRegistration[]> RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
 
     private readonly ReplControlSessionRegistry sessionRegistry =
@@ -279,23 +276,11 @@ internal sealed class PluginHostManager(
 
     public ValueTask DisposeAsync()
     {
+        lock (lifecycleGate)
+        {
+            externallyStopped = true;
+        }
         return new ValueTask(EnsureStoppedAsync());
-    }
-
-    /// <summary>Applies the watched changes recorded while the automatic-reload
-    /// option was off (docs/plugin-import-resolution.md §4.3).</summary>
-    public async Task ApplyPendingReloadsAsync(CancellationToken cancellationToken)
-    {
-        string[] paths;
-        lock (gate)
-        {
-            paths = [.. pendingReloadPaths];
-            pendingReloadPaths.Clear();
-        }
-        foreach (var path in paths)
-        {
-            await ReloadChangedPluginAsync(path).ConfigureAwait(false);
-        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -309,6 +294,11 @@ internal sealed class PluginHostManager(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        lock (lifecycleGate)
+        {
+            externallyStopped = true;
+        }
+
         // Stop must run to completion even if the caller's token cancels: an
         // aborted stop would leave the host process and watcher behind, and
         // Host.StopAsync treats a thrown TaskCanceledException as a fatal
@@ -665,12 +655,27 @@ internal sealed class PluginHostManager(
     private void OnPluginFileChanged(object sender, FileSystemEventArgs args)
     {
         // Debounce: a burst of file writes (e.g. deno fmt, git checkout) collapses into one
-        // reload. The most recent change wins; earlier pending reloads are superseded.
+        // reload. The most recent change wins; earlier pending reloads are superseded. The
+        // generation's CTS is captured with the debounce so a handler that resumes after a
+        // restart replaced `lifetime` still dies with its own generation instead of linking
+        // against (or observing) the new one.
         CancellationTokenSource debounce;
+        CancellationTokenSource generation;
         lock (gate)
         {
-            watcherDebounce?.Cancel();
-            watcherDebounce = debounce = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            generation = lifetime;
+            if (generation.IsCancellationRequested) return;
+            try
+            {
+                watcherDebounce?.Cancel();
+                watcherDebounce = debounce = CancellationTokenSource.CreateLinkedTokenSource(generation.Token);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The generation's CTS was disposed between the check and the link (stop path
+                // runs outside this lock); the event belongs to a dead generation.
+                return;
+            }
         }
 
         // Tracked like the capability calls so stop can observe the reloads; the body catches
@@ -680,7 +685,7 @@ internal sealed class PluginHostManager(
         {
             try
             {
-                if (lifetime.IsCancellationRequested) return;
+                if (generation.IsCancellationRequested) return;
 
                 try
                 {
@@ -691,18 +696,26 @@ internal sealed class PluginHostManager(
                     return;
                 }
 
-                if (AutomaticReload)
+                // Set recompute first: a watched change that adds or removes a local plugin
+                // (a directory at/under the plugins root carrying a maieutics.json) cannot be
+                // applied in-process — the new module entries belong to the process import
+                // map, which is fixed at host start. The restart re-runs full discovery, so
+                // removals cascade through the dependency graph's exclusion rules. Pure
+                // content changes leave the set unchanged and fall through to the in-process
+                // worker reload below.
+                if (LocalPluginSetDiffers(out var scan))
                 {
-                    await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                    logger.LogInformation(
+                        "Watched change at '{Path}' changes the local plugin set; restarting the plugin host.",
+                        args.FullPath);
+                    _ = RestartForPluginSetChangeAsync();
+                    return;
                 }
-                else
+
+                await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                lock (gate)
                 {
-                    lock (gate)
-                    {
-                        pendingReloadPaths.Add(args.FullPath);
-                        // RunContinuationsAsynchronously keeps awaiters off this lock.
-                        pendingReloadRecorded.TrySetResult();
-                    }
+                    reloadApplied.TrySetResult();
                 }
             }
             catch (Exception exception)
@@ -733,6 +746,142 @@ internal sealed class PluginHostManager(
                 return true;
             });
             watcherReloads.Add(reload);
+        }
+    }
+
+    /// <summary>Determines whether the local plugin set (the root project plus every local
+    /// file-import target at/under the plugins root) differs from the currently loaded
+    /// descriptors. The scan is file-only — no Deno toolchain resolution — so every debounced
+    /// watcher event can afford it; registry-installed (jsr:/npm:) plugins are not part of this
+    /// check and still require a manual host-process restart, consistent with the import-map
+    /// change they imply. The out parameter carries the fresh local roots for logging.</summary>
+    private bool LocalPluginSetDiffers(out IReadOnlyCollection<string> scannedRoots)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        scannedRoots = ScanLocalPluginRoots();
+        HashSet<string> current;
+        lock (gate)
+        {
+            current = descriptors
+                .Where(descriptor => IsWithin(descriptor.RootDirectory, pluginsRoot, comparison))
+                .Select(descriptor => NormalizeRoot(descriptor.RootDirectory))
+                .ToHashSet(StringComparer.FromComparison(comparison));
+        }
+
+        return !current.SetEquals(scannedRoots);
+    }
+
+    /// <summary>Scans the local plugin set without touching the Deno toolchain: the root
+    /// project plus every local file-import target whose directory carries a loadable
+    /// maieutics.json. Roots are normalized full paths.</summary>
+    private HashSet<string> ScanLocalPluginRoots()
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var roots = new HashSet<string>(StringComparer.FromComparison(comparison));
+        if (PluginManifest.TryLoad(pluginsRoot, out _, out _))
+            roots.Add(NormalizeRoot(pluginsRoot));
+
+        foreach (var importTarget in PluginManifest.ReadLocalImportTargets(pluginsRoot))
+        {
+            var packageDirectory = Path.GetDirectoryName(importTarget);
+            if (packageDirectory is null ||
+                !Directory.Exists(packageDirectory) ||
+                !PluginManifest.TryLoad(packageDirectory, out _, out _))
+                continue;
+
+            roots.Add(NormalizeRoot(packageDirectory));
+        }
+
+        return roots;
+    }
+
+    private static string NormalizeRoot(string directory)
+    {
+        return Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    /// <summary>Restarts the whole plugin host so discovery recomputes the plugin set: a fresh
+    /// scan rebuilds the dependency graph (removed plugins and their dependents become typed
+    /// exclusions), the process import map, and the worker set. Storage pools reopen from disk
+    /// (WAL recovery — crash-equivalent for SQLite); REPL children are separate processes and
+    /// their broker registrations release through the host-detach path. Concurrent requests
+    /// coalesce onto the running restart; a change arriving after the new watcher is armed
+    /// fires a fresh event and re-evaluates.</summary>
+    private Task RestartForPluginSetChangeAsync()
+    {
+        lock (lifecycleGate)
+        {
+            if (stopping is not null) return Task.CompletedTask;
+            return restart ??= RestartCoreAsync();
+        }
+    }
+
+    private async Task RestartCoreAsync()
+    {
+        await Task.Yield();
+        try
+        {
+            Task stop;
+            lock (lifecycleGate)
+            {
+                stop = EnsureStoppedAsync();
+            }
+
+            await stop.ConfigureAwait(false);
+            lock (lifecycleGate)
+            {
+                // A dispose that raced the restart wins: if a stop was requested while this
+                // task tore the old generation down, stay stopped instead of resetting the
+                // lifecycle and resurrecting a manager the caller just disposed.
+                if (externallyStopped)
+                {
+                    restart = null;
+                    return;
+                }
+
+                // Reset the terminal lifecycle state StopCoreAsync left behind so the manager
+                // can start a fresh host generation: new lifetime, readiness, and registry
+                // channel; per-generation state (descriptors, grants, registrations) is
+                // repopulated by Start(plan).
+                starting = null;
+                stopping = null;
+                restart = null;
+                readiness = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                lifetime = new CancellationTokenSource();
+                RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
+                    new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
+            }
+
+            logger.LogInformation("Starting a fresh plugin host generation with the recomputed plugin set.");
+            // Bound the new generation's discovery to its own lifetime: a dispose racing the
+            // restart cancels the scan instead of letting it complete against a stopped manager.
+            await StartAsync(lifetime.Token).ConfigureAwait(false);
+
+            // Watcher events fired between the old watcher's disposal and the new one arming
+            // are lost (FileSystemWatcher has no replay). One post-start re-check closes the
+            // gap: if the set differs again — from a change in that window — the coalesced
+            // restart machinery runs another generation. The diff is deterministic, so this
+            // converges instead of looping.
+            if (LocalPluginSetDiffers(out _))
+            {
+                logger.LogWarning(
+                    "The local plugin set changed while the host was restarting; starting another generation.");
+                _ = RestartForPluginSetChangeAsync();
+            }
+        }
+        catch (Exception exception)
+        {
+            // A failed restart leaves the manager stopped: StartCoreAsync has already faulted
+            // readiness and cleaned up. The next watched change re-evaluates and retries.
+            logger.LogError(exception, "The plugin host restart did not complete.");
+            lock (lifecycleGate)
+            {
+                restart = null;
+            }
         }
     }
 
@@ -1030,12 +1179,20 @@ internal sealed class PluginHostManager(
 
         try
         {
+            // Generation fence: this loop serves the process generation that was live at
+            // attach. A plugin-set restart stops this generation and starts a new one; the
+            // old loop can still hold a frame read just before the kill, and handling it
+            // after the restart's Start(plan) re-seeded the registry would merge the stale
+            // plugin set into the new generation until the new host's own registry frame
+            // arrives. Frames from a superseded generation are dropped instead.
+            var generationProcess = Volatile.Read(ref process);
             while (socket.State == WebSocketState.Open)
             {
                 var text = await ReplControlMessageReader
                     .ReadAsync(socket, cancellationToken)
                     .ConfigureAwait(false);
                 if (text is null) break;
+                if (!ReferenceEquals(Volatile.Read(ref process), generationProcess)) break;
 
                 HandleHostMessage(text);
             }

@@ -94,6 +94,11 @@ internal sealed partial class ReplControlHost
         }
     }
 
+    /// <summary>Verifies the hello of one comm connection with the same trust posture as the
+    /// control bus's session hello (ReplControlHost.ReceiveHelloAsync): pid ownership, a
+    /// matching credential, or — only when the peer has no attestable identity — a live
+    /// registered session. The output host is deliberately stricter; the three postures are a
+    /// known divergence — align them only as a deliberate trust redesign.</summary>
     private async Task<string?> ReceiveCommHelloAsync(
         WebSocket socket,
         int peerProcessId,

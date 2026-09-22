@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Maieutics.Agent;
 
 namespace Maieutics.Providers.Anthropic;
 
@@ -370,10 +371,20 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             WriteMessage(writer, message);
 
         writer.WriteEndArray();
-        WriteTools(writer, options?.Tools);
+        WriteTools(writer, options?.Tools, ReadMaxBuiltinToolCalls(options));
         writer.WriteEndObject();
         writer.Flush();
         return buffer.WrittenSpan.ToArray();
+    }
+
+    /// <summary>Extracts the runtime's per-request ceiling on built-in tool calls from the
+    /// chat options' additional properties, when the runtime configured one.</summary>
+    private static int? ReadMaxBuiltinToolCalls(ChatOptions? options)
+    {
+        return options?.AdditionalProperties?.TryGetValue(AgentChatOptionKeys.MaxBuiltinToolCalls, out var value) == true &&
+               value is int limit
+            ? limit
+            : null;
     }
 
     private static void WriteMessage(Utf8JsonWriter writer, ChatMessage message)
@@ -494,7 +505,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         return true;
     }
 
-    private static void WriteTools(Utf8JsonWriter writer, IList<AITool>? tools)
+    private static void WriteTools(Utf8JsonWriter writer, IList<AITool>? tools, int? maxBuiltinToolCalls)
     {
         if (tools is not { Count: > 0 }) return;
 
@@ -516,10 +527,12 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                     break;
                 case HostedWebSearchTool:
                     // Anthropic's server tool: declared by type and name, with no input schema.
-                    // The provider runs the search and returns the results in the response.
+                    // The provider runs the search and returns the results in the response; a
+                    // configured endpoint limit maps onto the wire's own per-request cap.
                     writer.WriteStartObject();
                     writer.WriteString("type", WebSearchToolType);
                     writer.WriteString("name", WebSearchToolName);
+                    if (maxBuiltinToolCalls is { } maxUses) writer.WriteNumber("max_uses", maxUses);
                     writer.WriteEndObject();
                     break;
                 default:

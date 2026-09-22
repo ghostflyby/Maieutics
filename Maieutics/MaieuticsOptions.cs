@@ -8,9 +8,6 @@ public sealed class MaieuticsOptions
 
     public string DefaultProfile { get; set; } = string.Empty;
 
-    public Dictionary<string, MaieuticsModelProfileOptions> Profiles { get; set; } =
-        new(StringComparer.OrdinalIgnoreCase);
-
     // Legacy single-provider configuration. Removed after the compatibility window.
     public MaieuticsModelOptions Model { get; set; } = new();
 
@@ -18,11 +15,68 @@ public sealed class MaieuticsOptions
 
     public MaieuticsAgentOptions Agent { get; set; } = new();
 
+    // App-wide permission defaults (ADR 0018 Phase 5): the second layer of the four-layer
+    // overlay, between the built-in baseline and the workspace permissions.json profile.
+    public MaieuticsPermissionsOptions Permissions { get; set; } = new();
+
 
     internal void ValidateCommon()
     {
         Agent.Validate();
+        Permissions.Validate();
     }
+}
+
+/// <summary>App-wide permission defaults (<c>Maieutics:Permissions</c>, ADR 0018 Phase 5).
+/// Per-kind allow/deny patterns mirror the workspace permissions.json shape so both layers of
+/// the overlay speak the same grammar; denials win regardless of layer order.</summary>
+public sealed class MaieuticsPermissionsOptions
+{
+    public MaieuticsPermissionKindOptions? Read { get; set; }
+
+    public MaieuticsPermissionKindOptions? Write { get; set; }
+
+    public MaieuticsPermissionKindOptions? Net { get; set; }
+
+    public MaieuticsPermissionKindOptions? Env { get; set; }
+
+    public MaieuticsPermissionKindOptions? Run { get; set; }
+
+    public MaieuticsPermissionKindOptions? Ffi { get; set; }
+
+    public MaieuticsPermissionKindOptions? Sys { get; set; }
+
+    public MaieuticsPermissionKindOptions? Import { get; set; }
+
+    internal void Validate()
+    {
+        ValidateKind(Read);
+        ValidateKind(Write);
+        ValidateKind(Net);
+        ValidateKind(Env);
+        ValidateKind(Run);
+        ValidateKind(Ffi);
+        ValidateKind(Sys);
+        ValidateKind(Import);
+    }
+
+    private static void ValidateKind(MaieuticsPermissionKindOptions? kind)
+    {
+        if (kind is null) return;
+        foreach (var pattern in kind.Allow) ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        foreach (var pattern in kind.Deny) ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+    }
+}
+
+public sealed class MaieuticsPermissionKindOptions
+{
+    public List<string> Allow { get; set; } = [];
+
+    public List<string> Deny { get; set; } = [];
+
+    public bool AllowAll { get; set; }
+
+    public bool DenyAll { get; set; }
 }
 
 // MCP servers live in a separate optional mcp.json beside the active maieutics.json. The file follows the
@@ -59,13 +113,6 @@ public sealed class MaieuticsMcpServerOptions
     public bool? Roots { get; set; }
 
     public bool? Elicitation { get; set; }
-}
-
-public sealed class MaieuticsModelProfileOptions
-{
-    public string Source { get; set; } = string.Empty;
-
-    public string Model { get; set; } = string.Empty;
 }
 
 public sealed class MaieuticsModelOptions

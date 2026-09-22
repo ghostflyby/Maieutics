@@ -384,6 +384,14 @@ internal sealed partial class ReplControlHost : IDisposable
         return registry.ContainsSession(sessionId) ? sessionId : null;
     }
 
+    /// <summary>Verifies the hello of one control-bus connection. Plugin-host connections are
+    /// strictly bound to a kernel-attested pid or the matched credential. Session connections
+    /// require pid ownership or a matching credential; the final branch additionally accepts a
+    /// peer with no attestable identity whose claimed session is live in the registry. That
+    /// fallback is deliberately more permissive than the output host's hello
+    /// (ReplOutputWebSocketHost.ReadHelloAsync), which never accepts an unattestable peer —
+    /// a known divergence across the three hellos; align them only as a deliberate trust
+    /// redesign.</summary>
     private async Task<HelloIdentity?> ReceiveHelloAsync(
         WebSocket socket,
         int peerProcessId,

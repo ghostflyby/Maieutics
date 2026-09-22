@@ -662,6 +662,73 @@ public sealed class AgentSubagentTests
         collector.SettledStatus.Should().Be(AgentSubagentStatus.Completed);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task DetachedChildRunsSessionScopedAndStaysAddressable()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var collector = new EventCollector();
+        var session = new AgentSession(
+            new ScriptedChatClient((_, _) => StreamAsync("detached report")),
+            new AgentSessionOptions
+            {
+                Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
+            });
+        var tools = ImmutableDictionary.Create<string, AIFunction>(StringComparer.Ordinal);
+        var spawnerOptions = new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
+        };
+        var spawner = session.SubagentHost.CreateSpawner(AgentRunId.Create(), tools, spawnerOptions);
+        _ = spawner;
+
+        var handle = await session.SubagentHost.StartDetachedChildAsync(
+            new AgentSubagentSpec { Input = "detached task" },
+            spawnerOptions,
+            [],
+            deadline.Token);
+
+        var result = await session.SubagentHost
+            .WaitDetachedAsync(handle.RunId, Timeout.InfiniteTimeSpan, deadline.Token);
+        result.Status.Should().Be(AgentSubagentStatus.Completed);
+        result.Report.Should().Be("detached report");
+        session.SubagentHost.FindChild(handle.RunId).Should().NotBeNull();
+        session.SubagentHost.ListChildren().Should().ContainSingle();
+        collector.Events.Should().NotBeEmpty();
+
+        var cancelled = await session.SubagentHost
+            .CancelDetachedAsync(handle.RunId, deadline.Token);
+        cancelled.Status.Should().Be(AgentSubagentStatus.Completed);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task DetachedChildrenAreCappedAndUnknownRunsFailTyped()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var session = new AgentSession(
+            new ScriptedChatClient((_, _) => StreamAsync("done")),
+            new AgentSessionOptions
+            {
+                Subagents = new AgentSubagentOptions { MaxDepth = 1, MaxDetachedChildren = 1, EventSink = new EventCollector() }
+            });
+        var spawnerOptions = new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, MaxDetachedChildren = 1, EventSink = new EventCollector() }
+        };
+
+        await session.SubagentHost.StartDetachedChildAsync(
+            new AgentSubagentSpec { Input = "first" }, spawnerOptions, [], deadline.Token);
+
+        var second = () => session.SubagentHost.StartDetachedChildAsync(
+            new AgentSubagentSpec { Input = "second" }, spawnerOptions, [], deadline.Token);
+        (await second.Should().ThrowAsync<AgentSubagentBudgetExceededException>())
+            .Which.LimitName.Should().Be(nameof(AgentSubagentOptions.MaxDetachedChildren));
+
+        await session.SubagentHost
+            .Invoking(static host => host.WaitDetachedAsync(
+                AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None))
+            .Should().ThrowAsync<AgentSubagentNotFoundException>();
+    }
+
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

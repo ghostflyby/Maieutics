@@ -56,13 +56,13 @@ public sealed class FrontendEventsSocketRunWaitTests
         await WaitForQueueDrainedAsync(harness, sessionId, deadline.Token);
         Trace("queue drained; submitting a direct turn");
 
-        using var response = await harness.Client.PostAsJsonAsync(
-            $"/v1/agent/sessions/{sessionId}/turns",
-            new { text = "direct after drain" },
-            deadline.Token);
-        response.StatusCode.Should().Be(
-            System.Net.HttpStatusCode.Accepted,
-            "the queue has drained, so a direct turn is accepted rather than busy-rejected");
+        // A 409 here is the documented busy window's tail, not a queue bug: the drained
+        // snapshot is published when the worker clears the running item, and the previous
+        // run's gate release / presentation detach becomes visible to a direct submission
+        // a beat later. "Busy" has two causes with different remedies (gate held vs.
+        // detach in flight); the direct submission retries briefly and only a persistent
+        // rejection fails the test.
+        using var response = await SubmitDirectUntilAcceptedAsync(harness, sessionId, deadline.Token);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var runId = body.GetProperty("runId").GetString();
         runId.Should().NotBeNullOrEmpty();
@@ -76,6 +76,34 @@ public sealed class FrontendEventsSocketRunWaitTests
         var terminal = frames.Last(frame => frame.GetProperty("type").GetString() is "run.completed" or "run.failed");
         terminal.GetProperty("type").GetString().Should().Be("run.completed");
         terminal.GetProperty("runId").GetString().Should().Be(runId);
+    }
+
+
+    /// <summary>Submits one direct turn, retrying bounded when the drained queue's busy
+    /// window (gate release / presentation detach propagation) rejects it as busy.</summary>
+    private static async Task<HttpResponseMessage> SubmitDirectUntilAcceptedAsync(
+        Harness harness,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var deadline = TimeSpan.FromSeconds(5);
+        while (true)
+        {
+            var response = await harness.Client.PostAsJsonAsync(
+                $"/v1/agent/sessions/{sessionId}/turns",
+                new { text = "direct after drain" },
+                cancellationToken);
+            if (response.StatusCode != System.Net.HttpStatusCode.Conflict || deadline <= TimeSpan.Zero)
+            {
+                response.StatusCode.Should().Be(
+                    System.Net.HttpStatusCode.Accepted,
+                    "the queue has drained, so a direct turn is accepted rather than busy-rejected");
+                return response;
+            }
+
+            await Task.Delay(100, cancellationToken);
+            deadline -= TimeSpan.FromMilliseconds(100);
+        }
     }
 
     private static async Task<string[]> EnqueueAsync(

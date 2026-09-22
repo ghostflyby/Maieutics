@@ -51,6 +51,35 @@ public interface IAgentSubagentEventSink
         CancellationToken cancellationToken);
 }
 
+/// <summary>Optional lifecycle notifications for sinks that render child runs on their own
+/// surfaces. The host invokes the members only when the configured event sink also implements
+/// this interface. Ordering is the display-plane contract: <see cref="OnSubagentStartedAsync" />
+/// fires before the child's first forwarded event, and <see cref="OnSubagentSettledAsync" />
+/// fires strictly after the last forwarded event of a child that settled normally.</summary>
+public interface IAgentSubagentLifecycleSink
+{
+    /// <summary>Notifies that a child run started and its event stream is about to flow.</summary>
+    /// <param name="childSessionId">The child run's session identity.</param>
+    /// <param name="childRunId">The child run identifier.</param>
+    /// <param name="cancellationToken">Cancels the notification; the child run is unaffected.</param>
+    ValueTask OnSubagentStartedAsync(
+        AgentSessionId childSessionId,
+        AgentRunId childRunId,
+        CancellationToken cancellationToken);
+
+    /// <summary>Notifies that a child run settled. Fired after the child's event stream has
+    /// drained, so a rendering surface can close its view on the terminal notification.</summary>
+    /// <param name="childSessionId">The child run's session identity.</param>
+    /// <param name="childRunId">The child run identifier.</param>
+    /// <param name="status">The child's terminal status.</param>
+    /// <param name="cancellationToken">Cancels the notification; the child run is unaffected.</param>
+    ValueTask OnSubagentSettledAsync(
+        AgentSessionId childSessionId,
+        AgentRunId childRunId,
+        AgentSubagentStatus status,
+        CancellationToken cancellationToken);
+}
+
 /// <summary>Describes one child run to spawn. The child inherits the parent run's model client
 /// and limits and receives only the explicitly provided instructions and tool allowlist.</summary>
 public sealed record AgentSubagentSpec
@@ -538,8 +567,14 @@ internal sealed class AgentSubagentHost(
 
         private async Task PumpEventsAsync(IAgentSubagentEventSink sink)
         {
+            var lifecycle = sink as IAgentSubagentLifecycleSink;
             try
             {
+                if (lifecycle is not null)
+                    await lifecycle
+                        .OnSubagentStartedAsync(SessionId, RunId, LinkedCts.Token)
+                        .ConfigureAwait(false);
+
                 await foreach (var agentEvent in Run.Events
                                    .WithCancellation(LinkedCts.Token)
                                    .ConfigureAwait(false))
@@ -564,6 +599,18 @@ internal sealed class AgentSubagentHost(
             }
             catch (OperationCanceledException)
             {
+            }
+
+            if (lifecycle is not null)
+            {
+                // Fired after the event stream drained, so a surface can close its view on the
+                // terminal notification. A notification failure escapes only into the join's
+                // observation path (the pump task is awaited there); the child is already
+                // settled and its result observed either way.
+                var result = await Completion.ConfigureAwait(false);
+                await lifecycle
+                    .OnSubagentSettledAsync(SessionId, RunId, result.Status, CancellationToken.None)
+                    .ConfigureAwait(false);
             }
         }
 

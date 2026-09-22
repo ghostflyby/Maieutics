@@ -631,6 +631,37 @@ public sealed class AgentSubagentTests
         }
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task LifecycleSinkSeesStartedBeforeEventsAndSettledAfterTheChildDrains()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var collector = new OrderedLifecycleSink();
+        var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
+        {
+            var handle = await AgentSubagentContext.GetRequired(arguments)
+                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
+                .ConfigureAwait(false);
+            var result = await handle.Completion.WaitAsync(token).ConfigureAwait(false);
+            return SpawnValue(result.Status.ToString(), result.Report, null);
+        });
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("call", "agent_spawn")),
+            (_, _) => StreamAsync("child report"),
+            (_, _) => StreamAsync("done"));
+        var session = new AgentSession(client, new AgentSessionOptions
+        {
+            Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
+        }, [spawnTool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        await run.Completion.WaitAsync(deadline.Token);
+        await collector.Settled.Task.WaitAsync(deadline.Token);
+
+        collector.Order.Should().Equal("started", "event", "settled");
+        collector.SettledStatus.Should().Be(AgentSubagentStatus.Completed);
+    }
+
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
     {
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -825,6 +856,66 @@ public sealed class AgentSubagentTests
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class OrderedLifecycleSink : IAgentSubagentEventSink, IAgentSubagentLifecycleSink
+    {
+        private readonly Lock gate = new();
+
+        public List<string> Order { get; } = [];
+
+        public AgentSubagentStatus SettledStatus { get; private set; }
+
+        public TaskCompletionSource Settled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private bool seenEvent;
+
+        public ValueTask OnSubagentStartedAsync(
+            AgentSessionId childSessionId,
+            AgentRunId childRunId,
+            CancellationToken cancellationToken)
+        {
+            lock (gate)
+            {
+                Order.Add("started");
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnSubagentEventAsync(
+            AgentSessionId childSessionId,
+            AgentEvent agentEvent,
+            CancellationToken cancellationToken)
+        {
+            lock (gate)
+            {
+                if (!seenEvent)
+                {
+                    seenEvent = true;
+                    Order.Add("event");
+                }
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnSubagentSettledAsync(
+            AgentSessionId childSessionId,
+            AgentRunId childRunId,
+            AgentSubagentStatus status,
+            CancellationToken cancellationToken)
+        {
+            lock (gate)
+            {
+                Order.Add("settled");
+                SettledStatus = status;
+                Settled.TrySetResult();
+            }
+
+            return ValueTask.CompletedTask;
         }
     }
 }

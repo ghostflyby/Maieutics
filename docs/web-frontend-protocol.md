@@ -203,7 +203,7 @@ implement comms ignore it and never open the endpoint.
 | POST | `/v1/agent/sessions/{sid}/repair` | Rebuild the derived object view |
 | POST | `/v1/agent/sessions/{sid}/turns` | Submit one Agent turn → `202 {runId}` |
 | GET | `/v1/agent/sessions/{sid}/transcript` | Authoritative history snapshot |
-| POST | `/v1/agent/runs/{runId}/cancel` | Cooperative cancel; waits for termination |
+| POST | `/v1/agent/runs/{runId}/cancel` | Cooperative cancel; waits for termination. A runId matching a live subagent child run of the session cancels that child |
 | POST | `/v1/agent/commands` | Execute a `%`-command cell → `{markdown}` |
 | POST | `/v1/agent/complete` | Command completion for the current cell text |
 | GET | `/v1/model/profiles` | Selectable model profiles (id, provider, model, selected) |
@@ -345,6 +345,15 @@ Rules:
   retained buffer. Frames older than the buffer produce `{"type":
   "run.missing", "runId": "…"}` so the client can refetch from the transcript
   endpoint instead of rendering a gap.
+- Frames whose `runId` differs from the serving run's id belong to **subagent
+  child runs** the run spawned (ADR 0030): they use the same frame vocabulary
+  and the child's own run-local sequence, plus child lifecycle frames
+  (`run.started` / `run.completed` / `run.failed` carrying the child's
+  `runId`; a cancelled child publishes `run.failed` with code `cancelled`).
+  Child frames replay best-effort from the stream's retention — live delivery
+  is never dropped — but a client that missed child history refetches the
+  report from the spawning `tool.finished` result instead of the frames (the
+  child transcript is not on the transcript endpoint).
 - The replay buffer is bounded per run; events are never silently dropped
   (invariant 16). If a consumer's send queue overflows, the server closes the
   socket (`1011`, reason `backpressure`) and the client reconnects with

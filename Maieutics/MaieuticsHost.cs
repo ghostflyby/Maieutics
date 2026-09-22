@@ -520,7 +520,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<FrontendSessionService>>(),
             runtimeConfiguration,
             services.GetRequiredService<MaieuticsStatusProvider>(),
-            workspace is null ? null : () => workspace.RootPath);
+            workspace is null ? null : () => workspace.RootPath,
+            services.GetRequiredService<Frontend.SubagentEventBuffer>());
     }
 
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)

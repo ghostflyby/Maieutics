@@ -34,6 +34,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     private readonly MaieuticsStatusProvider? statusProvider;
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Func<string?>? workspaceRootAccessor;
+    private readonly SubagentEventBuffer? subagentEvents;
     private readonly ILogger logger;
     private readonly ConcurrentDictionary<string, SessionRunHub> hubs = new(StringComparer.Ordinal);
 
@@ -44,7 +45,8 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         ILogger<FrontendSessionService> logger,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
         MaieuticsStatusProvider? statusProvider = null,
-        Func<string?>? workspaceRootAccessor = null)
+        Func<string?>? workspaceRootAccessor = null,
+        SubagentEventBuffer? subagentEvents = null)
     {
         this.sessionManager = sessionManager;
         this.commandExecutor = commandExecutor;
@@ -53,6 +55,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         this.runtimeConfiguration = runtimeConfiguration;
         this.statusProvider = statusProvider;
         this.workspaceRootAccessor = workspaceRootAccessor;
+        this.subagentEvents = subagentEvents;
     }
 
     /// <summary>Executes a Maieutics command cell and returns its markdown answer plus
@@ -442,6 +445,10 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
         stream.Start(scope);
         registry.Add(stream);
+        // Child runs spawned by this run forward their frames into the stream while it is
+        // current; children cannot outlive it (join-before-complete), so no detach is needed
+        // — the next run re-attaches the tap to its own stream.
+        subagentEvents?.Attach(stream);
 
         HubFor(session.Id).Announce(stream);
         return new FrontendTurnAccepted(run.Id.Value.ToString("N"));
@@ -520,19 +527,44 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         return true;
     }
 
-    /// <summary>Cancels a run cooperatively and waits for its termination.</summary>
+    /// <summary>Cancels a run cooperatively and waits for its termination. A runId that does
+    /// not match a retained session run is then resolved against the addressed (or foreground)
+    /// session's live subagent children (ADR 0030 decision 6): cancelling a child is scoped to
+    /// its owning session's runs and waits for the child to settle.</summary>
     public async Task CancelRunAsync(string runId, CancellationToken cancellationToken)
     {
-        if (!TryGetRun(runId, out var stream) || stream is null)
+        if (TryGetRun(runId, out var stream) && stream is not null)
+        {
+            try
+            {
+                await stream.CancelAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The caller stopped waiting; the run-side cancellation continues independently.
+            }
+
+            return;
+        }
+
+        if (!Guid.TryParseExact(runId, "N", out var childRunValue))
+            throw new FrontendFailureException(FrontendErrors.NotFound, $"No retained run matches '{runId}'.");
+        var childRunId = new AgentRunId(childRunValue);
+        var childSessionId = subagentEvents?.TryGetParentSession(childRunId, out var mapped)
+            is true
+            ? mapped
+            : sessionManager.Id;
+        if (sessionManager.Resolve(childSessionId) is not AgentSession session ||
+            session.SubagentHost.FindChild(childRunId) is not { } child)
             throw new FrontendFailureException(FrontendErrors.NotFound, $"No retained run matches '{runId}'.");
 
         try
         {
-            await stream.CancelAsync(cancellationToken).ConfigureAwait(false);
+            await child.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The caller stopped waiting; the run-side cancellation continues independently.
+            // The caller stopped waiting; the child-side cancellation continues independently.
         }
     }
 

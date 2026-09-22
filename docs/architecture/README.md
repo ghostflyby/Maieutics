@@ -244,6 +244,9 @@ transcript.
 - [ADR 0026](decisions/0026-virtual-resource-urls.md): Virtual resource URLs
 - [ADR 0027](decisions/0027-fixed-workspace-home-and-managed-project-links.md): Fixed workspace home and managed
   project links
+- [ADR 0028](decisions/0028-task-resources.md): Task resources in the virtual resource plane
+- [ADR 0029](decisions/0029-mcp-client-reverse-requests.md): MCP client reverse-request surface
+- [ADR 0030](decisions/0030-subagent-runs.md): Tool-scoped subagent runs on the task plane
 
 ## Explicitly deferred
 

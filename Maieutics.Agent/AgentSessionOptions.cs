@@ -47,6 +47,11 @@ public sealed record AgentSessionOptions
     /// <summary>Gets the capacity of each run's bounded event stream.</summary>
     public int EventBufferCapacity { get; init; } = 128;
 
+    /// <summary>Gets the subagent spawning configuration for this session's runs, or null when
+    /// runs of this session cannot spawn child runs. The configuration travels with the run
+    /// profile, so a spawned child carries a depth-reduced copy.</summary>
+    public AgentSubagentOptions? Subagents { get; init; }
+
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
@@ -60,6 +65,7 @@ public sealed record AgentSessionOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolResultBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
+        Subagents?.Validate();
     }
 }
 

@@ -114,3 +114,13 @@ public sealed class AgentTurnDurationExceededException(TimeSpan maximumDuration)
     /// <summary>Gets the configured maximum turn duration.</summary>
     public TimeSpan MaximumDuration { get; } = maximumDuration;
 }
+/// <summary>Indicates that a parent run exhausted one of its configured subagent budgets.</summary>
+public sealed class AgentSubagentBudgetExceededException(string limitName, int maximum)
+    : AgentException($"The Agent subagent budget '{limitName}' exceeded its configured maximum of {maximum}.")
+{
+    /// <summary>Gets the exceeded option name.</summary>
+    public string LimitName { get; } = limitName;
+
+    /// <summary>Gets the configured maximum.</summary>
+    public int Maximum { get; } = maximum;
+}

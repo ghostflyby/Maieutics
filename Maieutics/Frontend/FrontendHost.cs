@@ -66,11 +66,13 @@ internal sealed class FrontendHost : IAsyncDisposable
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
-    /// <summary>Terminates every WebSocket so Kestrel shutdown does not wait on upgrades.
-    /// The host-lifetime callback is synchronous, so the cancellation request is observed
-    /// here instead of awaited by the caller.</summary>
+    /// <summary>Requests cancellation of every retained run (so shutdown does not wait on a
+    /// provider stream) and terminates every WebSocket so Kestrel shutdown does not wait on
+    /// upgrades. The host-lifetime callback is synchronous, so the cancellation requests are
+    /// observed by their owners instead of awaited by the caller.</summary>
     internal void BeginShutdown()
     {
+        service.BeginShutdown();
         _ = ObserveShutdownCancelAsync();
     }
 

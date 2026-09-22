@@ -223,7 +223,6 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("displayId")] string? DisplayId = null,
     [property: JsonPropertyName("commId")] string? CommId = null,
     [property: JsonPropertyName("data")] JsonElement? Data = null,
-    [property: JsonPropertyName("mime")] string? Mime = null,
     [property: JsonPropertyName("agentMessage")] FrontendMessage? AgentMessage = null,
     [property: JsonPropertyName("truncated")] bool? Truncated = null,
     [property: JsonPropertyName("code")] string? Code = null,

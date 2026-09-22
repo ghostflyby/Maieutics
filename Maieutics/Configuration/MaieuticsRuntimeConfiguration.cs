@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Providers;
 using Microsoft.Extensions.AI;
@@ -19,6 +20,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     IMaieuticsRuntimeConfiguration,
     IMaieuticsMcpController,
     IMcpResourceCatalogSource,
+    IPermissionLayerSource,
     IAsyncDisposable
 {
     private const string TerminalShellCapability = "Shell";
@@ -70,6 +72,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private IDisposable? reloadSubscription;
     private ProfileOverride? sessionOverride;
 
+    private readonly PermissionOverrideRegistry? permissionOverrides;
+
     public MaieuticsRuntimeConfiguration(
         IConfiguration configuration,
         MaieuticsConfigurationFile configurationFile,
@@ -83,7 +87,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ILogger<MaieuticsRuntimeConfiguration> logger,
         McpClientTransportFactory? mcpTransportFactory = null,
         IMcpWorkspaceRootsSource? workspaceRootsSource = null,
-        IMcpElicitationPresenter? elicitationPresenter = null)
+        IMcpElicitationPresenter? elicitationPresenter = null,
+        PermissionOverrideRegistry? permissionOverrides = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -95,6 +100,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.mcpTransportFactory = mcpTransportFactory;
         this.workspaceRootsSource = workspaceRootsSource;
         this.elicitationPresenter = elicitationPresenter;
+        this.permissionOverrides = permissionOverrides;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
@@ -354,7 +360,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             mcpLeases,
             new AgentRunProfile(
                 selection.Generation.Client,
-                CreateAgentOptions(selection.Snapshot.Options),
+                CreateAgentOptions(selection.Snapshot.Options, selection.MaxBuiltinToolCalls),
                 selection.Identity,
                 selection.Capabilities,
                 selection.HostedCapabilities,
@@ -453,7 +459,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                         source,
                         candidate.Model,
                         candidate.Capabilities,
-                        candidate.HostedCapabilities))
+                        candidate.HostedCapabilities,
+                        candidate.MaxBuiltinToolCalls))
                     throw new ArgumentException(
                         $"The model source '{candidate.SourceId}' changed while the automatic profile was selected. " +
                         "Run model discovery and try again.",
@@ -671,7 +678,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 if (string.IsNullOrWhiteSpace(model.Id)) continue;
 
                 var selector = MaieuticsAutomaticProfileSelector.Format(cached.Result.SourceId, model.Id);
-                var (capabilities, hostedCapabilities) =
+                var (capabilities, hostedCapabilities, maxBuiltinToolCalls) =
                     ResolveSourceCapabilities(source, model.Id, snapshot.CapabilityRegistry);
                 candidates.TryAdd(selector, new AutomaticProfileCandidate(
                     selector,
@@ -681,6 +688,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     source.ClientGenerationKey,
                     capabilities,
                     hostedCapabilities,
+                    maxBuiltinToolCalls,
                     source));
             }
         }
@@ -921,7 +929,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                                  source,
                                  automatic.Model,
                                  automatic.Capabilities,
-                                 automatic.HostedCapabilities):
+                                 automatic.HostedCapabilities,
+                                 automatic.MaxBuiltinToolCalls):
                         removedOverride = automatic.Selector;
                         sessionOverride = null;
                         TrackRetirementLocked(automatic.Generation);
@@ -1028,7 +1037,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     new AgentModelProfileId(profile.Id),
                     profile.Source.ProviderName,
                     profile.Model);
-                var (capabilities, hostedCapabilities) =
+                var (capabilities, hostedCapabilities, maxBuiltinToolCalls) =
                     ResolveSourceCapabilities(profile.Source, profile.Model, candidate.CapabilityRegistry);
                 entries.Add(profile.Id, new ProfileEntry(
                     profile.Id,
@@ -1037,6 +1046,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     identity,
                     capabilities,
                     hostedCapabilities,
+                    maxBuiltinToolCalls,
                     generation));
             }
 
@@ -1050,6 +1060,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 sourceMap,
                 mcpServers,
                 candidate.CapabilityRegistry,
+                candidate.AppPermissionsDefaults,
+                candidate.WorkspacePermissionsProfile,
                 candidate.Key);
         }
         catch
@@ -1067,6 +1079,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         var root = configuration.GetSection(MaieuticsOptions.SectionName);
         var options = new MaieuticsOptions();
         root.Bind(options);
+        var appPermissionsDefaults = default(PermissionLayer); // BISECT
+        var workspacePermissionsProfile = default(PermissionLayer); // BISECT
         NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
         var capabilityRegistry = CapabilityRegistry.Create(root);
@@ -1083,11 +1097,19 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 "The named Sources/Profiles configuration cannot be combined with legacy Model configuration.");
 
         if (!hasNewSchema && !hasLegacySchema)
-            return CreateCandidate(options, string.Empty, [], [], mcpServers, capabilityRegistry);
+            return CreateCandidate(
+                options,
+                string.Empty,
+                [],
+                [],
+                mcpServers,
+                capabilityRegistry,
+                appPermissionsDefaults,
+                workspacePermissionsProfile);
 
         return hasNewSchema
-            ? CreateNamedCandidate(root, options, mcpServers, capabilityRegistry)
-            : CreateLegacyCandidate(root, options, mcpServers, capabilityRegistry);
+            ? CreateNamedCandidate(root, options, mcpServers, capabilityRegistry, appPermissionsDefaults, workspacePermissionsProfile)
+            : CreateLegacyCandidate(root, options, mcpServers, capabilityRegistry, appPermissionsDefaults, workspacePermissionsProfile);
     }
 
     private IConfigurationSection GetMcpServersSection()
@@ -1105,7 +1127,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IConfigurationSection root,
         MaieuticsOptions options,
         IReadOnlyList<McpServerDefinition> mcpServers,
-        CapabilityRegistry capabilityRegistry)
+        CapabilityRegistry capabilityRegistry,
+        PermissionLayer? appPermissionsDefaults,
+        PermissionLayer? workspacePermissionsProfile)
     {
         var sources = new Dictionary<string, BoundSource>(StringComparer.OrdinalIgnoreCase);
         foreach (var sourceSection in root.GetSection("Sources").GetChildren())
@@ -1168,7 +1192,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 profiles,
                 sources.Values.ToArray(),
                 mcpServers,
-                capabilityRegistry);
+                capabilityRegistry,
+                appPermissionsDefaults,
+                workspacePermissionsProfile);
         }
 
         var defaultProfileId = ValidateIdentifier(options.DefaultProfile, "profile");
@@ -1183,14 +1209,18 @@ internal sealed class MaieuticsRuntimeConfiguration :
             profiles,
             sources.Values.ToArray(),
             mcpServers,
-            capabilityRegistry);
+            capabilityRegistry,
+            appPermissionsDefaults,
+            workspacePermissionsProfile);
     }
 
     private Candidate CreateLegacyCandidate(
         IConfigurationSection root,
         MaieuticsOptions options,
         IReadOnlyList<McpServerDefinition> mcpServers,
-        CapabilityRegistry capabilityRegistry)
+        CapabilityRegistry capabilityRegistry,
+        PermissionLayer? appPermissionsDefaults,
+        PermissionLayer? workspacePermissionsProfile)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Model.Name);
         var provider = string.IsNullOrWhiteSpace(options.Model.Provider) ? "OpenAI" : options.Model.Provider;
@@ -1221,7 +1251,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
             [profile],
             [new BoundSource(sourceId, source)],
             mcpServers,
-            capabilityRegistry);
+            capabilityRegistry,
+            appPermissionsDefaults,
+            workspacePermissionsProfile);
     }
 
     private static Candidate CreateCandidate(
@@ -1230,7 +1262,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyList<CandidateProfile> profiles,
         IReadOnlyList<BoundSource> sources,
         IReadOnlyList<McpServerDefinition> mcpServers,
-        CapabilityRegistry capabilityRegistry)
+        CapabilityRegistry capabilityRegistry,
+        PermissionLayer? appPermissionsDefaults,
+        PermissionLayer? workspacePermissionsProfile)
     {
         var key = new RuntimeKey(
             NormalizeIdentifier(defaultProfileId),
@@ -1245,7 +1279,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             options.Agent.MaxToolArgumentsBytes,
             options.Agent.MaxToolResultBytes,
             options.Agent.MaxToolProgressEventsPerCall,
-            options.Agent.EventBufferCapacity);
+            options.Agent.EventBufferCapacity,
+            PermissionsFingerprint(appPermissionsDefaults, workspacePermissionsProfile));
         return new Candidate(
             options,
             defaultProfileId,
@@ -1253,6 +1288,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             sources,
             mcpServers,
             capabilityRegistry,
+            appPermissionsDefaults,
+            workspacePermissionsProfile,
             key);
     }
 
@@ -1601,7 +1638,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 entry.Generation,
                 entry.Identity,
                 entry.Capabilities,
-                entry.HostedCapabilities);
+                entry.HostedCapabilities,
+                entry.MaxBuiltinToolCalls);
         }
 
         return null;
@@ -1615,7 +1653,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 automatic.Generation,
                 automatic.Identity,
                 automatic.Capabilities,
-                automatic.HostedCapabilities);
+                automatic.HostedCapabilities,
+                automatic.MaxBuiltinToolCalls);
 
         var profileId = sessionOverride is ConfiguredProfileOverride configured
             ? configured.ProfileId
@@ -1628,7 +1667,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             entry.Generation,
             entry.Identity,
             entry.Capabilities,
-            entry.HostedCapabilities);
+            entry.HostedCapabilities,
+            entry.MaxBuiltinToolCalls);
     }
 
     private async Task RollbackRuntimeProfileAcquisitionAsync(
@@ -1665,7 +1705,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return new AgentModelProfileId($"auto-{Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant()}");
     }
 
-    private static AgentSessionOptions CreateAgentOptions(MaieuticsOptions options)
+    private static AgentSessionOptions CreateAgentOptions(MaieuticsOptions options, int? maxBuiltinToolCalls)
     {
         return new AgentSessionOptions
         {
@@ -1680,6 +1720,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             MaxToolArgumentsBytes = options.Agent.MaxToolArgumentsBytes,
             MaxToolResultBytes = options.Agent.MaxToolResultBytes,
             MaxToolProgressEventsPerCall = options.Agent.MaxToolProgressEventsPerCall,
+            MaxBuiltinToolCalls = maxBuiltinToolCalls,
             EventBufferCapacity = options.Agent.EventBufferCapacity
         };
     }
@@ -1689,21 +1730,24 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IConfiguredChatClientSource source,
         string model,
         AgentModelCapabilities capabilities,
-        IReadOnlyList<string> hostedCapabilities)
+        IReadOnlyList<string> hostedCapabilities,
+        int? maxBuiltinToolCalls)
     {
-        var (resolvedCapabilities, resolvedHosted) =
+        var (resolvedCapabilities, resolvedHosted, resolvedMaxBuiltinToolCalls) =
             ResolveSourceCapabilities(source, model, snapshot.CapabilityRegistry);
         return resolvedCapabilities == capabilities &&
-               HostedCapabilitiesEqual(resolvedHosted, hostedCapabilities);
+               HostedCapabilitiesEqual(resolvedHosted, hostedCapabilities) &&
+               resolvedMaxBuiltinToolCalls == maxBuiltinToolCalls;
     }
 
-    private static (AgentModelCapabilities Capabilities, IReadOnlyList<string> HostedCapabilities)
+    private static (AgentModelCapabilities Capabilities, IReadOnlyList<string> HostedCapabilities, int? MaxBuiltinToolCalls)
         ResolveSourceCapabilities(
             IConfiguredChatClientSource source,
             string model,
             CapabilityRegistry capabilityRegistry)
     {
-        return (source.Capabilities, capabilityRegistry.Resolve(source, model).Effective);
+        var resolution = capabilityRegistry.Resolve(source, model);
+        return (source.Capabilities, resolution.Effective, resolution.MaxBuiltinToolCalls);
     }
 
     private static bool HostedCapabilitiesEqual(
@@ -1711,6 +1755,98 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyList<string> right)
     {
         return left.SequenceEqual(right, StringComparer.Ordinal);
+    }
+
+    PermissionLayer? IPermissionLayerSource.AppDefaults => GetCurrent().AppPermissionsDefaults;
+
+    PermissionLayer? IPermissionLayerSource.WorkspaceProfile => GetCurrent().WorkspacePermissionsProfile;
+
+    PermissionLayer? IPermissionLayerSource.GetSessionOverride(AgentSessionId sessionId)
+    {
+        return permissionOverrides?.TryGet(sessionId);
+    }
+
+    /// <summary>Loads the workspace <c>permissions.json</c> beside the active maieutics.json
+    /// (the mcp.json convention). A missing file contributes no layer; an invalid file throws
+    /// the loader's typed <see cref="PermissionException"/>, which rejects the reload and keeps
+    /// the last-known-good snapshot (ADR 0018 Phase 5 gate).</summary>
+    private PermissionLayer? LoadWorkspacePermissionsProfile()
+    {
+        if (configurationFile.Path is null) return null;
+
+        var profilePath = Path.Combine(
+            Path.GetDirectoryName(configurationFile.Path)
+            ?? throw new InvalidOperationException(
+                $"Cannot resolve the directory for '{configurationFile.Path}'."),
+            "permissions.json");
+        var layer = PermissionProfileLoader.Load(profilePath);
+        return layer.Kinds.Count == 0 ? null : layer;
+    }
+
+    private static PermissionLayer? CreatePermissionsDefaultsLayer(MaieuticsPermissionsOptions options)
+    {
+        var kinds = new Dictionary<PermissionKind, PermissionKindRules>();
+        AddDefaultsKind(kinds, PermissionKind.Read, options.Read);
+        AddDefaultsKind(kinds, PermissionKind.Write, options.Write);
+        AddDefaultsKind(kinds, PermissionKind.Net, options.Net);
+        AddDefaultsKind(kinds, PermissionKind.Env, options.Env);
+        AddDefaultsKind(kinds, PermissionKind.Run, options.Run);
+        AddDefaultsKind(kinds, PermissionKind.Ffi, options.Ffi);
+        AddDefaultsKind(kinds, PermissionKind.Sys, options.Sys);
+        AddDefaultsKind(kinds, PermissionKind.Import, options.Import);
+        return kinds.Count == 0 ? null : new PermissionLayer { Kinds = kinds };
+    }
+
+    private static void AddDefaultsKind(
+        Dictionary<PermissionKind, PermissionKindRules> kinds,
+        PermissionKind model,
+        MaieuticsPermissionKindOptions? options)
+    {
+        if (options is null ||
+            (options.Allow.Count == 0 && options.Deny.Count == 0 && !options.AllowAll && !options.DenyAll))
+            return;
+
+        kinds[model] = new PermissionKindRules
+        {
+            AllowAll = options.AllowAll,
+            DenyAll = options.DenyAll,
+            Allow = [.. options.Allow],
+            Deny = [.. options.Deny]
+        };
+    }
+
+    /// <summary>A canonical fingerprint of the two configuration-owned permission layers. It
+    /// rides the runtime key so a reload whose permissions changed rebuilds the snapshot, while
+    /// an unchanged pair short-circuits.</summary>
+    private static string PermissionsFingerprint(PermissionLayer? appDefaults, PermissionLayer? workspaceProfile)
+    {
+        var builder = new StringBuilder();
+        AppendLayerFingerprint(builder, "app", appDefaults);
+        AppendLayerFingerprint(builder, "workspace", workspaceProfile);
+        return builder.ToString();
+    }
+
+    private static void AppendLayerFingerprint(StringBuilder builder, string name, PermissionLayer? layer)
+    {
+        builder.Append(name).Append(':');
+        if (layer is null)
+        {
+            builder.Append("none;");
+            return;
+        }
+
+        foreach (var (kind, rules) in layer.Kinds.OrderBy(static pair => (int)pair.Key))
+        {
+            builder.Append((int)kind).Append("|a:");
+            if (rules.AllowAll) builder.Append('*');
+            foreach (var entry in rules.Allow.OrderBy(static value => value, StringComparer.Ordinal))
+                builder.Append(entry).Append(',');
+            builder.Append("|d:");
+            if (rules.DenyAll) builder.Append('*');
+            foreach (var entry in rules.Deny.OrderBy(static value => value, StringComparer.Ordinal))
+                builder.Append(entry).Append(',');
+            builder.Append("|f:").Append(rules.AllowAll ? '1' : '0').Append(rules.DenyAll ? '1' : '0').Append(';');
+        }
     }
 
     private static IReadOnlyDictionary<string, IConfiguredChatClientFactory> CreateFactoryRegistry(
@@ -1737,6 +1873,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyList<BoundSource> Sources,
         IReadOnlyList<McpServerDefinition> McpServers,
         CapabilityRegistry CapabilityRegistry,
+        PermissionLayer? AppPermissionsDefaults,
+        PermissionLayer? WorkspacePermissionsProfile,
         RuntimeKey Key);
 
     private sealed record CandidateProfile(
@@ -1768,7 +1906,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         int MaxToolArgumentsBytes,
         int MaxToolResultBytes,
         int MaxToolProgressEventsPerCall,
-        int EventBufferCapacity);
+        int EventBufferCapacity,
+        string PermissionsFingerprint);
 
     private sealed record RuntimeSnapshot(
         long Version,
@@ -1778,6 +1917,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IReadOnlyDictionary<string, IConfiguredChatClientSource> Sources,
         IReadOnlyDictionary<string, McpServerGeneration> McpServers,
         CapabilityRegistry CapabilityRegistry,
+        PermissionLayer? AppPermissionsDefaults,
+        PermissionLayer? WorkspacePermissionsProfile,
         RuntimeKey Key);
 
     private sealed record ProfileEntry(
@@ -1787,6 +1928,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         AgentModelIdentity Identity,
         AgentModelCapabilities Capabilities,
         IReadOnlyList<string> HostedCapabilities,
+        int? MaxBuiltinToolCalls,
         ProfileGeneration Generation);
 
     private abstract class ProfileOverride;
@@ -1814,6 +1956,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
         internal IReadOnlyList<string> HostedCapabilities { get; } = candidate.HostedCapabilities;
 
+        internal int? MaxBuiltinToolCalls { get; } = candidate.MaxBuiltinToolCalls;
+
         internal ProfileGeneration Generation { get; } = generation;
 
         internal AgentModelIdentity Identity { get; } = new(
@@ -1828,7 +1972,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
                    string.Equals(Provider, other.Provider, StringComparison.OrdinalIgnoreCase) &&
                    Equals(ClientGenerationKey, other.ClientGenerationKey) &&
                    Capabilities == other.Capabilities &&
-                   HostedCapabilitiesEqual(HostedCapabilities, other.HostedCapabilities);
+                   HostedCapabilitiesEqual(HostedCapabilities, other.HostedCapabilities) &&
+                   MaxBuiltinToolCalls == other.MaxBuiltinToolCalls;
         }
 
         internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected)
@@ -1852,6 +1997,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         object ClientGenerationKey,
         AgentModelCapabilities Capabilities,
         IReadOnlyList<string> HostedCapabilities,
+        int? MaxBuiltinToolCalls,
         IConfiguredChatClientSource Source)
     {
         internal MaieuticsModelProfileInfo ToProfileInfo(bool isSelected)
@@ -1872,7 +2018,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ProfileGeneration Generation,
         AgentModelIdentity Identity,
         AgentModelCapabilities Capabilities,
-        IReadOnlyList<string> HostedCapabilities);
+        IReadOnlyList<string> HostedCapabilities,
+        int? MaxBuiltinToolCalls);
 
     private sealed class RuntimeProfileLease(
         ProfileGenerationLease generationLease,

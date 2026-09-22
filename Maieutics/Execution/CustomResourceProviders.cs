@@ -30,9 +30,12 @@ internal sealed class CustomResourceProviderOptions
 {
     internal const string HttpBridgeKind = "httpBridge";
 
-    /// <summary>The reserved schemes no custom provider may claim (ADR 0026 decision 2).</summary>
+    /// <summary>The reserved schemes no custom provider may claim — the same set
+    /// <see cref="ResourceRegistry.ReservedSchemeOwners" /> enforces at runtime (the task
+    /// plane is built-in per ADR 0028), so a claim fails configuration instead of being
+    /// silently disabled at first resolve.</summary>
     internal static readonly IReadOnlySet<string> ReservedSchemes =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "workspace", "mcp", "file" };
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "workspace", "task", "mcp", "file" };
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;

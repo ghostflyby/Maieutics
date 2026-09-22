@@ -1,3 +1,5 @@
+using Maieutics.Permissions;
+using Maieutics.Agent;
 using System.Diagnostics;
 using Maieutics.DenoExecution;
 using Microsoft.Extensions.Logging;
@@ -50,6 +52,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
     internal static async Task<DenoReplProcess> StartAsync(
         DenoReplProcessOptions options,
         ILogger logger,
+        PermissionPolicyAcquirer acquirer,
+        AgentSessionId? ownerSessionId,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -62,6 +66,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                 options.LockFile,
                 options.IpcAddress,
                 options.WindowsPipeName,
+                acquirer,
+                ownerSessionId,
                 logger,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -78,6 +84,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                     options.LockFile,
                     options.IpcAddress,
                     options.WindowsPipeName,
+                    acquirer,
+                    ownerSessionId,
                     logger,
                     cancellationToken)
                 .ConfigureAwait(false)

@@ -70,7 +70,8 @@ public sealed class ReplControlChannelIntegrationTests
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
-                SharedBroker);
+                SharedBroker,
+                TestPermissionPolicies.Unconfigured());
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "verify",
@@ -131,10 +132,12 @@ public sealed class ReplControlChannelIntegrationTests
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
-                SharedBroker);
+                SharedBroker,
+                TestPermissionPolicies.Unconfigured());
             var generation = await factory.StartAsync(
                 Directory.GetCurrentDirectory(),
                 "integration-session",
+                AgentSessionId.Create(),
                 1,
                 timeout.Token);
             await using (generation)
@@ -185,10 +188,12 @@ public sealed class ReplControlChannelIntegrationTests
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
-                SharedBroker);
+                SharedBroker,
+                TestPermissionPolicies.Unconfigured());
             var generation = await factory.StartAsync(
                 Directory.GetCurrentDirectory(),
                 "input-session",
+                AgentSessionId.Create(),
                 1,
                 timeout.Token);
             await using (generation)

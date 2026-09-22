@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Maieutics.DenoExecution;
+using Maieutics.Agent;
 using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
@@ -34,6 +35,8 @@ internal static class DenoReplPolicyBuilder
         string lockFile,
         string ipcAddress,
         string? windowsPipeName,
+        PermissionPolicyAcquirer acquirer,
+        AgentSessionId? ownerSessionId,
         ILogger logger,
         CancellationToken cancellationToken = default)
     {
@@ -52,7 +55,7 @@ internal static class DenoReplPolicyBuilder
                 cancellationToken)
             .ConfigureAwait(false);
         if (esbuildWasm is null) return null;
-        return Build(moduleDirectory, workingDirectory, configFile, lockFile, ipcAddress, esbuildWasm, windowsPipeName);
+        return Build(moduleDirectory, workingDirectory, configFile, lockFile, ipcAddress, esbuildWasm, windowsPipeName, acquirer, ownerSessionId);
     }
 
     /// <summary>Synchronous policy computation from an already-resolved esbuild-wasm path.</summary>
@@ -63,9 +66,11 @@ internal static class DenoReplPolicyBuilder
         string lockFile,
         string ipcAddress,
         string esbuildWasm,
-        string? windowsPipeName = null)
+        string? windowsPipeName,
+        PermissionPolicyAcquirer acquirer,
+        AgentSessionId? ownerSessionId)
     {
-        return PermissionBaseline.ForDenoRepl(
+        var baseline = PermissionBaseline.ForDenoReplLayer(
             moduleDirectory,
             workingDirectory,
             configFile,
@@ -73,6 +78,9 @@ internal static class DenoReplPolicyBuilder
             ipcAddress,
             esbuildWasm,
             windowsPipeName);
+        // The full acquisition path (ADR 0018 Phase 5): the launch-time baseline overlaid with
+        // the configuration-owned layers; the override lookup scopes by the owning Agent session.
+        return acquirer.Acquire(baseline, ownerSessionId);
     }
 
     internal static InvalidOperationException CreateMissingModuleGraphException()

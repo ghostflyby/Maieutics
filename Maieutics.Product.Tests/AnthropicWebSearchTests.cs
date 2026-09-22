@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Maieutics.Agent;
 using Maieutics.Providers.Anthropic;
 using Microsoft.Extensions.AI;
 
@@ -31,6 +32,8 @@ public sealed class AnthropicWebSearchTests
         tools[0].GetProperty("type").GetString().Should().Be("web_search_20250305");
         tools[0].GetProperty("name").GetString().Should().Be("web_search");
         tools[0].TryGetProperty("input_schema", out _).Should().BeFalse();
+        // No limit is configured, so the wire block carries no cap.
+        tools[0].TryGetProperty("max_uses", out _).Should().BeFalse();
 
         var contents = updates.SelectMany(static update => update.Contents).ToArray();
         var searchCall = contents.OfType<WebSearchToolCallContent>().Single();
@@ -48,6 +51,30 @@ public sealed class AnthropicWebSearchTests
         var cited = texts.Single(text => text.Annotations is { Count: > 0 });
         cited.Annotations![0].Should().BeOfType<CitationAnnotation>()
             .Which.Url.Should().Be(new Uri("https://example.com/zhipu"));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ConfiguredLimitIsDeclaredAsTheWireMaxUses()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
+        await using var provider = new FakeAnthropicServer(
+            "claude-test", "unused", webSearchFlow: true, requestCount: 1);
+        using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
+
+        var options = new ChatOptions { Tools = [new HostedWebSearchTool()] };
+        options.AdditionalProperties ??= [];
+        options.AdditionalProperties[AgentChatOptionKeys.MaxBuiltinToolCalls] = 4;
+
+        await foreach (var _ in client.GetStreamingResponseAsync(
+                           [new ChatMessage(ChatRole.User, "search zhipu ai")],
+                           options,
+                           deadline.Token))
+        {
+        }
+
+        // The endpoint limit rides the wire as the server tool's own per-request cap.
+        provider.RequestBody.GetProperty("tools")[0]
+            .GetProperty("max_uses").GetInt32().Should().Be(4);
     }
 
     [Fact(Timeout = 30_000)]

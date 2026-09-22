@@ -90,9 +90,9 @@ once after the hello to rebuild its view.
 
 ## Display objects (binary rich values)
 
-Binary mime values in `repl.display` bundles above a server-defined size
-threshold are stored as immutable, content-addressed objects. The bundle
-carries a structured reference — never base64 (invariant 26):
+Binary mime values in `repl.display` bundles are stored as immutable,
+content-addressed objects. The bundle carries a structured reference —
+never base64 (invariant 26):
 
 ```json
 {"image/png": {"$object": "/v1/objects/<sha256>", "byteLength": 12345}}
@@ -331,8 +331,8 @@ JSON text:
  "model": {"profileId": "…", "provider": "openai", "model": "…"},
  "usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}
 {"type": "run.failed", "runId": "…", "code": "agent_provider_error", "message": "…"}
-{"type": "repl.display", "displayId": "…", "mime": "text/markdown", "data": "…"}
-{"type": "repl.updateDisplay", "displayId": "…", "mime": "text/markdown", "data": "…"}
+{"type": "repl.display", "displayId": "…", "data": {"text/markdown": "…"}}
+{"type": "repl.updateDisplay", "displayId": "…", "data": {"text/markdown": "…"}}
 {"type": "run.status", "state": "busy" | "idle"}
 {"type": "input.request", "requestId": "input-<unique>-1", "prompt": "Name:", "password": false}
 {"type": "input.request", "requestId": "elicit-<unique>-1", "prompt": "Pick:", "password": false, "schema": {"type":"object","properties":{…}}, "serverId": "srv"}

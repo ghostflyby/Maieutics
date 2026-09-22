@@ -19,7 +19,7 @@ public sealed class TerminalRegistryTests
             },
             new FakeTerminalProcessFactory(process),
             NullLogger<TerminalSession>.Instance,
-            EffectivePolicy.Default);
+            TestPermissionPolicies.Unconfigured());
     }
 
     [Fact(Timeout = 10_000)]

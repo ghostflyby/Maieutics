@@ -60,18 +60,15 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
         this.vendorProfiles = vendorProfiles;
     }
 
-    internal static CapabilityRegistry Empty { get; } =
-        new(
-            new Dictionary<string, EndpointCapabilityProfile>(StringComparer.Ordinal),
-            new Dictionary<string, VendorCapabilityProfile>(StringComparer.OrdinalIgnoreCase));
-
     /// <summary>
     ///     Resolves the compatibility surface for one model source and model. Returns the vendor
     ///     identity, whether the vendor has known capability knowledge, whether the endpoint
     ///     matched an explicit profile, and the potential and effective capability name sets.
     ///     The potential is the capability ceiling the source's API format and the vendor's served
     ///     capabilities allow; the effective set is the default (the full potential for a known
-    ///     vendor, nothing for an unknown gateway) plus any explicit endpoint profile.
+    ///     vendor, nothing for an unknown gateway) plus any explicit endpoint profile. The limit
+    ///     is the matched endpoint profile's ceiling on provider-side built-in tool calls, or
+    ///     null when no endpoint profile (or no limit) is configured.
     /// </summary>
     internal CapabilityResolution Resolve(IConfiguredChatClientSource source, string model)
     {
@@ -80,19 +77,20 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
 
         var vendorId = ResolveVendorId(source);
         var knownVendor = IsKnownVendor(vendorId);
-        var endpointCapabilities = GetEndpointCapabilities(source.EndpointUri);
+        var endpointProfile = GetEndpointProfile(source.EndpointUri);
         var aggregate = ResolveAggregateCapabilities(source, model, vendorId);
         var potential = IntersectCapabilities(source.FormatCapabilities, aggregate);
         var effective = knownVendor
-            ? UnionCapabilities(potential, endpointCapabilities)
-            : endpointCapabilities;
+            ? UnionCapabilities(potential, endpointProfile?.Capabilities ?? [])
+            : endpointProfile?.Capabilities ?? [];
 
         return new CapabilityResolution(
             vendorId,
             knownVendor,
             IsKnown(source.EndpointUri),
             potential,
-            effective);
+            effective,
+            endpointProfile?.Limits?.MaxBuiltinToolCalls);
     }
 
     internal static CapabilityRegistry Create(IConfiguration root)
@@ -181,13 +179,13 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
         return false;
     }
 
-    private IReadOnlyList<string> GetEndpointCapabilities(Uri? endpoint)
+    private EndpointCapabilityProfile? GetEndpointProfile(Uri? endpoint)
     {
         if (endpoint is null || !TryNormalizeEndpoint(endpoint, out var normalized) ||
             !endpointProfiles.TryGetValue(normalized, out var profile))
-            return [];
+            return null;
 
-        return profile.Capabilities;
+        return profile;
     }
 
     private bool IsKnown(Uri? endpoint)
@@ -470,7 +468,8 @@ internal sealed record CapabilityResolution(
     bool KnownVendor,
     bool Matched,
     IReadOnlyList<string> Potential,
-    IReadOnlyList<string> Effective);
+    IReadOnlyList<string> Effective,
+    int? MaxBuiltinToolCalls = null);
 
 internal sealed record EndpointCapabilityProfile(
     string NormalizedUrl,

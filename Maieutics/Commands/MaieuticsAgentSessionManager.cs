@@ -43,7 +43,6 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly Dictionary<string, LiveSession> live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
     private IAgentSession foreground;
-    private long foregroundVersion;
 
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
@@ -78,19 +77,6 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             lock (gate)
             {
                 return live.Count;
-            }
-        }
-    }
-
-    /// <summary>Gets a monotonically increasing version that changes whenever the foreground
-    /// session moves, so callers can detect "did this command switch sessions".</summary>
-    public long ForegroundVersion
-    {
-        get
-        {
-            lock (gate)
-            {
-                return foregroundVersion;
             }
         }
     }
@@ -508,7 +494,6 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private void MoveForegroundLocked(IAgentSession session)
     {
         foreground = session;
-        foregroundVersion++;
     }
 
     /// <summary>Creates the per-session profile wrapper, or returns

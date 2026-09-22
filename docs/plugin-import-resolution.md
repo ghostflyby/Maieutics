@@ -143,15 +143,26 @@ project's own SDK alias merges harmlessly.
 
 ### 4.3 Lifecycle
 
-- The config is rewritten on every host start; the plugin set equals the host-process
-  lifecycle (a new plugin directory is not picked up by the watcher today either —
-  `ReloadChangedPluginAsync` returns when no known descriptor owns the path).
-- **Reload policy (§4.3 decision): reloads are not automatic by default.** Watched
-  changes are recorded as pending (`AutomaticReload = false`, the default); an explicit
-  apply (`ApplyPendingReloadsAsync`, exposed through the control surface) runs them.
-  Opting in (`AutomaticReload = true`, a dynamic option — command/config hot-update)
-  restores automatic in-process reloads for local edits.
-- **Install-level changes are never automatic**, opted in or not: import-map changes
+- The config is rewritten on every host start; between set-recompute restarts the
+  running host-process lifecycle owns one plugin set (watcher content changes reload
+  workers in-process without touching it).
+- **Reload policy (§4.3 decision): watched changes reload automatically.** A change
+  waits out the debounce window and then reloads the owning plugin in-process;
+  the applied reload is observable for tests through `ReloadApplied`. Import-map
+  changes still only warn (the process map is fixed at host start).
+- **Plugin-set changes recompute the set.** After each debounce the watcher
+  re-scans the *local* plugin set — the root project plus every local
+  file-import target at/under the plugins root. A set difference (a new or
+  removed sibling plugin directory plus its root-import entry) restarts the
+  plugin host: fresh discovery rebuilds the dependency graph (a removed
+  plugin's dependents become typed `missing dependency` exclusions), the
+  process import map, and the worker set. Plugin storage reopens from disk
+  (SQLite WAL recovery, crash-equivalent). The scan is file-only — no Deno
+  toolchain spawns — so it runs on every debounced event.
+- **Registry-installed (jsr:/npm:) plugins are outside the automatic set
+  recompute**: adding or removing them edits the root project's import map,
+  which still warns "Restart the host process".
+- **Install-level changes are never automatic**: import-map changes
   warn "Restart the host process" (the process map is baked at host start) and registry
   version changes require the explicit apply to re-query the toolchain and rebuild —
   no background version detection.

@@ -41,31 +41,6 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
         return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public bool TryGetCurrentSink(
-        AgentSessionId sessionId,
-        [NotNullWhen(true)] out IDenoReplPresentationSink? sink)
-    {
-        lock (gate)
-        {
-            if (runs.TryGetValue(sessionId, out var state) && state.Sink.IsActive)
-            {
-                sink = state.Sink;
-                return true;
-            }
-        }
-
-        sink = null;
-        return false;
-    }
-
-    internal bool IsAttached(AgentSessionId sessionId)
-    {
-        lock (gate)
-        {
-            return runs.ContainsKey(sessionId);
-        }
-    }
-
     /// <summary>Delivers a frontend stdin answer to whichever attached sink holds the
     /// pending request. Request ids are unique per sink, so at most one sink matches;
     /// an unknown or already-answered id returns false.</summary>

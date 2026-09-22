@@ -423,6 +423,29 @@ public sealed class CapabilityRegistryTests
     }
 
     [Fact]
+    public void EndpointLimitResolvesOnlyWhenTheEndpointMatches()
+    {
+        var registry = CreateRegistry("""
+        {
+          "Endpoints": [
+            {
+              "Url": "https://api.example.com/v1",
+              "Capabilities": ["WebSearch"],
+              "Limits": { "MaxBuiltinToolCalls": 3 }
+            }
+          ]
+        }
+        """);
+
+        registry
+            .Resolve(new FakeSource("OpenAI", "https://api.example.com/v1"), "gpt-5")
+            .MaxBuiltinToolCalls.Should().Be(3);
+        registry
+            .Resolve(new FakeSource("OpenAI", "https://other.example.com/v1"), "gpt-5")
+            .MaxBuiltinToolCalls.Should().BeNull();
+    }
+
+    [Fact]
     public void MissingUrlIsRejected()
     {
         var action = () => CreateRegistry("""

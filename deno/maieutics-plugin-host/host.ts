@@ -294,11 +294,23 @@ export class PluginHost {
     this.#installAcquireRouter();
   }
 
-  /** Starts every worker in topological waves (dependencies first) and collects the registry. */
+  /** Starts every worker in topological waves (dependencies first) and collects the registry.
+   * One broken plugin fails alone: its worker ends Failed with the reason recorded, its
+   * dependents still start (their actor acquisitions will refuse until it is reloaded), and
+   * the host process — and with it every healthy plugin — stays up. */
   async startAll(): Promise<readonly RegisteredExtension[]> {
     const waves = this.#computeStartWaves();
     for (const wave of waves) {
-      await Promise.all(wave.map((key) => this.#startWorker(key)));
+      await Promise.all(wave.map((key) =>
+        this.#startWorker(key).catch((error: unknown) => {
+          const handle = this.#workers.get(key);
+          if (handle !== undefined) {
+            handle.state = State.Failed;
+            handle.failure = error instanceof Error ? error.message : String(error);
+          }
+          console.error(`[plugin-host] start of '${key.replaceAll("\u0000", "/")}' failed:`, error);
+        })
+      ));
     }
     const registrations = this.#collectExtensions();
     this.#refreshExtensions(registrations);
@@ -357,11 +369,44 @@ export class PluginHost {
   /** Cascade-disables one worker and every transitive dependent, then restarts topologically.
    * When a replacement {@link PluginConfig} is supplied (permission/config change), the worker's
    * plugin configuration is updated first so the rebuilt workers carry the new grants. */
-  async reload(
+  // Lifecycle mutations (reload cascades, crash cascades) are serialized through
+  // this tail: mod.ts dispatches plugin.reload fire-and-forget and a worker death
+  // fires its own cascade, so two cascades could otherwise interleave — a stale
+  // cascade stopping a worker a newer reload just started (leaving it Running
+  // with cleared extension points), or a Running dependent over a Stopped
+  // dependency. One mutation runs at a time; each recomputes its closure fresh.
+  #lifecycleTail: Promise<void> = Promise.resolve();
+
+  /** Set synchronously by dispose(); every queued mutation and every wave
+   * boundary checks it so an in-flight reload can neither spawn nor resurrect
+   * workers after disposal. */
+  #disposed = false;
+
+  #enqueueLifecycle<T>(mutation: () => Promise<T>): Promise<T> {
+    const run = this.#lifecycleTail.then(mutation);
+    this.#lifecycleTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  reload(
     pluginId: string,
     exportName: string,
     nextConfig?: PluginConfig,
   ): Promise<void> {
+    // Serialized behind any in-flight lifecycle mutation (another reload or a
+    // crash cascade), so cascades never interleave.
+    return this.#enqueueLifecycle(() => this.#reloadCore(pluginId, exportName, nextConfig));
+  }
+
+  async #reloadCore(
+    pluginId: string,
+    exportName: string,
+    nextConfig?: PluginConfig,
+  ): Promise<void> {
+    if (this.#disposed) return;
     const key = workerKey(pluginId, exportName);
     const handle = this.#workers.get(key);
     if (handle === undefined) return;
@@ -380,6 +425,7 @@ export class PluginHost {
       this.#bySpecifier.set(handle.specifier, key);
     }
     await this.#cascade(key);
+    if (this.#disposed) return;
     // Restart the whole cascaded closure (the worker plus its transitive
     // dependents) in topological waves; restarting only the target would leave
     // dependents permanently Stopped until the next host-process restart.
@@ -405,6 +451,9 @@ export class PluginHost {
   }
 
   dispose(): void {
+    // Fence first: queued lifecycle mutations and every wave boundary check
+    // this, so an in-flight reload can neither finish nor resurrect workers.
+    this.#disposed = true;
     void this.#http?.stopRouter();
     this.#storage.dispose();
     for (const handle of this.#workers.values()) {
@@ -595,6 +644,17 @@ export class PluginHost {
           permissions: buildWorkerPermissions(handle.plugin, this.#options),
         },
       });
+      // Handle worker error events from the earliest possible moment: Deno
+      // rethrows a worker error as an uncaught host error — killing the whole
+      // plugin host process — unless an `onerror` property handler is attached
+      // at dispatch time. worker-actor's spawn installs its own handler later;
+      // this one covers the bootstrap window, and routes through #handleDeath,
+      // which ignores non-Running workers so the classification stays coherent.
+      worker.onerror = (event) => {
+        event.preventDefault?.();
+        this.#handleDeath(key, (event as ErrorEvent).error ?? event.message);
+      };
+      worker.onmessageerror = () => this.#handleDeath(key, "Worker message deserialization error");
       this.#attachAcquireListener(worker);
       // The worker's SDK reads its specifier and the actor-entry registry of
       // its declared dependencies from this per-worker message. It must be
@@ -614,7 +674,27 @@ export class PluginHost {
       });
       handle.actor = actor;
       handle.worker = worker;
+      // worker-actor's own onerror classifies the crash internally but never
+      // suppresses the event, and Deno rethrows an unsuppressed worker error as
+      // an uncaught host error — killing the whole plugin host process. Wrap
+      // (not replace) it: preventDefault first, then their handler, then the
+      // state classification (#handleDeath ignores non-Running workers, so a
+      // double dispatch stays coherent).
+      const actorOnError = worker.onerror;
+      worker.onerror = (event) => {
+        event.preventDefault?.();
+        actorOnError?.call(worker, event);
+        this.#handleDeath(key, (event as ErrorEvent).error ?? event.message);
+      };
       await this.#initWorker(key);
+      if (this.#disposed) {
+        try {
+          worker.terminate();
+        } catch {
+          // already gone
+        }
+        throw new Error("The plugin host was disposed during worker startup.");
+      }
       handle.state = State.Running;
     } catch (error) {
       handle.state = State.Failed;
@@ -739,6 +819,7 @@ export class PluginHost {
   async #startSubgraph(keys: string[]): Promise<void> {
     const waves = this.#computeStartWaves(keys);
     for (const wave of waves) {
+      if (this.#disposed) return;
       await Promise.all(
         wave.map((key) =>
           this.#startWorker(key).catch(() => {

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
@@ -336,7 +337,8 @@ public sealed class PluginHostIntegrationTests
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
-                SharedBroker);
+                SharedBroker,
+                TestPermissionPolicies.Unconfigured());
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "hook-session",
@@ -427,7 +429,8 @@ public sealed class PluginHostIntegrationTests
                 registry,
                 credentials,
                 NullLogger<DenoReplProcess>.Instance,
-                SharedBroker);
+                SharedBroker,
+                TestPermissionPolicies.Unconfigured());
             var session = new DenoReplSession(
                 AgentSessionId.Create(),
                 "capability-session",
@@ -723,7 +726,6 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
-            manager.AutomaticReload = true; // this test exercises the opt-in path
             await manager.StartAsync(timeout.Token);
             await manager.WaitUntilReadyAsync(timeout.Token);
 
@@ -751,57 +753,273 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
-    [Fact(Timeout = 60_000)]
-    public async Task WatchedChangesStayPendingUntilExplicitlyAppliedByDefault()
+    [Fact(Timeout = 150_000)]
+    public async Task WatchedSetChangesRecomputeThePluginSetThroughAHostRestart()
     {
-        var logger = new CollectingLogger<PluginHostManager>();
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(55));
-        var pluginsRoot = CreateAliasedPluginsRoot("sdk-alias");
+        timeout.CancelAfter(TimeSpan.FromSeconds(140));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var pluginsRoot = CreateRootWithoutExtraPlugin();
         var manager = new PluginHostManager(
             pluginsRoot,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
-            ReplControlHost.CreateSocketPath(),
+            socketPath,
             new DenoReplOptions { Executable = "deno" },
             new PluginHostModule(),
-            new ReplControlSessionRegistry(),
-            logger,
-            logger,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
             TimeProvider.System);
-
-        try
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
         {
-            await manager.StartAsync(timeout.Token);
-            await manager.WaitUntilReadyAsync(timeout.Token);
+            // The root project is the only plugin at first; its id is the root
+            // directory name (the temp directory's unique suffix).
+            await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token);
+            var rootPluginId = manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Single().PluginId;
+            rootPluginId.Should().StartWith("mc-plugins-root-");
 
-            var denoJsonPath = Path.Combine(pluginsRoot, "deno.json");
-            var updated = File.ReadAllText(denoJsonPath).Replace(
-                "\"imports\":",
-                "\"imports\": { \"@std/bytes\": \"jsr:@std/bytes@1\", \"@std/path\": \"jsr:@std/path@^1\" },\n    \"imports-old\":");
+            // Adding a sibling plugin plus its local import entry changes the plugin set:
+            // the new module entry belongs to the process import map, so the manager must
+            // restart the host instead of attempting an in-process reload.
+            WriteExtraPlugin(pluginsRoot);
+            AddLocalImport(pluginsRoot, "@acme/extra/main", "./extra/mod.ts");
 
-            // No automatic reload: the change is recorded as pending, and no
-            // restart-required warning is emitted. The seam completes on the same
-            // transition that increments PendingReloadCount, so the positive
-            // assertion needs no fixed grace period; it is captured before the
-            // write so the record cannot race the subscribe. The negative warning
-            // check keeps a bounded observation window past the record.
-            var recorded = manager.PendingReloadRecorded;
-            File.WriteAllText(denoJsonPath, updated);
-            await recorded.WaitAsync(TimeSpan.FromSeconds(20), timeout.Token);
-            manager.PendingReloadCount.Should().BeGreaterThan(0);
-            await Task.Delay(TimeSpan.FromMilliseconds(500), timeout.Token);
-            logger.Lines.Should().NotContain(line => line.Contains("Restart the host process"));
+            var extraAppeared = await WaitForAsync(
+                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
+                    .Any(registration => registration.PluginId == "extra"),
+                timeout.Token);
+            extraAppeared.Should().BeTrue("the restart must load the newly added plugin");
+            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
+                .Should().Contain(registration => registration.PluginId == rootPluginId)
+                .And.Contain(registration => registration.PluginId == "extra");
 
-            // The explicit apply runs the reload path (which emits the warning).
-            await manager.ApplyPendingReloadsAsync(timeout.Token);
-            logger.Lines.Should().Contain(line => line.Contains("Restart the host process"));
-            manager.PendingReloadCount.Should().Be(0);
+            // Removing the plugin (directory and import entry) recomputes the set the
+            // other way: the removed plugin's registrations disappear after the restart.
+            // The poll waits for the NEW generation's convergence (root re-registered,
+            // extra gone): the teardown phase clears every registration, so a negative
+            // condition alone would "pass" mid-restart with the root still missing.
+            Directory.Delete(Path.Combine(pluginsRoot, "extra"), true);
+            RemoveLocalImport(pluginsRoot, "@acme/extra/main");
+
+            var extraRemoved = await WaitForAsync(
+                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover) is { } current &&
+                     current.Any(registration => registration.PluginId == rootPluginId) &&
+                     current.All(registration => registration.PluginId != "extra"),
+                timeout.Token);
+            extraRemoved.Should().BeTrue("the restart must drop the removed plugin");
+            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
+                .Should().Contain(registration => registration.PluginId == rootPluginId);
         }
-        finally
+
+        if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+    }
+
+    [Fact(Timeout = 150_000)]
+    public async Task DisposeDuringASetChangeRestartStopsCleanlyWithoutResurrection()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(140));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var pluginsRoot = CreateRootWithoutExtraPlugin();
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            new PluginHostModule(),
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
         {
+            // Trigger a set change and wait until the restart has actually torn the old
+            // generation down (status leaves Ready), then dispose mid-restart. Dispose must
+            // complete deterministically: the aborted restart's StartAsync faults readiness
+            // and cleans up, and the manager ends terminal Stopped with nothing resurrected.
+            WriteExtraPlugin(pluginsRoot);
+            AddLocalImport(pluginsRoot, "@acme/extra/main", "./extra/mod.ts");
+
+            while (manager.GetStatus().State is PluginHostState.Ready)
+            {
+                await Task.Delay(100, timeout.Token);
+            }
+
             await manager.DisposeAsync();
-            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            // The terminal state depends on where the race landed (a startup cancelled by the
+            // stop reports Canceled, a faulted one Failed); what it must never be is a live
+            // generation again.
+            manager.GetStatus().State.Should().BeOneOf(
+                PluginHostState.Stopped,
+                PluginHostState.Canceled,
+                PluginHostState.Failed);
         }
+
+        if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+    }
+
+    /// <summary>Bounded condition poll for asynchronous restart outcomes (the restart spans a
+    /// process teardown, fresh discovery, a new host process, and worker re-registration).</summary>
+    private static async Task<bool> WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        var deadline = TimeSpan.FromSeconds(100);
+        while (deadline > TimeSpan.Zero)
+        {
+            if (condition()) return true;
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+            deadline -= TimeSpan.FromMilliseconds(250);
+        }
+
+        return condition();
+    }
+
+    private static string CreateRootWithoutExtraPlugin()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-plugins-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/root-plugin",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } },
+              "imports": {}
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mod.ts"),
+            """
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+            export const discover = defineExtensionPoint("McpDiscover", {
+              handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
+            });
+            """);
+        return root;
+    }
+
+    private static void WriteExtraPlugin(string pluginsRoot)
+    {
+        var extra = Path.Combine(pluginsRoot, "extra");
+        Directory.CreateDirectory(extra);
+        File.WriteAllText(
+            Path.Combine(extra, "deno.json"),
+            """
+            {
+              "name": "@acme/extra",
+              "version": "0.1.0",
+              "exports": { "./main": "./mod.ts" },
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(extra, "maieutics.json"),
+            """
+            {
+              "isolation": "auto",
+              "entrypoints": { "main": ["./mod.ts"] }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(extra, "mod.ts"),
+            """
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
+            export const discover = defineExtensionPoint("McpDiscover", {
+              handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
+            });
+            """);
+    }
+
+    private static void AddLocalImport(string pluginsRoot, string key, string target)
+    {
+        var path = Path.Combine(pluginsRoot, "deno.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var imports = new StringBuilder("{");
+        var first = true;
+        foreach (var property in document.RootElement.GetProperty("imports").EnumerateObject())
+        {
+            if (!first) imports.Append(',');
+            first = false;
+            imports.Append(JsonSerializer.Serialize(property.Name)).Append(':')
+                .Append(JsonSerializer.Serialize(property.Value.GetString()));
+        }
+
+        if (!first) imports.Append(',');
+        imports.Append(JsonSerializer.Serialize(key)).Append(':')
+            .Append(JsonSerializer.Serialize(target));
+        imports.Append('}');
+
+        // Plain concatenation: no raw-string interpolation to mis-escape.
+        var json = "{\n" +
+            "  \"name\": \"@maieutics/root-plugin\",\n" +
+            "  \"version\": \"0.1.0\",\n" +
+            "  \"exports\": { \"./main\": \"./mod.ts\" },\n" +
+            "  \"permissions\": { \"default\": { \"read\": [\"./\"] } },\n" +
+            "  \"imports\": " + imports + "\n" +
+            "}";
+        File.WriteAllText(path, json);
+    }
+
+    private static void RemoveLocalImport(string pluginsRoot, string key)
+    {
+        var path = Path.Combine(pluginsRoot, "deno.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var imports = new StringBuilder("{");
+        var first = true;
+        foreach (var property in document.RootElement.GetProperty("imports").EnumerateObject())
+        {
+            if (property.Name == key) continue;
+            if (!first) imports.Append(',');
+            first = false;
+            imports.Append(JsonSerializer.Serialize(property.Name)).Append(':')
+                .Append(JsonSerializer.Serialize(property.Value.GetString()));
+        }
+
+        imports.Append('}');
+
+        var json = "{\n" +
+            "  \"name\": \"@maieutics/root-plugin\",\n" +
+            "  \"version\": \"0.1.0\",\n" +
+            "  \"exports\": { \"./main\": \"./mod.ts\" },\n" +
+            "  \"permissions\": { \"default\": { \"read\": [\"./\"] } },\n" +
+            "  \"imports\": " + imports + "\n" +
+            "}";
+        File.WriteAllText(path, json);
     }
 
     private static string CreatePluginsRoot(string pluginName)

@@ -136,6 +136,7 @@ public sealed class PluginDeclarativeExtensionsTests
 
             // Remove the section from the manifest and apply the reload: the synthetic
             // registration and the contribution must both disappear.
+            var applied = CaptureReloadApplied(manager);
             File.WriteAllText(
                 Path.Combine(root, "maieutics.json"),
                 """
@@ -143,7 +144,7 @@ public sealed class PluginDeclarativeExtensionsTests
                   "capabilities": ["tools.invoke"]
                 }
                 """);
-            await ApplyReloadAsync(manager, deadline.Token);
+            await applied.WaitAsync(deadline.Token);
 
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             var discovery = manager.DiscoverManifestMcpAsync(
@@ -202,6 +203,7 @@ public sealed class PluginDeclarativeExtensionsTests
 
             // Add the section and apply the reload (a workerless plugin never
             // triggers a host registry resend, so the manager republishes itself).
+            var applied = CaptureReloadApplied(manager);
             File.WriteAllText(
                 Path.Combine(root, "maieutics.json"),
                 """
@@ -214,7 +216,7 @@ public sealed class PluginDeclarativeExtensionsTests
                   }
                 }
                 """);
-            await ApplyReloadAsync(manager, deadline.Token);
+            await applied.WaitAsync(deadline.Token);
 
             var registrations = manager.GetRegistrations(PluginExtensionKind.McpDiscover);
             var registration = registrations.Should().ContainSingle().Which;
@@ -231,21 +233,11 @@ public sealed class PluginDeclarativeExtensionsTests
         }
     }
 
-    /// <summary>Applies the pending reloads for the plugin-root change, waiting out the
-    /// watcher debounce before draining (bounded condition-polling, like discovery
-    /// waits elsewhere in the suite).</summary>
-    private static async Task ApplyReloadAsync(
-        PluginHostManager manager,
-        CancellationToken cancellationToken)
+    /// <summary>Captures the reload-applied signal so the awaited task observes exactly the
+    /// automatic reload triggered by the watched change written right after the capture.</summary>
+    private static Task CaptureReloadApplied(PluginHostManager manager)
     {
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(10));
-        while (manager.PendingReloadCount == 0)
-        {
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
-        }
-
-        await manager.ApplyPendingReloadsAsync(wait.Token).ConfigureAwait(false);
+        return manager.ReloadApplied;
     }
 
     private static string CreateDeclarativePluginsRoot(

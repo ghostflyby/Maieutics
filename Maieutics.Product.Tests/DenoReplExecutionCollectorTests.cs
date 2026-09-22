@@ -742,7 +742,7 @@ public sealed class DenoReplExecutionCollectorTests
             StringComparer.Ordinal);
     }
 
-    private sealed class RecordingPresentationSink : IDenoReplPresentationSink
+    internal sealed class RecordingPresentationSink : IDenoReplPresentationSink
     {
         internal string InputReply { get; init; } = string.Empty;
 

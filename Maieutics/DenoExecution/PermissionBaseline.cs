@@ -21,6 +21,23 @@ internal static class PermissionBaseline
         string esbuildWasm,
         string? windowsPipeName = null)
     {
+        return PermissionLayerStore.Build(
+            [ForDenoReplLayer(moduleDirectory, workingDirectory, configFile, lockFile, ipcAddress, esbuildWasm, windowsPipeName)],
+            new VariableTable(new EmptyVariableSource()));
+    }
+
+    /// <summary>Builds the REPL baseline as a declarative layer, the composition input of the
+    /// full acquisition path (ADR 0018 Phase 5): the acquisition overlays the configuration-owned
+    /// layers on top of this baseline. Absolute runtime paths carry no variable tokens.</summary>
+    internal static PermissionLayer ForDenoReplLayer(
+        string moduleDirectory,
+        string workingDirectory,
+        string configFile,
+        string lockFile,
+        string ipcAddress,
+        string esbuildWasm,
+        string? windowsPipeName = null)
+    {
         var read = new List<string>
         {
             moduleDirectory,
@@ -87,22 +104,18 @@ internal static class PermissionBaseline
             ffi = new PermissionKindRules { AllowAll = true };
         }
 
-        return PermissionLayerStore.Build(
-            [
-                new PermissionLayer
-                {
-                    Kinds = new Dictionary<PermissionKind, PermissionKindRules>
-                    {
-                        [PermissionKind.Read] = new() { Allow = read },
-                        [PermissionKind.Write] = new() { Allow = write },
-                        [PermissionKind.Net] = new() { Allow = net },
-                        [PermissionKind.Env] = new() { Allow = env },
-                        [PermissionKind.Import] = new() { Allow = import },
-                        [PermissionKind.Ffi] = ffi
-                    }
-                }
-            ],
-            new VariableTable(new EmptyVariableSource()));
+        return new PermissionLayer
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Read] = new() { Allow = read },
+                [PermissionKind.Write] = new() { Allow = write },
+                [PermissionKind.Net] = new() { Allow = net },
+                [PermissionKind.Env] = new() { Allow = env },
+                [PermissionKind.Import] = new() { Allow = import },
+                [PermissionKind.Ffi] = ffi
+            }
+        };
     }
 
     /// <summary>Builds the baseline for the plugin host child (the union of plugin grants plus the

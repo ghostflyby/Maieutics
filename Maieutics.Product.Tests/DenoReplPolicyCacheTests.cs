@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using FluentAssertions;
+using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
@@ -43,7 +44,9 @@ public sealed class DenoReplPolicyCacheTests
                 Path.Combine(root, "deno.lock"),
                 ControlAddressForTests(),
                 Path.Combine(root, "esbuild.wasm"),
-                WindowsPipeNameForTests());
+                WindowsPipeNameForTests(),
+                TestPermissionPolicies.Unconfigured(),
+                ownerSessionId: null);
             DenoReplPolicyCache.Cache(manager, "prepared-session", policy);
 
             using var process = StartProbe(broker, root, deadline.Token);
@@ -90,6 +93,8 @@ public sealed class DenoReplPolicyCacheTests
                 ControlAddressForTests(),
                 WindowsPipeNameForTests(),
                 "prepared-session",
+                AgentSessionId.Create(),
+                TestPermissionPolicies.Unconfigured(),
                 NullLogger.Instance,
                 deadline.Token);
 
@@ -140,6 +145,8 @@ public sealed class DenoReplPolicyCacheTests
                 ControlAddressForTests(),
                 WindowsPipeNameForTests(),
                 "failed-session",
+                AgentSessionId.Create(),
+                TestPermissionPolicies.Unconfigured(),
                 NullLogger.Instance,
                 deadline.Token);
             policy.Should().BeNull();
@@ -258,7 +265,9 @@ public sealed class DenoReplPolicyCacheTests
             Path.Combine(workingDirectory, "deno.lock"),
             ControlAddressForTests(),
             Path.Combine(workingDirectory, "esbuild.wasm"),
-            WindowsPipeNameForTests());
+            WindowsPipeNameForTests(),
+            TestPermissionPolicies.Unconfigured(),
+            ownerSessionId: null);
     }
 
     /// <summary>A control-channel address valid on the current platform: a loopback host:port on

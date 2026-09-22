@@ -1,5 +1,6 @@
 using Maieutics.Control;
 using Maieutics.DenoExecution;
+using Maieutics.Agent;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,7 @@ internal interface IDenoReplSessionFactory
     Task<IDenoReplGeneration> StartAsync(
         string workingDirectory,
         string sessionId,
+        AgentSessionId ownerSessionId,
         int generation,
         CancellationToken cancellationToken);
 }
@@ -43,8 +45,9 @@ internal sealed class LocalDenoReplSessionFactory(
     ReplControlCredentialRegistry credentialRegistry,
     ILogger<DenoReplProcess> logger,
     DenoPermissionBroker broker,
-    IReplPolicyRegistrar? replPolicyRegistrar = null,
-    PluginHostManager? pluginHosts = null)
+    PermissionPolicyAcquirer acquirer,
+    PluginHostManager? pluginHosts = null,
+    IReplPolicyRegistrar? replPolicyRegistrar = null)
     : IDenoReplSessionFactory
 {
     private readonly ReplControlCredentialRegistry credentialRegistry =
@@ -75,6 +78,7 @@ internal sealed class LocalDenoReplSessionFactory(
     public async Task<IDenoReplGeneration> StartAsync(
         string workingDirectory,
         string sessionId,
+        AgentSessionId ownerSessionId,
         int generation,
         CancellationToken cancellationToken)
     {
@@ -104,6 +108,8 @@ internal sealed class LocalDenoReplSessionFactory(
                 controlHost.ControlAddress,
                 controlHost.WindowsPipeName,
                 sessionId,
+                ownerSessionId,
+                acquirer,
                 logger,
                 startup.Token).ConfigureAwait(false);
 
@@ -140,6 +146,8 @@ internal sealed class LocalDenoReplSessionFactory(
                     broker,
                     options.AutoInstallModuleGraph),
                 logger,
+                acquirer,
+                ownerSessionId,
                 startup.Token).ConfigureAwait(false);
             sessionRegistry.Register(process.ProcessId, sessionId);
 

@@ -685,6 +685,19 @@ internal sealed class FrontendRunRegistry
         }
     }
 
+    /// <summary>Requests cooperative cancellation of every retained stream so process shutdown
+    /// does not wait on a provider stream. Completed streams ignore the request.</summary>
+    internal void BeginShutdown()
+    {
+        FrontendRunStream[] snapshot;
+        lock (gate)
+        {
+            snapshot = [.. streams.Values];
+        }
+
+        foreach (var stream in snapshot) stream.BeginShutdown();
+    }
+
     private async Task TrackCompletionAsync(FrontendRunStream stream)
     {
         try

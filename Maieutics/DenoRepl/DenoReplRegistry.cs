@@ -9,7 +9,8 @@ internal sealed class DenoReplRegistry(
     DenoReplOptions options,
     IDenoReplSessionFactory factory,
     IDenoReplPresentationRouter presentationRouter,
-    ILogger<DenoReplSession> logger)
+    ILogger<DenoReplSession> logger,
+    IReplDisplayObjectStore? displayObjectStore = null)
     : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
@@ -19,6 +20,7 @@ internal sealed class DenoReplRegistry(
 
     private readonly Lock gate = new();
     private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> sessions = [];
+    private readonly IReplDisplayObjectStore? displayObjectStore = displayObjectStore;
     private int disposeState;
 
     public async ValueTask DisposeAsync()
@@ -187,7 +189,8 @@ internal sealed class DenoReplRegistry(
                 options,
                 factory,
                 presentationRouter,
-                logger);
+                logger,
+                displayObjectStore);
             owned.Add(sessionId, created);
             return created;
         }

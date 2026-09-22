@@ -810,12 +810,16 @@ public sealed class PluginHostIntegrationTests
 
             // Removing the plugin (directory and import entry) recomputes the set the
             // other way: the removed plugin's registrations disappear after the restart.
+            // The poll waits for the NEW generation's convergence (root re-registered,
+            // extra gone): the teardown phase clears every registration, so a negative
+            // condition alone would "pass" mid-restart with the root still missing.
             Directory.Delete(Path.Combine(pluginsRoot, "extra"), true);
             RemoveLocalImport(pluginsRoot, "@acme/extra/main");
 
             var extraRemoved = await WaitForAsync(
-                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                    .All(registration => registration.PluginId != "extra"),
+                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover) is { } current &&
+                     current.Any(registration => registration.PluginId == rootPluginId) &&
+                     current.All(registration => registration.PluginId != "extra"),
                 timeout.Token);
             extraRemoved.Should().BeTrue("the restart must drop the removed plugin");
             manager.GetRegistrations(ReplExtensionPointName.McpDiscover)

@@ -405,7 +405,9 @@ public static class MaieuticsHost
             (Execution.TaskResourceProvider)services.GetRequiredService<ResourceRegistry>()
                 .Providers.Single(provider => provider.Id == Execution.TaskResourceProvider.Scheme));
         builder.Services.AddSingleton(static services =>
-            new AgentSubagentFunctions(services.GetRequiredService<Execution.TaskResourceProvider>()));
+            new AgentSubagentFunctions(
+                services.GetRequiredService<Execution.TaskResourceProvider>(),
+                services.GetRequiredService<PermissionOverrideRegistry>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,

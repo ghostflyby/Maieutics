@@ -19,6 +19,13 @@ public sealed record AgentSubagentOptions
     /// child is unlimited unless its spawn spec overrides the duration.</summary>
     public TimeSpan MaxChildTurnDuration { get; init; } = TimeSpan.Zero;
 
+    /// <summary>Gets how many detached (session-scoped) children one session may host in its
+    /// lifetime. Detached children have no parent run — an orchestration surface outside the
+    /// agent owns their lifetime — and settled ones stay addressable (their result is the
+    /// product), so they keep counting toward this cap; it is the retained-state bound that
+    /// replaces the per-turn budget.</summary>
+    public int MaxDetachedChildren { get; init; } = 8;
+
     /// <summary>Gets the receiver of every spawned child run's events. Required while
     /// <see cref="MaxDepth" /> is positive: a child run's bounded event stream must be consumed
     /// from the moment the run starts, so subagents cannot be enabled without an event consumer.</summary>
@@ -28,6 +35,7 @@ public sealed record AgentSubagentOptions
     {
         ArgumentOutOfRangeException.ThrowIfNegative(MaxDepth);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxChildrenPerTurn, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxDetachedChildren, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxChildTurnDuration, TimeSpan.Zero);
         if (MaxDepth > 0 && EventSink is null)
             throw new InvalidOperationException(
@@ -286,6 +294,157 @@ internal sealed class AgentSubagentHost(
 
     private readonly Lock gate = new();
     private readonly Dictionary<AgentRunId, List<ChildRecord>> childrenByParent = [];
+    private readonly List<ChildRecord> detached = [];
+
+    /// <summary>Starts a detached (session-scoped) child run for an orchestration surface
+    /// outside any agent run — the control channel's model-orchestration endpoints. A detached
+    /// child has no parent run: nothing joins it at a turn boundary, its lifetime is the
+    /// process or an explicit cancel, and <see cref="MaxDetachedChildren"/> bounds how many it
+    /// hosts. It is otherwise a complete child run — own profile lease, event sequence, and
+    /// tool registry — addressable through the same registry and task plane.</summary>
+    /// <param name="spec">The composed child run description.</param>
+    /// <param name="baseOptions">
+    ///     The session-level options the child derives from: the subagent configuration
+    ///     (depth, budgets, sink) must be present, and the child's effective options are this
+    ///     record narrowed by the spec.
+    /// </param>
+    /// <param name="availableTools">
+    ///     The tool registry the child's allowlist resolves against — for an orchestration
+    ///     surface, the owning process's production tool set.
+    /// </param>
+    /// <param name="cancellationToken">Cancels starting; the child's lifetime is session-scoped
+    /// and independent afterwards.</param>
+    /// <exception cref="AgentSubagentBudgetExceededException">The session hosts its detached
+    /// cap of children.</exception>
+    public async ValueTask<IAgentSubagentHandle> StartDetachedChildAsync(
+        AgentSubagentSpec spec,
+        AgentSessionOptions baseOptions,
+        IReadOnlyList<AIFunction> availableTools,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ArgumentException.ThrowIfNullOrWhiteSpace(spec.Input);
+        if (spec.MaxTurnDuration is { } duration && duration < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                nameof(spec), duration, "The subagent turn duration cannot be negative.");
+
+        var subagents = baseOptions.Subagents ??
+            throw new InvalidOperationException("Subagents are not configured for this session's runs.");
+
+        lock (gate)
+        {
+            if (detached.Count >= subagents.MaxDetachedChildren)
+                throw new AgentSubagentBudgetExceededException(
+                    nameof(AgentSubagentOptions.MaxDetachedChildren), subagents.MaxDetachedChildren);
+        }
+
+        var eventSink = subagents.EventSink ??
+            throw new InvalidOperationException(
+                "Subagents with a positive depth require an event sink.");
+        var linkedCts = new CancellationTokenSource();
+        AgentSession childSession;
+        IAgentRun childRun;
+        try
+        {
+            var childOptions = (baseOptions with
+            {
+                SystemPrompt = spec.Instructions,
+                MaxTurnDuration = spec.MaxTurnDuration ?? subagents.MaxChildTurnDuration,
+                Subagents = subagents with { MaxDepth = subagents.MaxDepth - 1 }
+            });
+            childSession = new AgentSession(
+                new OptionsOverrideProfileProvider(
+                    profileProvider, childOptions, ResolveTools(spec.Tools, availableTools)),
+                objectStore: objectStore);
+            childRun = await childSession
+                .StartTurnAsync(AgentTurn.FromText(spec.Input), linkedCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            linkedCts.Dispose();
+            throw;
+        }
+
+        var record = new ChildRecord(childSession.Id, childRun, linkedCts);
+        lock (gate)
+        {
+            detached.Add(record);
+        }
+
+        record.Start(eventSink);
+        return record;
+    }
+
+    /// <summary>Waits for one detached child to reach a terminal state and returns its result.</summary>
+    /// <exception cref="AgentSubagentNotFoundException">No detached child matches the identifier.</exception>
+    /// <exception cref="AgentSubagentWaitTimeoutException">The child stayed unsettled past the timeout.</exception>
+    public async ValueTask<AgentSubagentResult> WaitDetachedAsync(
+        AgentRunId childRunId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
+
+        var record = FindDetached(childRunId) ??
+            throw new AgentSubagentNotFoundException(childRunId);
+        try
+        {
+            return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new AgentSubagentWaitTimeoutException(childRunId, timeout, exception);
+        }
+    }
+
+    /// <summary>Cancels one detached child and returns its terminal result; idempotent on an
+    /// already-terminal child.</summary>
+    /// <exception cref="AgentSubagentNotFoundException">No detached child matches the identifier.</exception>
+    public async ValueTask<AgentSubagentResult> CancelDetachedAsync(
+        AgentRunId childRunId,
+        CancellationToken cancellationToken = default)
+    {
+        var record = FindDetached(childRunId) ??
+            throw new AgentSubagentNotFoundException(childRunId);
+        if (!record.Completion.IsCompleted)
+            await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
+        return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private ChildRecord? FindDetached(AgentRunId childRunId)
+    {
+        lock (gate)
+        {
+            return detached.FirstOrDefault(record => record.RunId == childRunId);
+        }
+    }
+
+    private static IReadOnlyList<AIFunction> ResolveTools(
+        IReadOnlyList<string>? allowlist,
+        IReadOnlyList<AIFunction> available)
+    {
+        if (allowlist is null)
+            return available.ToArray();
+
+        var byName = available
+            .GroupBy(static function => function.Name)
+            .ToDictionary(static group => group.Key, static group => group.Last(), StringComparer.Ordinal);
+        var resolved = new List<AIFunction>(allowlist.Count);
+        foreach (var name in allowlist)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            if (!byName.TryGetValue(name, out var function))
+                throw new ArgumentException(
+                    $"The subagent tool allowlist names '{name}', which is not registered on the owning scope.",
+                    nameof(allowlist));
+            resolved.Add(function);
+        }
+
+        return resolved;
+    }
 
     /// <summary>Creates the per-run spawn context attached to the run's tool calls.</summary>
     public Spawner CreateSpawner(
@@ -317,19 +476,21 @@ internal sealed class AgentSubagentHost(
         {
             return childrenByParent.Values
                 .SelectMany(static children => children)
+                .Concat(detached)
                 .FirstOrDefault(record => record.RunId == childRunId);
         }
     }
 
-    /// <summary>Enumerates every live child of this session, across all parent runs. The
-    /// enumeration snapshots under the gate; callers see records whose terminal state may
-    /// already have settled.</summary>
+    /// <summary>Enumerates every live child of this session, across all parent runs plus the
+    /// detached (session-scoped) children. The enumeration snapshots under the gate; callers
+    /// see records whose terminal state may already have settled.</summary>
     public IReadOnlyList<ChildRecord> ListChildren()
     {
         lock (gate)
         {
             return childrenByParent.Values
                 .SelectMany(static children => children)
+                .Concat(detached)
                 .ToArray();
         }
     }

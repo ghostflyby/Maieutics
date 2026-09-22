@@ -247,6 +247,7 @@ transcript.
 - [ADR 0028](decisions/0028-task-resources.md): Task resources in the virtual resource plane
 - [ADR 0029](decisions/0029-mcp-client-reverse-requests.md): MCP client reverse-request surface
 - [ADR 0030](decisions/0030-subagent-runs.md): Tool-scoped subagent runs on the task plane
+- [ADR 0031](decisions/0031-deno-model-orchestration.md): The Deno model-orchestration surface
 
 ## Explicitly deferred
 

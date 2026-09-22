@@ -398,12 +398,21 @@ public static class MaieuticsHost
                 resources: services.GetRequiredService<ResourceRegistry>()));
         builder.Services.AddSingleton(static services =>
             new WorkspaceEditFunctions(services.GetRequiredService<Workspace>()));
+        builder.Services.AddSingleton<Frontend.SubagentEventBuffer>();
+        // The task-plane tools share the built-in task:// provider instance that the resource
+        // registry composes; the concrete type is not otherwise registered.
+        builder.Services.AddSingleton<Execution.TaskResourceProvider>(static services =>
+            (Execution.TaskResourceProvider)services.GetRequiredService<ResourceRegistry>()
+                .Providers.Single(provider => provider.Id == Execution.TaskResourceProvider.Scheme));
+        builder.Services.AddSingleton(static services =>
+            new AgentSubagentFunctions(services.GetRequiredService<Execution.TaskResourceProvider>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
             .. services.GetRequiredService<WorkspaceEditFunctions>().Functions,
             .. services.GetRequiredService<ResourceFunctions>().Functions,
             .. services.GetRequiredService<DenoReplFunctions>().Functions,
+            .. services.GetRequiredService<AgentSubagentFunctions>().Functions,
             .. (services.GetService<AgentObjectFunctions>()?.Functions ?? [])
         ]);
         builder.Services.AddSingleton(CreateAgentSessionManager);
@@ -466,7 +475,8 @@ public static class MaieuticsHost
             new WorkspaceResourceProvider(services.GetRequiredService<Workspace>()),
             new Execution.TaskResourceProvider(
             [
-                new Execution.TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>())
+                new Execution.TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>()),
+                CreateAgentTaskResourceSource(services)
             ]),
             new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
         };
@@ -474,6 +484,30 @@ public static class MaieuticsHost
             providers.Add(new HttpBridgeResourceProvider(client, custom));
 
         return providers;
+    }
+
+    /// <summary>Composes the task plane's subagent source over the live session registry:
+    /// snapshots, waits, and cancels resolve onto concrete sessions' subagent hosts. The
+    /// session manager resolves lazily inside the delegates — resolving it eagerly here would
+    /// re-enter the container while the resource registry is still being constructed (the
+    /// manager's own registration resolves the same manager), deadlocking startup. A session
+    /// evicted between listing and resolution reads as absent.</summary>
+    private static Execution.AgentTaskResourceSource CreateAgentTaskResourceSource(IServiceProvider services)
+    {
+        return new Execution.AgentTaskResourceSource(
+            sessionId =>
+            {
+                var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
+                try
+                {
+                    return sessionManager.Resolve(sessionId) as AgentSession;
+                }
+                catch (AgentSessionNotFoundException)
+                {
+                    return null;
+                }
+            },
+            () => services.GetRequiredService<MaieuticsAgentSessionManager>().ListLiveSessionIds());
     }
 
     private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)    {
@@ -494,13 +528,15 @@ public static class MaieuticsHost
         var profileProvider = services.GetRequiredService<IAgentRunProfileProvider>();
         var logger = services.GetRequiredService<ILogger<MaieuticsAgentSessionManager>>();
         var paths = services.GetService<ApplicationPaths>();
+        var subagents = CreateSubagentOptions(services);
         if (paths is null)
         {
             return new MaieuticsAgentSessionManager(
                 profileProvider,
                 familiesRoot: null,
                 storeFactory: null,
-                logger);
+                logger,
+                subagents: subagents);
         }
 
         // Session rows stamp the workspace root current at row creation; a %workspace switch
@@ -517,7 +553,37 @@ public static class MaieuticsHost
             services.GetService<IObjectReclaimer>(),
             paths.AgentViewSessionsRoot,
             paths.AgentObjectsRoot,
-            services.GetService<IMaieuticsRuntimeConfiguration>());
+            services.GetService<IMaieuticsRuntimeConfiguration>(),
+            subagents);
+    }
+
+    /// <summary>Reads the composition-root subagent configuration (ADR 0030). Disabled by
+    /// default: a positive MaxDepth opts sessions' runs into spawning. The display-plane event
+    /// sink is the bounded retained buffer the frontend will render from; spawning cannot be
+    /// enabled without a sink because every child run's event stream must stay consumed.</summary>
+    private static AgentSubagentOptions? CreateSubagentOptions(IServiceProvider services)
+    {
+        var configuration = services.GetService<IConfiguration>();
+        var maxDepth = ReadIntSetting(configuration, "Maieutics:Agent:Subagents:MaxDepth") ?? 0;
+        if (maxDepth <= 0)
+            return null;
+
+        return new AgentSubagentOptions
+        {
+            MaxDepth = maxDepth,
+            MaxChildrenPerTurn = Math.Max(
+                1,
+                ReadIntSetting(configuration, "Maieutics:Agent:Subagents:MaxChildrenPerTurn") ?? 4),
+            EventSink = services.GetRequiredService<Frontend.SubagentEventBuffer>()
+        };
+    }
+
+    /// <summary>Reads one integer setting through the string indexer: the reflection-based
+    /// configuration binder is not AOT-safe on the executable's publish path.</summary>
+    private static int? ReadIntSetting(IConfiguration? configuration, string key)
+    {
+        var raw = configuration?[key];
+        return int.TryParse(raw, out var value) ? value : null;
     }
 
     [SupportedOSPlatform("windows")]

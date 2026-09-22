@@ -507,6 +507,14 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
     }
 
+    /// <summary>Waits until the session's child process exits. Resolve-once semantics: the
+    /// returned task completes even when the wait starts after the exit was observed. This is
+    /// the completion signal behind the task plane's wait contract (ADR 0030 decision 5).</summary>
+    internal Task WaitExitedAsync(CancellationToken cancellationToken)
+    {
+        return exitCompletion.Task.WaitAsync(cancellationToken);
+    }
+
     internal async Task<TerminalInterruptResult> InterruptAsync(
         TerminalSnapshotRequest snapshotRequest,
         CancellationToken cancellationToken)

@@ -279,6 +279,32 @@ internal sealed class AgentSubagentHost(
         }
     }
 
+    /// <summary>Looks up a child of this session by its run identifier regardless of which
+    /// parent run spawned it, or null when no live child matches. This is the addressing form
+    /// of the task plane, whose URIs carry the session and the child run but no parent run.</summary>
+    public ChildRecord? FindChild(AgentRunId childRunId)
+    {
+        lock (gate)
+        {
+            return childrenByParent.Values
+                .SelectMany(static children => children)
+                .FirstOrDefault(record => record.RunId == childRunId);
+        }
+    }
+
+    /// <summary>Enumerates every live child of this session, across all parent runs. The
+    /// enumeration snapshots under the gate; callers see records whose terminal state may
+    /// already have settled.</summary>
+    public IReadOnlyList<ChildRecord> ListChildren()
+    {
+        lock (gate)
+        {
+            return childrenByParent.Values
+                .SelectMany(static children => children)
+                .ToArray();
+        }
+    }
+
     /// <summary>Terminates and observes every child of one parent run. Children the parent turn
     /// left unsettled are cancelled before joining, so the parent run's terminal path always
     /// observes their termination; the primary terminal cause of the parent run is never masked.</summary>

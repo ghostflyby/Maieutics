@@ -149,6 +149,70 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
         }
     }
 
+    /// <summary>Waits until one one-shot's child process exits and returns its settled task
+    /// handle — the wait half of the task plane's control contract (ADR 0030 decision 5).
+    /// Waiting on an already-exited one-shot returns immediately; on a removed one-shot this
+    /// fails the caller with the registry's typed miss.</summary>
+    /// <exception cref="ArgumentException">No registered one-shot matches the ids.</exception>
+    /// <exception cref="TimeoutException">The child stayed alive past the timeout.</exception>
+    internal async Task<TerminalTaskHandle> WaitOneShotAsync(
+        AgentSessionId ownerSessionId,
+        string sessionId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var session = GetRegisteredOneShot(ownerSessionId, sessionId);
+        // The bounded wait layers a timeout over the session's exit signal; the underlying
+        // wait outlives a timeout on CancellationToken.None and settles at the process's real
+        // exit (or the close path), so no cancellation side state is left behind.
+        var exited = session.WaitExitedAsync(CancellationToken.None);
+        if (timeout != Timeout.InfiniteTimeSpan)
+            exited = exited.WaitAsync(timeout, cancellationToken);
+        await exited.ConfigureAwait(false);
+
+        return TryGetOneShotTask(ownerSessionId, sessionId) ??
+               throw new ArgumentException(
+                   $"No registered one-shot terminal session matches '{sessionId}'.",
+                   nameof(sessionId));
+    }
+
+    /// <summary>Cancels one one-shot by closing its session and returns the terminal task
+    /// handle — the cancel half of the task plane's control contract (ADR 0030 decision 5).
+    /// An already-terminal one-shot returns unchanged, so the operation is idempotent; the
+    /// close removes a live one-shot from the registry, matching terminal_close semantics.</summary>
+    /// <exception cref="ArgumentException">No registered one-shot matches the ids.</exception>
+    internal async Task<TerminalTaskHandle> CancelOneShotAsync(
+        AgentSessionId ownerSessionId,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var handle = TryGetOneShotTask(ownerSessionId, sessionId) ??
+                     throw new ArgumentException(
+                         $"No registered one-shot terminal session matches '{sessionId}'.",
+                         nameof(sessionId));
+        if (TerminalTaskResourceSource.MapStatus(handle) != "working")
+            return handle;
+
+        await CloseAsync(ownerSessionId, sessionId, cancellationToken).ConfigureAwait(false);
+        return handle with { State = "closed" };
+    }
+
+    private TerminalSession GetRegisteredOneShot(AgentSessionId ownerSessionId, string sessionId)
+    {
+        lock (gate)
+        {
+            ThrowIfDisposed();
+            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+                owned.TryGetValue(sessionId, out var session) &&
+                session.Kind == TerminalSessionKind.OneShot)
+                return session;
+        }
+
+        throw new ArgumentException(
+            $"No registered one-shot terminal session matches '{sessionId}'.",
+            nameof(sessionId));
+    }
+
     private static TerminalTaskHandle ToTaskHandle(AgentSessionId ownerSessionId, TerminalSession session)
     {
         var snapshot = session.GetSnapshot();

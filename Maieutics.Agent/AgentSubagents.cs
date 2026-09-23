@@ -126,13 +126,19 @@ public interface IAgentSubagentSpawner
     ///     cancels the child run. The token is typically the spawning tool call's token, so the
     ///     child dies with the parent turn's budget or cancellation.
     /// </param>
+    /// <param name="onChildSessionCreated">
+    ///     Invoked with the child session identity after the child session exists but before
+    ///     its turn starts — the hook for the spawning surface to register permission scope
+    ///     so the child never executes outside its inherited policy.
+    /// </param>
     /// <returns>A handle whose <see cref="IAgentSubagentHandle.Completion" /> never faults;
     /// terminal failure and cancellation map into the result status.</returns>
     /// <exception cref="AgentSubagentBudgetExceededException">The parent run exhausted its
     /// per-run child budget.</exception>
     ValueTask<IAgentSubagentHandle> StartChildAsync(
         AgentSubagentSpec spec,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Action<AgentSessionId>? onChildSessionCreated = null);
 
     /// <summary>Waits for one child of the current parent run to reach a terminal state and
     /// returns its result. Waiting on a child that already terminated returns immediately.
@@ -295,6 +301,7 @@ internal sealed class AgentSubagentHost(
     private readonly Lock gate = new();
     private readonly Dictionary<AgentRunId, List<ChildRecord>> childrenByParent = [];
     private readonly List<ChildRecord> detached = [];
+    private int detachedReserved;
 
     /// <summary>Starts a detached (session-scoped) child run for an orchestration surface
     /// outside any agent run — the control channel's model-orchestration endpoints. A detached
@@ -320,7 +327,8 @@ internal sealed class AgentSubagentHost(
         AgentSubagentSpec spec,
         AgentSessionOptions baseOptions,
         IReadOnlyList<AIFunction> availableTools,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<AgentSessionId>? onChildSessionCreated = null)
     {
         ArgumentNullException.ThrowIfNull(spec);
         ArgumentException.ThrowIfNullOrWhiteSpace(spec.Input);
@@ -331,11 +339,14 @@ internal sealed class AgentSubagentHost(
         var subagents = baseOptions.Subagents ??
             throw new InvalidOperationException("Subagents are not configured for this session's runs.");
 
-        lock (gate)
+        // Detached spawns arrive on concurrent control-channel requests, so the cap must be
+        // reserved atomically before the await and rolled back if the spawn fails.
+        var reservation = Interlocked.Increment(ref detachedReserved);
+        if (reservation > subagents.MaxDetachedChildren)
         {
-            if (detached.Count >= subagents.MaxDetachedChildren)
-                throw new AgentSubagentBudgetExceededException(
-                    nameof(AgentSubagentOptions.MaxDetachedChildren), subagents.MaxDetachedChildren);
+            Interlocked.Decrement(ref detachedReserved);
+            throw new AgentSubagentBudgetExceededException(
+                nameof(AgentSubagentOptions.MaxDetachedChildren), subagents.MaxDetachedChildren);
         }
 
         var eventSink = subagents.EventSink ??
@@ -356,6 +367,7 @@ internal sealed class AgentSubagentHost(
                 new OptionsOverrideProfileProvider(
                     profileProvider, childOptions, ResolveTools(spec.Tools, availableTools)),
                 objectStore: objectStore);
+            onChildSessionCreated?.Invoke(childSession.Id);
             childRun = await childSession
                 .StartTurnAsync(AgentTurn.FromText(spec.Input), linkedCts.Token)
                 .ConfigureAwait(false);
@@ -596,7 +608,8 @@ internal sealed class AgentSubagentHost(
 
         public async ValueTask<IAgentSubagentHandle> StartChildAsync(
             AgentSubagentSpec spec,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Action<AgentSessionId>? onChildSessionCreated = null)
         {
             ArgumentNullException.ThrowIfNull(spec);
             ArgumentException.ThrowIfNullOrWhiteSpace(spec.Input);
@@ -637,6 +650,7 @@ internal sealed class AgentSubagentHost(
                     new OptionsOverrideProfileProvider(
                         host.profileProvider, childOptions, ResolveTools(spec.Tools)),
                     objectStore: host.objectStore);
+                onChildSessionCreated?.Invoke(childSession.Id);
                 childRun = await childSession
                     .StartTurnAsync(AgentTurn.FromText(spec.Input), linkedCts.Token)
                     .ConfigureAwait(false);

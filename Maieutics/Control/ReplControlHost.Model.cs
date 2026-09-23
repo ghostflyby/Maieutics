@@ -19,7 +19,7 @@ namespace Maieutics.Control;
 internal sealed record ModelOrchestrationSurface(
     Func<Maieutics.Commands.MaieuticsAgentSessionManager> AgentSessions,
     Func<string, AgentSessionId?> ResolveOwnerSession,
-    Func<AgentSessionOptions> BaseSessionOptions,
+    Func<AgentSessionOptions?> BaseSessionOptions,
     Func<IReadOnlyList<AIFunction>> Tools,
     Func<PermissionOverrideRegistry?> Permissions)
 {
@@ -72,6 +72,18 @@ internal sealed partial class ReplControlHost
         if (ownerSessionId is null) return;
         if (ResolveAgentSession(context, ownerSessionId.Value) is not { } session) return;
 
+        var baseSessionOptions = orchestration.BaseSessionOptions();
+        if (baseSessionOptions?.Subagents is null)
+        {
+            // The composition root disabled subagent spawning: the orchestration surface
+            // honors the same deny-by-default knob as the model's own agent_spawn tool.
+            await WriteSubagentErrorAsync(
+                context, StatusCodes.Status409Conflict, "agent_subagent_disabled",
+                "Subagent spawning is not enabled for this host.", cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
         var spec = new AgentSubagentSpec
         {
             Instructions = request.Instructions,
@@ -83,15 +95,22 @@ internal sealed partial class ReplControlHost
         {
             // Run-first: while the owning session's run is executing (the model orchestrating
             // from a REPL cell), the child is a run-owned child with the full ADR 0030
-            // semantics; otherwise it falls back to a detached, session-scoped child.
+            // semantics; otherwise it falls back to a detached, session-scoped child. The
+            // child's permission scope registers between session creation and StartTurnAsync
+            // (the onChildSessionCreated callback), so a session-scoped deny applies from the
+            // child's first instruction — not after the run already started.
+            var onChildSessionCreated = (AgentSessionId childSessionId) =>
+                orchestration.Permissions()?.RegisterChildScope(childSessionId, ownerSessionId.Value);
             var spawner = session.TryCreateActiveRunSpawner();
             handle = spawner is not null
-                ? await spawner.StartChildAsync(spec, cancellationToken).ConfigureAwait(false)
+                ? await spawner.StartChildAsync(
+                      spec, cancellationToken, onChildSessionCreated).ConfigureAwait(false)
                 : await session.SubagentHost.StartDetachedChildAsync(
                       spec,
-                      orchestration.BaseSessionOptions(),
+                      baseSessionOptions,
                       orchestration.Tools(),
-                      cancellationToken)
+                      cancellationToken,
+                      onChildSessionCreated)
                   .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)
@@ -116,7 +135,6 @@ internal sealed partial class ReplControlHost
             return;
         }
 
-        orchestration.Permissions()?.RegisterChildScope(handle.SessionId, ownerSessionId.Value);
         await WriteJsonAsync(context, new SubagentSpawnedPayload(
             handle.SessionId.Value.ToString("N"),
             handle.RunId.Value.ToString("N"),
@@ -150,7 +168,7 @@ internal sealed partial class ReplControlHost
             var result = await session.SubagentHost
                 .WaitChildByIdAsync(new AgentRunId(runIdValue), timeout, cancellationToken)
                 .ConfigureAwait(false);
-            await WriteSubagentResultAsync(context, ownerSessionId.Value, result, cancellationToken)
+            await WriteSubagentResultAsync(context, result, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (AgentSubagentNotFoundException exception)
@@ -193,7 +211,7 @@ internal sealed partial class ReplControlHost
             var result = await session.SubagentHost
                 .CancelChildByIdAsync(new AgentRunId(runIdValue), cancellationToken)
                 .ConfigureAwait(false);
-            await WriteSubagentResultAsync(context, ownerSessionId.Value, result, cancellationToken)
+            await WriteSubagentResultAsync(context, result, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (AgentSubagentNotFoundException exception)
@@ -205,8 +223,8 @@ internal sealed partial class ReplControlHost
     }
 
     /// <summary>Waits on any task:// URI (bounded): the general task-plane addressing form
-    /// (ADR 0031). Ownership is not required for waiting — the plane keeps read visibility —
-    /// but the caller still presents its REPL session for peer attribution.</summary>
+    /// (ADR 0031). Waiting keeps read-plane visibility — no session attribution, no
+    /// ownership check; attribution is the transport-level peer identity.</summary>
     private async Task HandleTaskWaitAsync(HttpContext context)
     {
         var cancellationToken = context.RequestAborted;
@@ -246,6 +264,7 @@ internal sealed partial class ReplControlHost
                 {
                     "resource_not_found" => StatusCodes.Status404NotFound,
                     "resource_invalid_uri" => StatusCodes.Status400BadRequest,
+                    "task_wait_timeout" => StatusCodes.Status408RequestTimeout,
                     _ => StatusCodes.Status502BadGateway
                 }, exception.Code, exception.Message, cancellationToken).ConfigureAwait(false);
         }
@@ -263,26 +282,36 @@ internal sealed partial class ReplControlHost
             return;
         }
 
-        var body = await JsonSerializer.DeserializeAsync(
-            context.Request.Body,
-            ReplControlJsonContext.Default.TaskCancelRequest,
-            cancellationToken).ConfigureAwait(false);
-        var uri = body?.Uri;
-        if (string.IsNullOrWhiteSpace(uri) ||
-            !Execution.ResourceRegistry.TryParseUri(uri, out var parsed) ||
+        TaskCancelRequest? body;
+        try
+        {
+            body = await JsonSerializer.DeserializeAsync(
+                context.Request.Body,
+                ReplControlJsonContext.Default.TaskCancelRequest,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        if (body is not { } cancelRequest || string.IsNullOrWhiteSpace(cancelRequest.Uri) ||
+            !Execution.ResourceRegistry.TryParseUri(cancelRequest.Uri, out var parsed) ||
             !string.Equals(parsed.Scheme, "task", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
 
-        var ownerSessionId = ResolveOwnerSessionOrRespond(context, body!.SessionId);
+        var ownerSessionId = ResolveOwnerSessionOrRespond(context, cancelRequest.SessionId);
         if (ownerSessionId is null) return;
 
         try
         {
             var snapshot = await orchestration.TaskResources()
-                .CancelTaskAsync(uri, ownerSessionId.Value, cancellationToken).ConfigureAwait(false);
+                .CancelTaskAsync(cancelRequest.Uri, ownerSessionId.Value, cancellationToken)
+                .ConfigureAwait(false);
             await WriteJsonAsync(context, snapshot, cancellationToken).ConfigureAwait(false);
         }
         catch (Execution.ResourceException exception)
@@ -319,24 +348,31 @@ internal sealed partial class ReplControlHost
 
     private Maieutics.Agent.AgentSession? ResolveAgentSession(HttpContext context, AgentSessionId ownerSessionId)
     {
-        if (orchestration!.AgentSessions().Resolve(ownerSessionId) is Maieutics.Agent.AgentSession session)
-            return session;
+        Maieutics.Agent.AgentSession? session;
+        try
+        {
+            session = orchestration!.AgentSessions().Resolve(ownerSessionId) as Maieutics.Agent.AgentSession;
+        }
+        catch (Maieutics.Agent.AgentSessionNotFoundException)
+        {
+            session = null;
+        }
 
-        context.Response.StatusCode = StatusCodes.Status404NotFound;
-        return null;
+        if (session is null)
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return session;
     }
 
     private static TimeSpan? ReadBoundedTimeout(HttpContext context)
     {
         var raw = context.Request.Query["timeoutMs"].ToString();
-        return int.TryParse(raw, out var milliseconds) && milliseconds > 0
-            ? TimeSpan.FromMilliseconds(milliseconds)
-            : null;
+        if (!int.TryParse(raw, out var milliseconds) || milliseconds <= 0) return null;
+        if (milliseconds > ReplControlLimits.MaximumTaskWaitMs) return null;
+        return TimeSpan.FromMilliseconds(milliseconds);
     }
 
     private async Task WriteSubagentResultAsync(
         HttpContext context,
-        AgentSessionId ownerSessionId,
         AgentSubagentResult result,
         CancellationToken cancellationToken)
     {

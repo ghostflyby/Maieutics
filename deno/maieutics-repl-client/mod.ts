@@ -727,11 +727,25 @@ function createControlTransport(address: string) {
           "message" in payload
         ? String((payload as { message: unknown }).message)
         : response.statusText;
-      throw new Error(`model orchestration failed (${code}): ${message}`);
+      throw new ControlChannelError(code, message, response.status);
     }
 
     return payload as T;
   };
+}
+
+/** A typed control-channel failure: the wire error code and HTTP status survive as fields,
+ * so callers can branch on them (a bounded wait timing out is recoverable; a hard 404 is not). */
+export class ControlChannelError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, message: string, status: number) {
+    super(`model orchestration failed (${code}): ${message}`);
+    this.name = "ControlChannelError";
+    this.code = code;
+    this.status = status;
+  }
 }
 
 function createModel(
@@ -806,6 +820,7 @@ class TaskRefImpl implements TaskRef {
   readonly kind: string;
   readonly abortController = new AbortController();
   #latest: TaskSnapshot | undefined;
+  #settled = false;
   #completion: Promise<TaskSnapshot> | undefined;
 
   constructor(
@@ -840,11 +855,15 @@ class TaskRefImpl implements TaskRef {
   }
 
   async refresh(): Promise<TaskSnapshot> {
-    this.#latest = await this.request<TaskSnapshot>(
+    // Single-writer discipline: once the terminal snapshot landed (possibly via the abort
+    // path), a racing refresh must not regress the visible status.
+    if (this.#settled) return this.#latest!;
+    const snapshot = await this.request<TaskSnapshot>(
       "GET",
       `/v1/resource?uri=${encodeURIComponent(this.uri)}`,
     );
-    return this.#latest;
+    if (!this.#settled) this.#latest = snapshot;
+    return this.#latest!;
   }
 
   then<TResult1 = TaskSnapshot, TResult2 = never>(
@@ -875,6 +894,12 @@ class TaskRefImpl implements TaskRef {
           this.abortController.signal,
         );
       } catch (error) {
+        if (error instanceof ControlChannelError && error.code === "task_wait_timeout") {
+          // The bounded window expired while the task is still working: keep polling. The
+          // await must survive any number of windows — a subagent legitimately runs minutes.
+          continue;
+        }
+
         if (this.abortController.signal.aborted) {
           // Abort means cancel the task, not just stop waiting: settle it and land on the
           // cancelled terminal snapshot.
@@ -883,6 +908,7 @@ class TaskRefImpl implements TaskRef {
             `${TASKS_BASE_PATH}/cancel`,
             { uri: this.uri, sessionId: this.resolveSession() },
           ).catch(() => this.refresh());
+          this.#settled = true;
           this.#latest = cancelled;
           return cancelled;
         }
@@ -892,6 +918,7 @@ class TaskRefImpl implements TaskRef {
 
       this.#latest = snapshot;
       if (snapshot.status !== "working") {
+        this.#settled = true;
         return snapshot;
       }
     }

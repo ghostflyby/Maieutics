@@ -85,7 +85,10 @@ internal sealed class AgentSubagentFunctions
                     Input = input,
                     Tools = tools
                 },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                onChildSessionCreated: childSessionId =>
+                    permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId))
+                .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)
         {
@@ -99,13 +102,6 @@ internal sealed class AgentSubagentFunctions
         {
             throw new AgentToolException("agent_spawn_invalid_arguments", exception.Message);
         }
-
-        // The child's permission scope is the parent's: registering it under the parent
-        // session makes the acquisition overlay compose the parent's session override for
-        // every process the child launches, so a session-scoped deny cannot be bypassed by
-        // delegating work to a child run (ADR 0030 decision 3).
-        permissionOverrides?.RegisterChildScope(handle.SessionId, context.SessionId);
-
         if (wait is false)
         {
             return Serialize(new SpawnedValue(

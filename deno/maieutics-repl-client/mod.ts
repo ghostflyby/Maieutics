@@ -116,9 +116,117 @@ export interface ReplClient {
   comm: ReplComm;
   /** Virtual resource reads over the control channel (ADR 0026). */
   resources: ReplResources;
+  /** Model orchestration: spawn, await, and cancel subagent runs (ADR 0031). */
+  model: ReplModel;
+  /** Generic task-plane addressing: wait, cancel, poll by URI. */
+  tasks: ReplTasks;
 
   /** Probes the kernel control channel over the multiplexed bus. */
   health(): Promise<string>;
+}
+
+/** One subagent run spawned through the model-orchestration surface (ADR 0031). */
+export interface SubagentSpawnOptions {
+  /** The composed task for the subagent. It cannot ask questions; include everything. */
+  input: string;
+  /** System instructions for the subagent; the orchestrating context's are not inherited. */
+  instructions?: string;
+  /** Names of parent-registered tools the subagent may use; omitted means all. */
+  tools?: string[];
+  /** How long to wait for the subagent to settle, in milliseconds (spawn returns immediately). */
+  timeoutMs?: number;
+  /** The REPL session presenting the request; defaults to the environment-provided session. */
+  sessionId?: string;
+}
+
+/** The handle of one spawned subagent run. */
+export interface SubagentHandle {
+  childSessionId: string;
+  runId: string;
+  taskUri: string;
+}
+
+/** The terminal snapshot of one subagent run. */
+export interface SubagentResult {
+  childSessionId: string;
+  runId: string;
+  status: "complete" | "fail" | "cancel";
+  report?: string;
+  truncated?: boolean;
+  usage?: { input?: number; output?: number; total?: number };
+}
+
+/** Lifecycle vocabulary of the task plane's snapshots (ADR 0028/0031). */
+export type TaskPlaneStatus = "working" | "complete" | "fail" | "cancel";
+
+/** Terminal one-shot detail carried in a task-plane snapshot. */
+export interface TerminalTaskDetail {
+  agentSessionId: string;
+  sessionId: string;
+  state: string;
+  exitCode?: number;
+}
+
+/** Subagent run detail carried in a task-plane snapshot. */
+export interface AgentSubagentDetail {
+  agentSessionId: string;
+  runId: string;
+  report?: string;
+  reportTruncated?: boolean;
+  usage?: { input?: number; output?: number; total?: number };
+}
+
+/** The bounded fresh snapshot of one task-plane object: a common envelope plus
+ * additive kind-specific detail (unknown kinds carry opaque extra fields). */
+export interface TaskSnapshot {
+  uri: string;
+  kind: string;
+  status: TaskPlaneStatus;
+  terminal?: TerminalTaskDetail;
+  agent?: AgentSubagentDetail;
+}
+
+/** A live handle over one task-plane object: await it to wait for completion,
+ * `abortController.abort()` to initiate cancellation, `uri` to address it. */
+export interface TaskRef extends PromiseLike<TaskSnapshot> {
+  readonly uri: string;
+  readonly kind: string;
+  readonly status: TaskPlaneStatus;
+  readonly abortController: AbortController;
+  /** The most recently observed snapshot, or undefined before the first fetch. */
+  snapshot(): TaskSnapshot | undefined;
+  /** Pulls a fresh snapshot without waiting for completion. */
+  refresh(): Promise<TaskSnapshot>;
+}
+
+/** A spawned subagent run: a task reference plus the spawn identity. */
+export interface SubagentTaskRef extends TaskRef {
+  readonly childSessionId: string;
+  readonly runId: string;
+  readonly taskUri: string;
+}
+
+/** Generic task-plane operations: address any task by its URI (ADR 0031). */
+export interface ReplTasks {
+  /** Returns a live reference to the task at the URI; validates existence on first await. */
+  get(uri: string, options?: { signal?: AbortSignal }): TaskRef;
+}
+
+/** Model-orchestration operations against the control channel (ADR 0031). */
+export interface ReplModel {
+  /** Spawns a subagent run scoped to this REPL's owning Agent session; the returned
+   * reference is awaitable (waits for the terminal snapshot) and abortable (cancels). */
+  spawnSubagent(options: SubagentSpawnOptions): Promise<SubagentTaskRef>;
+  /** Waits (bounded) for a spawned subagent run to settle and returns its result. */
+  waitForSubagent(
+    runId: string,
+    options?: { timeoutMs?: number; sessionId?: string; signal?: AbortSignal },
+  ): Promise<SubagentResult>;
+  /** Cancels a spawned subagent run and returns its terminal snapshot. */
+  cancelSubagent(
+    runId: string,
+    options?: { sessionId?: string; signal?: AbortSignal },
+  ): Promise<SubagentResult>;
 }
 
 interface ToolEnvelope {
@@ -570,9 +678,273 @@ function createResources(address: string, tools: ReplTools): ReplResources {
   };
 }
 
+const MODEL_BASE_PATH = "/v1/model/subagents";
+
+/** A fetch transport over the control channel: unix-socket proxy on Unix, loopback plus
+ * credential header on Windows — the same shape as the resource bridge. */
+function createControlTransport(address: string) {
+  if (address.length === 0) {
+    throw new TypeError("The control-channel address is required.");
+  }
+  const useUnixProxy = Deno.build.os !== "windows";
+  const client = useUnixProxy
+    ? Deno.createHttpClient({
+      proxy: { transport: "unix", path: address },
+    })
+    : undefined;
+  const credential = Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined;
+  const headers = credential === undefined || credential.length === 0
+    ? undefined
+    : { Authorization: `Bearer ${credential}` };
+  const base = useUnixProxy ? "http://localhost" : `http://${address}`;
+
+  return async function request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      redirect: "error",
+      ...(body === undefined ? {} : {
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      ...(headers === undefined || body !== undefined ? {} : { headers }),
+      ...(client === undefined ? {} : { client }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const payload = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      const code = payload !== undefined && typeof payload === "object" && payload !== null &&
+          "code" in payload
+        ? String((payload as { code: unknown }).code)
+        : `http_${response.status}`;
+      const message = payload !== undefined && typeof payload === "object" && payload !== null &&
+          "message" in payload
+        ? String((payload as { message: unknown }).message)
+        : response.statusText;
+      throw new ControlChannelError(code, message, response.status);
+    }
+
+    return payload as T;
+  };
+}
+
+/** A typed control-channel failure: the wire error code and HTTP status survive as fields,
+ * so callers can branch on them (a bounded wait timing out is recoverable; a hard 404 is not). */
+export class ControlChannelError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, message: string, status: number) {
+    super(`model orchestration failed (${code}): ${message}`);
+    this.name = "ControlChannelError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function createModel(
+  request: <T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ) => Promise<T>,
+  resolveSession: () => string,
+  tasks: ReplTasks,
+): ReplModel {
+  const sessionQuery = (explicit?: string) => {
+    const sessionId = explicit ?? resolveSession();
+    return sessionId.length === 0 ? "" : `&session=${encodeURIComponent(sessionId)}`;
+  };
+
+  return {
+    async spawnSubagent(options: SubagentSpawnOptions): Promise<SubagentTaskRef> {
+      const handle = await request<SubagentHandle>(
+        "POST",
+        `${MODEL_BASE_PATH}?session=${encodeURIComponent(options.sessionId ?? resolveSession())}`,
+        {
+          version: 1,
+          input: options.input,
+          ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
+          ...(options.tools === undefined ? {} : { tools: options.tools }),
+          sessionId: options.sessionId ?? resolveSession(),
+        },
+        undefined,
+      );
+      // The spawn identity rides on the unified task reference: await, abort, and uri in one object.
+      return Object.assign(tasks.get(handle.taskUri), {
+        childSessionId: handle.childSessionId,
+        runId: handle.runId,
+        taskUri: handle.taskUri,
+      }) as SubagentTaskRef;
+    },
+    async waitForSubagent(
+      runId: string,
+      options?: { timeoutMs?: number; sessionId?: string; signal?: AbortSignal },
+    ): Promise<SubagentResult> {
+      const timeoutMs = options?.timeoutMs ?? 60_000;
+      return await request<SubagentResult>(
+        "GET",
+        `${MODEL_BASE_PATH}/${runId}?timeoutMs=${timeoutMs}${sessionQuery(options?.sessionId)}`,
+        undefined,
+        options?.signal,
+      );
+    },
+    async cancelSubagent(
+      runId: string,
+      options?: { sessionId?: string; signal?: AbortSignal },
+    ): Promise<SubagentResult> {
+      return await request<SubagentResult>(
+        "POST",
+        `${MODEL_BASE_PATH}/${runId}/cancel?session=${
+          encodeURIComponent(
+            options?.sessionId ?? resolveSession(),
+          )
+        }`,
+        undefined,
+        options?.signal,
+      );
+    },
+  };
+}
+
+const TASKS_BASE_PATH = "/v1/tasks";
+const TASK_POLL_MS = 60_000;
+
+class TaskRefImpl implements TaskRef {
+  readonly uri: string;
+  readonly kind: string;
+  readonly abortController = new AbortController();
+  #latest: TaskSnapshot | undefined;
+  #settled = false;
+  #completion: Promise<TaskSnapshot> | undefined;
+
+  constructor(
+    private readonly request: <T>(
+      method: string,
+      path: string,
+      body?: unknown,
+      signal?: AbortSignal,
+    ) => Promise<T>,
+    private readonly resolveSession: () => string,
+    uri: string,
+    external?: AbortSignal,
+  ) {
+    if (!uri.startsWith("task://")) {
+      throw new TypeError("A task URI must start with task://");
+    }
+    this.uri = uri;
+    this.kind = uri.slice("task://".length).split("/", 1)[0];
+    if (external !== undefined) {
+      external.addEventListener("abort", () => this.abortController.abort(), { once: true });
+    }
+    // Validate eagerly: a missing task surfaces as a rejected reference, not a silent one.
+    this.#completion = this.#drive();
+  }
+
+  get status(): TaskPlaneStatus {
+    return this.#latest?.status ?? "working";
+  }
+
+  snapshot(): TaskSnapshot | undefined {
+    return this.#latest;
+  }
+
+  async refresh(): Promise<TaskSnapshot> {
+    // Single-writer discipline: once the terminal snapshot landed (possibly via the abort
+    // path), a racing refresh must not regress the visible status.
+    if (this.#settled) return this.#latest!;
+    const snapshot = await this.request<TaskSnapshot>(
+      "GET",
+      `/v1/resource?uri=${encodeURIComponent(this.uri)}`,
+    );
+    if (!this.#settled) this.#latest = snapshot;
+    return this.#latest!;
+  }
+
+  then<TResult1 = TaskSnapshot, TResult2 = never>(
+    onfulfilled?: ((value: TaskSnapshot) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): PromiseLike<TResult1 | TResult2> {
+    return this.#completion!.then(onfulfilled, onrejected);
+  }
+
+  catch<TResult = never>(
+    onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+  ): PromiseLike<TaskSnapshot | TResult> {
+    return this.#completion!.catch(onrejected);
+  }
+
+  finally(onfinally?: () => void): PromiseLike<TaskSnapshot> {
+    return this.#completion!.finally(onfinally);
+  }
+
+  async #drive(): Promise<TaskSnapshot> {
+    while (true) {
+      let snapshot: TaskSnapshot;
+      try {
+        snapshot = await this.request<TaskSnapshot>(
+          "GET",
+          `${TASKS_BASE_PATH}?uri=${encodeURIComponent(this.uri)}&timeoutMs=${TASK_POLL_MS}`,
+          undefined,
+          this.abortController.signal,
+        );
+      } catch (error) {
+        if (error instanceof ControlChannelError && error.code === "task_wait_timeout") {
+          // The bounded window expired while the task is still working: keep polling. The
+          // await must survive any number of windows — a subagent legitimately runs minutes.
+          continue;
+        }
+
+        if (this.abortController.signal.aborted) {
+          // Abort means cancel the task, not just stop waiting: settle it and land on the
+          // cancelled terminal snapshot.
+          const cancelled = await this.request<TaskSnapshot>(
+            "POST",
+            `${TASKS_BASE_PATH}/cancel`,
+            { uri: this.uri, sessionId: this.resolveSession() },
+          ).catch(() => this.refresh());
+          this.#settled = true;
+          this.#latest = cancelled;
+          return cancelled;
+        }
+
+        throw error;
+      }
+
+      this.#latest = snapshot;
+      if (snapshot.status !== "working") {
+        this.#settled = true;
+        return snapshot;
+      }
+    }
+  }
+}
+
+function createTasks(
+  request: <T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ) => Promise<T>,
+  resolveSession: () => string,
+): ReplTasks {
+  return {
+    get: (uri, options) => new TaskRefImpl(request, resolveSession, uri, options?.signal),
+  };
+}
+
 function createClient(address: string, events: EventTarget): ReplClient {
   const bus = new ReplBus(address, events);
   const tools = createTools(bus);
+  const resolveSession = () => Deno.env.get(SESSION_ENV) ?? "";
+  const request = createControlTransport(address);
+  const tasks = createTasks(request, resolveSession);
   return {
     address,
     health: () => healthProbe(bus),
@@ -580,6 +952,8 @@ function createClient(address: string, events: EventTarget): ReplClient {
     events,
     comm: createComm(bus),
     resources: createResources(address, tools),
+    model: createModel(request, resolveSession, tasks),
+    tasks,
   };
 }
 
@@ -639,4 +1013,16 @@ export const comm: ReplComm = {
 export const resources: ReplResources = {
   list: () => ensureDefaultClient().resources.list(),
   read: (uri, options) => ensureDefaultClient().resources.read(uri, options),
+};
+
+/** Model orchestration against the default client (ADR 0031): spawn, await, cancel subagent runs. */
+export const model: ReplModel = {
+  spawnSubagent: (options) => ensureDefaultClient().model.spawnSubagent(options),
+  waitForSubagent: (runId, options) => ensureDefaultClient().model.waitForSubagent(runId, options),
+  cancelSubagent: (runId, options) => ensureDefaultClient().model.cancelSubagent(runId, options),
+};
+
+/** Generic task-plane operations against the default client: address any task by URI (ADR 0031). */
+export const tasks: ReplTasks = {
+  get: (uri, options) => ensureDefaultClient().tasks.get(uri, options),
 };

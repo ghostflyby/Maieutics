@@ -174,7 +174,7 @@ DenoExecution -> Permissions, Control
 Terminal    -> Permissions, Processes, Agent
 DenoRepl    -> DenoExecution, Control, Agent
 Plugins     -> DenoExecution, Control, Mcp
-Control     -> Plugins (host attach), DenoRepl (registry)
+Control     -> Plugins (host attach), DenoRepl (registry), Commands (agent sessions for the model-orchestration surface), Commands (agent sessions for the model-orchestration surface)
 Commands    -> Agent, Configuration, Execution, Mcp
 Frontend    -> Agent, Commands, Configuration, DenoRepl, Persistence
 Configuration -> Agent, Execution, Mcp, Plugins, Providers, Terminal

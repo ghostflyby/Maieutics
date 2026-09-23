@@ -215,6 +215,57 @@ public sealed class TaskResourceTests
         stillWorking.GetProperty("status").GetString().Should().Be("working");
     }
 
+    [Fact]
+    public async Task ObjectsPlaneReadsStoredContentAndRejectsUnknownAddresses()
+    {
+        var store = new InMemoryAgentObjectStore();
+        var descriptor = store.Ingest(new MemoryStream("[1,2,3]"u8.ToArray(), writable: false));
+        var provider = new AgentObjectResourceProvider(store);
+        var uri = $"objects://{descriptor.Sha256}";
+
+        var read = await provider.ReadAsync(
+            uri, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(read.Content);
+        document.RootElement.GetRawText().Should().Be("[1,2,3]");
+        read.MimeType.Should().Be("application/json");
+
+        async Task ThrowMissing() => await provider.ReadAsync(
+            $"objects://{new string('a', 64)}",
+            new ResourceReadRequest(16 * 1024),
+            TestContext.Current.CancellationToken);
+        async Task ThrowMalformed() => await provider.ReadAsync(
+            "objects://NOTAHASH",
+            new ResourceReadRequest(16 * 1024),
+            TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<ResourceException>(ThrowMissing);
+        await Assert.ThrowsAsync<ResourceException>(ThrowMalformed);
+    }
+
+    private sealed class InMemoryAgentObjectStore : IAgentObjectStore
+    {
+        private readonly Dictionary<string, byte[]> objects = [];
+
+        public AgentObjectDescriptor Ingest(Stream content)
+        {
+            using var buffered = new MemoryStream();
+            content.CopyTo(buffered);
+            var bytes = buffered.ToArray();
+            var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
+                .ToLowerInvariant();
+            objects[sha256] = bytes;
+            return new AgentObjectDescriptor(sha256, bytes.Length, "application/json");
+        }
+
+        public Stream Open(string sha256)
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(
+                    sha256, "^[0-9a-f]{64}$") || !objects.TryGetValue(sha256, out var bytes))
+                throw new FileNotFoundException("No such object.", sha256);
+            return new MemoryStream(bytes, writable: false);
+        }
+    }
+
     private static async Task<TerminalRunResult> StartTimedOutOneShotAsync(TaskHarness harness, AgentSessionId owner)
     {
         var result = await harness.Registry.RunOnceAsync(

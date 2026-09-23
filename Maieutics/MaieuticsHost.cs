@@ -351,7 +351,8 @@ public static class MaieuticsHost
                         services.GetRequiredService<FrontendCommRouter>()
                             .AcceptFromReplAsync(sessionId, message, cancellationToken)
                     : null,
-                resources: services.GetRequiredService<ResourceRegistry>());
+                resources: services.GetRequiredService<ResourceRegistry>(),
+                orchestration: CreateModelOrchestrationSurface(services));
 
             // Plugin capability calls execute kernel script tools through the same
             // invocation path the control bus uses; the manager is resolved lazily so
@@ -482,6 +483,8 @@ public static class MaieuticsHost
             ]),
             new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
         };
+        if (services.GetService<IAgentObjectStore>() is { } objectStore)
+            providers.Add(new AgentObjectResourceProvider(objectStore));
         foreach (var custom in options.CustomProviders)
             providers.Add(new HttpBridgeResourceProvider(client, custom));
 
@@ -578,6 +581,32 @@ public static class MaieuticsHost
                 1,
                 ReadIntSetting(configuration, "Maieutics:Agent:Subagents:MaxChildrenPerTurn") ?? 4),
             EventSink = services.GetRequiredService<Frontend.SubagentEventBuffer>()
+        };
+    }
+
+    /// <summary>Composes the Deno model-orchestration surface (ADR 0031): spawns resolve the
+    /// calling Deno process to its owning Agent session and run either as a child of that
+    /// session's live run or as a detached, session-scoped child bounded by the composition
+    /// root's subagent configuration.</summary>
+    private static ModelOrchestrationSurface CreateModelOrchestrationSurface(IServiceProvider services)
+    {
+        var subagents = CreateSubagentOptions(services)
+            ?? new AgentSubagentOptions
+            {
+                MaxDepth = 1,
+                EventSink = services.GetRequiredService<Frontend.SubagentEventBuffer>()
+            };
+        // Everything resolves lazily at request time: eager resolution here re-enters the
+        // container mid-composition (the startup-deadlock class this file has seen).
+        return new ModelOrchestrationSurface(
+            () => services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            replSessionId => services.GetRequiredService<DenoReplRegistry>()
+                .TryGetOwnerSessionId(replSessionId),
+            () => new AgentSessionOptions { Subagents = subagents },
+            () => services.GetRequiredService<IReadOnlyList<AIFunction>>(),
+            () => services.GetService<PermissionOverrideRegistry>())
+        {
+            TaskResources = () => services.GetRequiredService<Execution.TaskResourceProvider>()
         };
     }
 

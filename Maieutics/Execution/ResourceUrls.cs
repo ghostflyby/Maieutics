@@ -123,6 +123,7 @@ internal sealed class ResourceRegistry
         {
             ["workspace"] = ResourceProviderClass.BuiltIn,
             ["task"] = ResourceProviderClass.BuiltIn,
+            ["objects"] = ResourceProviderClass.BuiltIn,
             ["mcp"] = ResourceProviderClass.Mcp,
             ["file"] = null
         };

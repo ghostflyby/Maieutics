@@ -15,6 +15,10 @@ internal static class ReplControlLimits
     /// never dominate the channel.</summary>
     internal const int MaximumResourceBytes = 8 * 1024 * 1024;
 
+    /// <summary>Upper bound for one bounded task wait request: a longer wait is a client
+    /// misconfiguration, not a long-poll (each held request pins a control connection).</summary>
+    internal const int MaximumTaskWaitMs = 600_000;
+
     /// <summary>Per-message ceiling for the dedicated comm WebSocket; owned beside the shared
     /// codec in <see cref="DenoRepl.ReplCommLimits"/> so both hops enforce one value. The
     /// control bus keeps its own 1 MiB ceiling (control messages are small).</summary>

@@ -30,6 +30,12 @@ internal sealed record SubagentResultPayload(
     bool Truncated,
     SubagentUsagePayload? Usage);
 
+/// <summary>Versioned task-plane cancellation request: the task URI plus the presenting
+/// REPL session whose owning Agent session must own the task.</summary>
+internal sealed record TaskCancelRequest(
+    string Uri,
+    string? SessionId = null);
+
 /// <summary>Provider-reported token usage of one subagent child run.</summary>
 internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total);
 
@@ -40,6 +46,7 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(SubagentSpawnedPayload))]
 [JsonSerializable(typeof(SubagentResultPayload))]
 [JsonSerializable(typeof(SubagentUsagePayload))]
+[JsonSerializable(typeof(TaskCancelRequest))]
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ToolInvokePayload))]
 [JsonSerializable(typeof(CapabilityInvokePayload))]

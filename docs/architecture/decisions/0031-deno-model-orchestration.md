@@ -70,6 +70,27 @@ Two hard problems had to be designed rather than skipped:
    endpoints above over the client's existing transport and credential handling — the same
    pattern as `tools.start`/`tools.invoke`.
 
+## Surface Extension (2026-09-22, second slice)
+
+The surface is a common contract with additive semantics, and the client
+treats every task as one object shape:
+
+- **Kernel**: the generic endpoints `GET /v1/tasks?uri=&timeoutMs=` (bounded
+  wait, terminal snapshot) and `POST /v1/tasks/cancel` (idempotent, session-
+  owned) address *any* `task://` authority through the task plane's read +
+  wait + cancel contract; per-kind semantics live in the authority's snapshot
+  detail (additive fields; the client tolerates unknown kinds). The object
+  store joins the resource plane as the read-only `objects://{sha256}`
+  provider — content addresses are not live tasks, so no wait/cancel and no
+  catalog entries.
+- **Client**: every task is a `TaskRef` — `uri`, `kind`, `status`, an
+  `AbortController` whose abort initiates cancellation, and PromiseLike
+  resolution to the terminal snapshot (a bounded long-poll chain). Spawn
+  sites return the reference: `model.spawnSubagent` yields a
+  `SubagentTaskRef` (await = the report, abort = cancel, `uri` = the plane
+  address). Kind-specific capabilities wrap a reference (parse the uri) rather
+  than extending the base interface.
+
 ## Consequences
 
 - The model, from a REPL cell, can fan out parallel tool-using model runs and orchestrate

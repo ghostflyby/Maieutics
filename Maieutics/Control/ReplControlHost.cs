@@ -146,6 +146,11 @@ internal sealed partial class ReplControlHost : IDisposable
             application.MapGet("/v1/model/subagents/{runId}", HandleSubagentWaitAsync);
             application.MapPost("/v1/model/subagents/{runId}/cancel", HandleSubagentCancelAsync);
         }
+        if (orchestration is not null)
+        {
+            application.MapGet("/v1/tasks", HandleTaskWaitAsync);
+            application.MapPost("/v1/tasks/cancel", HandleTaskCancelAsync);
+        }
         MapCommEndpoint(application);
     }
 
@@ -155,7 +160,8 @@ internal sealed partial class ReplControlHost : IDisposable
                path.StartsWithSegments("/ws") ||
                path.StartsWithSegments("/v1/tool.invoke") ||
                path.StartsWithSegments("/v1/resource") ||
-               path.StartsWithSegments("/v1/model") ||
+               path.StartsWithSegments("/v1/model/subagents") ||
+               path.StartsWithSegments("/v1/tasks") ||
                path.StartsWithSegments("/comm");
     }
 

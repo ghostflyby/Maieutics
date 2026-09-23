@@ -6,6 +6,7 @@ using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Control;
 using Maieutics.Frontend;
+using Maieutics.Execution;
 using Maieutics.Permissions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.AI;
@@ -49,6 +50,54 @@ public sealed class ModelOrchestrationEndpointTests
             var result = JsonDocument.Parse(wait.Body).RootElement;
             result.GetProperty("status").GetString().Should().Be("complete");
             result.GetProperty("report").GetString().Should().Be("done");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task GenericTaskPlaneWaitsAndCancelsByUri()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control-host test harness rides a Unix domain socket.");
+
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
+        var harness = await CreateHarnessAsync(deadline.Token);
+        await using (harness.Application)
+        {
+            var spawn = await harness.SendJsonAsync(
+                "POST",
+                "/v1/model/subagents?session=test-session",
+                """{"version":1,"input":"orchestrated task","sessionId":"test-session"}""",
+                deadline.Token);
+            var runId = JsonDocument.Parse(spawn.Body).RootElement.GetProperty("runId").GetString()!;
+            var owner = harness.Manager.Id.Value.ToString("N");
+            var taskUri = $"task://agent/{owner}/{runId}";
+
+            var wait = await harness.SendJsonAsync(
+                "GET",
+                $"/v1/tasks?uri={Uri.EscapeDataString(taskUri)}&timeoutMs=10000",
+                null,
+                deadline.Token);
+            wait.StatusCode.Should().Be(200);
+            var snapshot = JsonDocument.Parse(wait.Body).RootElement;
+            snapshot.GetProperty("kind").GetString().Should().Be("agent");
+            snapshot.GetProperty("status").GetString().Should().Be("complete");
+            snapshot.GetProperty("agent").GetProperty("report").GetString().Should().Be("done");
+
+            var cancel = await harness.SendJsonAsync(
+                "POST",
+                "/v1/tasks/cancel?session=test-session",
+                $$"""{"uri":"{{taskUri}}","sessionId":"test-session"}""",
+                deadline.Token);
+            cancel.StatusCode.Should().Be(200);
+            JsonDocument.Parse(cancel.Body).RootElement.GetProperty("status").GetString()
+                .Should().Be("complete");
+
+            var unknown = await harness.SendJsonAsync(
+                "GET",
+                $"/v1/tasks?uri={Uri.EscapeDataString($"task://agent/{owner}/{Guid.NewGuid():N}")}&timeoutMs=200",
+                null,
+                deadline.Token);
+            unknown.StatusCode.Should().Be(404);
         }
     }
 
@@ -99,12 +148,23 @@ public sealed class ModelOrchestrationEndpointTests
             storeFactory: null,
             NullLogger<MaieuticsAgentSessionManager>.Instance,
             subagents: subagents);
+        var taskResources = new TaskResourceProvider(
+        [
+            new AgentTaskResourceSource(
+                sessionId => manager.IsLive(sessionId) && manager.Resolve(sessionId) is AgentSession live
+                    ? live
+                    : null,
+                () => [manager.Id])
+        ]);
         var surface = new ModelOrchestrationSurface(
-            manager,
+            () => manager,
             _ => manager.Id,
-            new AgentSessionOptions { Subagents = subagents },
-            [],
-            overrides);
+            () => new AgentSessionOptions { Subagents = subagents },
+            () => [],
+            () => overrides)
+        {
+            TaskResources = () => taskResources
+        };
         var socketPath = ReplControlHost.CreateSocketPath();
         var host = new ReplControlHost(
             socketPath,

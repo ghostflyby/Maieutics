@@ -483,6 +483,8 @@ public static class MaieuticsHost
             ]),
             new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
         };
+        if (services.GetService<IAgentObjectStore>() is { } objectStore)
+            providers.Add(new AgentObjectResourceProvider(objectStore));
         foreach (var custom in options.CustomProviders)
             providers.Add(new HttpBridgeResourceProvider(client, custom));
 
@@ -594,13 +596,18 @@ public static class MaieuticsHost
                 MaxDepth = 1,
                 EventSink = services.GetRequiredService<Frontend.SubagentEventBuffer>()
             };
+        // Everything resolves lazily at request time: eager resolution here re-enters the
+        // container mid-composition (the startup-deadlock class this file has seen).
         return new ModelOrchestrationSurface(
-            services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            () => services.GetRequiredService<MaieuticsAgentSessionManager>(),
             replSessionId => services.GetRequiredService<DenoReplRegistry>()
                 .TryGetOwnerSessionId(replSessionId),
-            new AgentSessionOptions { Subagents = subagents },
-            services.GetRequiredService<IReadOnlyList<AIFunction>>(),
-            services.GetRequiredService<PermissionOverrideRegistry>());
+            () => new AgentSessionOptions { Subagents = subagents },
+            () => services.GetRequiredService<IReadOnlyList<AIFunction>>(),
+            () => services.GetService<PermissionOverrideRegistry>())
+        {
+            TaskResources = () => services.GetRequiredService<Execution.TaskResourceProvider>()
+        };
     }
 
     /// <summary>Reads one integer setting through the string indexer: the reflection-based

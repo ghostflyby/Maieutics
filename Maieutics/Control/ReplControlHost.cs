@@ -37,6 +37,7 @@ internal sealed partial class ReplControlHost : IDisposable
     private readonly PluginHostManager? pluginHosts;
     private readonly ReplControlSessionRegistry registry;
     private readonly IReadOnlyList<AIFunction> scriptTools;
+    private readonly ModelOrchestrationSurface? orchestration;
     private string? controlAddress;
 
     public ReplControlHost(
@@ -48,7 +49,8 @@ internal sealed partial class ReplControlHost : IDisposable
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsPipeBootstrap = null,
         Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null,
-        Maieutics.Execution.ResourceRegistry? resources = null)
+        Maieutics.Execution.ResourceRegistry? resources = null,
+        ModelOrchestrationSurface? orchestration = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
@@ -60,6 +62,7 @@ internal sealed partial class ReplControlHost : IDisposable
         this.windowsPipeBootstrap = windowsPipeBootstrap;
         this.commFrontendSink = commFrontendSink;
         this.resources = resources;
+        this.orchestration = orchestration;
     }
 
     /// <summary>Gets the Unix socket path used by the process-wide channel on Unix.</summary>
@@ -137,6 +140,12 @@ internal sealed partial class ReplControlHost : IDisposable
         application.Map("/ws", HandleWebSocketAsync);
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
         if (resources is not null) application.MapGet("/v1/resource", HandleResourceGetAsync);
+        if (orchestration is not null)
+        {
+            application.MapPost("/v1/model/subagents", HandleSubagentSpawnAsync);
+            application.MapGet("/v1/model/subagents/{runId}", HandleSubagentWaitAsync);
+            application.MapPost("/v1/model/subagents/{runId}/cancel", HandleSubagentCancelAsync);
+        }
         MapCommEndpoint(application);
     }
 
@@ -146,6 +155,7 @@ internal sealed partial class ReplControlHost : IDisposable
                path.StartsWithSegments("/ws") ||
                path.StartsWithSegments("/v1/tool.invoke") ||
                path.StartsWithSegments("/v1/resource") ||
+               path.StartsWithSegments("/v1/model") ||
                path.StartsWithSegments("/comm");
     }
 

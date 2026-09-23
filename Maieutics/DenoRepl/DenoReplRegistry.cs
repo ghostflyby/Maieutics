@@ -89,6 +89,22 @@ internal sealed class DenoReplRegistry(
         return session;
     }
 
+    /// <summary>Resolves the owning Agent session of one REPL session id, or null when no
+    /// live REPL session matches. The model-orchestration surface uses this to scope a Deno
+    /// caller's spawns to its owning session (ADR 0031).</summary>
+    internal AgentSessionId? TryGetOwnerSessionId(string replSessionId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(replSessionId);
+        lock (gate)
+        {
+            foreach (var (owner, byId) in sessions)
+                if (byId.ContainsKey(replSessionId))
+                    return owner;
+        }
+
+        return null;
+    }
+
     internal DenoReplListResult List(AgentSessionId ownerSessionId)
     {
         DenoReplSession[] snapshot;

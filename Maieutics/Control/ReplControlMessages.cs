@@ -3,9 +3,43 @@ using System.Text.Json.Serialization;
 
 namespace Maieutics.Control;
 
+/// <summary>Versioned model-orchestration spawn request carried by the control channel
+/// (ADR 0031): one subagent child run, scoped to the calling Deno process's owning Agent
+/// session.</summary>
+internal sealed record SubagentSpawnRequest(
+    int Version,
+    string Input,
+    string? Instructions = null,
+    string[]? Tools = null,
+    string? SessionId = null);
+
+/// <summary>The handle of one spawned subagent child run.</summary>
+internal sealed record SubagentSpawnedPayload(
+    string ChildSessionId,
+    string RunId,
+    string TaskUri,
+    string Status);
+
+/// <summary>The terminal snapshot of one subagent child run; statuses follow the task
+/// plane's vocabulary (complete, fail, cancel).</summary>
+internal sealed record SubagentResultPayload(
+    string ChildSessionId,
+    string RunId,
+    string Status,
+    string? Report,
+    bool Truncated,
+    SubagentUsagePayload? Usage);
+
+/// <summary>Provider-reported token usage of one subagent child run.</summary>
+internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total);
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     MaxDepth = ReplControlLimits.MaximumJsonDepth)]
+[JsonSerializable(typeof(SubagentSpawnRequest))]
+[JsonSerializable(typeof(SubagentSpawnedPayload))]
+[JsonSerializable(typeof(SubagentResultPayload))]
+[JsonSerializable(typeof(SubagentUsagePayload))]
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ToolInvokePayload))]
 [JsonSerializable(typeof(CapabilityInvokePayload))]
@@ -32,6 +66,7 @@ namespace Maieutics.Control;
 [JsonSerializable(typeof(HostReplDerivePayload))]
 [JsonSerializable(typeof(HostReplDeriveFailedPayload))]
 [JsonSerializable(typeof(HostReplPermissions))]
+
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 internal static class ReplControlJson

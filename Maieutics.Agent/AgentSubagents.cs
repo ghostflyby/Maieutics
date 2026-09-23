@@ -414,6 +414,46 @@ internal sealed class AgentSubagentHost(
         return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Waits for one child of this session — run-owned or detached — to reach a
+    /// terminal state and returns its result. The session-wide addressing form the control
+    /// channel's orchestration endpoints use (ADR 0031).</summary>
+    /// <exception cref="AgentSubagentNotFoundException">No live child matches the identifier.</exception>
+    /// <exception cref="AgentSubagentWaitTimeoutException">The child stayed unsettled past the timeout.</exception>
+    public async ValueTask<AgentSubagentResult> WaitChildByIdAsync(
+        AgentRunId childRunId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
+
+        var record = FindChild(childRunId) ??
+            throw new AgentSubagentNotFoundException(childRunId);
+        try
+        {
+            return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new AgentSubagentWaitTimeoutException(childRunId, timeout, exception);
+        }
+    }
+
+    /// <summary>Cancels one child of this session — run-owned or detached — and returns its
+    /// terminal result; idempotent on an already-terminal child.</summary>
+    /// <exception cref="AgentSubagentNotFoundException">No live child matches the identifier.</exception>
+    public async ValueTask<AgentSubagentResult> CancelChildByIdAsync(
+        AgentRunId childRunId,
+        CancellationToken cancellationToken = default)
+    {
+        var record = FindChild(childRunId) ??
+            throw new AgentSubagentNotFoundException(childRunId);
+        if (!record.Completion.IsCompleted)
+            await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
+        return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private ChildRecord? FindDetached(AgentRunId childRunId)
     {
         lock (gate)

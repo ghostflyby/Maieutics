@@ -116,9 +116,58 @@ export interface ReplClient {
   comm: ReplComm;
   /** Virtual resource reads over the control channel (ADR 0026). */
   resources: ReplResources;
+  /** Model orchestration: spawn, await, and cancel subagent runs (ADR 0031). */
+  model: ReplModel;
 
   /** Probes the kernel control channel over the multiplexed bus. */
   health(): Promise<string>;
+}
+
+/** One subagent run spawned through the model-orchestration surface (ADR 0031). */
+export interface SubagentSpawnOptions {
+  /** The composed task for the subagent. It cannot ask questions; include everything. */
+  input: string;
+  /** System instructions for the subagent; the orchestrating context's are not inherited. */
+  instructions?: string;
+  /** Names of parent-registered tools the subagent may use; omitted means all. */
+  tools?: string[];
+  /** How long to wait for the subagent to settle, in milliseconds (spawn returns immediately). */
+  timeoutMs?: number;
+  /** The REPL session presenting the request; defaults to the environment-provided session. */
+  sessionId?: string;
+}
+
+/** The handle of one spawned subagent run. */
+export interface SubagentHandle {
+  childSessionId: string;
+  runId: string;
+  taskUri: string;
+}
+
+/** The terminal snapshot of one subagent run. */
+export interface SubagentResult {
+  childSessionId: string;
+  runId: string;
+  status: "complete" | "fail" | "cancel";
+  report?: string;
+  truncated?: boolean;
+  usage?: { input?: number; output?: number; total?: number };
+}
+
+/** Model-orchestration operations against the control channel (ADR 0031). */
+export interface ReplModel {
+  /** Spawns a subagent run scoped to this REPL's owning Agent session. */
+  spawnSubagent(options: SubagentSpawnOptions): Promise<SubagentHandle>;
+  /** Waits (bounded) for a spawned subagent run to settle and returns its result. */
+  waitForSubagent(
+    runId: string,
+    options?: { timeoutMs?: number; sessionId?: string; signal?: AbortSignal },
+  ): Promise<SubagentResult>;
+  /** Cancels a spawned subagent run and returns its terminal snapshot. */
+  cancelSubagent(
+    runId: string,
+    options?: { sessionId?: string; signal?: AbortSignal },
+  ): Promise<SubagentResult>;
 }
 
 interface ToolEnvelope {
@@ -570,6 +619,120 @@ function createResources(address: string, tools: ReplTools): ReplResources {
   };
 }
 
+const MODEL_BASE_PATH = "/v1/model/subagents";
+
+/** A fetch transport over the control channel: unix-socket proxy on Unix, loopback plus
+ * credential header on Windows — the same shape as the resource bridge. */
+function createModelTransport(address: string) {
+  if (address.length === 0) {
+    throw new TypeError("The control-channel address is required.");
+  }
+  const useUnixProxy = Deno.build.os !== "windows";
+  const client = useUnixProxy
+    ? Deno.createHttpClient({
+      proxy: { transport: "unix", path: address },
+    })
+    : undefined;
+  const credential = Deno.build.os === "windows"
+    ? Deno.env.get(CREDENTIAL_ENV)
+    : undefined;
+  const headers = credential === undefined || credential.length === 0
+    ? undefined
+    : { Authorization: `Bearer ${credential}` };
+  const base = useUnixProxy ? "http://localhost" : `http://${address}`;
+
+  return async function request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      redirect: "error",
+      ...(body === undefined ? {} : {
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      ...(headers === undefined || body !== undefined ? {} : { headers }),
+      ...(client === undefined ? {} : { client }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const payload = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      const code = payload !== undefined && typeof payload === "object" && payload !== null &&
+          "code" in payload
+        ? String((payload as { code: unknown }).code)
+        : `http_${response.status}`;
+      const message = payload !== undefined && typeof payload === "object" && payload !== null &&
+          "message" in payload
+        ? String((payload as { message: unknown }).message)
+        : response.statusText;
+      throw new Error(`model orchestration failed (${code}): ${message}`);
+    }
+
+    return payload as T;
+  };
+}
+
+function createModel(
+  address: string,
+  resolveSession: () => string,
+): ReplModel {
+  const request = createModelTransport(address);
+  const sessionQuery = (explicit?: string) => {
+    const sessionId = explicit ?? resolveSession();
+    return sessionId.length === 0 ? "" : `&session=${encodeURIComponent(sessionId)}`;
+  };
+
+  return {
+    async spawnSubagent(options: SubagentSpawnOptions): Promise<SubagentHandle> {
+      const handle = await request<SubagentHandle & { status?: string }>(
+        "POST",
+        `${MODEL_BASE_PATH}?session=${encodeURIComponent(options.sessionId ?? resolveSession())}`,
+        {
+          version: 1,
+          input: options.input,
+          ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
+          ...(options.tools === undefined ? {} : { tools: options.tools }),
+          sessionId: options.sessionId ?? resolveSession(),
+        },
+        undefined,
+      );
+      return {
+        childSessionId: handle.childSessionId,
+        runId: handle.runId,
+        taskUri: handle.taskUri,
+      };
+    },
+    async waitForSubagent(
+      runId: string,
+      options?: { timeoutMs?: number; sessionId?: string; signal?: AbortSignal },
+    ): Promise<SubagentResult> {
+      const timeoutMs = options?.timeoutMs ?? 60_000;
+      return await request<SubagentResult>(
+        "GET",
+        `${MODEL_BASE_PATH}/${runId}?timeoutMs=${timeoutMs}${sessionQuery(options?.sessionId)}`,
+        undefined,
+        options?.signal,
+      );
+    },
+    async cancelSubagent(
+      runId: string,
+      options?: { sessionId?: string; signal?: AbortSignal },
+    ): Promise<SubagentResult> {
+      return await request<SubagentResult>(
+        "POST",
+        `${MODEL_BASE_PATH}/${runId}/cancel?session=${encodeURIComponent(
+          options?.sessionId ?? resolveSession(),
+        )}`,
+        undefined,
+        options?.signal,
+      );
+    },
+  };
+}
+
 function createClient(address: string, events: EventTarget): ReplClient {
   const bus = new ReplBus(address, events);
   const tools = createTools(bus);
@@ -580,6 +743,7 @@ function createClient(address: string, events: EventTarget): ReplClient {
     events,
     comm: createComm(bus),
     resources: createResources(address, tools),
+    model: createModel(address, () => Deno.env.get(SESSION_ENV) ?? ""),
   };
 }
 
@@ -639,4 +803,12 @@ export const comm: ReplComm = {
 export const resources: ReplResources = {
   list: () => ensureDefaultClient().resources.list(),
   read: (uri, options) => ensureDefaultClient().resources.read(uri, options),
+};
+
+/** Model orchestration against the default client (ADR 0031): spawn, await, cancel subagent runs. */
+export const model: ReplModel = {
+  spawnSubagent: (options) => ensureDefaultClient().model.spawnSubagent(options),
+  waitForSubagent: (runId, options) =>
+    ensureDefaultClient().model.waitForSubagent(runId, options),
+  cancelSubagent: (runId, options) => ensureDefaultClient().model.cancelSubagent(runId, options),
 };

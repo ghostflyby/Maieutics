@@ -692,9 +692,7 @@ function createControlTransport(address: string) {
       proxy: { transport: "unix", path: address },
     })
     : undefined;
-  const credential = Deno.build.os === "windows"
-    ? Deno.env.get(CREDENTIAL_ENV)
-    : undefined;
+  const credential = Deno.build.os === "windows" ? Deno.env.get(CREDENTIAL_ENV) : undefined;
   const headers = credential === undefined || credential.length === 0
     ? undefined
     : { Authorization: `Bearer ${credential}` };
@@ -802,9 +800,11 @@ function createModel(
     ): Promise<SubagentResult> {
       return await request<SubagentResult>(
         "POST",
-        `${MODEL_BASE_PATH}/${runId}/cancel?session=${encodeURIComponent(
-          options?.sessionId ?? resolveSession(),
-        )}`,
+        `${MODEL_BASE_PATH}/${runId}/cancel?session=${
+          encodeURIComponent(
+            options?.sessionId ?? resolveSession(),
+          )
+        }`,
         undefined,
         options?.signal,
       );
@@ -1018,8 +1018,7 @@ export const resources: ReplResources = {
 /** Model orchestration against the default client (ADR 0031): spawn, await, cancel subagent runs. */
 export const model: ReplModel = {
   spawnSubagent: (options) => ensureDefaultClient().model.spawnSubagent(options),
-  waitForSubagent: (runId, options) =>
-    ensureDefaultClient().model.waitForSubagent(runId, options),
+  waitForSubagent: (runId, options) => ensureDefaultClient().model.waitForSubagent(runId, options),
   cancelSubagent: (runId, options) => ensureDefaultClient().model.cancelSubagent(runId, options),
 };
 

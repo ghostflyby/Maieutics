@@ -48,6 +48,7 @@ public sealed class AgentSubagentTests
         var transcript = session.GetTranscriptSnapshot();
         transcript.Turns.Should().ContainSingle();
         transcript.Turns[0].Messages[^1].Text.Should().Be("done");
+        await collector.Settled.Task.WaitAsync(deadline.Token);
         collector.Events.Should().Contain(pair => pair.Event is AgentTextDelta);
         collector.Events.Select(pair => pair.SessionId).Should().OnlyContain(id => id == childResult.SessionId);
     }
@@ -116,6 +117,7 @@ public sealed class AgentSubagentTests
         await run.Completion.WaitAsync(deadline.Token);
 
         events.OfType<AgentToolFinished>().Should().ContainSingle();
+        await collector.Settled.Task.WaitAsync(deadline.Token);
         collector.Events.Select(pair => pair.Event).OfType<AgentTextDelta>()
             .Should().HaveCountGreaterThanOrEqualTo(300);
     }
@@ -372,6 +374,7 @@ public sealed class AgentSubagentTests
         spawned.Should().NotBeNull();
         events.OfType<AgentToolFinished>().Last().Result.GetProperty("value")
             .GetProperty("report").GetString().Should().Be("async report");
+        await collector.Settled.Task.WaitAsync(deadline.Token);
         collector.Events.Should().Contain(pair => pair.Event is AgentTextDelta);
 
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
@@ -693,6 +696,10 @@ public sealed class AgentSubagentTests
         result.Report.Should().Be("detached report");
         session.SubagentHost.FindChild(handle.RunId).Should().NotBeNull();
         session.SubagentHost.ListChildren().Should().ContainSingle();
+        // Wait returns at the child's completion; the pump may still be draining the last
+        // buffered events into the sink. The settled notification fires strictly after the
+        // drain, so events are deterministic from here.
+        await collector.Settled.Task.WaitAsync(deadline.Token);
         collector.Events.Should().NotBeEmpty();
 
         var cancelled = await session.SubagentHost
@@ -906,13 +913,27 @@ public sealed class AgentSubagentTests
             ]);
     }
 
-    private sealed class EventCollector : IAgentSubagentEventSink
+    private sealed class EventCollector : IAgentSubagentEventSink, IAgentSubagentLifecycleSink
     {
         private readonly Lock gate = new();
 
         public List<(AgentSessionId SessionId, AgentEvent Event)> Events { get; } = [];
 
         public int FailAfter { get; init; } = int.MaxValue;
+
+        /// <summary>Completes when a child's settled notification fires — the pump emits it
+        /// strictly after the child's event stream drained, so awaiting it makes buffered
+        /// event assertions deterministic.</summary>
+        public TaskCompletionSource Settled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask OnSubagentStartedAsync(
+            AgentSessionId childSessionId,
+            AgentRunId childRunId,
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
 
         public ValueTask OnSubagentEventAsync(
             AgentSessionId childSessionId,
@@ -926,6 +947,16 @@ public sealed class AgentSubagentTests
                     throw new InvalidOperationException("The test sink failed on purpose.");
             }
 
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask OnSubagentSettledAsync(
+            AgentSessionId childSessionId,
+            AgentRunId childRunId,
+            AgentSubagentStatus status,
+            CancellationToken cancellationToken)
+        {
+            Settled.TrySetResult();
             return ValueTask.CompletedTask;
         }
     }

@@ -266,7 +266,9 @@ internal sealed record ToolPostHookContextPayload(
     JsonElement Arguments,
     string CallId,
     string Status,
-    JsonElement? Result = null);
+    JsonElement? Result = null,
+    string? Origin = null,
+    string? SessionId = null);
 
 /// <summary>Context passed to a plugin's MCP discovery extension point.</summary>
 internal sealed record DiscoverContextPayload(string Reason);

@@ -26,7 +26,8 @@ public sealed class PluginDependencyGraphTests
             [],
             [],
             [],
-            []);
+            [],
+            InspectionsContentReadAll: false);
     }
 
     [Fact]

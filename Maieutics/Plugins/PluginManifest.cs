@@ -16,7 +16,8 @@ internal sealed record PluginDescriptor(
     IReadOnlyList<PluginImportEntry> Imports,
     IReadOnlyList<string> Capabilities,
     IReadOnlyList<PluginExtensionEntry> Extensions,
-    IReadOnlyList<string> ExtensionDiagnostics);
+    IReadOnlyList<string> ExtensionDiagnostics,
+    bool InspectionsContentReadAll);
 
 /// <summary>One declarative extension entry from the manifest's `extensions` section:
 /// a kernel-known kind plus the raw data the kind's kernel interpreter consumes.
@@ -164,6 +165,24 @@ internal static class PluginManifest
             return false;
         }
 
+        // Inspections are the content-observation declaration (ADR 0032): a plugin that
+        // declares contentReadAll receives tool results in its post-invoke hooks. Absence
+        // means the hooks fire without result payloads.
+        var contentReadAll = false;
+        if (pluginManifest.Inspections is { ValueKind: JsonValueKind.Object } inspections)
+        {
+            if (inspections.TryGetProperty("contentReadAll", out var readAll))
+            {
+                if (readAll.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    error = "Invalid 'inspections' section: contentReadAll must be a boolean.";
+                    return false;
+                }
+
+                contentReadAll = readAll.GetBoolean();
+            }
+        }
+
         descriptor = new PluginDescriptor(
             id,
             name,
@@ -175,7 +194,8 @@ internal static class PluginManifest
             imports,
             capabilities,
             extensions,
-            extensionDiagnostics);
+            extensionDiagnostics,
+            contentReadAll);
         error = string.Empty;
         return true;
     }
@@ -412,7 +432,8 @@ internal sealed record MaieuticsManifestFile(
     IReadOnlyList<string>? Dependencies = null,
     string? Isolation = null,
     IReadOnlyList<string>? Capabilities = null,
-    JsonElement? Extensions = null);
+    JsonElement? Extensions = null,
+    JsonElement? Inspections = null);
 
 /// <summary>The package identity file (deno.json), read for name and permissions only.</summary>
 internal sealed record PluginManifestFile(

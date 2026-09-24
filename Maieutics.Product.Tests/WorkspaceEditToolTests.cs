@@ -4,6 +4,8 @@ using System.Text.Json.Serialization.Metadata;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
+using Microsoft.Extensions.Logging.Abstractions;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Product.Tests;
@@ -313,6 +315,7 @@ public sealed class WorkspaceEditToolTests
     {
         return new WorkspaceEditFunctions(
             Workspace.Create(root, root),
+            acquirer: null,
             maximumWriteBytes,
             maximumEditedFileBytes,
             maximumDiffBytes,
@@ -366,5 +369,83 @@ public sealed class WorkspaceEditToolTests
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task InstructionSurfacesRequireExplicitAllowWhileOrdinaryFilesDoNot()
+    {
+        var root = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"wsedit-instr-{Guid.NewGuid():N}");
+        System.IO.Directory.CreateDirectory(root);
+        var workspace = Workspace.Create(root, root);
+        var sessionId = AgentSessionId.Create();
+        var registry = new PermissionOverrideRegistry();
+        var acquirer = new PermissionPolicyAcquirer(
+            () => LayerSource(registry), new EmptyVariableSource());
+        var functions = new WorkspaceEditFunctions(workspace, acquirer: acquirer);
+        var write = functions.Functions.Single(static function => function.Name == "write_text");
+
+        async Task<JsonElement> invokeWrite(string uri)
+        {
+            var result = await write.InvokeAsync(new AIFunctionArguments(
+                new Dictionary<string, object?> { ["uri"] = uri, ["content"] = "# hi" })
+            { Context = ContextArguments(sessionId).Context }, TestContext.Current.CancellationToken);
+            return (JsonElement)result!;
+        }
+
+        // Default posture: instruction surfaces deny model-initiated writes even though the
+        // file sits inside the workspace root (ADR 0032 decision 2).
+        var gateForbidden = await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/AGENTS.md"));
+        gateForbidden.Should().BeOfType<AgentToolException>().Which.Code
+            .Should().Be("instructions_write_forbidden");
+
+        var gateForbiddenSkill = await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/.agents/skills/x/SKILL.md"));
+        gateForbiddenSkill.Should().BeOfType<AgentToolException>().Which.Code
+            .Should().Be("instructions_write_forbidden");
+
+        // Ordinary workspace files are unaffected by the instruction gate.
+        (await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/docs/notes.md"))).Should().BeNull();
+
+        // A session override allow admits the instruction path explicitly (the migration path).
+        registry.Set(sessionId, new PermissionLayer
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Write] = new PermissionKindRules { Allow = ["AGENTS.md"] }
+            }
+        });
+
+        (await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/AGENTS.md"))).Should().BeNull();
+    }
+
     private sealed record ToolInvocation(JsonElement? Result, AgentToolException? Failure);
+    private static IPermissionLayerSource LayerSource(PermissionOverrideRegistry registry) =>
+        new RegistrySource(registry);
+
+    private sealed class RegistrySource(PermissionOverrideRegistry registry) : IPermissionLayerSource
+    {
+        public PermissionLayer? AppDefaults => null;
+
+        public PermissionLayer? WorkspaceProfile => null;
+
+        public PermissionLayer? GetSessionOverride(AgentSessionId sessionId) => registry.TryGet(sessionId);
+    }
+
+    private sealed class EmptyVariableSource : IPermissionVariableSource
+    {
+        public string? GetVariable(string name) => null;
+    }
+
+    private static AIFunctionArguments ContextArguments(AgentSessionId sessionId) =>
+        new(new Dictionary<string, object?>())
+        {
+            Context = new Dictionary<object, object?>
+            {
+                [typeof(AgentToolContext)] = new AgentToolContext(
+                    sessionId, AgentRunId.Create(), AgentToolCallId.Create(),
+                    static (_, _) => ValueTask.CompletedTask)
+            }
+        };
 }

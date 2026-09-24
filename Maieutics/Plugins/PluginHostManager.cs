@@ -160,6 +160,18 @@ internal sealed class PluginHostManager(
     /// correlation id. A <c>host.invokeResult</c> / <c>host.invokeError</c> response for the same
     /// correlation id completes the matching call (the retired <c>extension.invoke</c> protocol
     /// used the same pending/complete shape; only the message family changed).</summary>
+    /// <summary>Resolves whether one loaded plugin declared content observation in its
+    /// inspections section (ADR 0032): a post-invoke hook on a plugin without the declaration
+    /// fires without the result payload. Unknown plugin ids report false.</summary>
+    internal bool DeliversContent(string pluginId)
+    {
+        lock (gate)
+        {
+            return descriptors.Any(descriptor =>
+                descriptor.Id == pluginId && descriptor.InspectionsContentReadAll);
+        }
+    }
+
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pendingInvokes =
         new(StringComparer.Ordinal);
 

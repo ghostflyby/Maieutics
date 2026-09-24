@@ -104,7 +104,8 @@ internal static class PluginRegistryDiscovery
                 PluginImportReader.Read(packageManifest.Imports),
                 [],
                 [],
-                []);
+                [],
+                InspectionsContentReadAll: false);
         }
         catch (Exception exception) when (exception is JsonException or IOException)
         {
@@ -196,7 +197,8 @@ internal static class PluginRegistryDiscovery
                 PluginImportReader.Read(packageManifest?.Imports),
                 [],
                 [],
-                []);
+                [],
+                InspectionsContentReadAll: false);
         }
         catch (Exception exception) when (exception is JsonException or IOException)
         {

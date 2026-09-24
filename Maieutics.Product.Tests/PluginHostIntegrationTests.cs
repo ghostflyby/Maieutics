@@ -405,7 +405,7 @@ public sealed class PluginHostIntegrationTests
             NullLogger<ReplControlHost>.Instance,
             functions,
             manager);
-        manager.CapabilityExecutor = controlHost.InvokeScriptToolAsync;
+        manager.CapabilityExecutor = (tool, arguments, token) => controlHost.InvokeScriptToolAsync(tool, arguments, token);
         await using var evalHost = new ReplEvalWebSocketHost(registry, credentials);
         await using var outputHost = new ReplOutputWebSocketHost(registry, credentials);
         var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, timeout.Token);

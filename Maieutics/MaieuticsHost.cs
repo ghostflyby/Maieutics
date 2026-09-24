@@ -358,7 +358,8 @@ public static class MaieuticsHost
             // invocation path the control bus uses; the manager is resolved lazily so
             // wiring stays side-effect free at registration time.
             services.GetRequiredService<PluginHostManager>().CapabilityExecutor =
-                controlHost.InvokeScriptToolAsync;
+                (tool, arguments, cancellationToken) =>
+                    controlHost.InvokeScriptToolAsync(tool, arguments, cancellationToken);
 
             return controlHost;
         });

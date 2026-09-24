@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Agent;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Execution;
@@ -29,6 +30,7 @@ internal sealed class WorkspaceEditFunctions
         };
 
     private readonly Workspace workspace;
+    private readonly PermissionPolicyAcquirer? acquirer;
     private readonly int maximumWriteBytes;
     private readonly int maximumEditedFileBytes;
     private readonly int maximumDiffBytes;
@@ -36,12 +38,14 @@ internal sealed class WorkspaceEditFunctions
 
     internal WorkspaceEditFunctions(
         Workspace workspace,
+        PermissionPolicyAcquirer? acquirer = null,
         int maximumWriteBytes = DefaultMaximumWriteBytes,
         int maximumEditedFileBytes = DefaultMaximumEditedFileBytes,
         int maximumDiffBytes = DefaultMaximumDiffBytes,
         int maximumDiffLines = DefaultMaximumDiffLines)
     {
         this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this.acquirer = acquirer;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumWriteBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEditedFileBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDiffBytes);
@@ -54,19 +58,19 @@ internal sealed class WorkspaceEditFunctions
         Functions =
         [
             CreateFunction(
-                (Func<string, string, CancellationToken, ValueTask<WriteTextResult>>)WriteTextAsync,
+                (Func<string, AIFunctionArguments, string, CancellationToken, ValueTask<WriteTextResult>>)WriteTextAsync,
                 "write_text",
                 "Creates or overwrites one workspace UTF-8 text file and returns a bounded unified diff " +
                 "of the change. Missing parent directories are created. Refuses symbolic links, " +
                 "directories, and .git paths."),
             CreateFunction(
-                (Func<string, string, string, bool?, CancellationToken, ValueTask<EditTextResult>>)EditTextAsync,
+                (Func<string, AIFunctionArguments, string, string, bool?, CancellationToken, ValueTask<EditTextResult>>)EditTextAsync,
                 "edit_text",
                 "Replaces exact text inside one workspace UTF-8 text file and returns a bounded unified " +
                 "diff of the change. The target text must appear exactly once unless replaceAll is true. " +
                 "Refuses binary files, symbolic links, and .git paths."),
             CreateFunction(
-                (Func<string, CancellationToken, ValueTask<ApplyPatchResult>>)ApplyPatchAsync,
+                (Func<string, AIFunctionArguments, CancellationToken, ValueTask<ApplyPatchResult>>)ApplyPatchAsync,
                 "apply_patch",
                 "Applies an OpenAI apply_patch V4A patch document to one or more workspace files: " +
                 "'*** Add File:', '*** Update File:' (with @@ change sections), and '*** Delete File:'. " +
@@ -89,14 +93,41 @@ internal sealed class WorkspaceEditFunctions
             });
     }
 
+    /// <summary>Gates model-initiated writes to instruction surfaces: an instruction path
+    /// requires an explicit allow in the calling session's effective write policy — absence
+    /// of a matching allow denies, and any matching deny denies (ADR 0032 decision 2). A
+    /// host without the permission acquirer keeps the legacy containment-only behavior.</summary>
+    private void GateInstructionSurface(string? relativePath, AIFunctionArguments arguments)
+    {
+        if (acquirer is null || relativePath is null || !InstructionSurface.IsInstructionSurface(relativePath))
+        {
+            return;
+        }
+
+        var sessionId = AgentToolContext.GetRequired(arguments).SessionId;
+        var policy = acquirer.Acquire(PermissionLayer.Empty, sessionId);
+        var rules = policy.For(PermissionKind.Write);
+        var normalized = relativePath.Replace('\\', '/');
+        if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)) ||
+            !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)))
+        {
+            throw new AgentToolException(
+                "instructions_write_forbidden",
+                $"'{normalized}' is an instruction surface: model-initiated writes require an " +
+                "explicit allow in the calling session's permission policy.");
+        }
+    }
+
     [Description("Creates or overwrites one workspace UTF-8 text file.")]
     private async ValueTask<WriteTextResult> WriteTextAsync(
         [Description("The workspace://local URI of the file. Missing parent directories are created.")]
         string uri,
+        AIFunctionArguments arguments,
         [Description("The complete file content, written verbatim as UTF-8 without a byte order mark.")]
         string content,
         CancellationToken cancellationToken)
     {
+        GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
         try
         {
             if (string.IsNullOrEmpty(uri))
@@ -162,6 +193,7 @@ internal sealed class WorkspaceEditFunctions
     private async ValueTask<EditTextResult> EditTextAsync(
         [Description("The workspace://local URI of the file to edit.")]
         string uri,
+        AIFunctionArguments arguments,
         [Description("The exact current text to replace, including indentation. Must appear exactly " +
                      "once unless replaceAll is true.")]
         string oldText,
@@ -171,6 +203,7 @@ internal sealed class WorkspaceEditFunctions
         bool? replaceAll = null,
         CancellationToken cancellationToken = default)
     {
+        GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
         try
         {
             if (string.IsNullOrEmpty(uri))
@@ -253,8 +286,10 @@ internal sealed class WorkspaceEditFunctions
     private async ValueTask<ApplyPatchResult> ApplyPatchAsync(
         [Description("The complete patch text, including the '*** Begin Patch' and '*** End Patch' sentinels.")]
         string patch,
+        AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
+        GatePatchSurface(patch, arguments);
         try
         {
             if (string.IsNullOrWhiteSpace(patch))
@@ -508,6 +543,23 @@ internal sealed class WorkspaceEditFunctions
     /// <summary>Converts a patch-relative POSIX path into a workspace URI.
     /// Absolute paths and escapes fail later with the workspace's typed
     /// URI errors.</summary>
+    private void GatePatchSurface(string patch, AIFunctionArguments arguments)
+    {
+        var document = ApplyPatchParser.Parse(patch);
+        foreach (var change in document.Files)
+            GateInstructionSurface(ToWorkspaceUri(change.Path), arguments);
+    }
+
+    /// <summary>Extracts the workspace-relative path (forward slashes, no leading
+    /// separator) from a workspace://local URI, or null when the URI names no local path.</summary>
+    private static string? WorkspaceRelativePath(string uri)
+    {
+        const string localPrefix = "workspace://local/";
+        return uri.StartsWith(localPrefix, StringComparison.Ordinal)
+            ? uri[localPrefix.Length..]
+            : null;
+    }
+
     private static string ToWorkspaceUri(string relativePath)
     {
         var trimmed = relativePath.Trim().TrimStart('/');

@@ -797,7 +797,8 @@ internal sealed partial class ReplControlHost : IDisposable
     internal async Task<JsonElement> InvokeScriptToolAsync(
         string tool,
         JsonElement arguments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sessionId = null)
     {
         insideCapabilityCall.Value = true;
         try
@@ -822,7 +823,8 @@ internal sealed partial class ReplControlHost : IDisposable
         JsonElement requestArguments,
         string? correlationId,
         SessionBusConnection? progressConnection,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sessionId = null)
     {
         var function = scriptTools.FirstOrDefault(candidate => candidate.Name == tool);
         if (function is null)
@@ -905,8 +907,9 @@ internal sealed partial class ReplControlHost : IDisposable
 
         if (!insideCapabilityCall.Value)
         {
-            await RunPostHooksAsync(tool, argumentValues, correlationId, envelope, cancellationToken)
-                .ConfigureAwait(false);
+            await RunPostHooksAsync(
+                tool, argumentValues, correlationId, envelope,
+                sessionId, cancellationToken).ConfigureAwait(false);
         }
 
         return envelope;
@@ -968,6 +971,7 @@ internal sealed partial class ReplControlHost : IDisposable
         Dictionary<string, object?> arguments,
         string? correlationId,
         JsonElement envelope,
+        string? sessionId,
         CancellationToken cancellationToken)
     {
         if (pluginHosts is not { } hosts) return;
@@ -980,12 +984,18 @@ internal sealed partial class ReplControlHost : IDisposable
         foreach (var registration in registrations)
             try
             {
+                // Content observation is a declared surface (ADR 0032): a plugin without the
+                // inspections declaration sees the hook without the result payload. Origin is
+                // always tool — these are script tool invocations from the Deno side.
+                var deliversContent = pluginHosts.DeliversContent(registration.PluginId);
                 var context = new ToolPostHookContextPayload(
                     tool,
                     SerializeArguments(arguments),
                     correlationId ?? string.Empty,
                     status,
-                    result);
+                    deliversContent ? result : null,
+                    Origin: "tool",
+                    SessionId: sessionId);
                 _ = await hosts
                     .InvokeExtensionPointAsync(
                         registration.PluginId,

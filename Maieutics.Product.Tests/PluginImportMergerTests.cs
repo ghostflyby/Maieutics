@@ -230,7 +230,8 @@ public sealed class PluginImportMergerTests
             imports ?? [],
             [],
             [],
-            []);
+            [],
+            InspectionsContentReadAll: false);
     }
 
     private static (

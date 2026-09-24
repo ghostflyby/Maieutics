@@ -132,10 +132,16 @@ export interface ToolInvokeContext {
   readonly callId: string;
 }
 
-/** Tool invocation result as seen by a post hook; observation only. */
+/** Tool invocation result as seen by a post hook; observation only. Content
+ * observation (ADR 0032) requires the manifest `inspections.contentReadAll`
+ * declaration — without it the hook fires without the result payload. */
 export interface ToolPostInvokeContext extends ToolInvokeContext {
   readonly status: "ok" | "error" | "cancelled";
   readonly result: unknown;
+  /** The content origin of the invocation (always "tool" for script tools). */
+  readonly origin?: string;
+  /** The presenting REPL session of the invocation. */
+  readonly sessionId?: string;
 }
 
 export interface McpDiscoverObjectInput {

@@ -1,4 +1,4 @@
-# ADR 0032: Content Provenance and the Injection-Defense Pipeline
+# ADR 0032: Provenance, Content Inspection, and Prompt Assembly Mechanisms
 
 Status: Draft
 
@@ -6,103 +6,92 @@ Date: 2026-09-24
 
 ## Context
 
-The kernel's prompt-injection posture is thin. The security section says tool
-output is untrusted; the presentation layer honors that for MIME bundles; the
-permission overlay gates side effects. But the content path itself — what
-actually enters the model's context, and what it claims to be — carries no
-trust information anywhere:
+An agent has to act; safety comes from enforcement — the permission overlay
+today, the sandbox later. The kernel's job is to provide the mechanisms those
+enforcers consume. On the content path it currently provides none:
 
-1. **Tool results are unmarked.** Every tool result enters the transcript as a
-   `{"status":"ok","value":…}` envelope with no provenance. `read_text` of a
-   poisoned file, MCP tool output, or `object_fetch` content lands next to
-   user turns and system instructions as undifferentiated text. Nothing
-   distinguishes "the user said" from "a file the model was told to read said".
-2. **Instruction surfaces are model-writable.** The kernel's system prompt is
-   operator config (`Maieutics:Agent:SystemPrompt`), but the workspace's
-   instruction conventions — `AGENTS.md`, `.agents/skills/**/SKILL.md` — are
-   plain workspace files, and the model's own `write_text`/`edit_text` tools
-   are ungated (workspace containment is the root path, nothing more). A run
-   that is itself injected can persist instructions into the files that future
-   agent sessions treat as trusted context: prompt-injection persistence.
-3. **Derived trust is unmarked.** Child reports (ADR 0030) return
-   model-generated content that may itself be the product of injected
-   instructions; the parent consumes it as an ordinary tool result. Task-plane
-   snapshots carried no origin label until this ADR.
-4. **There is no extensibility point.** Any future defense (heuristic
-   scanner, DLP, LLM classifier) would have to be threaded ad hoc through
-   every tool.
+1. **Content carries no origin.** Tool results, MCP output, child reports,
+   object-store content — everything enters the model context unmarked. The
+   permission overlay cannot write rules that reference where content came
+   from; the future sandbox cannot grade by origin; the model cannot
+   distinguish data from instructions.
+2. **Instruction surfaces have no gate.** `AGENTS.md`, `.agents/skills/**`,
+   and the system-prompt surface are writable through `write_text`/`edit_text`
+   with no permission kind covering them. A run — possibly itself injected —
+   can persist instructions into the files future agent sessions treat as
+   trusted context.
+3. **The content path has no inspection seam.** Tool envelopes and
+   `AgentContentTriage` are the only choke points; there is no place to plug a
+   scanner, DLP, or classifier. Every future defense would be threaded ad hoc.
+4. **There is no prompt-assembly mechanism.** Instructions are one config
+   string: no named fragments, no assembly order, no session override, no
+   origin declaration. Plugins, users, and the model have no way to compose
+   prompts except concatenating text into context.
+5. **Derivation has no representation.** A child report or MCP result entering
+   the parent context is indistinguishable from directly authored content —
+   which task produced it, through which chain, is nowhere recorded.
 
-What exists already is the right foundation: the permission overlay gates side
-effects with deny-wins, the canonical transcript is the single content choke
-point, `AgentContentTriage` is the single ingestion point, and child scopes
-(ADR 0030 phase 3) already inherit permission structure. What is missing is
-the *content-side* twin of the permission system: provenance and inspection.
+The workspace instruction conventions (`AGENTS.md`, skills) are consumed by
+coding-agent clients rather than the kernel, but that only widens the surface:
+Maieutics runs share the workspace and can write the files those clients trust.
 
 ## Decision
 
-1. **Canonical content carries a `ContentOrigin`.** Every content item entering
-   the transcript is tagged `system` (kernel/config instructions), `user`
-   (human turn or human-attached attachment), `tool` (observed data from any
-   tool or resource read), or `agent` (model-generated content from a child
-   run). The tag is assigned at the two existing choke points — turn ingestion
-   and the tool envelope — persisted additively in the canonical transcript
-   (versioned, tolerate-unknown on the wire), and never mutated afterwards:
-   provenance is immutable for the life of the content.
-2. **Derived content inherits the lesser trust.** A child report is
-   `agent`-origin; content an agent read is `tool`-origin in the child and
-   stays `agent`-origin when its report reaches the parent. Provenance never
-   upgrades across the run boundary: downstream consumers see the chain's
-   least-trusted origin, not the transport's.
-3. **Instruction surfaces are protected write targets.** Reserved instruction
-   paths — `AGENTS.md`, `.agents/skills/**`, and the config system prompt via
-   any command surface — gain a new permission-overlay kind (`instructions`)
-   with deny-by-default for model-initiated writes. User and frontend writes
-   are the grant path and are unaffected. This closes persistence poisoning by
-   construction: injected instructions can still *exist* in tool output but
-   cannot *land* where future context is built from. Existing workspaces that
-   legitimately have the model maintain these files opt in with one allow
-   entry.
-4. **A pluggable inspection pipeline observes content at the choke points.**
-   Ordered `IContentInspector` implementations run where content enters the
-   transcript (tool envelope, triage). v1 semantics: **observe and annotate
-   only** — an inspector may attach a flagged marker to the content's metadata
-   and log; it may not rewrite or drop content (invariants 12 and 16 hold
-   unchanged). Registry is DI-ordered; failures are observable and non-fatal.
-   Enforcement stays where it already is: the permission overlay. Later
-   implementations (heuristic scanner, LLM classifier, DLP) plug in without
-   touching the runtime.
-5. **Delimited rendering is the presentation-level mitigation.** Transcript
-   mappers and frontends SHOULD render `tool`/`agent`-origin content inside
-   explicit delimiters labeled with the origin. This is rendering hygiene, not
-   a security boundary; the boundary is the write gate (decision 3) plus
-   side-effect gating.
+Mechanisms, not behavior doctrine. Each mechanism below is a facility whose
+consumers are the permission overlay (rules, now) and the sandbox (grading,
+later). Nothing here forbids a content flow; it makes flows addressable.
 
-What is deliberately **not** done: prompt-side "treat data as data"
-instructions are not a defense (soft mitigation at best); content is never
-rewritten or dropped by inspectors; model-generated content is not blocked
-from re-entering context (that would break the agent paradigm); injection
-"intent detection" is not a gate.
+1. **M1 — Provenance metadata.** Canonical content carries additive metadata:
+   `origin` (`system | user | tool | agent`) plus a derivation chain (the task
+   URI / child session identifiers that produced it). Assigned at the two
+   choke points (turn ingestion, tool envelope), immutable once written.
+   Consumers: overlay predicates ("deny net unless the chain reaches a user
+   turn"), sandbox grading, origin-labeled rendering, inspection.
+2. **M2 — Instruction-surface gate.** Reserved instruction paths
+   (`AGENTS.md`, `.agents/skills/**`, and the system-prompt command surface)
+   match a new `instructions` permission kind evaluated by the existing
+   overlay. The kind and path matching are the mechanism; the shipped default
+   policy (deny model-initiated writes, one allow entry to migrate) is
+   configuration.
+3. **M3 — Inspection pipeline.** Ordered inspectors observe content at the
+   tool envelope: in-process implementations (DI-ordered) and plugin
+   inspectors riding the existing `ToolPostInvoke` hook with a
+   `content:read-all` grant (install-approved — inspectors see everything).
+   Inspectors emit verdicts and tags into the content's inspection metadata;
+   they never rewrite or drop content. Enforcement for tags is overlay policy
+   (e.g. `flagged ⇒ deny net`). Timeouts and inspector failures fail open with
+   an `inspection-skipped` annotation; tool latency stays bounded.
+4. **M4 — Prompt assembly.** Named instruction fragments with declared origin,
+   a configurable assembly order (system → plugin → user by default), and
+   per-session override through the existing overlay. Fragment sources:
+   operator config, user-approved plugin declarations (static, manifest
+   `instructions` section), and user files. Every assembled fragment carries
+   M1 provenance, so composition is orchestratable and policy-addressable at
+   once. There is no dynamic third-party prompt API; plugin instruction
+   contributions are install-approved declarations.
+5. **M5 — Derivation propagation.** Child reports, MCP results, and object
+   content enter the transcript with their derivation chain filled from the
+   task plane (task URI, child session id) — data that already exists, now
+   written into the content metadata so M1 consumers see the chain.
 
 ## Consequences
 
-- The canonical transcript schema gains additive origin metadata — a versioned,
-  tolerate-unknown wire and persistence change (migration note required for
-  stored transcripts).
-- `write_text`/`edit_text` acquire a permission check for reserved instruction
-  paths; default-deny is a behavior change for users whose workflows have the
-  model maintain `AGENTS.md` — the migration is one allow entry, and it must be
-  documented prominently.
-- The inspection registry is the extensibility seam: new defenses are new
-  inspector implementations, not new kernel branches.
-- Child-report provenance composes with the task plane: snapshots already carry
-  kind-specific detail; origin rides the same additive pattern.
-- MCP tool descriptions remain in-context third-party content; marking their
-  registry entries `tool`-origin is future work once MCP projection lands.
-
-## Notes
-
-- The workspace instruction conventions (`AGENTS.md`, skills) are consumed by
-  coding-agent clients, not by the Maieutics kernel itself; the kernel's own
-  instruction surface is operator config. The write gate protects both
-  consumers: Maieutics runs cannot poison the files, and the files cannot
-  poison Maieutics runs that later read them.
+- The canonical transcript schema gains additive origin/derivation metadata —
+  a versioned, tolerate-unknown wire and persistence change (migration note
+  for stored transcripts).
+- `write_text`/`edit_text` acquire the `instructions` overlay check on
+  reserved paths; the shipped default policy denies model-initiated writes
+  with a one-allow-entry migration, and is configuration, not doctrine.
+- Inspector plugins require the `content:read-all` grant at install time and
+  are listed in plugin permissions (they are in the sees-everything trust
+  tier); timeouts fail open with an `inspection-skipped` annotation, keeping
+  tool latency bounded (invariant: bounded payloads; enforcement in policy).
+- Prompt assembly gives plugins a legitimate instruction surface under the
+  same overlay that gates everything else — composition is orchestratable and
+  gated by the same mechanism, with no dynamic third-party prompt API.
+- MCP tool descriptions remain third-party in-context content; marking their
+  registry entries with M1 provenance is future work once MCP projection
+  lands.
+- The control channel's tool-hook transport carries the origin context for
+  plugin inspectors; payload discipline follows the existing object-reference
+  pattern (inline below the triage threshold, object reference above).

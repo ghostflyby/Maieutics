@@ -201,6 +201,8 @@ public sealed class AgentSession : IAgentSession
 
             var userMessage = AgentTranscriptCodec.DetachPrivateMessage(
                 new ChatMessage(ChatRole.User, turn.Contents.ToList()));
+            foreach (var content in userMessage.Contents)
+                AgentContentProvenance.Attach(content, new AgentContentProvenance(AgentContentOrigins.User));
             var run = new AgentRun(
                 this,
                 AgentRunId.Create(),
@@ -240,7 +242,9 @@ public sealed class AgentSession : IAgentSession
         var options = profile.Options;
         ValidateModelCapabilities(profile, run.Tools.Count);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
-        var toolState = new RunToolState(this, run, recordingClient, options, objectStore);
+        var toolState = new RunToolState(
+            this, run, recordingClient, options, objectStore,
+            BuildContentInspectorRegistry(options.ContentInspectors));
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
         using var functionClient = new FunctionInvokingChatClient(recordingClient)
         {
@@ -516,6 +520,17 @@ public sealed class AgentSession : IAgentSession
         return true;
     }
 
+    /// <summary>Builds the content-inspection registry from the run's effective options; a
+    /// session with no inspectors produces null and the tool envelope skips the pipeline
+    /// entirely (ADR 0032 decision 5).</summary>
+    private static AgentContentInspectorRegistry? BuildContentInspectorRegistry(
+        IReadOnlyList<IAgentContentInspector> inspectors)
+    {
+        return inspectors is { Count: > 0 }
+            ? new AgentContentInspectorRegistry([.. inspectors])
+            : null;
+    }
+
     private void ReleaseRun()
     {
         Volatile.Write(ref activeRun, null);
@@ -557,10 +572,12 @@ public sealed class AgentSession : IAgentSession
         AgentRun run,
         RecordingChatClient recordingClient,
         AgentSessionOptions options,
-        IAgentObjectStore? objectStore)
+        IAgentObjectStore? objectStore,
+        AgentContentInspectorRegistry? contentInspectors = null)
     {
         private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
         private readonly List<ChatMessage> intermediateMessages = [];
+        private readonly AgentContentInspectorRegistry? contentInspectors = contentInspectors;
         private readonly Dictionary<(int Iteration, string MessageId), AgentMessageId> messageIds = [];
         private readonly HashSet<int> publishedIterations = [];
         private int responseCharacters;
@@ -711,10 +728,35 @@ public sealed class AgentSession : IAgentSession
                     "application/json");
             }
 
+            var resultContent = new FunctionResultContent(record.ProviderCallId, envelope);
+
+            // Provenance: tool results are tool-origin content. The derivation chain names the
+            // session and run that produced them, so overlay predicates and the future sandbox
+            // can reason about the chain (ADR 0032 decision 1).
+            AgentContentProvenance.Attach(resultContent, new AgentContentProvenance(
+                AgentContentOrigins.Tool,
+                $"{owner.Id.Value:N}/{run.Id.Value:N}"));
+
+            // Inspection: content inspectors observe the result and stamp tags into the
+            // content's metadata; enforcement for those tags is overlay policy. The pipeline
+            // is fail-open — a failing inspector contributes a skip tag rather than blocking
+            // the tool result (ADR 0032 decision 5).
+            if (contentInspectors is { IsEmpty: false } registry)
+            {
+                var tags = await registry.InspectAsync(
+                    AgentContentOrigins.Tool, resultContent, cancellationToken).ConfigureAwait(false);
+                if (tags.Count > 0)
+                {
+                    resultContent.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                    resultContent.AdditionalProperties["maieutics.inspections"] =
+                        string.Join(",", tags);
+                }
+            }
+
             intermediateMessages.Add(new ChatMessage(
                 ChatRole.Tool,
                 [
-                    new FunctionResultContent(record.ProviderCallId, envelope)
+                    resultContent
                 ]));
             await run.WriteEventAsync(
                 sequence => new AgentToolFinished(run.Id, sequence, record.CallId, envelope),

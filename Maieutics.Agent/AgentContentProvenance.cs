@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent;
@@ -30,7 +31,9 @@ public sealed record AgentContentProvenance(string Origin, string? Derivation = 
     /// <summary>The additional-properties key the provenance rides on.</summary>
     public const string PropertyKey = "maieutics.provenance";
 
-    /// <summary>Attaches provenance to one content item, replacing any previous value.</summary>
+    /// <summary>Attaches provenance to one content item, replacing any previous value. The
+    /// provenance is stored as a JSON string so it survives MEAI source-gen serialization in
+    /// provider requests and transcript persistence without a dedicated JsonTypeInfo.</summary>
     public static void Attach(AIContent content, AgentContentProvenance provenance)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -39,7 +42,8 @@ public sealed record AgentContentProvenance(string Origin, string? Derivation = 
             throw new ArgumentException("The content provenance origin is required.", nameof(provenance));
 
         content.AdditionalProperties ??= new AdditionalPropertiesDictionary();
-        content.AdditionalProperties[PropertyKey] = provenance;
+        content.AdditionalProperties[PropertyKey] = JsonSerializer.Serialize(
+            new { origin = provenance.Origin, derivation = provenance.Derivation });
     }
 
     /// <summary>Reads the provenance from one content item, or null when the item carries none.</summary>
@@ -47,10 +51,21 @@ public sealed record AgentContentProvenance(string Origin, string? Derivation = 
     {
         ArgumentNullException.ThrowIfNull(content);
         if (content.AdditionalProperties?.TryGetValue(PropertyKey, out var value) != true ||
-            value is not AgentContentProvenance provenance)
+            value is not string json)
             return null;
 
-        return provenance;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            return new AgentContentProvenance(
+                root.GetProperty("origin").GetString() ?? "",
+                root.TryGetProperty("derivation", out var derivation) ? derivation.GetString() : null);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }
 

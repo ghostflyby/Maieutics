@@ -67,9 +67,13 @@ public sealed class SubagentFrontendFramesTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The parent's post-tool response hangs until the test releases it, ensuring
+        // CancelRunAsync operates on a live child (the parent run is still in-flight).
+        var parentReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var harness = CreateHarness(
             postToolParentResponse: "done",
-            childResponse: (messages, token) => ChildHangAsync(childStarted, token));
+            childResponse: (messages, token) => ChildHangAsync(childStarted, token),
+            parentRelease: parentReleased.Task);
 
         var accepted = await harness.Service.StartTurnAsync(
             harness.Manager.Id.ToString(), "Spawn", deadline.Token);
@@ -78,17 +82,24 @@ public sealed class SubagentFrontendFramesTests
         if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
             throw new InvalidOperationException("The submitted run left no retained stream.");
 
+        // Cancel the child while the parent run is still in-flight (the parent model is
+        // parked on parentReleased). The child settles as cancelled; the parent tool call
+        // sees the cancellation and the model finishes normally.
         await harness.Service.CancelRunAsync(handle.RunId.Value.ToString("N"), deadline.Token);
 
         var result = await handle.Completion.WaitAsync(deadline.Token);
         result.Status.Should().Be(AgentSubagentStatus.Cancelled);
+
+        // Release the parent; it returns "done" and the run completes normally.
+        parentReleased.TrySetResult();
         await stream.Settled.WaitAsync(deadline.Token);
     }
 
     private static Harness CreateHarness(
         string postToolParentResponse,
         Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>? childResponse = null,
-        bool useTaskWait = false)
+        bool useTaskWait = false,
+        Task? parentRelease = null)
     {
         var buffer = new SubagentEventBuffer();
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(
@@ -132,9 +143,15 @@ public sealed class SubagentFrontendFramesTests
             // The first post-tool request continues the scripted flow; with useTaskWait the
             // parent waits on the child in-turn, so the child settles before the turn ends
             // and join-before-complete never cancels a still-running child.
-            return Interlocked.Increment(ref taskWaitCalls) == 1 && useTaskWait
-                ? StreamAsync(ToolCallUpdate("wait", "agent_probe_wait"))
-                : StreamAsync(postToolParentResponse);
+            if (Interlocked.Increment(ref taskWaitCalls) == 1 && useTaskWait)
+                return StreamAsync(ToolCallUpdate("wait", "agent_probe_wait"));
+
+            // When parentRelease is set, park the parent model so CancelRunAsync can run
+            // while the parent run is still in-flight (the child is still alive).
+            if (parentRelease is not null)
+                return WaitAndStreamAsync(parentRelease, postToolParentResponse, token);
+
+            return StreamAsync(postToolParentResponse);
         }
 
         var spawnTool = CreateSpawnTool("agent_spawn", (arguments, token) =>
@@ -229,6 +246,14 @@ public sealed class SubagentFrontendFramesTests
     {
         await Task.Yield();
         yield return update;
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> WaitAndStreamAsync(
+        Task release, string text,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await release;
+        yield return new ChatResponseUpdate(ChatRole.Assistant, text);
     }
 
     private static ChatResponseUpdate ToolCallUpdate(

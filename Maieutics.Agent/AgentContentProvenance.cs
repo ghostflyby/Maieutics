@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent;
@@ -28,12 +27,15 @@ public static class AgentContentOrigins
 /// whose format the spawning surface defines.</summary>
 public sealed record AgentContentProvenance(string Origin, string? Derivation = null)
 {
-    /// <summary>The additional-properties key the provenance rides on.</summary>
+    /// <summary>The additional-properties key the provenance origin rides on.</summary>
     public const string PropertyKey = "maieutics.provenance";
 
+    /// <summary>The additional-properties key the derivation chain rides on.</summary>
+    public const string DerivationKey = "maieutics.derivation";
+
     /// <summary>Attaches provenance to one content item, replacing any previous value. The
-    /// provenance is stored as a JSON string so it survives MEAI source-gen serialization in
-    /// provider requests and transcript persistence without a dedicated JsonTypeInfo.</summary>
+    /// origin is stored as a plain string — universally serializable, AOT-safe, and passes
+    /// the transcript codec's validation without a dedicated JsonTypeInfo.</summary>
     public static void Attach(AIContent content, AgentContentProvenance provenance)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -42,30 +44,19 @@ public sealed record AgentContentProvenance(string Origin, string? Derivation = 
             throw new ArgumentException("The content provenance origin is required.", nameof(provenance));
 
         content.AdditionalProperties ??= new AdditionalPropertiesDictionary();
-        content.AdditionalProperties[PropertyKey] = JsonSerializer.Serialize(
-            new { origin = provenance.Origin, derivation = provenance.Derivation });
+        content.AdditionalProperties[PropertyKey] = provenance.Origin;
+        if (provenance.Derivation is { } derivation)
+            content.AdditionalProperties[DerivationKey] = derivation;
     }
 
-    /// <summary>Reads the provenance from one content item, or null when the item carries none.</summary>
-    public static AgentContentProvenance? TryRead(AIContent content)
+    /// <summary>Reads the origin from one content item, or null when the item carries none.</summary>
+    public static string? TryReadOrigin(AIContent content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        if (content.AdditionalProperties?.TryGetValue(PropertyKey, out var value) != true ||
-            value is not string json)
-            return null;
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            return new AgentContentProvenance(
-                root.GetProperty("origin").GetString() ?? "",
-                root.TryGetProperty("derivation", out var derivation) ? derivation.GetString() : null);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
+        return content.AdditionalProperties?.TryGetValue(PropertyKey, out var value) == true &&
+               value is string origin
+            ? origin
+            : null;
     }
 }
 

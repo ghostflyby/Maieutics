@@ -133,17 +133,8 @@ export interface SubagentSpawnOptions {
   instructions?: string;
   /** Names of parent-registered tools the subagent may use; omitted means all. */
   tools?: string[];
-  /** How long to wait for the subagent to settle, in milliseconds (spawn returns immediately). */
-  timeoutMs?: number;
   /** The REPL session presenting the request; defaults to the environment-provided session. */
   sessionId?: string;
-}
-
-/** The handle of one spawned subagent run. */
-export interface SubagentHandle {
-  childSessionId: string;
-  runId: string;
-  taskUri: string;
 }
 
 /** The terminal snapshot of one subagent run. */
@@ -155,9 +146,6 @@ export interface SubagentResult {
   truncated?: boolean;
   usage?: { input?: number; output?: number; total?: number };
 }
-
-/** Lifecycle vocabulary of the task plane's snapshots (ADR 0028/0031). */
-export type TaskPlaneStatus = "working" | "complete" | "fail" | "cancel";
 
 /** Terminal one-shot detail carried in a task-plane snapshot. */
 export interface TerminalTaskDetail {
@@ -181,7 +169,7 @@ export interface AgentSubagentDetail {
 export interface TaskSnapshot {
   uri: string;
   kind: string;
-  status: TaskPlaneStatus;
+  status: TaskStatus;
   terminal?: TerminalTaskDetail;
   agent?: AgentSubagentDetail;
 }
@@ -191,7 +179,7 @@ export interface TaskSnapshot {
 export interface TaskRef extends PromiseLike<TaskSnapshot> {
   readonly uri: string;
   readonly kind: string;
-  readonly status: TaskPlaneStatus;
+  readonly status: TaskStatus;
   readonly abortController: AbortController;
   /** The most recently observed snapshot, or undefined before the first fetch. */
   snapshot(): TaskSnapshot | undefined;
@@ -217,10 +205,11 @@ export interface ReplModel {
   /** Spawns a subagent run scoped to this REPL's owning Agent session; the returned
    * reference is awaitable (waits for the terminal snapshot) and abortable (cancels). */
   spawnSubagent(options: SubagentSpawnOptions): Promise<SubagentTaskRef>;
-  /** Waits (bounded) for a spawned subagent run to settle and returns its result. */
+  /** Waits for a spawned subagent run to settle and returns its result. The wait is
+   * unbounded — bound it via the caller's abort signal (e.g. the REPL tool-call token). */
   waitForSubagent(
     runId: string,
-    options?: { timeoutMs?: number; sessionId?: string; signal?: AbortSignal },
+    options?: { sessionId?: string; signal?: AbortSignal },
   ): Promise<SubagentResult>;
   /** Cancels a spawned subagent run and returns its terminal snapshot. */
   cancelSubagent(
@@ -763,7 +752,7 @@ function createModel(
 
   return {
     async spawnSubagent(options: SubagentSpawnOptions): Promise<SubagentTaskRef> {
-      const handle = await request<SubagentHandle>(
+      const handle = await request<{ childSessionId: string; runId: string; taskUri: string }>(
         "POST",
         `${MODEL_BASE_PATH}?session=${encodeURIComponent(options.sessionId ?? resolveSession())}`,
         {
@@ -784,12 +773,13 @@ function createModel(
     },
     async waitForSubagent(
       runId: string,
-      options?: { timeoutMs?: number; sessionId?: string; signal?: AbortSignal },
+      options?: { sessionId?: string; signal?: AbortSignal },
     ): Promise<SubagentResult> {
-      const timeoutMs = options?.timeoutMs ?? 60_000;
+      // No timeoutMs: the wait is unbounded and bounded by the caller's abort signal.
+      // The kernel's internal 60s window is retried transparently by the long-poll chain.
       return await request<SubagentResult>(
         "GET",
-        `${MODEL_BASE_PATH}/${runId}?timeoutMs=${timeoutMs}${sessionQuery(options?.sessionId)}`,
+        `${MODEL_BASE_PATH}/${runId}?timeoutMs=60000${sessionQuery(options?.sessionId)}`,
         undefined,
         options?.signal,
       );
@@ -846,7 +836,7 @@ class TaskRefImpl implements TaskRef {
     this.#completion = this.#drive();
   }
 
-  get status(): TaskPlaneStatus {
+  get status(): TaskStatus {
     return this.#latest?.status ?? "working";
   }
 

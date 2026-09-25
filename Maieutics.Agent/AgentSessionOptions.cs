@@ -52,6 +52,12 @@ public sealed record AgentSessionOptions
     /// profile, so a spawned child carries a depth-reduced copy.</summary>
     public AgentSubagentOptions? Subagents { get; init; }
 
+    /// <summary>Gets the content inspectors that observe tool results entering the transcript
+    /// (ADR 0032 decision 5). Inspectors run at the tool envelope and stamp tags into the
+    /// result's inspection metadata; enforcement for those tags is overlay policy. When the
+    /// list is empty no inspection pipeline runs.</summary>
+    public IReadOnlyList<IAgentContentInspector> ContentInspectors { get; init; } = [];
+
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);

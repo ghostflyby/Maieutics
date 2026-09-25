@@ -33,15 +33,14 @@ public sealed class AgentContentInspectorRegistry
         if (inspectors.Length == 0) return [];
 
         var tags = new List<string>();
-        var provenanceOrigin = AgentContentProvenance.TryReadOrigin(content);
+        var provenance = AgentContentProvenance.TryRead(content);
         foreach (var inspector in inspectors)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var inspection = await inspector.InspectAsync(
-                    new AgentContentInspectionContext(origin, content,
-            provenanceOrigin is { } o ? new AgentContentProvenance(o) : null),
+                    new AgentContentInspectionContext(origin, content, provenance),
                     cancellationToken).ConfigureAwait(false);
                 tags.AddRange(inspection.Tags);
             }

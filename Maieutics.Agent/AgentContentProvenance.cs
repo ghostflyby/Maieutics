@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent;
@@ -30,12 +32,9 @@ public sealed record AgentContentProvenance(string Origin, string? Derivation = 
     /// <summary>The additional-properties key the provenance origin rides on.</summary>
     public const string PropertyKey = "maieutics.provenance";
 
-    /// <summary>The additional-properties key the derivation chain rides on.</summary>
-    public const string DerivationKey = "maieutics.derivation";
-
     /// <summary>Attaches provenance to one content item, replacing any previous value. The
-    /// origin is stored as a plain string — universally serializable, AOT-safe, and passes
-    /// the transcript codec's validation without a dedicated JsonTypeInfo.</summary>
+    /// provenance is serialized through a source-generated
+    /// <see cref="AgentContentProvenanceJsonContext"/> so the metadata is AOT-safe.</summary>
     public static void Attach(AIContent content, AgentContentProvenance provenance)
     {
         ArgumentNullException.ThrowIfNull(content);
@@ -44,19 +43,19 @@ public sealed record AgentContentProvenance(string Origin, string? Derivation = 
             throw new ArgumentException("The content provenance origin is required.", nameof(provenance));
 
         content.AdditionalProperties ??= new AdditionalPropertiesDictionary();
-        content.AdditionalProperties[PropertyKey] = provenance.Origin;
-        if (provenance.Derivation is { } derivation)
-            content.AdditionalProperties[DerivationKey] = derivation;
+        content.AdditionalProperties[PropertyKey] =
+            JsonSerializer.SerializeToElement(provenance, AgentContentProvenanceJsonContext.Default.AgentContentProvenance);
     }
 
-    /// <summary>Reads the origin from one content item, or null when the item carries none.</summary>
-    public static string? TryReadOrigin(AIContent content)
+    /// <summary>Reads the provenance from one content item, or null when the item carries none.</summary>
+    public static AgentContentProvenance? TryRead(AIContent content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        return content.AdditionalProperties?.TryGetValue(PropertyKey, out var value) == true &&
-               value is string origin
-            ? origin
-            : null;
+        if (content.AdditionalProperties?.TryGetValue(PropertyKey, out var value) != true ||
+            value is not JsonElement element)
+            return null;
+
+        return element.Deserialize(AgentContentProvenanceJsonContext.Default.AgentContentProvenance);
     }
 }
 
@@ -96,3 +95,7 @@ public interface IAgentContentInspector
         AgentContentInspectionContext context,
         CancellationToken cancellationToken);
 }
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(AgentContentProvenance))]
+internal sealed partial class AgentContentProvenanceJsonContext : JsonSerializerContext;

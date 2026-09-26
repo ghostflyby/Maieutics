@@ -400,7 +400,12 @@ public static class MaieuticsHost
                 services.GetRequiredService<Workspace>(),
                 resources: services.GetRequiredService<ResourceRegistry>()));
         builder.Services.AddSingleton(static services =>
-            new WorkspaceEditFunctions(services.GetRequiredService<Workspace>()));
+            new WorkspaceEditFunctions(
+                services.GetRequiredService<Workspace>(),
+                // The instruction-surface write gate (ADR 0032) reads the session's effective
+                // write policy; without the acquirer the gate stays dormant and model-initiated
+                // writes to AGENTS.md/.agents would inherit the legacy containment-only posture.
+                acquirer: services.GetRequiredService<PermissionPolicyAcquirer>()));
         builder.Services.AddSingleton<Frontend.SubagentEventBuffer>();
         // The task-plane tools share the built-in task:// provider instance that the resource
         // registry composes; the concrete type is not otherwise registered.

@@ -392,7 +392,7 @@ public sealed class WorkspaceEditToolTests
         }
 
         // Default posture: instruction surfaces deny model-initiated writes even though the
-        // file sits inside the workspace root (ADR 0032 decision 2).
+        // file sits inside the workspace root (ADR 0032 decision 1).
         var gateForbidden = await Record.ExceptionAsync(
             () => invokeWrite("workspace://local/AGENTS.md"));
         gateForbidden.Should().BeOfType<AgentToolException>().Which.Code

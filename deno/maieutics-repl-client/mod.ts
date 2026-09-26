@@ -206,63 +206,107 @@ export interface ReplTasks {
 export interface TerminalRunOptions {
   executable: string;
   args?: string[];
-  timeoutMs?: number;
+  /** The one-shot deadline in seconds, 1 through 600; omit for a persistent
+   * interactive session (matches the kernel's terminal_run `timeout`). */
+  timeoutSeconds?: number;
   full?: boolean;
   maxCharacters?: number;
   signal?: AbortSignal;
 }
 
-export interface TerminalScreenResult {
-  sessionId: string;
-  state: string;
-  settled?: boolean;
-  exitCode?: number;
-  taskUri?: string;
-  frame: { version: number; columns: number; rows: { text: string }[]; cursor: unknown };
-}
-
-export interface TerminalInputOptions {
-  sessionId?: string;
-  full?: boolean;
-  maxCharacters?: number;
-  signal?: AbortSignal;
-}
-
-export interface TerminalInfo {
-  sessionId: string;
-  state: string;
-  kind: string;
-  exitCode?: number;
+/** Matches the kernel's TerminalFrame record (camelCase JSON). */
+export interface TerminalFrame {
+  version: number;
+  columns: number;
+  rows: number;
+  cursor: {
+    row: number;
+    column: number;
+    visible: boolean;
+    style: string;
+    blink: boolean;
+    left: string;
+    right: string;
+    unambiguous: boolean;
+  };
+  alternateBuffer: boolean;
+  lines: { row: number; text: string }[];
+  full: boolean;
+  truncated: boolean;
+  omittedCharacters: number;
 }
 
 /** Terminal operations against the control channel (script tools). */
 export interface ReplTerminal {
-  run(options: TerminalRunOptions): Promise<TerminalScreenResult>;
+  run(options: TerminalRunOptions): Promise<TerminalRunResultJson>;
   input(
     sessionId: string,
-    lines: string[],
-    options?: { signal?: AbortSignal },
-  ): Promise<TerminalScreenResult>;
+    lines: string,
+    options?: { full?: boolean; maxCharacters?: number; signal?: AbortSignal },
+  ): Promise<TerminalInputResultJson>;
   snapshot(
     sessionId?: string,
-    options?: { full?: boolean; signal?: AbortSignal },
-  ): Promise<TerminalScreenResult>;
+    options?: { full?: boolean; maxCharacters?: number; signal?: AbortSignal },
+  ): Promise<TerminalSnapshotResultJson>;
   paste(
     sessionId: string,
     text: string,
     options?: { signal?: AbortSignal },
-  ): Promise<TerminalScreenResult>;
+  ): Promise<TerminalPasteResultJson>;
   interrupt(
     sessionId?: string,
     options?: { signal?: AbortSignal },
-  ): Promise<TerminalInterruptResult>;
-  close(sessionId?: string, options?: { signal?: AbortSignal }): Promise<void>;
-  list(options?: { signal?: AbortSignal }): Promise<TerminalInfo[]>;
+  ): Promise<TerminalInterruptResultJson>;
+  close(
+    sessionId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<Record<string, never>>;
+  list(options?: { signal?: AbortSignal }): Promise<TerminalInfoJson[]>;
 }
 
-export interface TerminalInterruptResult {
+/** Matches Maieutics.Execution.TerminalRunResult serialized as camelCase JSON. */
+export interface TerminalRunResultJson {
+  sessionId: string;
+  state: string;
+  exitCode?: number;
   settled: boolean;
-  frame: { version: number; columns: number; rows: { text: string }[]; cursor: unknown };
+  frame: TerminalFrame;
+  taskUri?: string;
+}
+
+/** Matches Maieutics.Execution.TerminalInputResult serialized as camelCase JSON. */
+export interface TerminalInputResultJson {
+  executedLines: number;
+  failedLine?: number;
+  settled: boolean;
+  frame: TerminalFrame;
+}
+
+/** Matches Maieutics.Execution.TerminalSnapshotResult serialized as camelCase JSON. */
+export interface TerminalSnapshotResultJson {
+  exitCode?: number;
+  frame: TerminalFrame;
+}
+
+/** Matches Maieutics.Execution.TerminalPasteResult serialized as camelCase JSON. */
+export interface TerminalPasteResultJson {
+  bracketed: boolean;
+  settled: boolean;
+  frame: TerminalFrame;
+}
+
+/** Matches Maieutics.Execution.TerminalInterruptResult serialized as camelCase JSON. */
+export interface TerminalInterruptResultJson {
+  settled: boolean;
+  frame: TerminalFrame;
+}
+
+/** Matches Maieutics.Execution.TerminalInfo serialized as camelCase JSON. */
+export interface TerminalInfoJson {
+  sessionId: string;
+  state: string;
+  kind: string;
+  exitCode?: number;
 }
 
 /** Model-orchestration operations against the control channel (ADR 0031). */
@@ -1002,29 +1046,35 @@ function createTerminal(tools: ReplTools): ReplTerminal {
     run: (options) =>
       invoke("terminal_run", {
         executable: options.executable,
-        ...(options.args ? { args: options.args } : {}),
-        ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+        ...(options.args ? { arguments: options.args } : {}),
+        ...(options.timeoutSeconds !== undefined ? { timeout: options.timeoutSeconds } : {}),
         ...(options.full ? { full: true } : {}),
+        ...(options.maxCharacters !== undefined ? { maxCharacters: options.maxCharacters } : {}),
       }, options.signal),
     input: (sessionId, lines, options) =>
-      invoke("terminal_input", { sessionId, input: lines }, options?.signal) as Promise<
-        TerminalScreenResult
-      >,
+      invoke("terminal_input", {
+        sessionId,
+        input: lines,
+        ...(options?.full ? { full: true } : {}),
+        ...(options?.maxCharacters !== undefined ? { maxCharacters: options.maxCharacters } : {}),
+      }, options?.signal) as Promise<TerminalInputResultJson>,
     snapshot: (sessionId, options) =>
-      invoke("terminal_snapshot", { sessionId, ...(options ?? {}) }, options?.signal) as Promise<
-        TerminalScreenResult
-      >,
+      invoke("terminal_snapshot", {
+        sessionId,
+        ...(options?.full ? { full: true } : {}),
+        ...(options?.maxCharacters !== undefined ? { maxCharacters: options.maxCharacters } : {}),
+      }, options?.signal) as Promise<TerminalSnapshotResultJson>,
     paste: (sessionId, text, options) =>
       invoke("terminal_paste", { sessionId, text }, options?.signal) as Promise<
-        TerminalScreenResult
+        TerminalPasteResultJson
       >,
     interrupt: (sessionId, options) =>
       invoke("terminal_interrupt", { sessionId }, options?.signal) as Promise<
-        TerminalInterruptResult
+        TerminalInterruptResultJson
       >,
     close: (sessionId, options) =>
-      invoke("terminal_close", { sessionId }, options?.signal) as Promise<void>,
-    list: (options) => invoke("terminal_list", {}, options?.signal) as Promise<TerminalInfo[]>,
+      invoke("terminal_close", { sessionId }, options?.signal) as Promise<Record<string, never>>,
+    list: (options) => invoke("terminal_list", {}, options?.signal) as Promise<TerminalInfoJson[]>,
   };
 }
 

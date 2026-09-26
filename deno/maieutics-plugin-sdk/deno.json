@@ -19,6 +19,6 @@
   },
   "tasks": {
     "check": "deno check .",
-    "test": "deno test --allow-read --allow-write --allow-env --allow-net --unstable-worker-options"
+    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run --unstable-worker-options"
   }
 }

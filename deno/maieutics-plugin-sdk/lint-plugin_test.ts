@@ -432,8 +432,16 @@ Deno.test("entrypoint-registered: the worker section is recognized for actor fil
   const dir = tempProjectWithManifest({
     entrypoints: { worker: { main: ["./mod.ts"] } },
   });
-  const declared = await lint(dir, "mod.ts", SDK_IMPORT + "export const a = defineActor({ x() { return 1; } });\n");
+  const declared = await lint(
+    dir,
+    "mod.ts",
+    SDK_IMPORT + "export const a = defineActor({ x() { return 1; } });\n",
+  );
   assertEquals(declared.filter((d) => d.id === "maieutics/entrypoint-registered").length, 0);
-  const orphan = await lint(dir, "orphan.ts", SDK_IMPORT + "export const b = defineActor({ x() { return 2; } });\n");
+  const orphan = await lint(
+    dir,
+    "orphan.ts",
+    SDK_IMPORT + "export const b = defineActor({ x() { return 2; } });\n",
+  );
   assertEquals(orphan.filter((d) => d.id === "maieutics/entrypoint-registered").length, 1);
 });

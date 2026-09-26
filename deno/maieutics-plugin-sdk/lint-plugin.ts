@@ -634,7 +634,7 @@ function dataFileProblems(root: string, name: string, relativePath: string): str
   if (!KNOWN_DATA_NAMES.has(name)) {
     return [
       `${label}: this data name is not supported by this kernel; the file is ` +
-        `collected but inert (known names: ${[...KNOWN_DATA_NAMES].join(", ")})`,
+      `collected but inert (known names: ${[...KNOWN_DATA_NAMES].join(", ")})`,
       ...mcpFormatProblems(label, parsed),
     ].slice(0, 1);
   }

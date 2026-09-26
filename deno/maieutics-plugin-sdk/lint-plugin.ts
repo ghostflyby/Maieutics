@@ -14,6 +14,13 @@
  *    wrap it in `defineActor(...)`; other bare exports (constants,
  *    re-exports) are reported without a fix because no semantically safe
  *    automatic rewrite exists.
+ * 3. `maieutics/data-entrypoint` — every string-valued (data) entrypoint must
+ *    resolve to a file that exists inside the plugin project, parses as JSON,
+ *    and — for catalogued data names — matches the expected format (`mcp`:
+ *    mcpServers/servers shape, stdio command, http url). The kernel enforces
+ *    the same contract at load time with full schema strictness; this rule
+ *    gives the author the feedback at edit time. Validation runs once per
+ *    plugin project per `deno lint` invocation.
  *
  * The plugin locates `maieutics.json` by walking up from the linted file
  * (never from `Deno.cwd()`, which is the launch directory and unreliable).
@@ -38,7 +45,17 @@ function findUp(startDir: string, fileName: string): string | undefined {
   }
 }
 
-/** Reads maieutics.json and returns the set of script paths declared as entrypoints. */
+/** The catalogued data entry names (the lint-side mirror of the kernel's
+ * PluginDataName). Unknown string-valued names are inert on this kernel. */
+const KNOWN_DATA_NAMES = new Set(["mcp"]);
+
+/** The entrypoints key holding the worker map (ADR 0033 hierarchy). */
+const WORKER_SECTION = "worker";
+
+/** Reads maieutics.json and returns the set of script paths declared as worker
+ * entrypoints. Understands both the two-level form (`worker` kind wrapping the
+ * worker map) and the legacy flat form; string values are data entry points and
+ * are not script paths. */
 function readEntrypointScripts(maieuticsPath: string): Set<string> {
   const result = new Set<string>();
   let parsed: unknown;
@@ -48,20 +65,32 @@ function readEntrypointScripts(maieuticsPath: string): Set<string> {
     return result;
   }
   const entrypoints = (parsed as { entrypoints?: Record<string, unknown> }).entrypoints;
-  if (entrypoints === null || typeof entrypoints !== "object") return result;
+  if (entrypoints === null || typeof entrypoints !== "object" || Array.isArray(entrypoints)) {
+    return result;
+  }
   const root = maieuticsPath.slice(0, maieuticsPath.lastIndexOf("/"));
-  for (const scripts of Object.values(entrypoints)) {
-    if (!Array.isArray(scripts)) continue;
-    for (const script of scripts) {
-      if (typeof script !== "string") continue;
-      try {
-        result.add(new URL(script, `file://${root}/`).pathname);
-      } catch {
-        // malformed script path — ignore
-      }
+  for (const [key, value] of Object.entries(entrypoints)) {
+    if (key === WORKER_SECTION) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+      for (const scripts of Object.values(value)) collectScripts(scripts, root, result);
+      continue;
     }
+    // Legacy flat form: an array under a plain key is still a worker script list.
+    collectScripts(value, root, result);
   }
   return result;
+}
+
+function collectScripts(scripts: unknown, root: string, into: Set<string>): void {
+  if (!Array.isArray(scripts)) return;
+  for (const script of scripts) {
+    if (typeof script !== "string") continue;
+    try {
+      into.add(new URL(script, `file://${root}/`).pathname);
+    } catch {
+      // malformed script path — ignore
+    }
+  }
 }
 
 /** True if `dir` is a prefix of `file` (both normalized paths). */
@@ -556,6 +585,155 @@ const provideTopLevelRule: Deno.lint.Rule = {
   },
 };
 
+/**
+ * `maieutics/data-entrypoint` — every string-valued entrypoint is a data entry
+ * point: the kernel collects the referenced file and the entry name's interpreter
+ * interprets it (ADR 0033). This rule gives the author that feedback at edit time
+ * instead of at plugin-load time:
+ *
+ * - the resolved path must stay inside the plugin project;
+ * - the file must exist and parse as JSON;
+ * - unknown data names are collected but inert on this kernel (visible hint);
+ * - for `mcp`, the collected JSON must match the format shape: the
+ *   `mcpServers`/`servers` top-level key (not both), each entry an object with a
+ *   stdio (`command`) or http (`url`, https unless loopback) transport.
+ *
+ * The kernel remains the authority — its load-time validation is stricter (per
+ * transport allowed keys, timeout positivity, `enabled` semantics). Validation
+ * runs once per plugin project per `deno lint` invocation and reports against
+ * the first linted file of the project (JSON files themselves are not linted).
+ */
+const validatedProjects = new Set<string>();
+
+function dataFileProblems(root: string, name: string, relativePath: string): string[] {
+  const label = `data entry '${name}'`;
+  if (relativePath.trim() === "") return [`${label}: the path is empty`];
+
+  let pathname: string;
+  try {
+    pathname = new URL(relativePath, `file://${root}/`).pathname;
+  } catch {
+    return [`${label}: '${relativePath}' is not a valid path`];
+  }
+  if (!isWithin(root, pathname)) {
+    return [`${label}: '${relativePath}' resolves outside the plugin project`];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Deno.readTextFileSync(pathname));
+  } catch (error) {
+    const reason = error instanceof Deno.errors.NotFound
+      ? "the file does not exist"
+      : error instanceof SyntaxError
+      ? `the file is not valid JSON (${(error as Error).message})`
+      : `the file could not be read (${(error as Error).message})`;
+    return [`${label}: ${reason} (${relativePath})`];
+  }
+
+  if (!KNOWN_DATA_NAMES.has(name)) {
+    return [
+      `${label}: this data name is not supported by this kernel; the file is ` +
+        `collected but inert (known names: ${[...KNOWN_DATA_NAMES].join(", ")})`,
+      ...mcpFormatProblems(label, parsed),
+    ].slice(0, 1);
+  }
+  return mcpFormatProblems(label, parsed);
+}
+
+/** Format-shape checks for the `mcp` data format. Deliberately lighter than the
+ * kernel's load-time validation: this catches shape mistakes at edit time. */
+function mcpFormatProblems(label: string, parsed: unknown): string[] {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [`${label}: mcp data must be a JSON object`];
+  }
+  const root = parsed as { mcpServers?: unknown; servers?: unknown };
+  if (root.mcpServers !== undefined && root.servers !== undefined) {
+    return [`${label}: mcp data must not combine the 'mcpServers' and 'servers' top-level keys`];
+  }
+  const servers = root.mcpServers ?? root.servers;
+  if (servers === undefined) return [];
+  if (servers === null || typeof servers !== "object" || Array.isArray(servers)) {
+    return [`${label}: the server map must be a JSON object`];
+  }
+
+  const problems: string[] = [];
+  for (const [serverKey, server] of Object.entries(servers as Record<string, unknown>)) {
+    const serverLabel = `${label} / '${serverKey}'`;
+    if (server === null || typeof server !== "object" || Array.isArray(server)) {
+      problems.push(`${serverLabel}: the server entry must be a JSON object`);
+      continue;
+    }
+    const config = server as Record<string, unknown>;
+    const declared = typeof config.type === "string"
+      ? config.type.toLowerCase()
+      : typeof config.transport === "string"
+      ? (config.transport as string).toLowerCase()
+      : undefined;
+    if (declared === "sse") {
+      problems.push(`${serverLabel}: the 'sse' transport is not supported`);
+      continue;
+    }
+    const kind = declared ?? (typeof config.url === "string" ? "http" : "stdio");
+    if (kind !== "stdio" && kind !== "http") {
+      problems.push(`${serverLabel}: the transport must be 'stdio' or 'http'`);
+      continue;
+    }
+    if (kind === "stdio") {
+      if (typeof config.command !== "string" || (config.command as string).trim() === "") {
+        problems.push(`${serverLabel}: stdio servers require a non-empty 'command'`);
+      }
+      continue;
+    }
+    const url = typeof config.url === "string" ? config.url : "";
+    const secure = url.startsWith("https://");
+    const loopback = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])([:\\/]|$)/.test(url);
+    if (!secure && !loopback) {
+      problems.push(
+        `${serverLabel}: http servers require an absolute 'url' — https, or plain http only for loopback`,
+      );
+    }
+  }
+  return problems;
+}
+
+const dataEntrypointRule: Deno.lint.Rule = {
+  create(context: Deno.lint.RuleContext) {
+    return {
+      Program(node: Deno.lint.Program) {
+        const dir = context.filename.slice(0, context.filename.lastIndexOf("/"));
+        const maieuticsPath = findUp(dir, "maieutics.json");
+        if (maieuticsPath === undefined) return;
+        // One validation per plugin project per invocation: the diagnostics are
+        // project-level, so reporting them on every linted file would only repeat.
+        if (validatedProjects.has(maieuticsPath)) return;
+        validatedProjects.add(maieuticsPath);
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(Deno.readTextFileSync(maieuticsPath));
+        } catch {
+          return; // a broken manifest is the kernel's load-time error, not lint's
+        }
+        const entrypoints = (parsed as { entrypoints?: unknown }).entrypoints;
+        if (entrypoints === null || typeof entrypoints !== "object" || Array.isArray(entrypoints)) {
+          return;
+        }
+        const root = maieuticsPath.slice(0, maieuticsPath.lastIndexOf("/"));
+        const problems: string[] = [];
+        for (const [name, value] of Object.entries(entrypoints as Record<string, unknown>)) {
+          if (name === WORKER_SECTION) continue;
+          if (typeof value !== "string") continue;
+          problems.push(...dataFileProblems(root, name, value));
+        }
+        for (const message of problems) {
+          context.report({ node: node as Deno.lint.Node, message });
+        }
+      },
+    };
+  },
+};
+
 export default {
   name: "maieutics",
   rules: {
@@ -563,5 +741,6 @@ export default {
     "entrypoint-exports": entrypointExportsRule,
     "provide-once": provideOnceRule,
     "provide-top-level": provideTopLevelRule,
+    "data-entrypoint": dataEntrypointRule,
   },
 };

@@ -114,7 +114,7 @@ privacy, configuration reload provider switch. Still missing:
 - Anthropic tool loop (the harness's fake Anthropic server was deleted with
   the host integration file; extract it the way `FakeOpenAiServer` was).
 - OpenAI↔Anthropic switching with canonical-history assertions.
-- MCP tool-loop E2E (stdio test server wired through `mcp.json`).
+- MCP tool-loop E2E (stdio test server wired through the plugin `mcp.json` data file).
 
 **Acceptance.** The three scenarios run in the frontend integration suite on
 all three CI OSes. No new harness machinery beyond a

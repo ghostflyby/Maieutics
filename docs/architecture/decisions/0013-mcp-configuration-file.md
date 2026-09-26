@@ -1,6 +1,7 @@
 # ADR 0013: Separate MCP Configuration File
 
-Status: Accepted
+Status: Superseded by [ADR 0033](0033-plugin-scoped-mcp-data-file.md) — the kernel-level file is removed;
+the plugin data file carries the same schema.
 
 Date: 2026-08-03
 

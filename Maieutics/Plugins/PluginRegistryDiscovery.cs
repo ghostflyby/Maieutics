@@ -80,12 +80,11 @@ internal static class PluginRegistryDiscovery
             var permissions = PluginManifest.ReadPermissions(
                 FilterRelativeGrants(packageManifest.Permissions?.Default, name, diagnostics.Add));
             var workers = new List<PluginWorkerDescriptor>();
-            foreach (var (entrypoint, scripts) in pluginManifest.Entrypoints ?? new Dictionary<string, string[]>())
+            foreach (var (entrypoint, entryScript) in EnumerateRegistryEntrypoints(pluginManifest.Entrypoints))
             {
-                if (scripts is not { Length: > 0 } || string.IsNullOrWhiteSpace(scripts[0])) continue;
                 // Worker entry is the published registry URL: the worker loads it
                 // through the native loader (already cached by the install step).
-                var entry = scripts[0].StartsWith("./", StringComparison.Ordinal) ? scripts[0][2..] : scripts[0];
+                var entry = entryScript.StartsWith("./", StringComparison.Ordinal) ? entryScript[2..] : entryScript;
                 workers.Add(new PluginWorkerDescriptor(
                     entrypoint, $"https://jsr.io/{packageName}/{version}/{entry}"));
             }
@@ -96,12 +95,15 @@ internal static class PluginRegistryDiscovery
             }
 
             // Registry-discovered plugins carry no maieutics.json, so they start with
-            // no capability grants (deny-by-default).
+            // no capability grants and no declarative extensions or MCP data file
+            // (deny-by-default; ADR 0033).
             return new PluginDescriptor(
                 name, name, Path.GetDirectoryName(denoJsonLocal) ?? "/",
                 workers, permissions, pluginManifest.Isolation,
                 pluginManifest.Dependencies ?? [],
                 PluginImportReader.Read(packageManifest.Imports),
+                [],
+                [],
                 [],
                 [],
                 [],
@@ -177,10 +179,9 @@ internal static class PluginRegistryDiscovery
                 ?? key;
             var permissions = PluginManifest.ReadPermissions(packageManifest?.Permissions?.Default);
             var workers = new List<PluginWorkerDescriptor>();
-            foreach (var (entrypoint, scripts) in pluginManifest.Entrypoints ?? new Dictionary<string, string[]>())
+            foreach (var (entrypoint, entryScript) in EnumerateRegistryEntrypoints(pluginManifest.Entrypoints))
             {
-                if (scripts is not { Length: > 0 } || string.IsNullOrWhiteSpace(scripts[0])) continue;
-                var entry = scripts[0].StartsWith("./", StringComparison.Ordinal) ? scripts[0][2..] : scripts[0];
+                var entry = entryScript.StartsWith("./", StringComparison.Ordinal) ? entryScript[2..] : entryScript;
                 workers.Add(new PluginWorkerDescriptor(
                     entrypoint, new Uri(Path.Combine(packageDir, entry)).AbsoluteUri));
             }
@@ -195,6 +196,8 @@ internal static class PluginRegistryDiscovery
                 workers, permissions, pluginManifest.Isolation,
                 pluginManifest.Dependencies ?? [],
                 PluginImportReader.Read(packageManifest?.Imports),
+                [],
+                [],
                 [],
                 [],
                 [],
@@ -360,5 +363,25 @@ internal static class PluginRegistryDiscovery
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted,
             TaskScheduler.Default);
+    }
+
+
+    /// <summary>Enumerates a registry package manifest's `entrypoints` as
+    /// (name, first script) pairs. Registry manifests are only read, never
+    /// interpreted as kernel declarations, so string values (data entries, ADR 0033)
+    /// are simply not worker sources and are skipped here.</summary>
+    private static IEnumerable<(string Name, string EntryScript)> EnumerateRegistryEntrypoints(
+        JsonElement? entrypoints)
+    {
+        if (entrypoints is not { ValueKind: JsonValueKind.Object } section) yield break;
+        foreach (var entry in section.EnumerateObject())
+        {
+            if (entry.Value.ValueKind != JsonValueKind.Array) continue;
+            var first = entry.Value.EnumerateArray()
+                .Where(static item => item.ValueKind == JsonValueKind.String)
+                .Select(static item => item.GetString())
+                .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
+            if (first is not null) yield return (entry.Name, first);
+        }
     }
 }

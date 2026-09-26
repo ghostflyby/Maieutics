@@ -1,6 +1,8 @@
 # ADR 0029: MCP Client Reverse-Request Surface
 
-Status: Draft
+Status: Draft. The `mcp.json` references below now denote the plugin-scoped MCP
+data file (ADR 0033); capability semantics are unchanged.
+
 
 Date: 2026-09-17
 

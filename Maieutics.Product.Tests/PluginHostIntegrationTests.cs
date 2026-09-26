@@ -490,7 +490,7 @@ public sealed class PluginHostIntegrationTests
             """
             {
               "isolation": "auto",
-              "entrypoints": { "main": ["./mod.ts"] },
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } },
               "capabilities": ["tools.invoke"]
             }
             """);
@@ -590,6 +590,93 @@ public sealed class PluginHostIntegrationTests
                 .Be($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server");
 
             // No worker was ever spawned for a data-only plugin.
+            manager.GetStatus().PluginCount.Should().Be(1);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            await application.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task McpDataFilePluginsContributeWithoutSpawningWorkers()
+    {
+        // A real plugin host process with a pure mcp.json data file (ADR 0033): the
+        // synthetic registration rides the same registry the host's worker
+        // registrations land in, and no worker is ever spawned for the data-only plugin.
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        var root = Path.Combine(Path.GetTempPath(), $"mc-data-e2e-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/mcp-data-e2e",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["tools.invoke"],
+              "entrypoints": { "mcp": "mcp.json" }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mcp.json"),
+            """
+            {
+              "mcpServers": {
+                "probe": { "command": "deno", "args": ["info"] }
+              }
+            }
+            """);
+        var manager = new PluginHostManager(
+            root,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            modules,
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System);
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+
+        try
+        {
+            await manager.StartAsync(timeout.Token);
+            await manager.WaitUntilReadyAsync(timeout.Token);
+
+            var registration = (await WaitForRegistrationsAsync(
+                    manager,
+                    ReplExtensionPointName.McpDiscover,
+                    timeout.Token))
+                .Should().ContainSingle().Which;
+            registration.PluginId.Should().Be(Path.GetFileName(root));
+            registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
+
+            var discovery = manager.DiscoverManifestMcpAsync(registration);
+            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
+            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
+                .Be($"plugin:{Path.GetFileName(root)}::probe");
+
             manager.GetStatus().PluginCount.Should().Be(1);
         }
         finally
@@ -919,7 +1006,7 @@ public sealed class PluginHostIntegrationTests
             """
             {
               "isolation": "auto",
-              "entrypoints": { "main": ["./mod.ts"] }
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
             """);
         File.WriteAllText(
@@ -952,7 +1039,7 @@ public sealed class PluginHostIntegrationTests
             """
             {
               "isolation": "auto",
-              "entrypoints": { "main": ["./mod.ts"] }
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
             """);
         File.WriteAllText(
@@ -1043,7 +1130,7 @@ public sealed class PluginHostIntegrationTests
             """
             {
               "isolation": "auto",
-              "entrypoints": { "main": ["./mod.ts"] }
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
             """);
         File.WriteAllText(
@@ -1103,7 +1190,7 @@ public sealed class PluginHostIntegrationTests
             """
             {
               "isolation": "auto",
-              "entrypoints": { "main": ["./mod.ts"] }
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
             """);
         File.WriteAllText(Path.Combine(root, "mod.ts"), moduleBody + "\n");
@@ -1133,7 +1220,7 @@ public sealed class PluginHostIntegrationTests
             {
               "isolation": "auto",
               "dependencies": ["sub"],
-              "entrypoints": { "main": ["./mod.ts"] }
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
             """);
         File.WriteAllText(
@@ -1163,7 +1250,7 @@ public sealed class PluginHostIntegrationTests
             """
             {
               "isolation": "auto",
-              "entrypoints": { "main": ["./mod.ts"] }
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
             """);
         File.WriteAllText(

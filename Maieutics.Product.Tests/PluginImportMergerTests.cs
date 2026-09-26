@@ -231,6 +231,8 @@ public sealed class PluginImportMergerTests
             [],
             [],
             [],
+            [],
+            [],
             InspectionsContentReadAll: false);
     }
 

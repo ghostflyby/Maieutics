@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Maieutics.Mcp;
 using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
@@ -28,8 +29,10 @@ public sealed class PluginManifestTests
               "isolation": "auto",
               "dependencies": ["base"],
               "entrypoints": {
-                "main": ["./mod.ts", "./helper.ts"],
-                "mcp": ["./src/mcp.ts"]
+                "worker": {
+                  "main": ["./mod.ts", "./helper.ts"],
+                  "echo": ["./src/echo.ts"]
+                }
               }
             }
             """);
@@ -43,8 +46,8 @@ public sealed class PluginManifestTests
         descriptor.Workers[0].ExportName.Should().Be("main");
         descriptor.Workers[0].EntryUrl.Should().StartWith("file://");
         descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");
-        descriptor.Workers[1].ExportName.Should().Be("mcp");
-        descriptor.Workers[1].EntryUrl.Should().EndWith("/src/mcp.ts");
+        descriptor.Workers[1].ExportName.Should().Be("echo");
+        descriptor.Workers[1].EntryUrl.Should().EndWith("/src/echo.ts");
         descriptor.Permissions.Read.AllowAll.Should().BeFalse();
         descriptor.Permissions.Read.Values.Should().Equal("./");
         descriptor.Permissions.Net.Values.Should().BeEmpty();
@@ -115,7 +118,7 @@ public sealed class PluginManifestTests
             }
             """,
             """
-            { "entrypoints": { "main": ["./mod.ts"] } }
+            { "entrypoints": { "worker": { "main": ["./mod.ts"] } } }
             """);
 
         descriptor.Permissions.Read.AllowAll.Should().BeFalse();
@@ -136,9 +139,11 @@ public sealed class PluginManifestTests
             """
             {
               "entrypoints": {
-                "ok": ["./mod.ts"],
-                "escape": ["../outside.ts"],
-                "abs": ["/etc/passwd"]
+                "worker": {
+                  "ok": ["./mod.ts"],
+                  "escape": ["../outside.ts"],
+                  "abs": ["/etc/passwd"]
+                }
               }
             }
             """);
@@ -261,11 +266,260 @@ public sealed class PluginManifestTests
             """,
             """
             {
-              "entrypoints": { "maieutics.json": ["./mod.ts"] }
+              "entrypoints": { "worker": { "maieutics.json": ["./mod.ts"] } }
             }
             """);
         PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
         error.Should().Contain("reserved");
+    }
+
+    [Fact]
+    public void AnMcpDataEntrypointWithACustomFileNameIsCollected()
+    {
+        // The string form of an entrypoint (ADR 0033) is a data entry point: the file
+        // name and location are the plugin's choice, and the kernel collects it instead
+        // of launching anything.
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-data", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "config/servers.json" } }
+            """);
+        Directory.CreateDirectory(Path.Combine(directory, "config"));
+        File.WriteAllText(
+            Path.Combine(directory, "config", "servers.json"),
+            """
+            {
+              "mcpServers": {
+                "probe": { "command": "deno", "args": ["run", "server.ts"] },
+                "remote": { "type": "http", "url": "https://example.test/mcp" }
+              }
+            }
+            """);
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.Workers.Should().BeEmpty();
+
+        var entry = descriptor.DataEntries.Should().ContainSingle().Which;
+        entry.Name.Should().Be("mcp");
+        entry.Error.Should().BeNull();
+        entry.Data.Should().NotBeNull();
+
+        var servers = descriptor.McpServers;
+        servers.Should().HaveCount(2);
+        var stdio = servers.Should().ContainSingle(s => s.Id == $"plugin:{Path.GetFileName(directory)}::probe").Subject;
+        stdio.Transport.Should().BeOfType<StdioMcpTransportDefinition>();
+        stdio.RootsEnabled.Should().BeTrue();
+        var http = servers.Should().ContainSingle(s => s.Id.EndsWith("::remote")).Subject;
+        http.Transport.Should().BeOfType<HttpMcpTransportDefinition>();
+        http.RootsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AFlatWorkerDeclarationFailsWithAMigrationHint()
+    {
+        // Pre-hierarchy manifests declared workers directly under entrypoints; the
+        // failure must say exactly where worker declarations live now.
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/flat", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "main": ["./mod.ts"] } }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("Unknown entrypoint section 'main'").And.Contain("'worker'");
+    }
+
+    [Fact]
+    public void AWorkerEntrypointMustBeAScriptArray()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/worker-string", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "worker": { "main": "./mod.ts" } } }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("worker 'main'").And.Contain("script array");
+    }
+
+    [Fact]
+    public void AnUndeclaredMcpJsonFileIsIgnored()
+    {
+        // There is no implicit file pickup (ADR 0033): a plugin must declare its data
+        // entrypoint. A stray mcp.json without a declaration is dead weight, even a
+        // broken one — it contributes nothing and marks nothing.
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-data", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "capabilities": ["tools.invoke"] }
+            """);
+        File.WriteAllText(Path.Combine(directory, "mcp.json"), "{ not even json");
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.DataEntries.Should().BeEmpty();
+        descriptor.McpServers.Should().BeEmpty();
+        descriptor.McpServersError.Should().BeNull();
+    }
+
+    [Fact]
+    public void AnArrayValueForACataloguedDataNameFailsTheManifest()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-array", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": ["deno"] } }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("catalogued data entry").And.Contain("string path");
+    }
+
+    [Fact]
+    public void ADataEntrypointOutsideTheRootCarriesTheError()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-escape", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "../escape.json" } }
+            """);
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.McpServers.Should().BeEmpty();
+        descriptor.McpServersError.Should().Contain("outside the plugin root");
+    }
+
+    [Fact]
+    public void AMissingDataEntrypointFileCarriesTheError()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-missing", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "missing.json" } }
+            """);
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.McpServersError.Should().Contain("does not exist");
+    }
+
+    [Fact]
+    public void AnUnknownDataEntrypointNameIsCollectedButInert()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/data-catalog", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "catalog": "./data/catalog.json" } }
+            """);
+        Directory.CreateDirectory(Path.Combine(directory, "data"));
+        File.WriteAllText(
+            Path.Combine(directory, "data", "catalog.json"),
+            """{ "items": [1, 2, 3] }""");
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        var entry = descriptor.DataEntries.Should().ContainSingle().Which;
+        entry.Name.Should().Be("catalog");
+        entry.Data.Should().NotBeNull();
+        descriptor.ExtensionDiagnostics.Should()
+            .Contain(d => d.Contains("data entry 'catalog'") && d.Contains("inert"));
+        descriptor.McpServers.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AStrayConventionalFileNextToADeclarationIsIgnored()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-both", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "servers.json" } }
+            """);
+        File.WriteAllText(
+            Path.Combine(directory, "servers.json"),
+            """{ "mcpServers": { "declared": { "command": "deno" } } }""");
+        File.WriteAllText(
+            Path.Combine(directory, "mcp.json"),
+            """{ "mcpServers": { "conventional": { "command": "deno" } } }""");
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.McpServers.Should().ContainSingle().Which.Id.Should().EndWith("::declared");
+    }
+
+    [Fact]
+    public void DisabledDataFileServersAreSkipped()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-off", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "servers.json" } }
+            """);
+        File.WriteAllText(
+            Path.Combine(directory, "servers.json"),
+            """
+            {
+              "mcpServers": {
+                "off": { "enabled": false, "command": "deno" },
+                "on": { "command": "deno" }
+              }
+            }
+            """);
+
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.McpServers.Should().ContainSingle().Which.Id.Should().EndWith("::on");
+    }
+
+    [Fact]
+    public void AnInvalidDataEntrypointFileCarriesTheError()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/mcp-broken", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "servers.json" } }
+            """);
+        File.WriteAllText(Path.Combine(directory, "servers.json"), "{");
+
+        // The broken data file must not take the manifest's own declarations down:
+        // the plugin loads, carries no servers, and reports the parse failure.
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+            throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+        descriptor.McpServers.Should().BeEmpty();
+        descriptor.McpServersError.Should().Contain("Invalid JSON in 'servers.json'");
+    }
+
+    [Fact]
+    public void APluginWithoutAnMcpDataFileCarriesNoServers()
+    {
+        var descriptor = LoadPlugin(
+            """
+            { "name": "@maieutics/no-data", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "capabilities": ["tools.invoke"] }
+            """);
+        descriptor.McpServers.Should().BeEmpty();
     }
 
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)

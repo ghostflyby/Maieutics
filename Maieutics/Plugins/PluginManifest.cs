@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Maieutics.Control;
+using Maieutics.Mcp;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -16,8 +17,11 @@ internal sealed record PluginDescriptor(
     IReadOnlyList<PluginImportEntry> Imports,
     IReadOnlyList<string> Capabilities,
     IReadOnlyList<PluginExtensionEntry> Extensions,
+    IReadOnlyList<PluginDataEntry> DataEntries,
+    IReadOnlyList<McpServerDefinition> McpServers,
     IReadOnlyList<string> ExtensionDiagnostics,
-    bool InspectionsContentReadAll);
+    bool InspectionsContentReadAll,
+    string? McpServersError = null);
 
 /// <summary>One declarative extension entry from the manifest's `extensions` section:
 /// a kernel-known kind plus the raw data the kind's kernel interpreter consumes.
@@ -34,6 +38,26 @@ internal static class PluginExtensionKind
     public static bool IsKnown(string kind)
     {
         return kind == McpDiscover;
+    }
+}
+
+/// <summary>One data entry point declared in the manifest's `entrypoints` section with a
+/// plain string value: the kernel collects the referenced file as raw JSON instead of
+/// launching it. Interpretation belongs to the entry name's kernel interpreter
+/// (<see cref="PluginDataName"/>); a collection failure rides the entry as an error
+/// marker and never fails the plugin load.</summary>
+internal sealed record PluginDataEntry(string Name, JsonElement? Data, string? Error);
+
+/// <summary>The kernel-known data entry names. A catalogued name requires its string
+/// entrypoint value to resolve to a file the kernel can interpret; unknown names are
+/// collected but inert, with a visible diagnostic.</summary>
+internal static class PluginDataName
+{
+    public const string Mcp = "mcp";
+
+    public static bool IsKnown(string name)
+    {
+        return name == Mcp;
     }
 }
 
@@ -108,6 +132,10 @@ internal sealed class PluginPermissionGrantJsonConverter : JsonConverter<PluginP
 /// </remarks>
 internal static class PluginManifest
 {
+    /// <summary>The entrypoints key holding the worker map (worker name → script array).
+    /// Sibling keys are data entry names (ADR 0033).</summary>
+    private const string WorkerSectionName = "worker";
+
     public static bool TryLoad(string directory, [NotNullWhen(true)] out PluginDescriptor? descriptor, out string error)
     {
         descriptor = null;
@@ -135,9 +163,11 @@ internal static class PluginManifest
         var id = Path.GetFileName(Path.TrimEndingDirectorySeparator(directory));
         var name = ReadPackageName(directory, id);
         IReadOnlyList<PluginWorkerDescriptor> workers;
+        IReadOnlyList<PluginDataEntry> dataEntries;
+        IReadOnlyList<string> dataDiagnostics;
         try
         {
-            workers = ReadEntrypoints(pluginManifest.Entrypoints, directory);
+            (workers, dataEntries, dataDiagnostics) = ReadEntrypoints(pluginManifest.Entrypoints, directory);
         }
         catch (JsonException exception)
         {
@@ -165,6 +195,32 @@ internal static class PluginManifest
             return false;
         }
 
+        // MCP interpretation of the declared data entry (ADR 0033). The 'mcp' name is
+        // the only source — there is no implicit file pickup beside the manifest. A
+        // broken entry does not fail the plugin load: the manifest declarations
+        // (entrypoints, capabilities, extensions) stay authoritative, and the error
+        // marker keeps the plugin registered so its previous MCP contribution remains
+        // discoverable-but-failed — the sticky-last-good rule the coordinator applies.
+        IReadOnlyList<McpServerDefinition> mcpServers = [];
+        string? mcpServersError = null;
+        if (dataEntries.FirstOrDefault(entry => entry.Name == PluginDataName.Mcp) is { } mcpEntry)
+        {
+            if (mcpEntry.Error is { } collectionError)
+                mcpServersError = $"The 'mcp' data entry could not be collected: {collectionError}";
+            else if (mcpEntry.Data is { } collectedData)
+            {
+                try
+                {
+                    mcpServers = McpServerFile.ReadJson(collectedData, directory, $"plugin:{id}::");
+                }
+                catch (Exception exception) when (
+                    exception is InvalidOperationException or JsonException or InvalidDataException)
+                {
+                    mcpServersError = $"Invalid mcp.json data entry: {exception.Message}";
+                }
+            }
+        }
+
         // Inspections are the content-observation declaration (ADR 0032): a plugin that
         // declares contentReadAll receives tool results in its post-invoke hooks. Absence
         // means the hooks fire without result payloads.
@@ -183,6 +239,9 @@ internal static class PluginManifest
             }
         }
 
+        var declarativeDiagnostics = new List<string>(extensionDiagnostics);
+        declarativeDiagnostics.AddRange(dataDiagnostics);
+
         descriptor = new PluginDescriptor(
             id,
             name,
@@ -194,10 +253,154 @@ internal static class PluginManifest
             imports,
             capabilities,
             extensions,
-            extensionDiagnostics,
-            contentReadAll);
+            dataEntries,
+            mcpServers,
+            declarativeDiagnostics,
+            contentReadAll,
+            mcpServersError);
         error = string.Empty;
         return true;
+    }
+
+    /// <summary>Reads the manifest's `entrypoints` section. The top-level key is the
+    /// entry KIND, never a name: `worker` holds the worker map (worker name → script
+    /// array, the first script starting one worker, the rest same-worker helpers);
+    /// catalogued data names (`mcp`, <see cref="PluginDataName"/>) hold a string path to
+    /// a file the kernel collects and interprets instead of launching (ADR 0033);
+    /// unknown names holding a string are collected but inert with a visible diagnostic
+    /// (forward compatibility, same rule as unknown extension kinds). Structural
+    /// violations fail the manifest — including an array under an unknown name, which
+    /// is almost certainly a pre-hierarchy worker declaration missing its `worker`
+    /// wrapper. A data file that cannot be collected only marks its entry.</summary>
+    private static (
+        IReadOnlyList<PluginWorkerDescriptor> Workers,
+        IReadOnlyList<PluginDataEntry> DataEntries,
+        IReadOnlyList<string> Diagnostics)
+        ReadEntrypoints(JsonElement? entrypoints, string directory)
+    {
+        var workers = new List<PluginWorkerDescriptor>();
+        var dataEntries = new List<PluginDataEntry>();
+        var diagnostics = new List<string>();
+        if (entrypoints is not { ValueKind: JsonValueKind.Object } section)
+        {
+            if (entrypoints is { ValueKind: not JsonValueKind.Null and not JsonValueKind.Undefined })
+                throw new JsonException("The 'entrypoints' section must be an object.");
+            return (workers, dataEntries, diagnostics);
+        }
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        foreach (var entry in section.EnumerateObject())
+        {
+            if (string.Equals(entry.Name, WorkerSectionName, StringComparison.Ordinal))
+            {
+                if (entry.Value.ValueKind is not JsonValueKind.Object)
+                    throw new JsonException(
+                        "The 'worker' entrypoints section must be an object of worker name → script array.");
+                foreach (var worker in entry.Value.EnumerateObject())
+                    if (TryReadWorker(root, worker) is { } descriptor)
+                        workers.Add(descriptor);
+                continue;
+            }
+
+            switch (entry.Value.ValueKind)
+            {
+                case JsonValueKind.String:
+                    var dataPath = entry.Value.GetString();
+                    if (string.IsNullOrWhiteSpace(dataPath))
+                    {
+                        dataEntries.Add(new PluginDataEntry(entry.Name, null, "The data entry path is empty."));
+                        break;
+                    }
+
+                    if (!PluginDataName.IsKnown(entry.Name))
+                        diagnostics.Add(
+                            $"Unknown data entry '{entry.Name}' is declared but not supported by this kernel; " +
+                            $"it is collected but inert (known names: {PluginDataName.Mcp}).");
+                    dataEntries.Add(CollectDataEntry(root, entry.Name, dataPath));
+                    break;
+
+                case JsonValueKind.Array when PluginDataName.IsKnown(entry.Name):
+                    throw new JsonException(
+                        $"The entrypoint '{entry.Name}' is a catalogued data entry and requires a string path, not a script array.");
+
+                default:
+                    throw new JsonException(
+                        $"Unknown entrypoint section '{entry.Name}'. Worker declarations live under 'worker'; " +
+                        $"catalogued data entries take a string path (known names: {PluginDataName.Mcp}).");
+            }
+        }
+
+        return (workers, dataEntries, diagnostics);
+    }
+
+    /// <summary>Reads one code entrypoint's script array. The first non-empty script is
+    /// the worker's entry module and must resolve inside the plugin root; anything else
+    /// is a tolerant skip, matching the historical behavior for malformed arrays.</summary>
+    private static PluginWorkerDescriptor? TryReadWorker(string root, JsonProperty entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry.Name)) return null;
+        // The manifest export name is reserved for declarative entries: a worker
+        // export with this name would be shadowed by the manifest discovery branch.
+        if (string.Equals(entry.Name, PluginHostManager.ManifestExportName, StringComparison.Ordinal))
+            throw new JsonException(
+                $"The entrypoint name '{PluginHostManager.ManifestExportName}' is reserved.");
+        if (entry.Value.ValueKind is not JsonValueKind.Array)
+            throw new JsonException(
+                $"The worker '{entry.Name}' must be declared as a script array.");
+
+        var entryScript = entry.Value.EnumerateArray()
+            .Where(static item => item.ValueKind == JsonValueKind.String)
+            .Select(static item => item.GetString())
+            .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
+        if (entryScript is null) return null;
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(Path.Combine(root, entryScript));
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+
+        // Directory traversal protection: the resolved path must stay inside the plugin root.
+        if (!IsWithinRoot(fullPath, root)) return null;
+
+        return new PluginWorkerDescriptor(entry.Name, new Uri(fullPath).AbsoluteUri);
+    }
+
+    /// <summary>Collects one string-valued data entry: resolves the path inside the
+    /// plugin root and parses the file as JSON. Any failure rides the entry as an error
+    /// marker — the plugin stays loaded, and the entry's interpreter treats a failed
+    /// collection as no data (for 'mcp', the sticky-last-good marker).</summary>
+    private static PluginDataEntry CollectDataEntry(string root, string name, string relativePath)
+    {
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(Path.Combine(root, relativePath));
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return new PluginDataEntry(name, null, $"The data entry path '{relativePath}' is not a valid path.");
+        }
+
+        if (!IsWithinRoot(fullPath, root))
+            return new PluginDataEntry(name, null, $"The data entry path '{relativePath}' resolves outside the plugin root.");
+
+        if (!File.Exists(fullPath))
+            return new PluginDataEntry(name, null, $"The data entry file '{relativePath}' does not exist.");
+
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(fullPath));
+            return new PluginDataEntry(name, document.RootElement.Clone(), null);
+        }
+        catch (JsonException exception)
+        {
+            return new PluginDataEntry(name, null, $"Invalid JSON in '{relativePath}': {exception.Message}");
+        }
     }
 
     /// <summary>Parses the manifest's declarative `extensions` section. The section must
@@ -299,51 +502,6 @@ internal static class PluginManifest
         }
     }
 
-    /// <summary>
-    ///     Reads the worker entrypoints from maieutics.json. Each entrypoint name becomes one worker
-    ///     actor; the array lists the scripts of that worker (the first is the entry, the rest are
-    ///     same-worker helpers — they never become separate workers). Every script path must resolve
-    ///     inside the plugin directory; an escaping path (.. / symlink) is rejected for that entrypoint.
-    /// </summary>
-    private static IReadOnlyList<PluginWorkerDescriptor> ReadEntrypoints(
-        IReadOnlyDictionary<string, string[]>? entrypoints,
-        string directory)
-    {
-        if (entrypoints is null || entrypoints.Count == 0) return [];
-
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
-        var workers = new List<PluginWorkerDescriptor>();
-        foreach (var (entrypointName, scripts) in entrypoints)
-        {
-            if (string.IsNullOrWhiteSpace(entrypointName)) continue;
-            // The manifest export name is reserved for declarative entries: a worker
-            // export with this name would be shadowed by the manifest discovery branch.
-            if (string.Equals(entrypointName, PluginHostManager.ManifestExportName, StringComparison.Ordinal))
-                throw new JsonException(
-                    $"The entrypoint name '{PluginHostManager.ManifestExportName}' is reserved.");
-            if (scripts is null || scripts.Length == 0) continue;
-
-            var entry = scripts[0];
-            if (string.IsNullOrWhiteSpace(entry)) continue;
-
-            string fullPath;
-            try
-            {
-                fullPath = Path.GetFullPath(Path.Combine(root, entry));
-            }
-            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                continue;
-            }
-
-            // Directory traversal protection: the resolved path must stay inside the plugin root.
-            if (!IsWithinRoot(fullPath, root)) continue;
-
-            workers.Add(new PluginWorkerDescriptor(entrypointName, new Uri(fullPath).AbsoluteUri));
-        }
-        return workers;
-    }
-
     /// <summary>Whether <paramref name="fullPath"/> stays inside <paramref name="root"/> (no `..` escape).</summary>
     private static bool IsWithinRoot(string fullPath, string root)
     {
@@ -426,9 +584,10 @@ internal static class PluginManifest
 [JsonSerializable(typeof(PluginManifestMaieutics))]
 internal sealed partial class PluginManifestJsonContext : JsonSerializerContext;
 
-/// <summary>The plugin declaration file (maieutics.json): worker entrypoints, dependencies, isolation.</summary>
+/// <summary>The plugin declaration file (maieutics.json): entrypoints (code arrays and
+/// data paths), dependencies, isolation.</summary>
 internal sealed record MaieuticsManifestFile(
-    IReadOnlyDictionary<string, string[]>? Entrypoints = null,
+    JsonElement? Entrypoints = null,
     IReadOnlyList<string>? Dependencies = null,
     string? Isolation = null,
     IReadOnlyList<string>? Capabilities = null,

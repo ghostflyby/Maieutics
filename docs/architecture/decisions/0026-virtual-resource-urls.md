@@ -1,6 +1,8 @@
 # ADR 0026: Virtual Resource URLs
 
-Status: Draft
+Status: Draft. The `mcp.json` references below now denote the plugin-scoped MCP
+data file (ADR 0033); ordering semantics are unchanged (servers are ordered by id).
+
 
 Date: 2026-09-13
 

@@ -47,8 +47,7 @@ public static class MaieuticsHost
             AppContext.BaseDirectory,
             startupCurrentDirectory,
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
-        var mcpConfigurationPath = GetMcpConfigurationPath(configurationFile);
-        ValidateInitialConfigurationFile(configurationFile, mcpConfigurationPath);
+        ValidateInitialConfigurationFile(configurationFile);
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -73,22 +72,9 @@ public static class MaieuticsHost
                 context.Ignore = true;
             };
         });
-        builder.Configuration.AddJsonFile(source =>
-        {
-            source.FileProvider = fileProvider.Provider;
-            source.Path = "mcp.json";
-            source.Optional = true;
-            source.ReloadOnChange = true;
-            source.OnLoadException = context =>
-            {
-                fileErrors.Record(context.Exception);
-                context.Ignore = true;
-            };
-        });
-        // permissions.json rides the same watcher convention as mcp.json: the config source is
-        // only the change trigger (and its unknown root keys bind to nothing); the Deno-shaped
-        // content is parsed by PermissionProfileLoader in the reload pipeline, where an invalid
-        // file rejects the reload and keeps the last-known-good snapshot (ADR 0018 Phase 5).
+        // permissions.json is a change trigger only: its Deno-shaped content is parsed by
+        // PermissionProfileLoader in the reload pipeline, where an invalid file rejects the
+        // reload and keeps the last-known-good snapshot (ADR 0018 Phase 5).
         builder.Configuration.AddJsonFile(source =>
         {
             source.FileProvider = fileProvider.Provider;
@@ -204,7 +190,6 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(configurationFile);
         builder.Services.AddSingleton(_ => fileProvider);
         builder.Services.AddSingleton(fileErrors);
-        builder.Services.AddSingleton(new McpStartupDirectory(startupCurrentDirectory));
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton(applicationPaths);
         builder.Services.AddSingleton(workspaceHome);
@@ -310,11 +295,17 @@ public static class MaieuticsHost
 
         builder.Services.AddSingleton<PluginHostModule>();
         builder.Services.TryAddSingleton(ApplicationPaths.Resolve());
-        builder.Services.AddSingleton(services => new PluginHostManager(
-            Path.Combine(
+        // MAIEUTICS_PLUGINS_ROOT relocates the plugin workspace (portable setups and test
+        // isolation); the default stays under the roaming application-data Maieutics directory.
+        var pluginsRoot = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT") is
+                { } configuredPluginsRoot and not { Length: 0 }
+            ? Path.GetFullPath(configuredPluginsRoot)
+            : Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "Maieutics",
-                "plugins"),
+                "plugins");
+        builder.Services.AddSingleton(services => new PluginHostManager(
+            pluginsRoot,
             services.GetRequiredService<ApplicationPaths>().PluginDataRoot,
             controlSocketPath,
             services.GetRequiredService<DenoReplOptions>(),
@@ -323,6 +314,8 @@ public static class MaieuticsHost
             services.GetRequiredService<ILogger<PluginHostManager>>(),
             services.GetRequiredService<ILoggerFactory>(),
             services.GetRequiredService<TimeProvider>(),
+            services.GetService<IMcpWorkspaceRootsSource>(),
+            services.GetService<IMcpElicitationPresenter>(),
             services.GetService<DenoPermissionBroker>()));
         // The host manager is the kernel-facing REPL policy registrar (ADR 0020 decision 1): the
         // session factory pre-caches a REPL's policy through it before the host derives the REPL.
@@ -663,20 +656,8 @@ public static class MaieuticsHost
         if (!string.IsNullOrWhiteSpace(value)) aliases.Add(key, value);
     }
 
-    private static string? GetMcpConfigurationPath(MaieuticsConfigurationFile configurationFile)
-    {
-        return configurationFile.Path is null
-            ? null
-            : Path.Combine(
-                Path.GetDirectoryName(configurationFile.Path)
-                ?? throw new InvalidOperationException(
-                    $"Cannot resolve the directory for '{configurationFile.Path}'."),
-                "mcp.json");
-    }
-
     private static void ValidateInitialConfigurationFile(
-        MaieuticsConfigurationFile configurationFile,
-        string? mcpConfigurationPath)
+        MaieuticsConfigurationFile configurationFile)
     {
         if (configurationFile.Path is not null)
         {
@@ -691,12 +672,6 @@ public static class MaieuticsHost
                 using var stream = File.OpenRead(configurationFile.Path);
                 using var _ = JsonDocument.Parse(stream);
             }
-        }
-
-        if (mcpConfigurationPath is null || !File.Exists(mcpConfigurationPath)) return;
-        {
-            using var stream = File.OpenRead(mcpConfigurationPath);
-            using var _ = JsonDocument.Parse(stream);
         }
     }
 }

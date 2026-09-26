@@ -120,6 +120,8 @@ export interface ReplClient {
   model: ReplModel;
   /** Generic task-plane addressing: wait, cancel, poll by URI. */
   tasks: ReplTasks;
+  /** Terminal operations via script tools. */
+  terminal: ReplTerminal;
 
   /** Probes the kernel control channel over the multiplexed bus. */
   health(): Promise<string>;
@@ -198,6 +200,69 @@ export interface SubagentTaskRef extends TaskRef {
 export interface ReplTasks {
   /** Returns a live reference to the task at the URI; validates existence on first await. */
   get(uri: string, options?: { signal?: AbortSignal }): TaskRef;
+}
+
+/** Terminal operation types. */
+export interface TerminalRunOptions {
+  executable: string;
+  args?: string[];
+  timeoutMs?: number;
+  full?: boolean;
+  maxCharacters?: number;
+  signal?: AbortSignal;
+}
+
+export interface TerminalScreenResult {
+  sessionId: string;
+  state: string;
+  settled?: boolean;
+  exitCode?: number;
+  taskUri?: string;
+  frame: { version: number; columns: number; rows: { text: string }[]; cursor: unknown };
+}
+
+export interface TerminalInputOptions {
+  sessionId?: string;
+  full?: boolean;
+  maxCharacters?: number;
+  signal?: AbortSignal;
+}
+
+export interface TerminalInfo {
+  sessionId: string;
+  state: string;
+  kind: string;
+  exitCode?: number;
+}
+
+/** Terminal operations against the control channel (script tools). */
+export interface ReplTerminal {
+  run(options: TerminalRunOptions): Promise<TerminalScreenResult>;
+  input(
+    sessionId: string,
+    lines: string[],
+    options?: { signal?: AbortSignal },
+  ): Promise<TerminalScreenResult>;
+  snapshot(
+    sessionId?: string,
+    options?: { full?: boolean; signal?: AbortSignal },
+  ): Promise<TerminalScreenResult>;
+  paste(
+    sessionId: string,
+    text: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<TerminalScreenResult>;
+  interrupt(
+    sessionId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<TerminalInterruptResult>;
+  close(sessionId?: string, options?: { signal?: AbortSignal }): Promise<void>;
+  list(options?: { signal?: AbortSignal }): Promise<TerminalInfo[]>;
+}
+
+export interface TerminalInterruptResult {
+  settled: boolean;
+  frame: { version: number; columns: number; rows: { text: string }[]; cursor: unknown };
 }
 
 /** Model-orchestration operations against the control channel (ADR 0031). */
@@ -929,6 +994,40 @@ function createTasks(
   };
 }
 
+function createTerminal(tools: ReplTools): ReplTerminal {
+  const invoke = <T>(tool: string, args?: Record<string, unknown>, signal?: AbortSignal) =>
+    tools.invoke(tool, args, { signal }) as Promise<T>;
+
+  return {
+    run: (options) =>
+      invoke("terminal_run", {
+        executable: options.executable,
+        ...(options.args ? { args: options.args } : {}),
+        ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+        ...(options.full ? { full: true } : {}),
+      }, options.signal),
+    input: (sessionId, lines, options) =>
+      invoke("terminal_input", { sessionId, input: lines }, options?.signal) as Promise<
+        TerminalScreenResult
+      >,
+    snapshot: (sessionId, options) =>
+      invoke("terminal_snapshot", { sessionId, ...(options ?? {}) }, options?.signal) as Promise<
+        TerminalScreenResult
+      >,
+    paste: (sessionId, text, options) =>
+      invoke("terminal_paste", { sessionId, text }, options?.signal) as Promise<
+        TerminalScreenResult
+      >,
+    interrupt: (sessionId, options) =>
+      invoke("terminal_interrupt", { sessionId }, options?.signal) as Promise<
+        TerminalInterruptResult
+      >,
+    close: (sessionId, options) =>
+      invoke("terminal_close", { sessionId }, options?.signal) as Promise<void>,
+    list: (options) => invoke("terminal_list", {}, options?.signal) as Promise<TerminalInfo[]>,
+  };
+}
+
 function createClient(address: string, events: EventTarget): ReplClient {
   const bus = new ReplBus(address, events);
   const tools = createTools(bus);
@@ -944,6 +1043,7 @@ function createClient(address: string, events: EventTarget): ReplClient {
     resources: createResources(address, tools),
     model: createModel(request, resolveSession, tasks),
     tasks,
+    terminal: createTerminal(tools),
   };
 }
 

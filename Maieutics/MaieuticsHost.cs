@@ -339,7 +339,8 @@ public static class MaieuticsHost
                 [
                     .. services.GetRequiredService<WorkspaceFunctions>().Functions,
                     .. services.GetRequiredService<WorkspaceEditFunctions>().Functions,
-                    .. services.GetRequiredService<ResourceFunctions>().Functions
+                    .. services.GetRequiredService<ResourceFunctions>().Functions,
+                    .. services.GetRequiredService<TerminalFunctions>().Functions
                 ],
                 pluginHosts: services.GetRequiredService<PluginHostManager>(),
                 credentials: services.GetRequiredService<ReplControlCredentialRegistry>(),

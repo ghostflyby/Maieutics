@@ -819,6 +819,39 @@ public sealed class FrontendTurnQueueIntegrationTests
             .ToArray();
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task AParkedRequestWhoseClientVanishesDoesNotBlockTheGate()
+    {
+        // Deterministic pin for the Debug-load hang: a client that sends a request and
+        // vanishes while its release is pending used to leave an unreleasable entry at
+        // the head of the gate, so every subsequent release popped the zombie and the
+        // live request starved forever.
+        var provider = new GatedOpenAiServer();
+        using var zombie = new TcpClient();
+        await zombie.ConnectAsync(IPAddress.Loopback, provider.Port, TestContext.Current.CancellationToken);
+        var request = Encoding.ASCII.GetBytes(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: gated\r\nContent-Length: 2\r\n\r\n{}");
+        await zombie.Client.SendAsync(request, TestContext.Current.CancellationToken);
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        wait.CancelAfter(TimeSpan.FromSeconds(10));
+        while (provider.ParkedRequests < 1)
+        {
+            await Task.Delay(25, wait.Token);
+        }
+
+        zombie.Close();
+        while (provider.ParkedRequests > 0)
+        {
+            await Task.Delay(25, wait.Token);
+        }
+
+        // The gate must serve the LIVE head now that the zombie is gone.
+        var probe = provider.ParkForTest();
+        provider.ReleaseNext();
+        await probe.Task.WaitAsync(wait.Token);
+        probe.Task.IsCompleted.Should().BeTrue();
+    }
+
     /// <summary>A chat-completions SSE server whose responses are gated one request at a
     /// time: every provider request parks until the test releases it, so run lifetimes and
     /// queue transitions can be staged deterministically.</summary>
@@ -842,6 +875,9 @@ public sealed class FrontendTurnQueueIntegrationTests
         }
 
         public Uri Endpoint { get; }
+
+        /// <summary>The raw listen port, for tests that drive the gate's TCP surface directly.</summary>
+        public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
         /// <summary>How many provider requests have arrived and are waiting for release.</summary>
         public int ParkedRequests
@@ -980,9 +1016,25 @@ public sealed class FrontendTurnQueueIntegrationTests
                         parked.Add(release);
                     }
 
-                    // The release call owns removing the entry; the response is written only
-                    // after the release arrives, so this loop never touches `parked`.
-                    await release.Task.ConfigureAwait(false);
+                    // The release call owns removing a released entry; a client that walks
+                    // away while parked owns removing its own: a vanished connection can
+                    // never observe its release, so its entry would sit at the head of the
+                    // queue unreleasable and ReleaseNext would spend every pop on it while
+                    // the live request starved behind it (the Debug-load hang this guards).
+                    using var parkedWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    var disconnected = WaitDisconnectedAsync(client, parkedWait.Token);
+                    var settled = await Task.WhenAny(release.Task, disconnected).ConfigureAwait(false);
+                    await parkedWait.CancelAsync().ConfigureAwait(false);
+                    lock (gate)
+                    {
+                        parked.Remove(release);
+                    }
+
+                    if (cancellationToken.IsCancellationRequested ||
+                        !ReferenceEquals(settled, release.Task))
+                    {
+                        return;
+                    }
 
                     if (cancellationToken.IsCancellationRequested) return;
 
@@ -1003,6 +1055,19 @@ public sealed class FrontendTurnQueueIntegrationTests
             finally
             {
                 client.Dispose();
+            }
+        }
+
+        /// <summary>Completes when the client closes its end (EOF) or the server shuts
+        /// down: a parked request whose connection is gone can never observe a release,
+        /// so its gate entry must be removed instead of blocking the head of the queue.</summary>
+        private static async Task WaitDisconnectedAsync(TcpClient client, CancellationToken cancellationToken)
+        {
+            var socket = client.Client;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0) return;
+                await Task.Delay(25, cancellationToken).ConfigureAwait(false);
             }
         }
 

@@ -60,6 +60,10 @@ the manifest with a message pointing at the `worker` wrapper.
   collected but inert, with a visible diagnostic (same forward-compatibility rule as
   unknown extension kinds). Registry-discovered (jsr/npm) plugins declare no data
   entrypoints, as with extensions (deny-by-default).
+- Edit-time feedback: the SDK's deno lint plugin (`@maieutics/plugin-sdk/lint`,
+  rule `maieutics/data-entrypoint`) validates every declared data entrypoint —
+  existence, JSON, and the `mcp` format shape — while the kernel load-time check
+  remains the stricter authority.
 - Failure semantics: a data file that cannot be collected (missing, invalid JSON, path
   escaping the plugin root) does **not** fail the plugin load — only the `entrypoints`
   section's own shape is strict (an array value under a catalogued data name is a load

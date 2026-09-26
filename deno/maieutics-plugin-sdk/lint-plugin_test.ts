@@ -12,6 +12,17 @@ function tempProject(entrypoints: Record<string, string[]>): string {
   return dir;
 }
 
+function tempProjectWithManifest(manifest: Record<string, unknown>): string {
+  const dir = Deno.makeTempDirSync({ prefix: "maieutics-lint-" });
+  Deno.writeTextFileSync(`${dir}/maieutics.json`, JSON.stringify(manifest, null, 2));
+  return dir;
+}
+
+async function dataDiagnostics(dir: string): Promise<Diagnostic[]> {
+  const diags = await lint(dir, "anything.ts", "export const x = 1;\n");
+  return diags.filter((d) => d.id === "maieutics/data-entrypoint");
+}
+
 interface Diagnostic {
   id: string;
   message: string;
@@ -304,4 +315,125 @@ Deno.test("provide-top-level: a conditional top-level provide is silent", async 
     "if (isProd) { provide(ep, s); }\n";
   const diags = await lint(dir, "mod.ts", src);
   assertEquals(diags.filter((d) => d.id === "maieutics/provide-top-level").length, 0);
+});
+
+// ---------- data-entrypoint (ADR 0033) ----------
+
+Deno.test("data-entrypoint: a declared file that does not exist is reported", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "config/servers.json" },
+  });
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("'mcp'"), diags[0].message);
+  assert(diags[0].message.includes("does not exist"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: a declared file that is not JSON is reported", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "config/servers.json" },
+  });
+  Deno.mkdirSync(`${dir}/config`);
+  Deno.writeTextFileSync(`${dir}/config/servers.json`, "{ nope");
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("not valid JSON"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: a declared mcp file with the right shape is silent", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "config/servers.json" },
+  });
+  Deno.mkdirSync(`${dir}/config`);
+  Deno.writeTextFileSync(
+    `${dir}/config/servers.json`,
+    JSON.stringify({
+      mcpServers: {
+        probe: { command: "deno", args: ["info"] },
+        remote: { type: "http", url: "https://example.test/mcp" },
+      },
+    }),
+  );
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 0);
+});
+
+Deno.test("data-entrypoint: combining the top-level keys is reported", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "servers.json" },
+  });
+  Deno.writeTextFileSync(
+    `${dir}/servers.json`,
+    JSON.stringify({ mcpServers: { a: { command: "deno" } }, servers: { b: { command: "deno" } } }),
+  );
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("must not combine"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: a stdio server without a command is reported", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "servers.json" },
+  });
+  Deno.writeTextFileSync(
+    `${dir}/servers.json`,
+    JSON.stringify({ mcpServers: { broken: { args: ["x"] } } }),
+  );
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("non-empty 'command'"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: a remote plain-http url is reported", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "servers.json" },
+  });
+  Deno.writeTextFileSync(
+    `${dir}/servers.json`,
+    JSON.stringify({ servers: { remote: { type: "http", url: "http://example.test/mcp" } } }),
+  );
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("https"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: an unknown data name is reported as inert", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { catalog: "./data/catalog.json" },
+  });
+  Deno.mkdirSync(`${dir}/data`);
+  Deno.writeTextFileSync(`${dir}/data/catalog.json`, JSON.stringify({ items: [1] }));
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("inert"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: a path escaping the project is reported", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "../outside.json" },
+  });
+  Deno.writeTextFileSync(`${dir}/../outside.json`, "{}");
+  const diags = await dataDiagnostics(dir);
+  assertEquals(diags.length, 1);
+  assert(diags[0].message.includes("outside the plugin project"), diags[0].message);
+});
+
+Deno.test("data-entrypoint: a project is validated once per invocation", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { mcp: "missing.json" },
+  });
+  const first = await dataDiagnostics(dir);
+  assertEquals(first.length, 1);
+  const second = await dataDiagnostics(dir);
+  assertEquals(second.length, 0);
+});
+
+Deno.test("entrypoint-registered: the worker section is recognized for actor files", async () => {
+  const dir = tempProjectWithManifest({
+    entrypoints: { worker: { main: ["./mod.ts"] } },
+  });
+  const declared = await lint(dir, "mod.ts", SDK_IMPORT + "export const a = defineActor({ x() { return 1; } });\n");
+  assertEquals(declared.filter((d) => d.id === "maieutics/entrypoint-registered").length, 0);
+  const orphan = await lint(dir, "orphan.ts", SDK_IMPORT + "export const b = defineActor({ x() { return 2; } });\n");
+  assertEquals(orphan.filter((d) => d.id === "maieutics/entrypoint-registered").length, 1);
 });

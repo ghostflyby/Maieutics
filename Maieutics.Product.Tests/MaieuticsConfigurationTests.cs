@@ -16,7 +16,6 @@ using System.Threading;
 
 namespace Maieutics.Product.Tests;
 
-
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class MaieuticsConfigurationTests
 {
@@ -1481,143 +1480,6 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
     }
 
-    [Fact(Timeout = 30_000)]
-    public async Task McpFileConfigurationValidatesTransportsHttpsSseKeysAndDefaultEnablement()
-    {
-        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
-        var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-config-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        var configurationFile = Path.Combine(root, "maieutics.json");
-        var mcpFile = Path.Combine(root, "mcp.json");
-        await File.WriteAllTextAsync(configurationFile, CreateMcpHostConfigurationBase(),
-            TestContext.Current.CancellationToken);
-
-        try
-        {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            await using (var host = builder.Build())
-            {
-                host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
-            }
-
-            AssertRejected(
-                new JsonObject { ["remote"] = HttpMcpServer("http://example.test/mcp") },
-                "*must use HTTPS*");
-            AssertRejected(
-                new JsonObject { ["remote"] = SseMcpServer("https://example.test/mcp") },
-                "*unsupported 'sse'*");
-
-            var invalidStdio = StdioMcpServer();
-            invalidStdio["Nope"] = true;
-            AssertRejected(new JsonObject { ["stdio"] = invalidStdio }, "*not valid for MCP server*");
-
-            await File.WriteAllTextAsync(mcpFile, new JsonObject
-            {
-                ["mcpServers"] = new JsonObject { ["one"] = StdioMcpServer() },
-                ["servers"] = new JsonObject { ["two"] = StdioMcpServer() }
-            }.ToJsonString(), TestContext.Current.CancellationToken);
-            var conflicting = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            await using var conflictingHost = conflicting.Build();
-            conflictingHost.Services.Invoking(static services =>
-                    services.GetRequiredService<MaieuticsRuntimeConfiguration>())
-                .Should().Throw<Exception>().WithMessage("*must not combine*");
-
-            await File.WriteAllTextAsync(mcpFile, "{", TestContext.Current.CancellationToken);
-            FluentActions.Invoking(() => MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]))
-                .Should().Throw<JsonException>();
-
-            // A server disabled with the VS Code convention is skipped before transport validation.
-            await File.WriteAllTextAsync(mcpFile, CreateMcpFile(new JsonObject
-            {
-                ["disabled"] = new JsonObject
-                {
-                    ["enabled"] = false,
-                    ["type"] = "http",
-                    ["url"] = "not-a-url"
-                }
-            }), TestContext.Current.CancellationToken);
-            var disabledBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            await using var disabledHost = disabledBuilder.Build();
-            disabledHost.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
-
-            await File.WriteAllTextAsync(mcpFile, CreateMcpFile(new JsonObject
-            {
-                ["stdio"] = StdioMcpServer(),
-                ["http"] = HttpMcpServer("http://127.0.0.1:65535/mcp")
-            }), TestContext.Current.CancellationToken);
-            var valid = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            await using var validHost = valid.Build();
-            validHost.Services.GetRequiredService<MaieuticsRuntimeConfiguration>().Should().NotBeNull();
-        }
-        finally
-        {
-            DeleteDirectoryWithRetry(root);
-        }
-
-        void AssertRejected(JsonObject servers, string expectedMessage)
-        {
-            File.WriteAllText(mcpFile, CreateMcpFile(servers));
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-            var host = builder.Build();
-            using (IDisposable _ = host)
-            {
-                host.Services.Invoking(static services =>
-                        services.GetRequiredService<MaieuticsRuntimeConfiguration>())
-                    .Should().Throw<Exception>().WithMessage(expectedMessage);
-            }
-        }
-    }
-
-    [Fact(Timeout = 60_000)]
-    public async Task McpFileChangesTriggerReloadAndInvalidUpdatesRetainLastKnownGood()
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(50));
-        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
-        var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-reload-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        var configurationFile = Path.Combine(root, "maieutics.json");
-        var mcpFile = Path.Combine(root, "mcp.json");
-        await File.WriteAllTextAsync(
-            configurationFile,
-            CreateMcpHostConfigurationBase(),
-            deadline.Token);
-
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
-        var host = builder.Build();
-        try
-        {
-            var configuration = host.Services.GetRequiredService<IConfiguration>();
-            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
-            runtime.GetMcpServers().Should().BeEmpty();
-
-            var acceptedVersion = runtime.Version;
-            await WriteAndWaitForReloadAsync(
-                configuration,
-                runtime,
-                mcpFile,
-                CreateMcpFile(new JsonObject { ["remote"] = HttpMcpServer("http://example.test/mcp") }),
-                deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
-            runtime.GetMcpServers().Should().BeEmpty();
-
-            await WriteAndWaitForReloadAsync(
-                configuration,
-                runtime,
-                mcpFile,
-                CreateMcpFile(new JsonObject { ["stdio"] = StdioMcpServer() }),
-                deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
-            runtime.GetMcpServers().Should().BeEmpty();
-        }
-        finally
-        {
-            await host.StopAsync(deadline.Token);
-            await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
-        }
-    }
-
     private static async Task<TrackingChatClient> AcquireClientAsync(MaieuticsRuntimeConfiguration runtime)
     {
         await using var lease = await runtime.AcquireAsync(TestContext.Current.CancellationToken);
@@ -1733,53 +1595,6 @@ internal static void DeleteDirectoryWithRetry(string path)
             }
         };
         return root.ToJsonString();
-    }
-
-    private static string CreateMcpFile(JsonObject servers)
-    {
-        return new JsonObject
-        {
-            ["mcpServers"] = servers
-        }.ToJsonString();
-    }
-
-    private static string CreateMcpHostConfigurationBase()
-    {
-        return new JsonObject
-        {
-            ["Maieutics"] = new JsonObject
-            {
-            }
-        }.ToJsonString();
-    }
-
-    private static JsonObject StdioMcpServer()
-    {
-        return new JsonObject
-        {
-            ["command"] = "/usr/bin/false",
-            ["args"] = new JsonArray(),
-            ["env"] = new JsonObject()
-        };
-    }
-
-    private static JsonObject HttpMcpServer(string url)
-    {
-        return new JsonObject
-        {
-            ["type"] = "http",
-            ["url"] = url,
-            ["headers"] = new JsonObject()
-        };
-    }
-
-    private static JsonObject SseMcpServer(string url)
-    {
-        return new JsonObject
-        {
-            ["type"] = "sse",
-            ["url"] = url
-        };
     }
 
     private static string CreateNamedConfiguration(

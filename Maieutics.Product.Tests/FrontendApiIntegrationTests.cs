@@ -1131,33 +1131,43 @@ public sealed class FrontendApiIntegrationTests
         Directory.CreateDirectory(root);
         var configurationFile = Path.Combine(root, "maieutics.json");
         var discoveryPath = Path.Combine(root, "discovery.json");
-        var mcpFile = Path.Combine(root, "mcp.json");
-        await File.WriteAllTextAsync(
-            mcpFile,
-            new JsonObject
-            {
-                ["mcpServers"] = new JsonObject
+        // MCP configuration is a declared plugin data entrypoint now (ADR 0033): the
+        // plugins root is redirected into the test sandbox and the root project (itself
+        // a plugin) declares the data file.
+        var pluginsRoot = Path.Combine(root, "plugins");
+        Directory.CreateDirectory(pluginsRoot);
+        var previousPluginsRoot = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT");
+        Environment.SetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT", pluginsRoot);
+            await File.WriteAllTextAsync(
+                Path.Combine(pluginsRoot, "maieutics.json"),
+                """{ "entrypoints": { "mcp": "mcp.json" } }""",
+                deadline.Token);
+            await File.WriteAllTextAsync(
+                Path.Combine(pluginsRoot, "mcp.json"),
+                new JsonObject
                 {
-                    ["test"] = new JsonObject
+                    ["mcpServers"] = new JsonObject
                     {
-                        ["command"] = Path.GetFullPath(mcpServer),
-                        ["args"] = new JsonArray(),
-                        ["env"] = new JsonObject()
+                        ["test"] = new JsonObject
+                        {
+                            ["command"] = Path.GetFullPath(mcpServer),
+                            ["args"] = new JsonArray(),
+                            ["env"] = new JsonObject()
+                        }
                     }
-                }
-            }.ToJsonString(),
-            deadline.Token);
-        await File.WriteAllTextAsync(
-            configurationFile,
-            CONFIGURATION_TEMPLATE
-                .Replace("{{model}}", "test-model")
-                .Replace("{{endpoint}}", provider.Endpoint.ToString()),
-            deadline.Token);
+                }.ToJsonString(),
+                deadline.Token);
+            await File.WriteAllTextAsync(
+                configurationFile,
+                CONFIGURATION_TEMPLATE
+                    .Replace("{{model}}", "test-model")
+                    .Replace("{{endpoint}}", provider.Endpoint.ToString()),
+                deadline.Token);
 
-        var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: null);
-        try
-        {
+            var harness = await FrontendHarness.StartAsync(
+                deadline.Token, provider, hanging: false, configureBuilder: null);
+            try
+            {
             var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
             var mcpList = await harness.Client.PostAsJsonAsync(
@@ -1180,6 +1190,7 @@ public sealed class FrontendApiIntegrationTests
         finally
         {
             await harness.DisposeAsync();
+            Environment.SetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT", previousPluginsRoot);
             DeleteDirectoryWithRetry(root);
         }
     }

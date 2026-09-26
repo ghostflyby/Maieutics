@@ -12,9 +12,10 @@ session-level profile selection, and reference-counted provider generation lifet
 
 - Select exactly one active `maieutics.json`: `--config`, then `MAIEUTICS_CONFIG`, then an existing file beside the
   executable, otherwise the platform user application-data path. Never implicitly load the notebook working directory.
-- MCP servers live in an optional `mcp.json` beside the active `maieutics.json`, using the conventional `mcpServers`
-  or `servers` top-level keys. A syntactically invalid `mcp.json` present at startup fails startup; invalid runtime
-  updates retain the last-known-good snapshot.
+- MCP server configuration no longer lives beside `maieutics.json` (ADR 0033): a plugin declares a data entry point in
+  its manifest (`"entrypoints": { "mcp": "<path>" }` — the only form, no implicit file pickup) and
+  `Maieutics.Mcp` (`McpServerFile`) interprets it into the plugin descriptor. Configuration-domain code does not parse
+  it; `MAIEUTICS_PLUGINS_ROOT` relocates the plugin workspace and is read once at composition-root time.
 - Precedence is defaults, active JSON, shortcut environment variables, standard .NET hierarchical environment variables,
   then command line.
 - The active path is startup-only. JSON contents may reload; environment and command-line sources do not hot reload.

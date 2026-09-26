@@ -249,6 +249,8 @@ public sealed class DenoReplPolicyCacheTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System,
+            null,
+            null,
             broker);
     }
 

@@ -140,6 +140,30 @@ internal sealed class PluginMcpCoordinator(
         return leases;
     }
 
+    /// <summary>Status snapshot of the published MCP servers, ordered by id: reconnecting
+    /// generations report the reconnecting state with an empty tool list. Disposed
+    /// coordinators report nothing.</summary>
+    internal IReadOnlyList<MaieuticsMcpServerInfo> GetServerInfos()
+    {
+        var snapshot = SnapshotGenerations();
+        return snapshot.Select(static generation => generation.GetInfo()).ToArray();
+    }
+
+    /// <summary>The published generations for resource access (ADR 0026 decision 3),
+    /// ordered by id. A retired generation keeps answering reads with the typed
+    /// unavailable error until the caller releases it, so a racy snapshot is safe.</summary>
+    internal IReadOnlyList<McpServerGeneration> SnapshotGenerations()
+    {
+        lock (gate)
+        {
+            if (Volatile.Read(ref disposeState) != 0) return [];
+
+            return generations.Values
+                .OrderBy(static generation => generation.Id, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         Task task;

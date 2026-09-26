@@ -10,8 +10,14 @@ The plugin SDK's entry points require code: a plugin declares a worker entrypoin
 host spawns it, and every extension-point call is a live worker-actor invocation. Plugin
 authors who only need static data — an MCP server to expose, a future catalogued data
 kind — must ship and run a module for what is effectively configuration. The kernel
-already has two declarative precedents (`mcp.json` for kernel-level MCP servers,
-`capabilities` in `maieutics.json`), but nothing plugin-scoped.
+already had two declarative precedents (`capabilities` in `maieutics.json` and the
+kernel-level `mcp.json`, itself now superseded), but nothing plugin-scoped. With
+ADR 0033 the `entrypoints` section gains kinds: `worker` holds the worker map, and
+sibling keys are data entry points — the kernel collects the referenced file and the
+key's interpreter interprets it. `mcp` is the catalogued name consuming the same
+server-block schema the kernel-level file used, with no worker involved. `McpDiscover` data now has two declarative forms — the
+manifest `extensions` section (fixed defaults) and the data entry point (full
+per-server options).
 
 ## Principles
 

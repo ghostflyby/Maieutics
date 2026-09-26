@@ -300,10 +300,10 @@ time, and an unresolvable token rejects the acquisition instead of silently wide
 ```
 
 The workspace profile is an optional `permissions.json` beside the active maieutics.json (the
-mcp.json convention), format aligned with Deno's config permissions: per-kind
+permissions.json is a change trigger only), format aligned with Deno's config permissions: per-kind
 `{"allow":[...],"deny":[...]}` inside named sets, the `default` set applied unless another is
 selected, and relative paths resolved against the profile file's directory. The file is watched
-like mcp.json; an invalid file rejects the reload and keeps the last-known-good profile.
+like the other watched files; an invalid file rejects the reload and keeps the last-known-good profile.
 
 ### Instruction surfaces
 

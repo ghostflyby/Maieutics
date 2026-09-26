@@ -729,6 +729,8 @@ public sealed class DenoReplHostDeriveTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System,
+            null,
+            null,
             broker);
     }
 

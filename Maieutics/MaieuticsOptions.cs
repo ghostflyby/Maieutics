@@ -79,42 +79,6 @@ public sealed class MaieuticsPermissionKindOptions
     public bool DenyAll { get; set; }
 }
 
-// MCP servers live in a separate optional mcp.json beside the active maieutics.json. The file follows the
-// conventional lowercase mcpServers format used by Claude Code, Cursor, and JetBrains clients so existing
-// server blocks can be copied directly.
-public sealed class MaieuticsMcpServerOptions
-{
-    public bool Enabled { get; set; } = true;
-
-    public string? Command { get; set; }
-
-    public string[] Arguments { get; set; } = [];
-
-    public string? WorkingDirectory { get; set; }
-
-    public Dictionary<string, string?> EnvironmentVariables { get; set; } =
-        new(StringComparer.Ordinal);
-
-    public string? Url { get; set; }
-
-    public Dictionary<string, string> Headers { get; set; } =
-        new(StringComparer.OrdinalIgnoreCase);
-
-    public TimeSpan InitializationTimeout { get; set; } = TimeSpan.FromSeconds(30);
-
-    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromMinutes(2);
-
-    public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
-
-    public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(30);
-
-    // Maieutics extension keys (unknown to Claude/Cursor-format files). Null resolves by
-    // transport: stdio servers default to true, HTTP servers to false (ADR 0029 decision 1).
-    public bool? Roots { get; set; }
-
-    public bool? Elicitation { get; set; }
-}
-
 public sealed class MaieuticsModelOptions
 {
     public string Provider { get; set; } = "OpenAI";

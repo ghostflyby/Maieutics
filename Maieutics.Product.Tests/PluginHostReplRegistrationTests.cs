@@ -320,6 +320,8 @@ public sealed class PluginHostReplRegistrationTests
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
             TimeProvider.System,
+            null,
+            null,
             broker);
     }
 

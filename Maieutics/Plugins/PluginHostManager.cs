@@ -97,6 +97,8 @@ internal sealed class PluginHostManager(
     ILogger<PluginHostManager> logger,
     ILoggerFactory loggerFactory,
     TimeProvider timeProvider,
+    IMcpWorkspaceRootsSource? workspaceRootsSource = null,
+    IMcpElicitationPresenter? elicitationPresenter = null,
     DenoPermissionBroker? broker = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
@@ -191,6 +193,18 @@ internal sealed class PluginHostManager(
     private readonly Dictionary<string, IReadOnlyList<string>> capabilityGrants =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, IReadOnlyList<PluginExtensionEntry>> descriptorExtensions =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Plugin-declared MCP data-file servers (ADR 0033): the parsed
+    /// <c>mcp.json</c> snapshot per plugin id, refreshed with the descriptor at start
+    /// and reload. Pure kernel-side data — the host process never sees it.</summary>
+    private readonly Dictionary<string, IReadOnlyList<McpServerDefinition>> descriptorMcpServers =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Per-plugin mcp.json load failures (ADR 0033): a plugin whose data file
+    /// cannot be parsed stays registered with its previous contribution retained by the
+    /// coordinator; discovery for it fails until the file is repaired.</summary>
+    private readonly Dictionary<string, string> descriptorMcpServerErrors =
         new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
         new(StringComparer.Ordinal);
@@ -537,8 +551,10 @@ internal sealed class PluginHostManager(
             capabilityGrants.Clear();
             RecordCapabilityGrants(descriptors);
             descriptorExtensions.Clear();
+            descriptorMcpServers.Clear();
+            descriptorMcpServerErrors.Clear();
             foreach (var descriptor in descriptors)
-                RecordDescriptorExtensionsLock(descriptor);
+                RecordDescriptorDeclarationsLock(descriptor);
 
             // Manifest-declared entries seed the registry before any host payload:
             // a declarative-only plugin contributes without ever spawning a worker.
@@ -938,9 +954,12 @@ internal sealed class PluginHostManager(
 
         if (owner is null) return;
 
-        // Re-resolve the descriptor from disk so manifest/permission changes apply.
+        // Re-resolve the descriptor from disk so manifest, permission, and mcp.json
+        // changes apply. A failed re-read keeps the previous snapshot active — the same
+        // last-known-good rule the kernel applies to its own configuration reloads —
+        // and must degrade visibly, not silently.
         PluginHostConfigPlugin? replacement = null;
-        if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out _))
+        if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out var loadFailure))
         {
             if (!PluginImportMerger.SameMapping(owner.Imports, reloaded.Imports))
             {
@@ -974,7 +993,7 @@ internal sealed class PluginHostManager(
                 PluginRegistration[] mcpSnapshotForReload;
                 lock (gate)
                 {
-                    RecordDescriptorExtensionsLock(reloaded);
+                    RecordDescriptorDeclarationsLock(reloaded);
 
                     // A declarative-only change (or a plugin without workers) never
                     // triggers a host registry resend: rebuild the merged snapshot so
@@ -989,6 +1008,14 @@ internal sealed class PluginHostManager(
 
                 RepublishRegistry(mcpSnapshotForReload);
             }
+        }
+
+        else
+        {
+            logger.LogWarning(
+                "Plugin '{PluginId}' could not be re-read after a watched change; its previous declarations remain active ({Failure}).",
+                owner.Id,
+                loadFailure);
         }
 
         foreach (var worker in owner.Workers)
@@ -1093,6 +1120,23 @@ internal sealed class PluginHostManager(
     {
         await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         return dynamicMcpCoordinator?.AcquireLeases() ?? [];
+    }
+
+    /// <summary>Status snapshot of the plugin-discovered MCP servers (ADR 0033): the
+    /// source behind <c>/mcp list</c> and the status snapshot now that the plugin
+    /// data files are the only MCP configuration form. Servers awaiting reconnection
+    /// still appear (reconnecting state, empty tool list).</summary>
+    public IReadOnlyList<MaieuticsMcpServerInfo> GetDynamicMcpServerInfos()
+    {
+        return dynamicMcpCoordinator?.GetServerInfos() ?? [];
+    }
+
+    /// <summary>The plugin-discovered MCP server generations for resource access
+    /// (ADR 0026 decision 3). A racy snapshot is safe: a retired generation answers
+    /// reads with the typed unavailable error until the caller releases it.</summary>
+    public IReadOnlyList<McpServerGeneration> SnapshotDynamicMcpGenerations()
+    {
+        return dynamicMcpCoordinator?.SnapshotGenerations() ?? [];
     }
 
     /// <summary>
@@ -1502,19 +1546,35 @@ internal sealed class PluginHostManager(
     private List<PluginDescriptor> ScanProject(string projectDirectory)
     {
         var result = new List<PluginDescriptor>();
-        if (PluginManifest.TryLoad(projectDirectory, out var self, out _) &&
-            !RequiresProcessIsolation(self))
-            result.Add(self);
+        AddScannedDescriptor(result, projectDirectory);
 
         foreach (var importTarget in PluginManifest.ReadLocalImportTargets(projectDirectory))
         {
             var packageDirectory = Path.GetDirectoryName(importTarget);
             if (packageDirectory is null || !Directory.Exists(packageDirectory)) continue;
-            if (PluginManifest.TryLoad(packageDirectory, out var plugin, out _) &&
-                !RequiresProcessIsolation(plugin))
-                result.Add(plugin);
+            AddScannedDescriptor(result, packageDirectory);
         }
         return result;
+    }
+
+    /// <summary>Adds one scanned plugin directory when it loads and does not require
+    /// process isolation. A directory that carries declarations (maieutics.json or an
+    /// mcp.json data file) but fails to load is an authoring error, so it degrades
+    /// visibly instead of silently disappearing from the plugin set.</summary>
+    private void AddScannedDescriptor(List<PluginDescriptor> result, string directory)
+    {
+        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+        {
+            if (File.Exists(Path.Combine(directory, "maieutics.json")) ||
+                File.Exists(Path.Combine(directory, "mcp.json")))
+                logger.LogWarning(
+                    "Plugin directory '{Directory}' failed to load and is skipped ({Failure}).",
+                    directory,
+                    error);
+            return;
+        }
+
+        if (!RequiresProcessIsolation(descriptor)) result.Add(descriptor);
     }
 
     private static bool RequiresProcessIsolation(PluginDescriptor descriptor)
@@ -2077,23 +2137,39 @@ internal sealed class PluginHostManager(
         dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
     }
 
-    /// <summary>The synthetic registrations for manifest-declared entries. Called under
-    /// <see cref="gate" />.</summary>
+    /// <summary>The synthetic registrations for manifest-declared entries (the
+    /// <c>McpDiscover</c> extensions section or an <c>mcp.json</c> data file, ADR 0033).
+    /// Called under <see cref="gate" />.</summary>
     private IEnumerable<PluginRegistration> DeclarativeRegistrationsLock()
     {
-        foreach (var pair in descriptorExtensions)
+        foreach (var pluginId in descriptorExtensions.Keys
+                     .Concat(descriptorMcpServers.Keys)
+                     .Concat(descriptorMcpServerErrors.Keys)
+                     .Distinct(StringComparer.Ordinal))
         {
-            if (pair.Value.Any(static entry => entry.Kind == PluginExtensionKind.McpDiscover))
-                yield return new PluginRegistration(pair.Key, ManifestExportName, ReplExtensionPointName.McpDiscover);
+            var hasExtensions = descriptorExtensions.TryGetValue(pluginId, out var entries) &&
+                                entries.Any(static entry => entry.Kind == PluginExtensionKind.McpDiscover);
+            var hasServers = descriptorMcpServers.TryGetValue(pluginId, out var servers) &&
+                             servers.Count > 0;
+            var hasServerErrors = descriptorMcpServerErrors.ContainsKey(pluginId);
+            if (hasExtensions || hasServers || hasServerErrors)
+                yield return new PluginRegistration(pluginId, ManifestExportName, ReplExtensionPointName.McpDiscover);
         }
     }
 
-    /// <summary>Updates one plugin's declarative-extension snapshot (reload): an empty
-    /// extension list removes the entry, so section removals take effect.</summary>
-    private void RecordDescriptorExtensionsLock(PluginDescriptor descriptor)
+    /// <summary>Updates one plugin's declarative snapshots (extensions and the MCP data
+    /// file, ADR 0033) on load and reload: an empty list removes the entry, so section
+    /// or file removals take effect.</summary>
+    private void RecordDescriptorDeclarationsLock(PluginDescriptor descriptor)
     {
         if (descriptor.Extensions.Count > 0) descriptorExtensions[descriptor.Id] = descriptor.Extensions;
         else descriptorExtensions.Remove(descriptor.Id);
+
+        if (descriptor.McpServers.Count > 0) descriptorMcpServers[descriptor.Id] = descriptor.McpServers;
+        else descriptorMcpServers.Remove(descriptor.Id);
+
+        if (descriptor.McpServersError is { } dataFileError) descriptorMcpServerErrors[descriptor.Id] = dataFileError;
+        else descriptorMcpServerErrors.Remove(descriptor.Id);
 
         foreach (var diagnostic in descriptor.ExtensionDiagnostics)
             logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
@@ -2137,16 +2213,27 @@ internal sealed class PluginHostManager(
         return PluginMcpDiscoveryResult.Success(definitions);
     }
 
-    /// <summary>Parses the plugin's declarative `mcp.discover` entries with the same
-    /// definition rules the handler path applies; the result carries the same id scheme
-    /// (`plugin:<pluginId>::<module>`) so merges and conflicts behave identically.</summary>
+    /// <summary>Parses one plugin's declarative MCP contributions — the manifest's
+    /// <c>mcp.discover</c> entries plus its <c>mcp.json</c> data file (ADR 0033) — with
+    /// the same merge rules the coordinator applies across plugins: identical ids with
+    /// identical generation keys deduplicate; identical ids with different keys fail the
+    /// discovery (the sticky-last-good rule then keeps the previous contribution active).</summary>
     internal PluginMcpDiscoveryResult DiscoverManifestMcpAsync(PluginRegistration registration)
     {
         IReadOnlyList<PluginExtensionEntry> entries;
+        IReadOnlyList<McpServerDefinition> fileServers;
         lock (gate)
         {
-            if (!descriptorExtensions.TryGetValue(registration.PluginId, out var recorded)) return PluginMcpDiscoveryResult.Failed("unknown_manifest_plugin");
-            entries = recorded;
+            var hasEntries = descriptorExtensions.TryGetValue(registration.PluginId, out var recorded);
+            var hasServers = descriptorMcpServers.TryGetValue(registration.PluginId, out var servers);
+            var hasServerErrors = descriptorMcpServerErrors.TryGetValue(
+                registration.PluginId,
+                out var serverError);
+            if (!hasEntries && !hasServers && !hasServerErrors)
+                return PluginMcpDiscoveryResult.Failed("unknown_manifest_plugin");
+            if (hasServerErrors) return PluginMcpDiscoveryResult.Failed("invalid_data_file");
+            entries = recorded ?? [];
+            fileServers = servers ?? [];
         }
 
         var definitions = new List<McpServerDefinition>();
@@ -2157,6 +2244,21 @@ internal sealed class PluginHostManager(
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
             definitions.Add(definition);
+        }
+
+        foreach (var fileServer in fileServers)
+        {
+            var existing = definitions.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, fileServer.Id, StringComparison.Ordinal));
+            if (existing is not null)
+            {
+                if (string.Equals(existing.GenerationKey, fileServer.GenerationKey, StringComparison.Ordinal))
+                    continue;
+
+                return PluginMcpDiscoveryResult.Failed("conflicting_server_definition");
+            }
+
+            definitions.Add(fileServer);
         }
 
         return PluginMcpDiscoveryResult.Success(definitions);
@@ -2172,13 +2274,19 @@ internal sealed class PluginHostManager(
             reservedNames = reservedToolNames;
         }
 
+        // The same capability wiring the kernel-level servers used (ADR 0029): roots are
+        // answered with the live workspace root when the definition opted in, and
+        // elicitation flows through the frontend presenter. Capability follows handler
+        // presence, so a null source simply means the server is never asked.
         return McpServerGeneration.CreateAsync(
             definition,
             loggerFactory,
             timeProvider,
             cancellationToken,
             null,
-            reservedNames);
+            reservedNames,
+            workspaceRootsSource,
+            elicitationPresenter);
     }
 
     private static bool TryToMcpDefinition(

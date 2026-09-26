@@ -15,7 +15,7 @@ blocker the integration test exposed and its resolution (the worker's denied
 
 A Maieutics plugin is a Deno package: a `deno.json` (package identity: `name` used for
 specifiers, `permissions.default`, and `imports` for dependencies) plus a
-`maieutics.json` (worker entrypoints, dependency declarations, isolation). Plugin
+`maieutics.json` (worker entrypoints under the `worker` kind, dependency declarations, isolation). Plugin
 authors declare dependencies in `deno.json` `imports` and import them as bare aliases:
 
 ```ts

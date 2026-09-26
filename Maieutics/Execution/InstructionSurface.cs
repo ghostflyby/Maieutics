@@ -1,7 +1,7 @@
 namespace Maieutics.Execution;
 
 /// <summary>Classifies workspace-relative paths that carry agent instructions
-/// (ADR 0032 decision 2): writes to these surfaces from the model's edit tools
+/// (ADR 0032 decision 1): writes to these surfaces from the model's edit tools
 /// require an explicit allow in the calling session's effective policy. The
 /// classification is the mechanism; the shipped default policy and any
 /// session overrides are configuration.</summary>

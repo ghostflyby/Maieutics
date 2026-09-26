@@ -305,6 +305,29 @@ mcp.json convention), format aligned with Deno's config permissions: per-kind
 selected, and relative paths resolved against the profile file's directory. The file is watched
 like mcp.json; an invalid file rejects the reload and keeps the last-known-good profile.
 
+### Instruction surfaces
+
+Model-initiated writes to instruction surfaces — `AGENTS.md` at any depth and files under
+`.agents/` — require an explicit `Write` allow in the calling session's effective policy
+(ADR 0032); any matching deny denies, and with no matching allow the write fails with
+`instructions_write_forbidden`. The shipped defaults grant no such allow, so the model cannot
+rewrite the context of future sessions unless the workspace opts in:
+
+```json
+{
+  "Maieutics": {
+    "Permissions": {
+      "Write": { "allow": ["AGENTS.md"] }
+    }
+  }
+}
+```
+
+Patterns are workspace-relative paths matched by prefix, so `"AGENTS.md"` admits the
+workspace-root file; a nested surface needs its own entry (for example `".agents/skills"`).
+
+Ordinary workspace files are unaffected: they keep the containment-only workspace-root posture.
+
 ## Agent limits
 
 | Setting                                        |    Default |

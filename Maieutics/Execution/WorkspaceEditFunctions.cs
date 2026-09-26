@@ -95,7 +95,7 @@ internal sealed class WorkspaceEditFunctions
 
     /// <summary>Gates model-initiated writes to instruction surfaces: an instruction path
     /// requires an explicit allow in the calling session's effective write policy — absence
-    /// of a matching allow denies, and any matching deny denies (ADR 0032 decision 2). A
+    /// of a matching allow denies, and any matching deny denies (ADR 0032 decision 1). A
     /// host without the permission acquirer keeps the legacy containment-only behavior.</summary>
     private void GateInstructionSurface(string? relativePath, AIFunctionArguments arguments)
     {

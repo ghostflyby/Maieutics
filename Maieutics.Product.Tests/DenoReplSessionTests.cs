@@ -252,7 +252,13 @@ public sealed class DenoReplSessionTests
         return new DenoReplOptions
         {
             ExecutionTimeout = executionTimeout ?? TimeSpan.FromSeconds(5),
-            InterruptGracePeriod = TimeSpan.FromSeconds(1)
+            // The product default. A tightened 1s grace turned the cancel-drain theory
+            // into a CI flake: on a contended Windows runner the fake connection's
+            // cancellation hops (TCS continuations through the session pump) starved
+            // past the budget, escalating a drain that only needed a scheduler slot
+            // (windows CI: TerminateCount 1 on the releaseOnCancel case). The escalate
+            // theory pays the full grace on purpose, so the theory timeout must cover it.
+            InterruptGracePeriod = TimeSpan.FromSeconds(5)
         };
     }
 

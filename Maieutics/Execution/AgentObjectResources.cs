@@ -26,9 +26,12 @@ internal sealed class AgentObjectResourceProvider(IAgentObjectStore store) : IRe
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        // The URI parser case-folds hosts, so an uppercase spelling would silently read the
+        // canonical object; require the verbatim canonical form `objects://{64 lowercase hex}`.
         if (!ResourceRegistry.TryParseUri(uri, out var parsed) ||
             parsed.Host.Length != 64 ||
-            !IsLowerHex(parsed.Host))
+            !IsLowerHex(parsed.Host) ||
+            !string.Equals(uri, $"objects://{parsed.Host}", StringComparison.Ordinal))
         {
             throw new ResourceException(
                 "resource_invalid_uri",

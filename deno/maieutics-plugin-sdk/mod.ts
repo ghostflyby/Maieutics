@@ -801,6 +801,10 @@ async function initialize(entryUrl: string): Promise<void> {
   servingApi["__maieuticsProviderDead"] = (specifier: unknown): void => {
     if (typeof specifier !== "string") return;
     removeContributionsByProvider(specifier);
+    // ADR 0035: the provider will be restarted on demand — cached stubs and
+    // pending acquires against the dead instance must be invalidated so the
+    // next dependency call re-acquires from the restarted worker.
+    invalidateDependencyStubs(specifier);
   };
   scopePostMessage({
     type: "ready",
@@ -1041,12 +1045,16 @@ function removeRemoteContribution(name: string, providerKey: string): void {
 }
 
 /** Withdraws every contribution whose providerKey carries `providerSpecifier`
- * as its prefix (the provider worker is dead or stopped). */
+ * as its prefix (the provider worker is dead or stopped). Each withdrawal also
+ * releases one served channel so the host's reference count follows. */
 function removeContributionsByProvider(providerSpecifier: string): void {
   const prefix = `${providerSpecifier}:`;
   for (const byName of remoteContributions.values()) {
     for (const [key, contribution] of byName) {
-      if (key.startsWith(prefix)) contribution.stop();
+      if (key.startsWith(prefix)) {
+        contribution.stop();
+        notifyRefReleased(providerSpecifier);
+      }
     }
   }
 }
@@ -1139,6 +1147,24 @@ const closeHandlers: Array<() => void> = [];
 const SDK_ENTRY_URL = import.meta.url;
 
 const stubBySpecifier = new Map<string, RemoteActor<Record<string, unknown>>>();
+/** Per-stub invalidation hooks: drop the dead instance so the next dependency
+ * call re-acquires from the restarted provider (ADR 0035). */
+const stubInvalidators = new Map<string, () => void>();
+
+function invalidateDependencyStubs(providerSpecifier: string): void {
+  for (const key of [...stubBySpecifier.keys()]) {
+    if (key === providerSpecifier || key.startsWith(`${providerSpecifier}\u0000`)) {
+      stubBySpecifier.delete(key);
+    }
+  }
+
+  for (const [key, invalidate] of [...stubInvalidators]) {
+    if (key === providerSpecifier || key.startsWith(`${providerSpecifier}\u0000`)) {
+      invalidate();
+      stubInvalidators.delete(key);
+    }
+  }
+}
 
 /**
  * The runtime stub for one dependency specifier: a single lazy surface whose
@@ -1209,6 +1235,7 @@ export function createDependencyStub(
       if (prop === "dispose") {
         return () => {
           stubBySpecifier.delete(cacheKey);
+          notifyRefReleased(specifier);
           (materialized as { dispose?(): Promise<void> } | undefined)?.dispose?.();
           return Promise.resolve();
         };
@@ -1245,6 +1272,17 @@ export function createDependencyStub(
     },
   });
   stubBySpecifier.set(cacheKey, surface);
+  stubInvalidators.set(cacheKey, () => {
+    // The dead provider's instance is gone: drop it and re-arm the acquire so
+    // the next dependency call starts the restarted provider fresh (ADR 0035).
+    materialized = undefined;
+    refId = "";
+    for (const pending of queue.splice(0)) {
+      pending.reject(
+        new Error(`Dependency '${specifier}' is restarting; retry the call.`),
+      );
+    }
+  });
 
   // The worker id arrives via the standard worker-actor frame; the surface's
   // first call before that would use the placeholder prefix, so re-route any
@@ -1300,6 +1338,16 @@ function postAcquireActor(specifier: string, refId: string, name?: string): void
     specifier,
     refId,
     ...(name === undefined ? {} : { name }),
+  });
+}
+
+/** Tells the host one served channel for `specifier` went away (ADR 0035):
+ * the host counts open channels as references, so a release lets it reclaim
+ * an otherwise-idle provider worker. */
+function notifyRefReleased(specifier: string): void {
+  (self as unknown as { postMessage(m: unknown): void }).postMessage({
+    type: "__ref-released",
+    specifier,
   });
 }
 

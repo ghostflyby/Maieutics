@@ -103,7 +103,17 @@ internal sealed class PluginHostManager(
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
     private const int EnvelopeVersion = 1;
-    private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(15);
+    // 30s: the extension-point channel also covers on-demand worker starts
+    // (ADR 0035) — a cold spawn's handshake rides the same budget.
+    private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>Idle grace before an unreferenced worker is reclaimed
+    /// (ADR 0035); MAIEUTICS_PLUGIN_IDLE_GRACE_MS overrides (milliseconds).</summary>
+    private static int ReadIdleGraceMs()
+    {
+        var raw = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_IDLE_GRACE_MS");
+        return int.TryParse(raw, out var parsed) && parsed > 0 ? parsed : 30_000;
+    }
 
     /// <summary>The synthetic export name given to manifest-declared extension entries.
     /// They have no worker export; discovery reads the kernel-parsed manifest snapshot
@@ -1671,7 +1681,7 @@ internal sealed class PluginHostManager(
                     dataDir is null ? null : new PluginHostConfigStorage(dataDir));
             })
             .ToArray();
-        return new PluginHostConfigFile(configured, pluginDataRoot);
+        return new PluginHostConfigFile(configured, pluginDataRoot, ReadIdleGraceMs());
     }
 
     /// <summary>Canonical interop specifier of one worker entrypoint: `&lt;name&gt;/&lt;entrypoint&gt;`.</summary>

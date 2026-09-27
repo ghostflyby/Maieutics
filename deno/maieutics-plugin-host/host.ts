@@ -360,8 +360,7 @@ export class PluginHost {
         continue;
       }
 
-      const referenced =
-        (this.#inFlight.get(key) ?? 0) > 0 ||
+      const referenced = (this.#inFlight.get(key) ?? 0) > 0 ||
         (this.#openChannels.get(key) ?? 0) > 0 ||
         this.#isDependencyOfRunningWorker(key);
       if (referenced) {
@@ -742,7 +741,12 @@ export class PluginHost {
   /** Bootstraps the owner↔holder channel for a specifier acquire. A stopped
    * owner is started on demand (ADR 0035): the acquire itself is the reference
    * that wakes it, and the open channel pins it against reclamation. */
-  async #routeAcquire(requester: Worker, specifier: string, refId: string, name?: string): Promise<void> {
+  async #routeAcquire(
+    requester: Worker,
+    specifier: string,
+    refId: string,
+    name?: string,
+  ): Promise<void> {
     if (specifier === HTTP_AGGREGATOR_SPECIFIER) {
       const { port1, port2 } = new MessageChannel();
       this.httpGateway().serveCollection(port1);

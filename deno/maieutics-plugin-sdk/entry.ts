@@ -86,6 +86,14 @@ export type {
 } from "./mod.ts";
 export type {
   DiscoverContext,
+  McpAdjust,
+  McpAdjustContext,
+  McpAdjustedTool,
+  McpAdjustFunction,
+  McpAdjustFunctionInput,
+  McpAdjustInput,
+  McpAdjustObject,
+  McpAdjustObjectInput,
   McpDiscover,
   McpDiscoverFunction,
   McpDiscoverFunctionInput,

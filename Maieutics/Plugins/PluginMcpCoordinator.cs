@@ -37,7 +37,8 @@ internal sealed record PluginMcpDiscoveryResult(
 internal sealed class PluginMcpCoordinator(
     PluginMcpDiscovery discovery,
     PluginMcpGenerationFactory generationFactory,
-    ILogger logger) : IAsyncDisposable
+    ILogger logger,
+    McpAdjustmentChain? adjustments = null) : IAsyncDisposable
 {
     private readonly PluginMcpDiscovery discovery =
         discovery ?? throw new ArgumentNullException(nameof(discovery));
@@ -58,6 +59,7 @@ internal sealed class PluginMcpCoordinator(
         FullMode = BoundedChannelFullMode.DropWrite
     });
 
+    private readonly Dictionary<string, string> adjustmentFingerprints = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>> contributions =
         new Dictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>>();
 
@@ -312,6 +314,36 @@ internal sealed class PluginMcpCoordinator(
         }
 
         if (!IsCurrent(revision)) return false;
+
+        // The adjustment chain folds the composed view before the merge: adjusters
+        // run in dependency-topological order, each seeing only its declared
+        // dependencies' servers, and drops remove servers from the view that
+        // downstream adjusters and the merge see (ADR 0034).
+        if (adjustments is not null)
+        {
+            var view = candidateContributions
+                .SelectMany(pair => pair.Value.Select(definition =>
+                    (Owner: pair.Key.PluginId, ServerId: definition.Id, definition.Transport)))
+                .ToList();
+            if (view.Count > 0)
+            {
+                var dropped = await adjustments.FoldCompositionAsync(view, cancellationToken)
+                    .ConfigureAwait(false);
+                if (dropped.Count > 0)
+                {
+                    foreach (var key in candidateContributions.Keys.ToList())
+                    {
+                        if (candidateContributions[key].Any(definition => dropped.Contains(definition.Id)))
+                        {
+                            candidateContributions[key] = candidateContributions[key]
+                                .Where(definition => !dropped.Contains(definition.Id))
+                                .ToArray();
+                        }
+                    }
+                }
+            }
+        }
+
         if (!TryMergeDefinitions(candidateContributions.Values, out var definitions)) return false;
 
         return await ReconcileGenerationsAsync(
@@ -414,6 +446,38 @@ internal sealed class PluginMcpCoordinator(
         {
             await RetireCreatedAsync(created).ConfigureAwait(false);
             return false;
+        }
+
+        // A retained generation whose adjuster chain changed re-projects its tool
+        // surface over the live connection; freshly created generations already
+        // projected with the current chain (ADR 0034).
+        if (adjustments is not null)
+        {
+            var createdSet = created.ToHashSet(ReferenceEqualityComparer.Instance);
+            var pendingRefresh = new List<McpServerGeneration>();
+            foreach (var generation in next.Values)
+            {
+                var fingerprint = adjustments.FingerprintFor(generation.Id);
+                if (createdSet.Contains(generation))
+                {
+                    adjustmentFingerprints[generation.Id] = fingerprint;
+                    continue;
+                }
+
+                if (adjustmentFingerprints.TryGetValue(generation.Id, out var stored) &&
+                    string.Equals(stored, fingerprint, StringComparison.Ordinal))
+                    continue;
+                adjustmentFingerprints[generation.Id] = fingerprint;
+                pendingRefresh.Add(generation);
+            }
+
+            foreach (var generation in pendingRefresh)
+            {
+                logger.LogInformation(
+                    "The adjustment chain changed for server '{ServerId}'; its tool surface will be re-projected.",
+                    generation.Id);
+                generation.RequestToolRefresh();
+            }
         }
 
         foreach (var generation in retired) TrackRetirement(generation);

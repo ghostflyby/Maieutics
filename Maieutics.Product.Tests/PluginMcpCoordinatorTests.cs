@@ -1,4 +1,5 @@
 using System.IO.Pipelines;
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.Mcp;
@@ -175,6 +176,111 @@ public sealed class PluginMcpCoordinatorTests
                 elicitationEnabled: false));
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task AdjustmentChainDropsServersAndReProjectsWithFingerprintChanges()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var providerRegistration = new PluginRegistration("provider", "maieutics.json", ReplExtensionPointName.McpDiscover);
+        var drop = false;
+        var compositionCalls = 0;
+        var toolCalls = 0;
+        var chain = new McpAdjustmentChain(
+            (adjusterPluginId, _, _, request, _) =>
+            {
+                var body = request ?? default;
+                var reason = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("reason", out var value)
+                    ? value.GetString()
+                    : null;
+                if (reason == "composition")
+                {
+                    Interlocked.Increment(ref compositionCalls);
+                    JsonElement? result = drop
+                        ? ParseAdjustmentJson("""{"servers":[{"id":"plugin:provider::server","drop":true}]}""")
+                        : ParseAdjustmentJson("""{"servers":[]}""");
+                    return Task.FromResult(ExtensionCallOutcome.Result(result));
+                }
+
+                if (reason == "tools")
+                {
+                    Interlocked.Increment(ref toolCalls);
+                    return Task.FromResult(ExtensionCallOutcome.Result(
+                        ParseAdjustmentJson("""[{"aliasOf":"echo"},{"aliasOf":"echo","name":"echo_alias"}]""")));
+                }
+
+                return Task.FromResult(ExtensionCallOutcome.Error("unknown_reason", "unreachable"));
+            },
+            NullLogger<PluginHostManager>.Instance);
+        await using var generationFactory = new TestGenerationFactory { ToolSurfaceAdjuster = chain };
+        chain.UpdateSnapshot(new McpAdjustmentSnapshot(
+            ["adjuster", "provider"],
+            new Dictionary<string, IReadOnlyList<string>> { ["adjuster"] = ["provider"] },
+            [new McpAdjusterRegistration("adjuster", "adjust")]));
+        // The definition's owner ("provider") must match the adjuster's declared
+        // dependency, or the chain scope filters the server out entirely.
+        var currentDiscovery = PluginMcpDiscoveryResult.Success(
+            [CreateDefinition("one") with { Id = "plugin:provider::server" }]);
+        await using var coordinator = new PluginMcpCoordinator(
+            (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(currentDiscovery);
+            },
+            generationFactory.CreateAsync,
+            NullLogger<PluginHostManager>.Instance,
+            chain);
+        coordinator.Start();
+
+        (await coordinator.PublishRegistryAsync([providerRegistration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        generationFactory.Generations.Should().ContainSingle();
+        compositionCalls.Should().BeGreaterThanOrEqualTo(1);
+        var firstLease = coordinator.AcquireLeases().Should().ContainSingle().Which;
+        await firstLease.DisposeAsync();
+
+        // A chain change (second adjuster joins) keeps the generation but must
+        // re-project its tool surface over the live connection.
+        chain.UpdateSnapshot(new McpAdjustmentSnapshot(
+            ["adjuster", "adjuster2", "provider"],
+            new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["adjuster"] = ["provider"],
+                ["adjuster2"] = ["provider"],
+            },
+            [
+                new McpAdjusterRegistration("adjuster", "adjust"),
+                new McpAdjusterRegistration("adjuster2", "adjust"),
+            ]));
+        (await coordinator.PublishRegistryAsync([providerRegistration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        generationFactory.Generations.Should().ContainSingle("an unchanged generation key must be reused");
+        // The fingerprint change re-projects the tool surface over the LIVE
+        // connection: poll the exposed surface instead of racing the refresh.
+        while (true)
+        {
+            var poll = coordinator.AcquireLeases();
+            if (poll.Count == 1 &&
+                poll[0].Tools.Select(static function => function.Name).Order().SequenceEqual(["echo", "echo_alias"]))
+            {
+                await poll[0].DisposeAsync();
+                break;
+            }
+
+            foreach (var lease in poll) await lease.DisposeAsync();
+            await Task.Delay(50, deadline.Token);
+        }
+
+        // The adjuster drops the server: it leaves the view before the merge, so
+        // no generation survives the revision.
+        drop = true;
+        (await coordinator.PublishRegistryAsync([providerRegistration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        coordinator.AcquireLeases().Should().BeEmpty();
+    }
+
+    private static JsonElement ParseAdjustmentJson(string value)
+    {
+        using var document = JsonDocument.Parse(value);
+        return document.RootElement.Clone();
+    }
+
     private sealed class TestGenerationFactory : IAsyncDisposable
     {
         private readonly CancellationTokenSource lifetime = new();
@@ -203,6 +309,8 @@ public sealed class PluginMcpCoordinatorTests
             lifetime.Dispose();
         }
 
+        internal IMcpToolSurfaceAdjuster? ToolSurfaceAdjuster { get; init; }
+
         internal async Task<McpServerGeneration> CreateAsync(
             McpServerDefinition definition,
             CancellationToken cancellationToken)
@@ -215,7 +323,8 @@ public sealed class PluginMcpCoordinatorTests
                 NullLoggerFactory.Instance,
                 TimeProvider.System,
                 cancellationToken,
-                CreateTransportAsync);
+                CreateTransportAsync,
+                toolSurfaceAdjuster: ToolSurfaceAdjuster);
             Definitions.Add(definition);
             Generations.Add(generation);
             return generation;

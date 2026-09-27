@@ -330,7 +330,31 @@ internal sealed class MaieuticsRuntimeConfiguration :
         tools.AddRange(builtInTools);
         if (selection.HostedCapabilities.Contains(TerminalShellCapability, StringComparer.OrdinalIgnoreCase))
             tools.AddRange(terminalFunctions.Functions);
-        foreach (var lease in mcpLeases) tools.AddRange(lease.Tools);
+        // Global exposed-name uniqueness across the whole MCP union (ADR 0034):
+        // adjustment chains can rename tools into collisions that no single server
+        // sees, so the union point is the only place the guard can live. The later
+        // server (id order) loses the name deterministically instead of failing the
+        // turn at the Agent tool registry.
+        var exposedToolNames = tools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal);
+        foreach (var lease in mcpLeases.OrderBy(static lease => lease.ServerId, StringComparer.Ordinal))
+        {
+            var duplicates = false;
+            foreach (var function in lease.Tools)
+            {
+                if (!exposedToolNames.Add(function.Name))
+                {
+                    duplicates = true;
+                    continue;
+                }
+
+                tools.Add(function);
+            }
+
+            if (duplicates)
+                logger.LogWarning(
+                    "MCP server '{ServerId}' exposed tools whose names duplicate other exposed tools; the duplicates are hidden.",
+                    lease.ServerId);
+        }
 
         return new RuntimeProfileLease(
             generationLease,

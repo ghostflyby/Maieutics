@@ -82,6 +82,229 @@ public sealed class McpServerGenerationTests
         }
     }
 
+    private static JsonElement ParseJson(string value)
+    {
+        using var document = JsonDocument.Parse(value);
+        return document.RootElement.Clone();
+    }
+
+    private sealed class FakeToolSurfaceAdjuster(Func<JsonElement, JsonElement?> handler) : IMcpToolSurfaceAdjuster
+    {
+        private int invocations;
+
+        internal int Invocations => invocations;
+
+        public Task<JsonElement?> AdjustToolsAsync(
+            string serverId,
+            JsonElement listing,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref invocations);
+            return Task.FromResult(handler(listing));
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AdjustmentChainRenamesRedescribesAndOverridesSchema()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        JsonElement? seenListing = null;
+        var adjuster = new FakeToolSurfaceAdjuster(listing =>
+        {
+            seenListing = listing;
+            return ParseJson("""
+                [
+                  {"aliasOf":"echo","name":"echo_safe","description":"Safe echo",
+                   "inputSchema":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}
+                ]
+                """);
+        });
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            toolSurfaceAdjuster: adjuster);
+
+        var lease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        var tool = lease.Tools.Should().ContainSingle().Which;
+        tool.Name.Should().Be("echo_safe");
+        tool.Description.Should().Be("Safe echo");
+        // Invocation still routes to the remote echo tool.
+        using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hello\"}");
+        var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone()));
+        var result = await tool.InvokeAsync(arguments, deadline.Token);
+        result.Should().BeOfType<JsonElement>().Which
+            .GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hello");
+
+        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
+            new MaieuticsMcpToolInfo("echo", "echo_safe", true));
+        seenListing.Should().NotBeNull();
+        seenListing.Value.EnumerateArray().Should().ContainSingle().Which
+            .GetProperty("name").GetString().Should().Be("echo");
+        var retirement = generation.Retire();
+        await lease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AdjustmentChainFailsClosedWithoutAPreviousListing()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var adjuster = new FakeToolSurfaceAdjuster(_ => null);
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            toolSurfaceAdjuster: adjuster);
+
+        var lease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        lease.Tools.Should().BeEmpty("a failed adjustment with no previous listing exposes nothing (fail-closed)");
+        generation.GetInfo().Tools.Should().BeEmpty();
+        var retirement = generation.Retire();
+        await lease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AdjustmentChainAliasExposesBothNamesRoutingToOneRemoteTool()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var adjuster = new FakeToolSurfaceAdjuster(_ => ParseJson("""
+            [
+              {"aliasOf":"echo"},
+              {"aliasOf":"echo","name":"echo_alias"}
+            ]
+            """));
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            toolSurfaceAdjuster: adjuster);
+
+        var lease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        lease.Tools.Select(static function => function.Name).Should().Equal("echo", "echo_alias");
+        using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hi\"}");
+        var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone()));
+        foreach (var tool in lease.Tools)
+        {
+            var result = await tool.InvokeAsync(arguments, deadline.Token);
+            result.Should().BeOfType<JsonElement>().Which
+                .GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hi");
+        }
+
+        generation.GetInfo().Tools.Select(static info => (info.RemoteName, info.ExposedName)).Should().Equal(
+            (("echo", "echo")),
+            (("echo", "echo_alias")));
+        var retirement = generation.Retire();
+        await lease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AFailingAdjusterFailsClosedOnRefreshWithoutResurrectingTools()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var fail = false;
+        var adjuster = new FakeToolSurfaceAdjuster(_ =>
+        {
+            if (fail) return null;
+            return ParseJson("""[{"aliasOf":"echo","name":"echo_safe"}]""");
+        });
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            toolSurfaceAdjuster: adjuster);
+
+        var firstLease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        firstLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
+        await firstLease.DisposeAsync();
+
+        // The adjuster stops producing: the refresh fails closed (nothing exposed)
+        // instead of resurrecting the raw surface — the sticky-last-good decision
+        // belongs to the chain above this layer.
+        fail = true;
+        generation.RequestToolRefresh();
+        while (adjuster.Invocations < 2)
+            await Task.Delay(25, deadline.Token);
+        var refreshedLease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        refreshedLease.Tools.Should().BeEmpty();
+        var retirement = generation.Retire();
+        await refreshedLease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AStickyAdjusterKeepsTheAdjustedSurfaceAcrossRefreshes()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var fail = false;
+        JsonElement? lastGood = null;
+        // The real chain's sticky semantics, embedded in the fake: a failing backend
+        // keeps the last adjusted listing active.
+        var adjuster = new FakeToolSurfaceAdjuster(listing =>
+        {
+            if (fail) return lastGood;
+            lastGood = ParseJson("""[{"aliasOf":"echo","name":"echo_safe"}]""");
+            return lastGood;
+        });
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            deadline.Token,
+            serverFactory.CreateTransportAsync,
+            toolSurfaceAdjuster: adjuster);
+
+        var firstLease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        firstLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
+        await firstLease.DisposeAsync();
+
+        fail = true;
+        generation.RequestToolRefresh();
+        while (adjuster.Invocations < 2)
+            await Task.Delay(25, deadline.Token);
+        var stickyLease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a lease");
+        stickyLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
+        var retirement = generation.Retire();
+        await stickyLease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task OfficialStreamServerDiscoversAndInvokesAllExposedTools()
     {

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { defineExtensionPoint, ExtensionPoint } from "./entry.ts";
+import { defineExtensionPoint, ExtensionPoint, type McpAdjustedTool } from "./entry.ts";
 
 Deno.test("global symbols are shared across any module instance", () => {
   assertEquals(
@@ -17,6 +17,18 @@ Deno.test("defineExtensionPoint accepts an object with a handler", () => {
     true,
   );
   assertEquals(typeof (impl as { handler(): unknown }).handler, "function");
+});
+
+Deno.test("defineExtensionPoint marks McpAdjust as a known extension point", () => {
+  const impl = defineExtensionPoint("McpAdjust", {
+    handler(): McpAdjustedTool[] {
+      return [];
+    },
+  });
+  assertEquals(
+    (impl as Record<symbol, unknown>)[ExtensionPoint.McpAdjust],
+    true,
+  );
 });
 
 Deno.test("defineExtensionPoint accepts a callable function", () => {

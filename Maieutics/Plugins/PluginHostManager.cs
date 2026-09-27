@@ -201,6 +201,10 @@ internal sealed class PluginHostManager(
     private readonly Dictionary<string, IReadOnlyList<McpServerDefinition>> descriptorMcpServers =
         new(StringComparer.Ordinal);
 
+    /// <summary>Dependency-topological plugin id order from the last discovery
+    /// (ADR 0034): the chain order for MCP adjusters.</summary>
+    private IReadOnlyList<string> pluginOrder = [];
+
     /// <summary>Per-plugin mcp.json load failures (ADR 0033): a plugin whose data file
     /// cannot be parsed stays registered with its previous contribution retained by the
     /// coordinator; discovery for it fails until the file is repaired.</summary>
@@ -291,6 +295,7 @@ internal sealed class PluginHostManager(
     private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
 
     private PluginMcpCoordinator? dynamicMcpCoordinator;
+    private McpAdjustmentChain? adjustmentChain;
     private PluginHostProcess? process;
     private Task processExitObservation = Task.CompletedTask;
     private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
@@ -537,6 +542,9 @@ internal sealed class PluginHostManager(
         var enabled = graph.Enabled
             .Where(plugin => !importMerge.ExcludedPluginIds.Contains(plugin.Id))
             .ToArray();
+        // The enabled list preserves the dependency-topological wave order, which is
+        // the responsibility-chain order for MCP adjusters (ADR 0034).
+        pluginOrder = enabled.Select(static plugin => plugin.Id).ToArray();
         return new PluginStartupPlan(enabled, importMerge);
     }
 
@@ -637,12 +645,41 @@ internal sealed class PluginHostManager(
 
     private void StartDynamicMcpCoordinator()
     {
+        adjustmentChain = new McpAdjustmentChain(InvokeExtensionPointAsync, logger);
+        UpdateAdjustmentSnapshot();
         var coordinator = new PluginMcpCoordinator(
             DiscoverDynamicMcpAsync,
             CreateDynamicMcpGenerationAsync,
-            logger);
+            logger,
+            adjustmentChain);
         coordinator.Start();
         dynamicMcpCoordinator = coordinator;
+    }
+
+    /// <summary>Recomputes the MCP adjustment topology (ADR 0034): dependency-
+    /// topological plugin order, per-plugin declared dependencies, and the live
+    /// McpAdjust registrations. Called on startup, on every host registry payload,
+    /// and after declarative reloads.</summary>
+    private void UpdateAdjustmentSnapshot()
+    {
+        var chain = adjustmentChain;
+        if (chain is null) return;
+
+        McpAdjustmentSnapshot snapshot;
+        lock (gate)
+        {
+            var dependencies = descriptors.ToDictionary(
+                static descriptor => descriptor.Id,
+                static descriptor => (IReadOnlyList<string>)descriptor.Dependencies);
+            var adjusters = registrations
+                .Where(registration => registration.ExtensionPoint == ReplExtensionPointName.McpAdjust)
+                .Select(registration => new McpAdjusterRegistration(registration.PluginId, registration.ExportName))
+                .Distinct()
+                .ToList();
+            snapshot = new McpAdjustmentSnapshot(pluginOrder, dependencies, adjusters);
+        }
+
+        chain.UpdateSnapshot(snapshot);
     }
 
     /// <summary>Watches the plugins root for manifest/permission/source changes and reloads the
@@ -1007,6 +1044,7 @@ internal sealed class PluginHostManager(
                 }
 
                 RepublishRegistry(mcpSnapshotForReload);
+                UpdateAdjustmentSnapshot();
             }
         }
 
@@ -2286,7 +2324,8 @@ internal sealed class PluginHostManager(
             null,
             reservedNames,
             workspaceRootsSource,
-            elicitationPresenter);
+            elicitationPresenter,
+            adjustmentChain);
     }
 
     private static bool TryToMcpDefinition(

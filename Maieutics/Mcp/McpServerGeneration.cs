@@ -147,6 +147,7 @@ internal sealed class McpServerGeneration
     private readonly McpClientTransportFactory transportFactory;
     private readonly IMcpWorkspaceRootsSource? rootsSource;
     private readonly McpElicitationCoordinator? elicitationCoordinator;
+    private readonly IMcpToolSurfaceAdjuster? toolSurfaceAdjuster;
     private McpConnectionGeneration? current;
     private TimeSpan? nextReconnectDelay;
     private Task? retirement;
@@ -160,7 +161,8 @@ internal sealed class McpServerGeneration
         IReadOnlySet<string>? reservedToolNames,
         IMcpWorkspaceRootsSource? rootsSource,
         McpElicitationCoordinator? elicitationCoordinator,
-        McpConnectionGeneration connection)
+        McpConnectionGeneration connection,
+        IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
         this.definition = definition;
         this.loggerFactory = loggerFactory;
@@ -170,6 +172,7 @@ internal sealed class McpServerGeneration
         this.rootsSource = rootsSource;
         this.elicitationCoordinator = elicitationCoordinator;
         logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
+        this.toolSurfaceAdjuster = toolSurfaceAdjuster;
         current = connection;
     }
 
@@ -185,7 +188,8 @@ internal sealed class McpServerGeneration
         McpClientTransportFactory? transportFactory = null,
         IReadOnlySet<string>? reservedToolNames = null,
         IMcpWorkspaceRootsSource? rootsSource = null,
-        IMcpElicitationPresenter? elicitationPresenter = null)
+        IMcpElicitationPresenter? elicitationPresenter = null,
+        IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
         transportFactory ??= CreateTransportAsync;
         var coordinator = elicitationPresenter is null
@@ -200,7 +204,8 @@ internal sealed class McpServerGeneration
             cancellationToken,
             reservedToolNames,
             rootsSource,
-            coordinator).ConfigureAwait(false);
+            coordinator,
+            toolSurfaceAdjuster).ConfigureAwait(false);
         var generation = new McpServerGeneration(
             definition,
             loggerFactory,
@@ -209,7 +214,8 @@ internal sealed class McpServerGeneration
             reservedToolNames,
             rootsSource,
             coordinator,
-            connection);
+            connection,
+            toolSurfaceAdjuster);
         generation.supervisor = generation.SuperviseAsync();
         return generation;
     }
@@ -284,6 +290,17 @@ internal sealed class McpServerGeneration
             new ReadResourceRequestParams { Uri = uri },
             timeout.Token).ConfigureAwait(false);
         return [.. result.Contents];
+    }
+
+    /// <summary>Re-projects the tool surface over the live connection without
+    /// reconnecting: the adjustment chain changed (ADR 0034), so the next refresh
+    /// re-lists tools and applies the new projection.</summary>
+    internal void RequestToolRefresh()
+    {
+        lock (gate)
+        {
+            current?.RequestToolRefresh();
+        }
     }
 
     internal Task Retire()
@@ -425,7 +442,8 @@ internal sealed class McpServerGeneration
                     lifetime.Token,
                     reservedToolNames,
                     rootsSource,
-                    elicitationCoordinator).ConfigureAwait(false);
+                    elicitationCoordinator,
+                    toolSurfaceAdjuster).ConfigureAwait(false);
                 lock (gate)
                 {
                     if (retirement is null)
@@ -466,7 +484,8 @@ internal sealed class McpServerGeneration
         CancellationToken cancellationToken,
         IReadOnlySet<string>? reservedToolNames,
         IMcpWorkspaceRootsSource? rootsSource = null,
-        McpElicitationCoordinator? elicitationCoordinator = null)
+        McpElicitationCoordinator? elicitationCoordinator = null,
+        IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
         var refreshSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
         {
@@ -533,7 +552,8 @@ internal sealed class McpServerGeneration
             refreshSignals,
             reservedToolNames,
             loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}"),
-            elicitationCoordinator);
+            elicitationCoordinator,
+            toolSurfaceAdjuster);
         try
         {
             connection.StartSubscriptionListener();
@@ -682,7 +702,8 @@ internal sealed class McpServerGeneration
         Channel<byte> refreshSignals,
         IReadOnlySet<string>? reservedToolNames,
         ILogger logger,
-        McpElicitationCoordinator? elicitationCoordinator = null)
+        McpElicitationCoordinator? elicitationCoordinator = null,
+        IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
         private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock gate = new();
@@ -752,7 +773,7 @@ internal sealed class McpServerGeneration
                 if (retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
 
                 references = checked(references + 1);
-                return new McpServerLease(this, tools);
+                return new McpServerLease(this, definition.Id, tools);
             }
         }
 
@@ -784,24 +805,38 @@ internal sealed class McpServerGeneration
             }
         }
 
+        internal void RequestToolRefresh()
+        {
+            refreshSignals.Writer.TryWrite(0);
+        }
+
         internal async Task RefreshToolsAsync(CancellationToken cancellationToken)
         {
-            var discovered = await Client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var discovered = (await Client.ListToolsAsync(cancellationToken: cancellationToken).ConfigureAwait(false))
+                .OrderBy(static value => value.ProtocolTool.Name, StringComparer.Ordinal)
+                .ToList();
             var exposed = ImmutableArray.CreateBuilder<AIFunction>();
             var info = ImmutableArray.CreateBuilder<MaieuticsMcpToolInfo>();
-            foreach (var tool in discovered.OrderBy(static value => value.ProtocolTool.Name, StringComparer.Ordinal))
+            if (toolSurfaceAdjuster is null)
             {
-                var name = tool.ProtocolTool.Name;
-                if (reservedToolNames is not null && reservedToolNames.Contains(name))
+                foreach (var tool in discovered)
                 {
-                    info.Add(new MaieuticsMcpToolInfo(name, name, false));
-                    continue;
-                }
+                    var name = tool.ProtocolTool.Name;
+                    if (reservedToolNames is not null && reservedToolNames.Contains(name))
+                    {
+                        info.Add(new MaieuticsMcpToolInfo(name, name, false));
+                        continue;
+                    }
 
-                exposed.Add(new TimeoutAIFunction(
-                    new ProgressReportingAIFunction(tool, definition.Id, logger, elicitationCoordinator),
-                    definition.RequestTimeout));
-                info.Add(new MaieuticsMcpToolInfo(name, name, true));
+                    exposed.Add(new TimeoutAIFunction(
+                        new ProgressReportingAIFunction(tool, definition.Id, logger, elicitationCoordinator),
+                        definition.RequestTimeout));
+                    info.Add(new MaieuticsMcpToolInfo(name, name, true));
+                }
+            }
+            else
+            {
+                await AdjustSurfaceAsync(discovered, exposed, info, cancellationToken).ConfigureAwait(false);
             }
 
             var catalog = await RefreshResourceCatalogAsync(cancellationToken).ConfigureAwait(false);
@@ -872,6 +907,130 @@ internal sealed class McpServerGeneration
             }
 
             return new McpResourceCatalog(resources.ToImmutable(), templates.ToImmutable());
+        }
+
+        /// <summary>Projects the discovered tools through the adjustment chain
+        /// (ADR 0034): the chain sees the listing only, and the projection maps each
+        /// output entry back to its declared remote tool. A failed invocation with
+        /// no previous adjusted listing exposes nothing (fail-closed) — removed
+        /// tools never resurrect because the adjuster hiccups.</summary>
+        private async Task AdjustSurfaceAsync(
+            List<McpClientTool> discovered,
+            ImmutableArray<AIFunction>.Builder exposed,
+            ImmutableArray<MaieuticsMcpToolInfo>.Builder info,
+            CancellationToken cancellationToken)
+        {
+            var adjusted = await toolSurfaceAdjuster.AdjustToolsAsync(
+                definition.Id,
+                BuildListing(discovered),
+                cancellationToken).ConfigureAwait(false);
+            if (adjusted is null)
+            {
+                logger.LogWarning(
+                    "The MCP adjustment chain for server '{ServerId}' produced no listing; its tools are not exposed.",
+                    definition.Id);
+                return;
+            }
+
+            var byName = discovered.ToDictionary(
+                static tool => tool.ProtocolTool.Name,
+                StringComparer.Ordinal);
+            var exposedNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var entry in adjusted.Value.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object ||
+                    !entry.TryGetProperty("aliasOf", out var aliasOfValue) ||
+                    aliasOfValue.ValueKind != JsonValueKind.String ||
+                    !byName.TryGetValue(aliasOfValue.GetString()!, out var source))
+                {
+                    logger.LogWarning(
+                        "The MCP adjustment chain for server '{ServerId}' returned an entry with no input identity; it is dropped.",
+                        definition.Id);
+                    continue;
+                }
+
+                var remoteName = aliasOfValue.GetString()!;
+                var exposedName = remoteName;
+                string? description = null;
+                JsonElement? schema = null;
+                if (entry.TryGetProperty("name", out var nameValue) && nameValue.ValueKind == JsonValueKind.String)
+                    exposedName = nameValue.GetString()!;
+                if (entry.TryGetProperty("description", out var descriptionValue) &&
+                    descriptionValue.ValueKind == JsonValueKind.String)
+                    description = descriptionValue.GetString();
+                if (entry.TryGetProperty("inputSchema", out var schemaValue) &&
+                    schemaValue.ValueKind == JsonValueKind.Object)
+                    schema = schemaValue.Clone();
+
+                if (!exposedNames.Add(exposedName))
+                {
+                    logger.LogWarning(
+                        "The MCP adjustment chain for server '{ServerId}' produced duplicate exposed name '{Name}'; it is dropped.",
+                        definition.Id,
+                        exposedName);
+                    continue;
+                }
+
+                AIFunction surface = new TimeoutAIFunction(
+                    new ProgressReportingAIFunction(source, definition.Id, logger, elicitationCoordinator),
+                    definition.RequestTimeout);
+                if (exposedName != remoteName || description is not null || schema is not null)
+                    surface = new RenamingAIFunction(surface, exposedName, description, schema);
+                exposed.Add(surface);
+                info.Add(new MaieuticsMcpToolInfo(remoteName, exposedName, true));
+            }
+        }
+
+        private static JsonElement BuildListing(List<McpClientTool> discovered)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartArray();
+                foreach (var tool in discovered)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("name", tool.ProtocolTool.Name);
+                    if (!string.IsNullOrEmpty(tool.ProtocolTool.Description))
+                        writer.WriteString("description", tool.ProtocolTool.Description);
+                    if (tool.ProtocolTool.InputSchema.ValueKind == JsonValueKind.Object)
+                    {
+                        writer.WritePropertyName("inputSchema");
+                        tool.ProtocolTool.InputSchema.WriteTo(writer);
+                    }
+
+                    writer.WriteEndObject();
+                }
+
+                writer.WriteEndArray();
+            }
+
+            stream.Position = 0;
+            using var document = JsonDocument.Parse(stream);
+            return document.RootElement.Clone();
+        }
+
+        /// <summary>Renames / re-describes / re-schemas a tool surface without
+        /// changing invocation: the call still routes to the inner remote tool.</summary>
+        private sealed class RenamingAIFunction : DelegatingAIFunction
+        {
+            private readonly string? description;
+            private readonly JsonElement? schema;
+
+            public RenamingAIFunction(AIFunction innerFunction, string name, string? description, JsonElement? schema)
+                : base(innerFunction)
+            {
+                Name = name;
+                this.description = description;
+                this.schema = schema;
+            }
+
+            public override string Name { get; }
+
+            public override string? Description => description ?? base.Description;
+
+            public override JsonElement JsonSchema =>
+                schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;
         }
 
         internal Task Retire()
@@ -946,9 +1105,12 @@ internal sealed class McpServerGeneration
 
     internal sealed class McpServerLease(
         McpConnectionGeneration generation,
+        string serverId,
         ImmutableArray<AIFunction> tools) : IAsyncDisposable
     {
         private int disposed;
+
+        internal string ServerId { get; } = serverId;
 
         internal IReadOnlyList<AIFunction> Tools { get; } = tools;
 

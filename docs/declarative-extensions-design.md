@@ -95,6 +95,7 @@ identical to handler-contributed conflicts.
 | Kind | Form | Consumer |
 |---|---|---|
 | `McpDiscover` | code + declarative | `PluginMcpCoordinator` (dynamic MCP generation) |
+| `McpAdjust` | code (ADR 0034) | the MCP adjustment chain — dependency-ordered tool-surface projection |
 | `ToolPreInvoke` / `ToolPostInvoke` | code only | per-call hook chain — no declarative form |
 
 New kinds are kernel release events: an interpreter + a catalog entry + a contract

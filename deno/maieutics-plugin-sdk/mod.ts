@@ -84,10 +84,12 @@ const NAMESPACE = "maieutics/extensionPoint/v1";
 /** Versioned extension point identity markers. */
 export const ExtensionPoint: {
   readonly McpDiscover: symbol;
+  readonly McpAdjust: symbol;
   readonly ToolPreInvoke: symbol;
   readonly ToolPostInvoke: symbol;
 } = {
   McpDiscover: Symbol.for(`${NAMESPACE}/mcp.discover`),
+  McpAdjust: Symbol.for(`${NAMESPACE}/mcp.adjust`),
   ToolPreInvoke: Symbol.for(`${NAMESPACE}/tools.preInvoke`),
   ToolPostInvoke: Symbol.for(`${NAMESPACE}/tools.postInvoke`),
 };
@@ -117,6 +119,46 @@ export type McpDiscovery =
 /** Why the host asked for a discovery pass. */
 export interface DiscoverContext {
   readonly reason: "registry_update" | "startup" | "config-changed";
+}
+
+/**
+ * `mcp.adjust` — adjust the MCP declaration surface of dependency plugins
+ * (ADR 0034). The handler sees declarations only (server definitions and tool
+ * listings); it is never on the tool-call path, and the kernel routes every
+ * invocation to the owning server, so an adjuster structurally cannot observe
+ * call-time input or output.
+ */
+export interface McpAdjustServer {
+  /** Kernel server id: `plugin:<ownerPluginId>::<key>`. */
+  readonly id: string;
+  /** Drop the server from the composed view (composition reason only). */
+  readonly drop?: boolean;
+}
+
+/** One exposed tool in an adjusted listing. Entries must map an input identity
+ * (`aliasOf`); omission from the returned array removes the tool; a `name`
+ * different from `aliasOf` renames it (the original name survives only if also
+ * listed). `description`/`inputSchema` override the declaration. */
+export interface McpAdjustedTool {
+  readonly aliasOf: string;
+  readonly name?: string;
+  readonly description?: string;
+  readonly inputSchema?: Record<string, unknown>;
+}
+
+export interface McpAdjustContext {
+  readonly reason: "composition" | "tools";
+  /** Composition: the in-scope server definitions (owners of the declared
+   * dependencies only). Return the servers to keep (drop flags applied). */
+  readonly servers?: readonly McpAdjustServer[];
+  /** Tools: the server whose listing was materialized. */
+  readonly server?: string;
+  /** Tools: the current tool listing (name/description/inputSchema). */
+  readonly tools?: readonly {
+    readonly name: string;
+    readonly description?: string;
+    readonly inputSchema?: Record<string, unknown>;
+  }[];
 }
 
 /** Decision returned by a pre-invoke hook; hook chain semantics, not observation. */
@@ -209,14 +251,38 @@ export type ToolPostInvokeInput =
   | ToolPostInvokeFunctionInput;
 export type ToolPostInvoke = ToolPostInvokeObject | ToolPostInvokeFunction;
 
+export interface McpAdjustObjectInput {
+  handler(context: McpAdjustContext):
+    | readonly McpAdjustedTool[]
+    | Promise<readonly McpAdjustedTool[]>;
+}
+
+export interface McpAdjustObject extends McpAdjustObjectInput {
+  readonly [ExtensionPoint.McpAdjust]: true;
+}
+
+export type McpAdjustFunctionInput = (
+  context: McpAdjustContext,
+) => readonly McpAdjustedTool[] | Promise<readonly McpAdjustedTool[]>;
+
+export type McpAdjustFunction = McpAdjustFunctionInput & {
+  readonly [ExtensionPoint.McpAdjust]: true;
+};
+
+export type McpAdjustInput = McpAdjustObjectInput | McpAdjustFunctionInput;
+export type McpAdjust = McpAdjustObject | McpAdjustFunction;
+
 interface ExtensionPointShape<K extends ExtensionPointName> {
   context: K extends "McpDiscover" ? DiscoverContext
+    : K extends "McpAdjust" ? McpAdjustContext
     : K extends "ToolPreInvoke" ? ToolInvokeContext
     : ToolPostInvokeContext;
   input: K extends "McpDiscover" ? McpDiscoverInput
+    : K extends "McpAdjust" ? McpAdjustInput
     : K extends "ToolPreInvoke" ? ToolPreInvokeInput
     : ToolPostInvokeInput;
   impl: K extends "McpDiscover" ? McpDiscover
+    : K extends "McpAdjust" ? McpAdjust
     : K extends "ToolPreInvoke" ? ToolPreInvoke
     : ToolPostInvoke;
 }

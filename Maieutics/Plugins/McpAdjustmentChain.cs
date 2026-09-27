@@ -299,7 +299,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
         }
 
         var inScopeIds = inScope.Select(static entry => entry.ServerId).ToHashSet(StringComparer.Ordinal);
-        var builder = ImmutableHashSet.CreateBuilder(StringComparer.Ordinal);
+        var builder = ImmutableHashSet.CreateBuilder<string>(StringComparer.Ordinal);
         foreach (var server in servers.EnumerateArray())
         {
             if (server.ValueKind != JsonValueKind.Object ||

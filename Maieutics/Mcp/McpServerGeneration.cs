@@ -920,7 +920,8 @@ internal sealed class McpServerGeneration
             ImmutableArray<MaieuticsMcpToolInfo>.Builder info,
             CancellationToken cancellationToken)
         {
-            var adjusted = await toolSurfaceAdjuster.AdjustToolsAsync(
+            if (toolSurfaceAdjuster is not { } adjuster) return;
+            var adjusted = await adjuster.AdjustToolsAsync(
                 definition.Id,
                 BuildListing(discovered),
                 cancellationToken).ConfigureAwait(false);
@@ -941,15 +942,14 @@ internal sealed class McpServerGeneration
                 if (entry.ValueKind != JsonValueKind.Object ||
                     !entry.TryGetProperty("aliasOf", out var aliasOfValue) ||
                     aliasOfValue.ValueKind != JsonValueKind.String ||
-                    !byName.TryGetValue(aliasOfValue.GetString()!, out var source))
+                    aliasOfValue.GetString() is not { Length: > 0 } remoteName ||
+                    !byName.TryGetValue(remoteName, out var source))
                 {
                     logger.LogWarning(
                         "The MCP adjustment chain for server '{ServerId}' returned an entry with no input identity; it is dropped.",
                         definition.Id);
                     continue;
                 }
-
-                var remoteName = aliasOfValue.GetString()!;
                 var exposedName = remoteName;
                 string? description = null;
                 JsonElement? schema = null;
@@ -1027,7 +1027,7 @@ internal sealed class McpServerGeneration
 
             public override string Name { get; }
 
-            public override string? Description => description ?? base.Description;
+            public override string Description => description ?? base.Description;
 
             public override JsonElement JsonSchema =>
                 schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;

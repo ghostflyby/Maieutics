@@ -100,11 +100,15 @@ export interface HostOptions {
   maxRestarts?: number;
   /** Cooperative teardown window per cascade wave. */
   stopGraceMs?: number;
+  /** Service-worker lifecycle (ADR 0035): a worker with zero references is
+   * stopped after this idle grace. 0 disables automatic reclamation. */
+  idleGraceMs?: number;
 }
 
 const DEFAULT_INVOKE_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RESTARTS = 3;
 const DEFAULT_STOP_GRACE_MS = 5_000;
+const DEFAULT_IDLE_GRACE_MS = 30_000;
 
 function filePathOf(url: string): string {
   return decodeURIComponent(new URL(url).pathname);
@@ -200,6 +204,9 @@ interface WorkerHandle {
   /** Contract identities (extension points) this worker's entry exports. */
   contractIdentities: ContractExportIdentity[];
   restarts: number;
+  /** ADR 0035: when the worker last reached zero references (undefined while
+   * referenced or running its grace). */
+  idleSince?: number;
 }
 
 const enum State {
@@ -222,6 +229,14 @@ export class PluginHost {
   #workers = new Map<string, WorkerHandle>();
   #bySpecifier = new Map<string, string>(); // specifier → workerKey
   #options: HostOptions;
+  /** ADR 0035 reference ledgers: in-flight extension-point invocations and
+   * live actor serve channels per worker key. Zero for the whole idle grace
+   * makes a running worker reclaimable. */
+  #inFlight = new Map<string, number>();
+  #openChannels = new Map<string, number>();
+  #idleSince = new Map<string, number>();
+  #starting = new Map<string, Promise<void>>();
+  #idleMonitor: ReturnType<typeof setInterval> | undefined;
   #acquireRouterInstalled = false;
   #http: HttpGateway | undefined;
   /** Authoritative per-plugin storage execution pool (ADR 0022): the frame
@@ -314,7 +329,70 @@ export class PluginHost {
     }
     const registrations = this.#collectExtensions();
     this.#refreshExtensions(registrations);
+    this.#startIdleMonitor();
     return registrations;
+  }
+
+  /** The Service-Worker reclamation monitor (ADR 0035): every tick, a running
+   * worker with zero references (no in-flight invocation, no live actor
+   * channel, not pinned as a dependency of a running worker) that has stayed
+   * unreferenced for the idle grace is stopped cooperatively. Stopped workers
+   * keep their registry entries and are restarted on demand. */
+  #startIdleMonitor(): void {
+    if (this.#idleMonitor !== undefined) return;
+    const grace = this.#options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
+    if (grace <= 0) return;
+    // A quarter of the grace per tick: short graces (tests, tight settings) get
+    // timely reclamation without ever busy-looping.
+    const tick = Math.max(50, Math.min(1_000, Math.floor(grace / 4)));
+    this.#idleMonitor = setInterval(() => this.#reclaimIdleWorkers(), tick);
+  }
+
+  #reclaimIdleWorkers(): void {
+    if (this.#disposed) return;
+    const grace = this.#options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
+    if (grace <= 0) return;
+    const now = Date.now();
+    for (const key of this.#workers.keys()) {
+      const handle = this.#requireHandle(key);
+      if (handle.state !== State.Running) {
+        this.#idleSince.delete(key);
+        continue;
+      }
+
+      const referenced =
+        (this.#inFlight.get(key) ?? 0) > 0 ||
+        (this.#openChannels.get(key) ?? 0) > 0 ||
+        this.#isDependencyOfRunningWorker(key);
+      if (referenced) {
+        this.#idleSince.delete(key);
+        continue;
+      }
+
+      const since = this.#idleSince.get(key) ?? now;
+      this.#idleSince.set(key, since);
+      if (now - since >= grace) {
+        this.#idleSince.delete(key);
+        // Cooperative stop through the serialized lifecycle tail: the
+        // provider-dead notification fires and dependents drop contributions,
+        // exactly as they would when the worker dies. The next reference
+        // restarts it.
+        void this.#enqueueLifecycle(() => this.#stopWorker(key));
+      }
+    }
+  }
+
+  /** True when some RUNNING worker declares (transitively — one edge here)
+   * a dependency on this worker: a running consumer pins its dependencies. */
+  #isDependencyOfRunningWorker(key: string): boolean {
+    for (const handle of this.#workers.values()) {
+      if (handle.state !== State.Running) continue;
+      if (this.#dependencyOf(workerKey(handle.plugin.id, handle.config.exportName)).includes(key)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /** Replaces the public registry snapshot with the current per-worker extension points. */
@@ -323,14 +401,21 @@ export class PluginHost {
     this.extensions.push(...registrations);
   }
 
-  /** Invokes one extension point on the targeted plugin worker. */
+  /** Invokes one extension point on the targeted plugin worker. A stopped
+   * worker is started on demand (Service-Worker wake, ADR 0035): the
+   * requirements closure (transitive dependencies) comes up first, then the
+   * worker, then the dispatch. The invocation holds a reference for its whole
+   * duration so the reclaimer cannot race it. */
   async invoke(
     pluginId: string,
     exportName: string,
     extensionPoint: string,
     request: unknown,
   ): Promise<unknown> {
-    const handle = this.#requireHandle(workerKey(pluginId, exportName));
+    const key = workerKey(pluginId, exportName);
+    this.#requireHandle(key);
+    await this.#ensureStarted(key);
+    const handle = this.#requireHandle(key);
     if (handle.state !== State.Running) {
       throw new Error(
         `Plugin worker '${pluginId}/${exportName}' is not running (state ${handle.state}).`,
@@ -348,7 +433,63 @@ export class PluginHost {
         `Extension point '${extensionPoint}' has no remote callable on '${pluginId}/${exportName}'.`,
       );
     }
-    return await call(request);
+    this.#inFlight.set(key, (this.#inFlight.get(key) ?? 0) + 1);
+    try {
+      return await call(request);
+    } finally {
+      const current = this.#inFlight.get(key) ?? 1;
+      if (current <= 1) this.#inFlight.delete(key);
+      else this.#inFlight.set(key, current - 1);
+    }
+  }
+
+  /** Ensures a worker is running (ADR 0035 wake): its transitive dependency
+   * closure starts first (dependencies before dependents), then the worker.
+   * Concurrent wake requests share one start; an explicit wake resets the
+   * crash counter — a deliberate reference is not a crash loop. */
+  #ensureStarted(key: string): Promise<void> {
+    const pending = this.#starting.get(key);
+    if (pending !== undefined) return pending;
+    const started = this.#enqueueLifecycle(async () => {
+      if (this.#disposed) throw new Error("The plugin host was disposed.");
+      const handle = this.#requireHandle(key);
+      if (handle.state === State.Running) return;
+      handle.restarts = 0;
+      await this.#startSubgraph(this.#requirementsClosure(key));
+      await this.#startWorker(key);
+    }).then(
+      () => {
+        this.#starting.delete(key);
+      },
+      () => {
+        this.#starting.delete(key);
+      },
+    );
+    // The tail mutation itself is what callers await; the cleanup chain keeps
+    // the map tidy without changing the awaited outcome.
+    this.#starting.set(key, started.then(() => undefined, () => undefined));
+    void started;
+    return started;
+  }
+
+  /** The worker plus its transitive dependencies (the requirements direction —
+   * what must run BEFORE this worker can). */
+  #requirementsClosure(rootKey: string): string[] {
+    const closure = new Set<string>([rootKey]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const key of [...closure]) {
+        for (const dep of this.#dependencyOf(key)) {
+          if (!closure.has(dep)) {
+            closure.add(dep);
+            grew = true;
+          }
+        }
+      }
+    }
+
+    return [...closure];
   }
 
   /** Snapshot of per-worker lifecycle states (backward compatible registry field). */
@@ -454,6 +595,10 @@ export class PluginHost {
     // Fence first: queued lifecycle mutations and every wave boundary check
     // this, so an in-flight reload can neither finish nor resurrect workers.
     this.#disposed = true;
+    if (this.#idleMonitor !== undefined) {
+      clearInterval(this.#idleMonitor);
+      this.#idleMonitor = undefined;
+    }
     void this.#http?.stopRouter();
     this.#storage.dispose();
     for (const handle of this.#workers.values()) {
@@ -580,12 +725,24 @@ export class PluginHost {
       if (typeof specifier !== "string" || typeof refId !== "string") return;
       const requester = event.currentTarget as Worker;
       const name = typeof frame.name === "string" ? frame.name : undefined;
-      this.#routeAcquire(requester, specifier, refId, name);
+      void this.#routeAcquire(requester, specifier, refId, name);
+    });
+    worker.addEventListener("message", (event: MessageEvent) => {
+      const frame = event.data as { type?: string; specifier?: unknown };
+      if (frame?.type !== "__ref-released") return;
+      if (typeof frame.specifier !== "string") return;
+      const key = this.#bySpecifier.get(frame.specifier);
+      if (key === undefined) return;
+      const count = this.#openChannels.get(key) ?? 0;
+      if (count <= 1) this.#openChannels.delete(key);
+      else this.#openChannels.set(key, count - 1);
     });
   }
 
-  /** Bootstraps the owner↔holder channel for a specifier acquire. */
-  #routeAcquire(requester: Worker, specifier: string, refId: string, name?: string): void {
+  /** Bootstraps the owner↔holder channel for a specifier acquire. A stopped
+   * owner is started on demand (ADR 0035): the acquire itself is the reference
+   * that wakes it, and the open channel pins it against reclamation. */
+  async #routeAcquire(requester: Worker, specifier: string, refId: string, name?: string): Promise<void> {
     if (specifier === HTTP_AGGREGATOR_SPECIFIER) {
       const { port1, port2 } = new MessageChannel();
       this.httpGateway().serveCollection(port1);
@@ -599,6 +756,15 @@ export class PluginHost {
     if (key === undefined) {
       return;
     }
+    try {
+      await this.#ensureStarted(key);
+    } catch (error: unknown) {
+      console.error(
+        `[plugin-host] acquire of '${specifier}' failed to start its owner: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     const owner = this.#requireHandle(key);
     if (owner.state !== State.Running || owner.worker === undefined) {
       console.error(
@@ -606,6 +772,7 @@ export class PluginHost {
       );
       return;
     }
+    this.#openChannels.set(key, (this.#openChannels.get(key) ?? 0) + 1);
     const { port1, port2 } = new MessageChannel();
     // serveWorker dispatches __serve-ref / __ref-acquired; the specifier rides
     // on the serve frame so the owner serves the right surface. The optional
@@ -756,7 +923,9 @@ export class PluginHost {
     if (handle.restarts > (this.#options.maxRestarts ?? DEFAULT_MAX_RESTARTS)) {
       handle.state = State.Disabled;
     }
-    void this.#cascade(key);
+    // Serialized behind the lifecycle tail (a crash cascade must not interleave
+    // with a reload or a reclamation stop) — the comment on #lifecycleTail.
+    void this.#enqueueLifecycle(() => this.#cascade(key));
   }
 
   async #cascade(rootKey: string): Promise<void> {
@@ -785,8 +954,13 @@ export class PluginHost {
     ]);
     await stopped;
     handle.state = State.Stopped;
-    handle.extensionPoints.clear();
-    handle.contractIdentities = [];
+    // ADR 0035: extension points and contract identities are RETAINED across
+    // stops — a Service-Worker registration survives termination, the kernel
+    // registry keeps routing (an invoke re-starts the worker), and a cold
+    // restart still knows the dependency contract identities. They are
+    // replaced only by a reload's fresh registration.
+    void handle.extensionPoints;
+    void handle.contractIdentities;
   }
 
   /** Notifies every worker that `stopped` contributes to (its declared

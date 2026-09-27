@@ -146,7 +146,8 @@ internal sealed partial class PluginHostJsonContext : JsonSerializerContext;
 
 internal sealed record PluginHostConfigFile(
     IReadOnlyList<PluginHostConfigPlugin> Plugins,
-    string? StorageDataRoot = null);
+    string? StorageDataRoot = null,
+    int? IdleGraceMs = null);
 
 internal sealed record PluginHostConfigPlugin(
     string Id,

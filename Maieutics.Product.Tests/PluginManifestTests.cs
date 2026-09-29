@@ -510,6 +510,90 @@ public sealed class PluginManifestTests
     }
 
     [Fact]
+    public void ManifestTriggersJoinTheDescriptor()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/triggers", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            {
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } },
+              "triggers": [
+                { "name": "idea-port", "kind": "watch",
+                  "paths": ["${env.MAIEUTICS_TEST_HOME}/Library/Caches/JetBrains/**"],
+                  "depth": 2, "action": { "type": "rediscover" } },
+                { "name": "nightly", "kind": "cron", "expression": "0 3 * * *", "action": "event" },
+                { "name": "poll", "kind": "interval", "seconds": 300 }
+              ]
+            }
+            """);
+        Environment.SetEnvironmentVariable("MAIEUTICS_TEST_HOME", "/Users/tester");
+        try
+        {
+            if (!PluginManifest.TryLoad(
+                    directory,
+                    new Maieutics.Permissions.VariableTable(new ManifestVariableSource()),
+                    out var descriptor,
+                    out var error))
+                throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
+
+            descriptor.Triggers.Should().HaveCount(3);
+
+            var watch = descriptor.Triggers.Should().ContainSingle(t => t.Name == "idea-port").Subject;
+            watch.Kind.Should().Be("watch");
+            watch.Action.Should().Be(PluginTriggerAction.Rediscover);
+            // Watch paths are kernel-expanded through the permission variable table.
+            watch.WatchPaths.Should().Equal("/Users/tester/Library/Caches/JetBrains/**");
+            watch.Depth.Should().Be(2);
+
+            var cron = descriptor.Triggers.Should().ContainSingle(t => t.Name == "nightly").Subject;
+            cron.Kind.Should().Be("cron");
+            cron.Action.Should().Be(PluginTriggerAction.Event);
+            cron.CronExpression.Should().Be("0 3 * * *");
+
+            var interval = descriptor.Triggers.Should().ContainSingle(t => t.Name == "poll").Subject;
+            interval.Kind.Should().Be("interval");
+            interval.Action.Should().Be(PluginTriggerAction.Event);
+            interval.IntervalSeconds.Should().Be(300);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIEUTICS_TEST_HOME", null);
+        }
+    }
+
+    [Fact]
+    public void MalformedTriggersFailThePluginLoad()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/broken-triggers", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "triggers": [{ "name": "bad", "kind": " Psychic", "action": "event" }] }
+            """);
+        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
+        error.Should().Contain("unknown kind");
+
+        var directory2 = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/bad-cron", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "triggers": [{ "name": "bad", "kind": "cron", "expression": "0 3 * *" }] }
+            """);
+        PluginManifest.TryLoad(directory2, out _, out var error2).Should().BeFalse();
+        error2.Should().Contain("5 fields");
+    }
+
+    private sealed class ManifestVariableSource : Maieutics.Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name) =>
+            name == "env.MAIEUTICS_TEST_HOME" ? "/Users/tester" : null;
+    }
+
+    [Fact]
     public void APluginWithoutAnMcpDataFileCarriesNoServers()
     {
         var descriptor = LoadPlugin(

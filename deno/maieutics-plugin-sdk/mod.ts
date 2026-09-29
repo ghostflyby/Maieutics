@@ -85,11 +85,13 @@ const NAMESPACE = "maieutics/extensionPoint/v1";
 export const ExtensionPoint: {
   readonly McpDiscover: symbol;
   readonly McpAdjust: symbol;
+  readonly PluginEvent: symbol;
   readonly ToolPreInvoke: symbol;
   readonly ToolPostInvoke: symbol;
 } = {
   McpDiscover: Symbol.for(`${NAMESPACE}/mcp.discover`),
   McpAdjust: Symbol.for(`${NAMESPACE}/mcp.adjust`),
+  PluginEvent: Symbol.for(`${NAMESPACE}/plugin.event`),
   ToolPreInvoke: Symbol.for(`${NAMESPACE}/tools.preInvoke`),
   ToolPostInvoke: Symbol.for(`${NAMESPACE}/tools.postInvoke`),
 };
@@ -144,6 +146,21 @@ export interface McpAdjustedTool {
   readonly name?: string;
   readonly description?: string;
   readonly inputSchema?: Record<string, unknown>;
+}
+
+/** `plugin.event` — a manifest-declared trigger fired on the host (ADR 0036).
+ * The runtime holds the listener (watch/cron/interval); delivery wakes the worker
+ * (ADR 0035) and dispatches here. Handlers run under the plugin's own grants and
+ * should reconcile state on wake: delivery is at-least-once. */
+export interface PluginEventContext {
+  readonly trigger: string;
+  readonly firedAt: string;
+  readonly detail?: {
+    readonly kind?: "watch" | "cron" | "interval";
+    readonly paths?: readonly string[];
+    readonly expression?: string;
+    readonly seconds?: number;
+  };
 }
 
 export interface McpAdjustContext {
@@ -272,17 +289,39 @@ export type McpAdjustFunction = McpAdjustFunctionInput & {
 export type McpAdjustInput = McpAdjustObjectInput | McpAdjustFunctionInput;
 export type McpAdjust = McpAdjustObject | McpAdjustFunction;
 
+export interface PluginEventObjectInput {
+  handler(context: PluginEventContext): void | Promise<void>;
+}
+
+export interface PluginEventObject extends PluginEventObjectInput {
+  readonly [ExtensionPoint.PluginEvent]: true;
+}
+
+export type PluginEventFunctionInput = (
+  context: PluginEventContext,
+) => void | Promise<void>;
+
+export type PluginEventFunction = PluginEventFunctionInput & {
+  readonly [ExtensionPoint.PluginEvent]: true;
+};
+
+export type PluginEventInput = PluginEventObjectInput | PluginEventFunctionInput;
+export type PluginEvent = PluginEventObject | PluginEventFunction;
+
 interface ExtensionPointShape<K extends ExtensionPointName> {
   context: K extends "McpDiscover" ? DiscoverContext
     : K extends "McpAdjust" ? McpAdjustContext
+    : K extends "PluginEvent" ? PluginEventContext
     : K extends "ToolPreInvoke" ? ToolInvokeContext
     : ToolPostInvokeContext;
   input: K extends "McpDiscover" ? McpDiscoverInput
     : K extends "McpAdjust" ? McpAdjustInput
+    : K extends "PluginEvent" ? PluginEventInput
     : K extends "ToolPreInvoke" ? ToolPreInvokeInput
     : ToolPostInvokeInput;
   impl: K extends "McpDiscover" ? McpDiscover
     : K extends "McpAdjust" ? McpAdjust
+    : K extends "PluginEvent" ? PluginEvent
     : K extends "ToolPreInvoke" ? ToolPreInvoke
     : ToolPostInvoke;
 }

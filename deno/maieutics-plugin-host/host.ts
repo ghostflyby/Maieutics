@@ -61,6 +61,30 @@ export interface PluginConfig {
    * store lives in this host process; the directory is only the persistence
    * target. Omitted configs make plugin storage fail with a typed error. */
   storage?: { readonly dataDir: string };
+  /** Manifest-declared triggers (ADR 0036). Watch paths arrive already
+   * kernel-expanded through the permission variable table; this host holds the
+   * listeners and delivers fires through the wired sinks. */
+  triggers?: readonly PluginTriggerConfig[];
+}
+
+/** The wire form of one trigger (kernel-validated, ADR 0036). */
+export interface PluginTriggerConfig {
+  readonly name: string;
+  readonly kind: "watch" | "cron" | "interval";
+  readonly action: "event" | "rediscover" | { readonly type: "event" | "rediscover" };
+  readonly paths?: readonly string[];
+  readonly depth?: number;
+  readonly expression?: string;
+  readonly seconds?: number;
+}
+
+/** Where trigger fires are delivered (wired by mod.ts): events wake the owning
+ * worker (ADR 0035) and dispatch to its PluginEvent extension point; rediscover
+ * sends a plugin.trigger frame to the kernel, which republishes the plugin's MCP
+ * registrations. Pure runtime — no worker involvement on the rediscover path. */
+export interface TriggerSinks {
+  onEvent(pluginId: string, trigger: string, detail: unknown): Promise<void>;
+  onRediscover(pluginId: string, trigger: string): void;
 }
 
 export interface RegisteredExtension {
@@ -237,6 +261,9 @@ export class PluginHost {
   #idleSince = new Map<string, number>();
   #starting = new Map<string, Promise<void>>();
   #idleMonitor: ReturnType<typeof setInterval> | undefined;
+  /** Trigger delivery sinks (ADR 0036), wired by mod.ts before startAll. */
+  #triggerSinks: TriggerSinks | undefined;
+  #triggerDisposers: Array<() => void> = [];
   #acquireRouterInstalled = false;
   #http: HttpGateway | undefined;
   /** Authoritative per-plugin storage execution pool (ADR 0022): the frame
@@ -330,7 +357,154 @@ export class PluginHost {
     const registrations = this.#collectExtensions();
     this.#refreshExtensions(registrations);
     this.#startIdleMonitor();
+    this.#installTriggers();
     return registrations;
+  }
+
+  /** Wires trigger delivery (ADR 0036); must be set before startAll so the
+   * listeners install with the sinks in place. */
+  setTriggerSinks(sinks: TriggerSinks | undefined): void {
+    this.#triggerSinks = sinks;
+  }
+
+  /** Materializes one listener per declared trigger (ADR 0036): watch paths are
+   * already kernel-expanded; missing paths are tolerated (a trigger may predate
+   * the software it watches). Watch fires coalesce per trigger (500ms, matching
+   * the kernel watcher); timers fire at most once per tick. Bounded: one
+   * listener per trigger, replaced wholesale on reinstall. */
+  #installTriggers(): void {
+    for (const dispose of this.#triggerDisposers.splice(0)) {
+      try {
+        dispose();
+      } catch {
+        // already gone
+      }
+    }
+
+    if (this.#triggerSinks === undefined) return;
+    for (const plugin of this.#options.plugins) {
+      for (const trigger of plugin.triggers ?? []) {
+        this.#installTrigger(plugin.id, trigger);
+      }
+    }
+  }
+
+  #installTrigger(pluginId: string, trigger: PluginTriggerConfig): void {
+    // The action arrives as "rediscover" or the object form {type: "rediscover"}
+    // (kernel wire form); normalize once.
+    const action = typeof trigger.action === "string"
+      ? trigger.action
+      : (trigger.action as { type?: string }).type === "rediscover"
+      ? "rediscover"
+      : "event";
+    const fire = (detail: unknown): void => {
+      if (this.#disposed) return;
+      const sinks = this.#triggerSinks;
+      if (sinks === undefined) return;
+      if (action === "rediscover") {
+        sinks.onRediscover(pluginId, trigger.name);
+        return;
+      }
+
+      void sinks.onEvent(pluginId, trigger.name, detail).catch((error: unknown) => {
+        console.error(
+          `[plugin-host] trigger '${pluginId}/${trigger.name}' event delivery failed: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    };
+
+    if (trigger.kind === "interval") {
+      const seconds = Math.max(1, trigger.seconds ?? 1);
+      const timer = setInterval(() => fire({ kind: "interval", seconds }), seconds * 1_000);
+      this.#triggerDisposers.push(() => clearInterval(timer));
+      return;
+    }
+
+    if (trigger.kind === "cron") {
+      const timer = setInterval(
+        () => {
+          if (this.#cronDue(trigger.expression ?? "", new Date())) {
+            fire({ kind: "cron", expression: trigger.expression });
+          }
+        },
+        30_000,
+      );
+      this.#triggerDisposers.push(() => clearInterval(timer));
+      return;
+    }
+
+    // watch: coalesce per trigger; Deno.watchFs is recursive but the depth cap
+    // bounds the watched tree, and a missing root just ends the watcher (a
+    // trigger may predate the software it watches — reinstall checks nothing).
+    const roots = (trigger.paths ?? []).map((path) =>
+      path.endsWith("/**") ? path.slice(0, -3).replace(/\/$/, "") : path
+    );
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    for (const root of roots) {
+      try {
+        const watcher = Deno.watchFs(root, { recursive: true });
+        this.#triggerDisposers.push(() => {
+          try {
+            watcher.close();
+          } catch {
+            // already closed
+          }
+        });
+        void (async () => {
+          try {
+            for await (const _event of watcher) {
+              void _event;
+              if (pending !== undefined) clearTimeout(pending);
+              pending = setTimeout(() => {
+                pending = undefined;
+                fire({ kind: "watch", paths: trigger.paths });
+              }, 500);
+            }
+          } catch {
+            // watcher closed or root vanished
+          }
+        })();
+      } catch {
+        // root does not exist (yet) — tolerated by design
+      }
+    }
+  }
+
+  /** Five-field local-time cron matching (test surface over the private due
+   * check; the sampling tick calls it every 30s). `*`, lists, ranges, and steps
+   * match the kernel-validated grammar. */
+  cronMatches(expression: string, now: Date): boolean {
+    return this.#cronDue(expression, now);
+  }
+
+  /** Five-field local-time cron matching at a 30s sampling tick. `*`, lists,
+   * ranges, and steps match the kernel-validated grammar. */
+  #cronDue(expression: string, now: Date): boolean {
+    const fields = expression.split(/\s+/).filter((part) => part.length > 0);
+    if (fields.length !== 5) return false;
+    const values = [
+      now.getMinutes(),
+      now.getHours(),
+      now.getDate(),
+      now.getMonth() + 1,
+      now.getDay(),
+    ];
+    return fields.every((field, index) => this.#cronFieldMatches(field, values[index]));
+  }
+
+  #cronFieldMatches(field: string, value: number): boolean {
+    return field.split(",").some((part) => {
+      const [range, stepText] = part.split("/");
+      const step = stepText === undefined ? 1 : Math.max(1, Number.parseInt(stepText, 10));
+      if (Number.isNaN(step)) return false;
+      const ends = range === "*"
+        ? [value, value]
+        : range.split("-").map((n) => Number.parseInt(n, 10));
+      if (ends.some((n) => Number.isNaN(n))) return false;
+      const [from, to] = ends.length === 1 ? [ends[0], ends[0]] : ends;
+      return value >= from && value <= to && (value - from) % step === 0;
+    });
   }
 
   /** The Service-Worker reclamation monitor (ADR 0035): every tick, a running
@@ -594,6 +768,14 @@ export class PluginHost {
     // Fence first: queued lifecycle mutations and every wave boundary check
     // this, so an in-flight reload can neither finish nor resurrect workers.
     this.#disposed = true;
+    for (const dispose of this.#triggerDisposers.splice(0)) {
+      try {
+        dispose();
+      } catch {
+        // already gone
+      }
+    }
+
     if (this.#idleMonitor !== undefined) {
       clearInterval(this.#idleMonitor);
       this.#idleMonitor = undefined;

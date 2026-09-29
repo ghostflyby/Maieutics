@@ -107,6 +107,7 @@ internal static class PluginRegistryDiscovery
                 [],
                 [],
                 [],
+                [],
                 InspectionsContentReadAll: false);
         }
         catch (Exception exception) when (exception is JsonException or IOException)
@@ -196,6 +197,7 @@ internal static class PluginRegistryDiscovery
                 workers, permissions, pluginManifest.Isolation,
                 pluginManifest.Dependencies ?? [],
                 PluginImportReader.Read(packageManifest?.Imports),
+                [],
                 [],
                 [],
                 [],

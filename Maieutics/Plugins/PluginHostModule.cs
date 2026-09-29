@@ -139,6 +139,7 @@ internal sealed class PluginHostModule
 [JsonSerializable(typeof(PluginHostConfigWorker))]
 [JsonSerializable(typeof(PluginHostConfigPermissions))]
 [JsonSerializable(typeof(PluginHostConfigStorage))]
+[JsonSerializable(typeof(PluginHostConfigTrigger))]
 [JsonSerializable(typeof(PluginReloadPayload))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(string[]))]
@@ -155,7 +156,8 @@ internal sealed record PluginHostConfigPlugin(
     IReadOnlyList<PluginHostConfigWorker> Workers,
     PluginHostConfigPermissions Permissions,
     IReadOnlyList<string> Dependencies,
-    PluginHostConfigStorage? Storage = null);
+    PluginHostConfigStorage? Storage = null,
+    IReadOnlyList<PluginHostConfigTrigger>? Triggers = null);
 
 internal sealed record PluginHostConfigWorker(string ExportName, string EntryUrl, string Specifier);
 

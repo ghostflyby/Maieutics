@@ -56,62 +56,24 @@
     </ItemGroup>
 
 
+    <!-- The kernel materializes these Deno packages from embedded resources at
+         runtime (PluginHostModule / DenoReplModule): every runtime .ts file of the
+         six packages is embedded by glob, so adding a module can never be missed:
+         the LogicalName is the package-relative path the materializers reverse
+         (RecursiveDir covers only subdirectories, so each batch prepends its
+         package name). Tests run in the deno workspace itself; the VS Code
+         extension and research scripts ship through their own flows. -->
     <ItemGroup>
-        <EmbeddedResource Include="..\deno\maieutics-repl-client\mod.ts" LogicalName="Maieutics.Deno.ReplClient.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\comm.ts" LogicalName="Maieutics.Deno.DenoRepl.Comm.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\windows_bootstrap.ts" LogicalName="Maieutics.Deno.DenoRepl.WindowsBootstrap.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\main.ts" LogicalName="Maieutics.Deno.DenoRepl.Main.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\protocol.ts" LogicalName="Maieutics.Deno.DenoRepl.Protocol.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\output_protocol.ts" LogicalName="Maieutics.Deno.DenoRepl.OutputProtocol.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_client.ts" LogicalName="Maieutics.Deno.DenoRepl.Client.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_actor.ts" LogicalName="Maieutics.Deno.DenoRepl.Actor.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_worker.ts" LogicalName="Maieutics.Deno.DenoRepl.Worker.ts" />
-        <EmbeddedResource Include="..\deno\shared\resource_bridge.ts" LogicalName="Maieutics.Deno.Shared.ResourceBridge.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\input_mailbox.ts" LogicalName="Maieutics.Deno.DenoRepl.InputMailbox.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_eval_queue.ts" LogicalName="Maieutics.Deno.DenoRepl.Queue.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\process_main.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessMain.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\process_rpc.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessRpc.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\repl_process_env.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessEnv.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\process_rpc_test.ts" LogicalName="Maieutics.Deno.DenoRepl.ProcessRpcTest.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Maieutics.Deno.DenoRepl.Config.json" />
-        <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Maieutics.Deno.DenoRepl.Lock.json" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\index.ts" LogicalName="Maieutics.Deno.Widgets.Index.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\runtime.ts" LogicalName="Maieutics.Deno.Widgets.Runtime.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\controls.ts" LogicalName="Maieutics.Deno.Widgets.Controls.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\vnode.ts" LogicalName="Maieutics.Deno.Widgets.VNode.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\transform.ts" LogicalName="Maieutics.Deno.Widgets.Transform.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\style.ts" LogicalName="Maieutics.Deno.Widgets.Style.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\widgets\jsx-runtime.ts" LogicalName="Maieutics.Deno.Widgets.JsxRuntime.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\mod.ts" LogicalName="Maieutics.Deno.PluginSdk.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\entry.ts" LogicalName="Maieutics.Deno.PluginSdkEntry.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\runtime.ts" LogicalName="Maieutics.Deno.PluginSdkRuntime.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\interop.ts" LogicalName="Maieutics.Deno.PluginSdkInterop.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\actor_ref.ts" LogicalName="Maieutics.Deno.PluginSdkActorRef.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\reactive.ts" LogicalName="Maieutics.Deno.PluginSdkReactive.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\collection_stream.ts" LogicalName="Maieutics.Deno.PluginSdkCollectionStream.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\admission.ts" LogicalName="Maieutics.Deno.PluginSdkAdmission.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\http.ts" LogicalName="Maieutics.Deno.PluginSdkHttp.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\http_codec.ts" LogicalName="Maieutics.Deno.PluginSdkHttpCodec.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\lint-plugin.ts" LogicalName="Maieutics.Deno.PluginSdkLint.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\mod.ts" LogicalName="Maieutics.Deno.PluginHost.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\host.ts" LogicalName="Maieutics.Deno.PluginHostImpl.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\http.ts" LogicalName="Maieutics.Deno.PluginHostHttp.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\worker_entry.ts" LogicalName="Maieutics.Deno.PluginHostWorker.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_engine.ts" LogicalName="Maieutics.Deno.PluginHostStorageEngine.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_pool.ts" LogicalName="Maieutics.Deno.PluginHostStoragePool.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\storage_pool_worker.ts" LogicalName="Maieutics.Deno.PluginHostStoragePoolWorker.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-runtime\storage_channel.ts" LogicalName="Maieutics.Deno.Runtime.StorageChannel.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\repl_manager.ts" LogicalName="Maieutics.Deno.PluginHostReplManager.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-host\host_repl_protocol.ts" LogicalName="Maieutics.Deno.PluginHostReplProtocol.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-runtime\bootstrap_contract.ts" LogicalName="Maieutics.Deno.Runtime.BootstrapContract.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-runtime\worker_bootstrap.ts" LogicalName="Maieutics.Deno.Runtime.WorkerBootstrap.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-runtime\worker_factory.ts" LogicalName="Maieutics.Deno.Runtime.WorkerFactory.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-runtime\worker_patch.ts" LogicalName="Maieutics.Deno.Runtime.WorkerPatch.ts" />
-        <EmbeddedResource Include="..\deno\shared\protocol.ts" LogicalName="Maieutics.Deno.Shared.Protocol.ts" />
-        <EmbeddedResource Include="..\deno\shared\bus.ts" LogicalName="Maieutics.Deno.Shared.Bus.ts" />
-        <EmbeddedResource Include="..\deno\shared\ipc_websocket.ts" LogicalName="Maieutics.Deno.Shared.IpcWebSocket.ts" />
-        <EmbeddedResource Include="..\deno\shared\comm_codec.ts" LogicalName="Maieutics.Deno.Shared.CommCodec.ts" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Maieutics.Deno.PluginSdkConfig.json" />
+        <DenoRuntimeModule Include="..\deno\maieutics-repl-client\**\*.ts" Package="maieutics-repl-client" Exclude="..\deno\maieutics-repl-client\**\*_test.ts" />
+        <DenoRuntimeModule Include="..\deno\maieutics-deno-repl\**\*.ts" Package="maieutics-deno-repl" Exclude="..\deno\maieutics-deno-repl\**\*_test.ts" />
+        <DenoRuntimeModule Include="..\deno\maieutics-plugin-sdk\**\*.ts" Package="maieutics-plugin-sdk" Exclude="..\deno\maieutics-plugin-sdk\**\*_test.ts" />
+        <DenoRuntimeModule Include="..\deno\maieutics-plugin-host\**\*.ts" Package="maieutics-plugin-host" Exclude="..\deno\maieutics-plugin-host\**\*_test.ts" />
+        <DenoRuntimeModule Include="..\deno\maieutics-runtime\**\*.ts" Package="maieutics-runtime" Exclude="..\deno\maieutics-runtime\**\*_test.ts;..\deno\maieutics-runtime\test_fixtures\**" />
+        <DenoRuntimeModule Include="..\deno\shared\**\*.ts" Package="shared" Exclude="..\deno\shared\**\*_test.ts" />
+        <EmbeddedResource Include="@(DenoRuntimeModule)" LogicalName="Deno/%(Package)/%(RecursiveDir)%(Filename)%(Extension)" />
+        <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Deno/maieutics-deno-repl/deno.json" />
+        <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Deno/maieutics-deno-repl/deno.lock" />
+        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Deno/maieutics-plugin-sdk/deno.json" />
     </ItemGroup>
 
 </Project>

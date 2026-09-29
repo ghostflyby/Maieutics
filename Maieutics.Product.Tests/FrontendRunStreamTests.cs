@@ -316,7 +316,21 @@ public sealed class FrontendRunStreamTests
     /// <summary>Captures records so tests can assert on the diagnostic surface.</summary>
     private sealed class CapturingLogger : ILogger
     {
-        public List<(LogLevel Level, string Message, Exception? Exception)> Records { get; } = [];
+        // The pump thread appends while the test thread asserts; a plain list would
+        // both tear enumerations and race the settlement records into the snapshot.
+        private readonly Lock gate = new();
+        private List<(LogLevel Level, string Message, Exception? Exception)> records = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message, Exception? Exception)> Records
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return records.ToArray();
+                }
+            }
+        }
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
@@ -330,7 +344,10 @@ public sealed class FrontendRunStreamTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            Records.Add((logLevel, formatter(state, exception), exception));
+            lock (gate)
+            {
+                records.Add((logLevel, formatter(state, exception), exception));
+            }
         }
     }
 

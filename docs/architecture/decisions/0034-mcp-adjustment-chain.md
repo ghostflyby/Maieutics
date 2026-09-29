@@ -67,7 +67,9 @@ Semantics:
 - The kernel-side projection (`MaieuticsMcpToolInfo` remote/exposed split finally
   diverges) means `%mcp list` shows exposed names and the Agent registry keys by exposed
   names — invocations still address the remote tool.
-- Out of scope (Phase 2+): tools with their own implementations (call traffic would
-  route to the adjuster, breaking the constraint), per-consumer views (the composed view
-  is global), and transitive direct targeting (declare the chain: adjust what your
-  dependencies expose after their own adjustments).
+- Extensions land in stages, each independently shippable: per-consumer views and
+  transitive direct targeting extend the same chain fold (per-consumer snapshots keyed
+  by consumer, and chain edges derived from indirect references respectively); tools
+  with their own implementations grow the contract into a routed surface, with call
+  traffic to the owning worker and the declarations-only guarantee scoped to the
+  declaration plane.

@@ -1678,10 +1678,28 @@ internal sealed class PluginHostManager(
                     ],
                     ToConfigPermissions(descriptor.Permissions),
                     descriptor.Dependencies.ToArray(),
-                    dataDir is null ? null : new PluginHostConfigStorage(dataDir));
+                    dataDir is null ? null : new PluginHostConfigStorage(dataDir),
+                    TriggerConfigs(descriptor));
             })
             .ToArray();
         return new PluginHostConfigFile(configured, pluginDataRoot, ReadIdleGraceMs());
+    }
+
+    /// <summary>Wire form of a plugin's triggers (ADR 0036): watch paths already
+    /// kernel-expanded; the host only listens on what it was given.</summary>
+    private static IReadOnlyList<PluginHostConfigTrigger> TriggerConfigs(PluginDescriptor descriptor)
+    {
+        if (descriptor.Triggers.Count == 0) return [];
+        return descriptor.Triggers
+            .Select(trigger => new PluginHostConfigTrigger(
+                trigger.Name,
+                trigger.Kind,
+                PluginTrigger.ActionName(trigger.Action),
+                trigger.WatchPaths.Count == 0 ? null : trigger.WatchPaths,
+                trigger.Depth,
+                trigger.CronExpression,
+                trigger.IntervalSeconds))
+            .ToArray();
     }
 
     /// <summary>Canonical interop specifier of one worker entrypoint: `&lt;name&gt;/&lt;entrypoint&gt;`.</summary>
@@ -1734,6 +1752,9 @@ internal sealed class PluginHostManager(
                 break;
             case ReplMessageType.ExtensionRegistry:
                 UpdateRegistry(ParsePayload<ExtensionRegistryPayload>(envelope));
+                break;
+            case ReplMessageType.PluginTrigger:
+                HandlePluginTrigger(ParsePayload<PluginTriggerPayload>(envelope));
                 break;
             case ReplMessageType.HostReplSpawned:
                 RegisterHostRepl(ParsePayload<HostReplSpawnedPayload>(envelope));
@@ -2175,6 +2196,29 @@ internal sealed class PluginHostManager(
 
         RegistryChanges.Writer.TryWrite(registrySnapshot);
         dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+    }
+
+    /// <summary>A trigger fired on the host (ADR 0036): republish the named plugin's
+    /// MCP registration subset so discovery re-runs over the current local state and
+    /// the coordinator recomposes. Pure runtime — no worker wake.</summary>
+    private void HandlePluginTrigger(PluginTriggerPayload? payload)
+    {
+        if (payload is null || string.IsNullOrWhiteSpace(payload.PluginId)) return;
+        PluginRegistration[] mcpSnapshot;
+        lock (gate)
+        {
+            mcpSnapshot = registrations
+                .Where(registration => registration.PluginId == payload.PluginId &&
+                                       registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
+                .ToArray();
+        }
+
+        if (mcpSnapshot.Length == 0) return;
+        logger.LogInformation(
+            "Plugin '{PluginId}' trigger '{Trigger}' fired; republishing its MCP registrations.",
+            payload.PluginId,
+            payload.Trigger);
+        RepublishRegistry(mcpSnapshot);
     }
 
     /// <summary>Republishes the MCP subset of the merged registry snapshot (worker

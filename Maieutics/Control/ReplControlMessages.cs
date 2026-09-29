@@ -62,6 +62,7 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(HostInvokeResultPayload))]
 [JsonSerializable(typeof(HostInvokeErrorPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPayload))]
+[JsonSerializable(typeof(PluginTriggerPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPlugin))]
 [JsonSerializable(typeof(PluginStatePayload))]
 [JsonSerializable(typeof(ToolHookContextPayload))]
@@ -128,6 +129,7 @@ internal static class ReplMessageType
     public const string HostInvokeError = "host.invokeError";
     public const string ExtensionRegistry = "extension.registry";
     public const string PluginReload = "plugin.reload";
+    public const string PluginTrigger = "plugin.trigger";
     public const string HostReplSpawned = "host.repl.spawned";
     public const string HostReplExited = "host.repl.exited";
     public const string HostReplDerive = "host.repl.derive";
@@ -238,6 +240,11 @@ internal sealed record HostInvokeResultPayload(JsonElement? Value = null);
 internal sealed record HostInvokeErrorPayload(string Code, string Message);
 
 /// <summary>Host-to-kernel registry snapshot of scanned extension points per worker.</summary>
+/// <summary>A trigger fired on the host (ADR 0036): the kernel republishes the named
+/// plugin's MCP registration subset — discovery re-runs and the coordinator recomposes.
+/// No worker wake: the rediscover action is pure runtime.</summary>
+internal sealed record PluginTriggerPayload(string PluginId, string Trigger);
+
 internal sealed record ExtensionRegistryPayload(
     IReadOnlyList<ExtensionRegistryPlugin> Plugins,
     IReadOnlyList<PluginStatePayload>? States = null);

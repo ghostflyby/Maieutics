@@ -19,6 +19,7 @@ internal sealed record PluginDescriptor(
     IReadOnlyList<PluginExtensionEntry> Extensions,
     IReadOnlyList<PluginDataEntry> DataEntries,
     IReadOnlyList<McpServerDefinition> McpServers,
+    IReadOnlyList<PluginTrigger> Triggers,
     IReadOnlyList<string> ExtensionDiagnostics,
     bool InspectionsContentReadAll,
     string? McpServersError = null);
@@ -136,7 +137,25 @@ internal static class PluginManifest
     /// Sibling keys are data entry names (ADR 0033).</summary>
     private const string WorkerSectionName = "worker";
 
+    public static bool TryLoad(
+        string directory,
+        Maieutics.Permissions.VariableTable? triggerVariables,
+        [NotNullWhen(true)] out PluginDescriptor? descriptor,
+        out string error)
+    {
+        return TryLoad(directory, out descriptor, out error, triggerVariables);
+    }
+
     public static bool TryLoad(string directory, [NotNullWhen(true)] out PluginDescriptor? descriptor, out string error)
+    {
+        return TryLoad(directory, out descriptor, out error, null);
+    }
+
+    private static bool TryLoad(
+        string directory,
+        [NotNullWhen(true)] out PluginDescriptor? descriptor,
+        out string error,
+        Maieutics.Permissions.VariableTable? triggerVariables)
     {
         descriptor = null;
         var pluginConfigPath = Path.Combine(directory, "maieutics.json");
@@ -239,6 +258,22 @@ internal static class PluginManifest
             }
         }
 
+        // Triggers (ADR 0036): the kernel owns the declaration plane — kinds are a
+        // closed catalog and watch paths expand through the permission store's
+        // variable table, so a trigger can never widen what the plugin may read.
+        IReadOnlyList<PluginTrigger> triggers;
+        try
+        {
+            triggers = PluginTriggerReader.Read(
+                pluginManifest.Triggers,
+                triggerVariables ?? EmptyVariables());
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or Maieutics.Permissions.PermissionException)
+        {
+            error = exception.Message;
+            return false;
+        }
+
         var declarativeDiagnostics = new List<string>(extensionDiagnostics);
         declarativeDiagnostics.AddRange(dataDiagnostics);
 
@@ -255,6 +290,7 @@ internal static class PluginManifest
             extensions,
             dataEntries,
             mcpServers,
+            triggers,
             declarativeDiagnostics,
             contentReadAll,
             mcpServersError);
@@ -368,6 +404,17 @@ internal static class PluginManifest
         if (!IsWithinRoot(fullPath, root)) return null;
 
         return new PluginWorkerDescriptor(entry.Name, new Uri(fullPath).AbsoluteUri);
+    }
+
+    private static Maieutics.Permissions.VariableTable EmptyVariables()
+    {
+        return new Maieutics.Permissions.VariableTable(
+            new EmptyTriggerVariableSource());
+    }
+
+    private sealed class EmptyTriggerVariableSource : Maieutics.Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name) => null;
     }
 
     /// <summary>Collects one string-valued data entry: resolves the path inside the
@@ -592,7 +639,8 @@ internal sealed record MaieuticsManifestFile(
     string? Isolation = null,
     IReadOnlyList<string>? Capabilities = null,
     JsonElement? Extensions = null,
-    JsonElement? Inspections = null);
+    JsonElement? Inspections = null,
+    JsonElement? Triggers = null);
 
 /// <summary>The package identity file (deno.json), read for name and permissions only.</summary>
 internal sealed record PluginManifestFile(

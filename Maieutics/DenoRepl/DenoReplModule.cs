@@ -5,48 +5,19 @@ namespace Maieutics.DenoRepl;
 /// </summary>
 internal sealed class DenoReplModule
 {
-    private static readonly (string Resource, string RelativePath)[] Entries =
+    /// <summary>The embedded-resource root (shared with PluginHostModule): resource
+    /// names are package-relative paths batch-embedded by glob, so the materializer
+    /// enumerates the manifest instead of a hand-maintained table and can never drift
+    /// from what was embedded.</summary>
+    private const string ResourcePrefix = "Deno/";
+
+    private static readonly string[] MaterializedPackages =
     [
-        ("Maieutics.Deno.DenoRepl.Main.ts", "maieutics-deno-repl/main.ts"),
-        ("Maieutics.Deno.DenoRepl.Protocol.ts", "maieutics-deno-repl/protocol.ts"),
-        ("Maieutics.Deno.DenoRepl.OutputProtocol.ts", "maieutics-deno-repl/output_protocol.ts"),
-        ("Maieutics.Deno.DenoRepl.Client.ts", "maieutics-deno-repl/repl_client.ts"),
-        ("Maieutics.Deno.DenoRepl.Actor.ts", "maieutics-deno-repl/repl_actor.ts"),
-        ("Maieutics.Deno.DenoRepl.Worker.ts", "maieutics-deno-repl/repl_worker.ts"),
-        ("Maieutics.Deno.Shared.ResourceBridge.ts", "shared/resource_bridge.ts"),
-        ("Maieutics.Deno.DenoRepl.InputMailbox.ts", "maieutics-deno-repl/input_mailbox.ts"),
-        ("Maieutics.Deno.DenoRepl.Queue.ts", "maieutics-deno-repl/repl_eval_queue.ts"),
-        ("Maieutics.Deno.DenoRepl.ProcessMain.ts", "maieutics-deno-repl/process_main.ts"),
-        ("Maieutics.Deno.DenoRepl.ProcessRpc.ts", "maieutics-deno-repl/process_rpc.ts"),
-        ("Maieutics.Deno.DenoRepl.ProcessEnv.ts", "maieutics-deno-repl/repl_process_env.ts"),
-        ("Maieutics.Deno.DenoRepl.ProcessRpcTest.ts", "maieutics-deno-repl/process_rpc_test.ts"),
-        ("Maieutics.Deno.DenoRepl.Comm.ts", "maieutics-deno-repl/comm.ts"),
-        ("Maieutics.Deno.DenoRepl.WindowsBootstrap.ts", "maieutics-deno-repl/windows_bootstrap.ts"),
-        ("Maieutics.Deno.DenoRepl.Config.json", "maieutics-deno-repl/deno.json"),
-        ("Maieutics.Deno.DenoRepl.Lock.json", "maieutics-deno-repl/deno.lock"),
-        ("Maieutics.Deno.Widgets.Index.ts", "maieutics-plugin-sdk/widgets/index.ts"),
-        ("Maieutics.Deno.Widgets.Runtime.ts", "maieutics-plugin-sdk/widgets/runtime.ts"),
-        ("Maieutics.Deno.Widgets.Controls.ts", "maieutics-plugin-sdk/widgets/controls.ts"),
-        ("Maieutics.Deno.Widgets.VNode.ts", "maieutics-plugin-sdk/widgets/vnode.ts"),
-        ("Maieutics.Deno.Widgets.Transform.ts", "maieutics-plugin-sdk/widgets/transform.ts"),
-        ("Maieutics.Deno.Widgets.Style.ts", "maieutics-plugin-sdk/widgets/style.ts"),
-        ("Maieutics.Deno.Widgets.JsxRuntime.ts", "maieutics-plugin-sdk/widgets/jsx-runtime.ts"),
-        ("Maieutics.Deno.PluginSdkAdmission.ts", "maieutics-plugin-sdk/admission.ts"),
-        ("Maieutics.Deno.PluginSdkHttp.ts", "maieutics-plugin-sdk/http.ts"),
-        ("Maieutics.Deno.PluginSdkHttpCodec.ts", "maieutics-plugin-sdk/http_codec.ts"),
-        ("Maieutics.Deno.ReplClient.ts", "maieutics-repl-client/mod.ts"),
-        ("Maieutics.Deno.Runtime.BootstrapContract.ts", "maieutics-runtime/bootstrap_contract.ts"),
-        ("Maieutics.Deno.Runtime.WorkerBootstrap.ts", "maieutics-runtime/worker_bootstrap.ts"),
-        ("Maieutics.Deno.Runtime.WorkerFactory.ts", "maieutics-runtime/worker_factory.ts"),
-        ("Maieutics.Deno.Runtime.WorkerPatch.ts", "maieutics-runtime/worker_patch.ts"),
-        // worker_bootstrap.ts imports the storage channel (the nested plugin
-        // realm composes plugin storage there), so the REPL materialization
-        // needs the module on disk even though the REPL never installs it.
-        ("Maieutics.Deno.Runtime.StorageChannel.ts", "maieutics-runtime/storage_channel.ts"),
-        ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
-        ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
-        ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts"),
-        ("Maieutics.Deno.Shared.CommCodec.ts", "shared/comm_codec.ts")
+        "maieutics-deno-repl",
+        "maieutics-plugin-sdk",
+        "maieutics-runtime",
+        "shared",
+        "maieutics-repl-client"
     ];
 
     private readonly Lazy<MaterializedModules> modules =
@@ -73,7 +44,8 @@ internal sealed class DenoReplModule
     {
         var root = Path.Combine(Path.GetTempPath(), $"mc-repl-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        foreach (var (resource, relativePath) in Entries) WriteEmbedded(resource, Path.Combine(root, relativePath));
+        foreach (var (resource, relativePath) in MaterializedResources())
+            WriteEmbedded(resource, Path.Combine(root, relativePath));
 
         return new MaterializedModules(
             new Uri(Path.Combine(root, "maieutics-repl-client/mod.ts")).AbsoluteUri,
@@ -82,6 +54,21 @@ internal sealed class DenoReplModule
             Path.Combine(root, "maieutics-deno-repl/deno.json"),
             Path.Combine(root, "maieutics-deno-repl/deno.lock"),
             root);
+    }
+
+    private static IEnumerable<(string Resource, string RelativePath)> MaterializedResources()
+    {
+        var assembly = typeof(DenoReplModule).Assembly;
+        foreach (var name in assembly.GetManifestResourceNames())
+        {
+            if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal)) continue;
+            var relative = name[ResourcePrefix.Length..];
+            var package = relative.Contains('/')
+                ? relative[..relative.IndexOf('/', StringComparison.Ordinal)]
+                : relative;
+            if (!MaterializedPackages.Contains(package)) continue;
+            yield return (name, relative);
+        }
     }
 
     internal static void WriteEmbedded(string resourceName, string path)

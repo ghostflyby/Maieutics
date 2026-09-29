@@ -9,51 +9,25 @@ namespace Maieutics.Plugins;
 /// </summary>
 internal sealed class PluginHostModule
 {
-    private static readonly (string Resource, string RelativePath)[] Entries =
+    /// <summary>The embedded-resource root for the runtime Deno packages; each
+    /// resource name is the package-relative path (batch-embedded by glob in the
+    /// project file, so adding a module file can never be missed here).</summary>
+    private const string ResourcePrefix = "Deno/";
+
+    private static readonly string[] MaterializedPackages =
     [
-        ("Maieutics.Deno.PluginSdk.ts", "maieutics-plugin-sdk/mod.ts"),
-        ("Maieutics.Deno.PluginSdkEntry.ts", "maieutics-plugin-sdk/entry.ts"),
-        ("Maieutics.Deno.PluginSdkRuntime.ts", "maieutics-plugin-sdk/runtime.ts"),
-        ("Maieutics.Deno.PluginSdkInterop.ts", "maieutics-plugin-sdk/interop.ts"),
-        ("Maieutics.Deno.PluginSdkActorRef.ts", "maieutics-plugin-sdk/actor_ref.ts"),
-        ("Maieutics.Deno.PluginSdkReactive.ts", "maieutics-plugin-sdk/reactive.ts"),
-        ("Maieutics.Deno.PluginSdkCollectionStream.ts", "maieutics-plugin-sdk/collection_stream.ts"),
-        ("Maieutics.Deno.PluginSdkAdmission.ts", "maieutics-plugin-sdk/admission.ts"),
-        ("Maieutics.Deno.PluginSdkHttp.ts", "maieutics-plugin-sdk/http.ts"),
-        ("Maieutics.Deno.PluginSdkHttpCodec.ts", "maieutics-plugin-sdk/http_codec.ts"),
-        ("Maieutics.Deno.PluginSdkLint.ts", "maieutics-plugin-sdk/lint-plugin.ts"),
-        ("Maieutics.Deno.Widgets.Index.ts", "maieutics-plugin-sdk/widgets/index.ts"),
-        ("Maieutics.Deno.Widgets.Runtime.ts", "maieutics-plugin-sdk/widgets/runtime.ts"),
-        ("Maieutics.Deno.Widgets.Controls.ts", "maieutics-plugin-sdk/widgets/controls.ts"),
-        ("Maieutics.Deno.Widgets.VNode.ts", "maieutics-plugin-sdk/widgets/vnode.ts"),
-        ("Maieutics.Deno.Widgets.Transform.ts", "maieutics-plugin-sdk/widgets/transform.ts"),
-        ("Maieutics.Deno.Widgets.Style.ts", "maieutics-plugin-sdk/widgets/style.ts"),
-        ("Maieutics.Deno.Widgets.JsxRuntime.ts", "maieutics-plugin-sdk/widgets/jsx-runtime.ts"),
-        ("Maieutics.Deno.PluginHost.ts", "maieutics-plugin-host/mod.ts"),
-        ("Maieutics.Deno.PluginHostImpl.ts", "maieutics-plugin-host/host.ts"),
-        ("Maieutics.Deno.PluginHostHttp.ts", "maieutics-plugin-host/http.ts"),
-        ("Maieutics.Deno.PluginHostWorker.ts", "maieutics-plugin-host/worker_entry.ts"),
-        ("Maieutics.Deno.PluginHostStorageEngine.ts", "maieutics-plugin-host/storage_engine.ts"),
-        ("Maieutics.Deno.PluginHostStoragePool.ts", "maieutics-plugin-host/storage_pool.ts"),
-        ("Maieutics.Deno.PluginHostStoragePoolWorker.ts", "maieutics-plugin-host/storage_pool_worker.ts"),
-        ("Maieutics.Deno.PluginHostReplManager.ts", "maieutics-plugin-host/repl_manager.ts"),
-        ("Maieutics.Deno.PluginHostReplProtocol.ts", "maieutics-plugin-host/host_repl_protocol.ts"),
-        ("Maieutics.Deno.Runtime.BootstrapContract.ts", "maieutics-runtime/bootstrap_contract.ts"),
-        ("Maieutics.Deno.Runtime.WorkerBootstrap.ts", "maieutics-runtime/worker_bootstrap.ts"),
-        ("Maieutics.Deno.Runtime.WorkerFactory.ts", "maieutics-runtime/worker_factory.ts"),
-        ("Maieutics.Deno.Runtime.WorkerPatch.ts", "maieutics-runtime/worker_patch.ts"),
-        ("Maieutics.Deno.Runtime.StorageChannel.ts", "maieutics-runtime/storage_channel.ts"),
-        ("Maieutics.Deno.Shared.Protocol.ts", "shared/protocol.ts"),
-        ("Maieutics.Deno.Shared.Bus.ts", "shared/bus.ts"),
-        ("Maieutics.Deno.Shared.IpcWebSocket.ts", "shared/ipc_websocket.ts"),
-        ("Maieutics.Deno.PluginSdkConfig.json", "maieutics-plugin-sdk/deno.json")
+        "maieutics-plugin-sdk",
+        "maieutics-plugin-host",
+        "maieutics-runtime",
+        "shared",
+        "maieutics-repl-client"
     ];
 
     public PluginHostModule()
     {
         ModuleDirectory = Path.Combine(Path.GetTempPath(), $"mc-modules-{Guid.NewGuid():N}");
         Directory.CreateDirectory(ModuleDirectory);
-        foreach (var (resource, relativePath) in Entries)
+        foreach (var (resource, relativePath) in MaterializedResources())
             WriteEmbedded(resource, Path.Combine(ModuleDirectory, relativePath));
 
         SdkUrl = new Uri(Path.Combine(ModuleDirectory, "maieutics-plugin-sdk/mod.ts")).AbsoluteUri;
@@ -118,6 +92,23 @@ internal sealed class PluginHostModule
     public string ConfigFile { get; }
 
     private string SdkDirectory { get; }
+
+    /// <summary>Every embedded resource of the materialized packages, as
+    /// (resource name, package-relative path). Enumerating the assembly manifest
+    /// replaces the historical hand-maintained name table: the resource set and
+    /// the materializer can no longer drift apart.</summary>
+    private static IEnumerable<(string Resource, string RelativePath)> MaterializedResources()
+    {
+        var assembly = typeof(PluginHostModule).Assembly;
+        foreach (var name in assembly.GetManifestResourceNames())
+        {
+            if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal)) continue;
+            var relative = name[ResourcePrefix.Length..];
+            var package = relative.Contains('/') ? relative[..relative.IndexOf('/', StringComparison.Ordinal)] : relative;
+            if (!MaterializedPackages.Contains(package)) continue;
+            yield return (name, relative);
+        }
+    }
 
     private static void WriteEmbedded(string resourceName, string path)
     {

@@ -45,8 +45,9 @@ Deno.test("an interval trigger fires the event sink", async () => {
   ]);
   const host = makeHost([plugin]);
   host.setTriggerSinks({
-    async onEvent(pluginId, trigger) {
+    onEvent(pluginId, trigger) {
       fired.push({ plugin: pluginId, trigger });
+      return Promise.resolve();
     },
     onRediscover() {},
   });

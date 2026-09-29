@@ -47,6 +47,9 @@ async function main(): Promise<void> {
     storageDataRoot: config.storageDataRoot,
     idleGraceMs: config.idleGraceMs,
   });
+  // The sink closure fires before the bus connects (rediscover is a no-op
+  // until then), so the bus rides a holder instead of a forward-declared let.
+  const busHolder: { bus?: Awaited<ReturnType<typeof connectBus>> } = {};
   // Trigger delivery sinks (ADR 0036): events dispatch to the owning worker's
   // PluginEvent extension point through the same invoke path the kernel uses
   // (start-on-demand included); rediscover sends a plugin.trigger frame the
@@ -74,7 +77,7 @@ async function main(): Promise<void> {
       }
     },
     onRediscover(pluginId, trigger) {
-      bus?.send({
+      busHolder.bus?.send({
         type: "plugin.trigger",
         payload: { pluginId, trigger },
       });
@@ -89,7 +92,6 @@ async function main(): Promise<void> {
     replEntryPath: Deno.env.get(REPL_ENTRY_ENV) ?? "",
   });
 
-  let bus: Awaited<ReturnType<typeof connectBus>> | undefined;
   const registered = await host.startAll();
   await host.httpGateway().startRouter({
     token: crypto.randomUUID(),
@@ -105,7 +107,7 @@ async function main(): Promise<void> {
   // The control host (Kestrel in the composition root) may not be listening
   // yet when this process starts, so the bus connect is retried instead of
   // crashing the host. The first registry snapshot is sent once connected.
-  bus = await connectBusWithRetry({
+  busHolder.bus = await connectBusWithRetry({
     address: ipcAddress,
     hello: {
       type: "control.hello",
@@ -113,14 +115,14 @@ async function main(): Promise<void> {
     },
     onMessage: handleMessage,
   });
-  bus!.send({
+  busHolder.bus!.send({
     type: "extension.registry",
     payload: registryPayload(registered, host.states()),
   });
   // Host → kernel REPL pid reports ride the same bus. The reporter is wired
   // here, after the hello handshake authenticated this host; ReplManager
   // refuses to derive a REPL before it is set.
-  repls.setReporter((report: HostReplReport) => bus!.send(report));
+  repls.setReporter((report: HostReplReport) => busHolder.bus!.send(report));
 
   // Kernel capability calls ride the same bus: the host relays the worker's
   // request with its derived plugin identity and completes on the correlated
@@ -148,7 +150,7 @@ async function main(): Promise<void> {
           reject(error);
         },
       });
-      bus.send({
+      busHolder.bus?.send({
         type: "capability.invoke",
         payload: { pluginId: plugin, capability, payload },
         correlationId,
@@ -164,7 +166,7 @@ async function main(): Promise<void> {
       console.error(`[plugin-host] storage flush on shutdown failed: ${error.message}`);
     });
     void repls.disposeAll();
-    bus?.close();
+    busHolder.bus?.close();
   };
   globalThis.addEventListener("unload", shutdown);
 
@@ -200,7 +202,7 @@ async function main(): Promise<void> {
       if (typeof payload?.pluginId === "string" && typeof payload.exportName === "string") {
         const next = payload.plugin;
         void host.reload(payload.pluginId, payload.exportName, next).then(() => {
-          bus!.send({
+          busHolder.bus!.send({
             type: "extension.registry",
             payload: registryPayload(host.extensions, host.states()),
           });
@@ -232,13 +234,13 @@ async function main(): Promise<void> {
           payload.extensionPoint,
           payload.request,
         ).then((value: unknown) => {
-          bus!.send({
+          busHolder.bus!.send({
             type: "host.invokeResult",
             payload: { value },
             correlationId: envelope.correlationId,
           });
         }).catch((error: Error) => {
-          bus!.send({
+          busHolder.bus!.send({
             type: "host.invokeError",
             payload: { code: "host_invoke_failed", message: error.message },
             correlationId: envelope.correlationId,

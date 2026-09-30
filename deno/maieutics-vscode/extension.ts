@@ -43,10 +43,6 @@ let connecting: Promise<Connection> | undefined;
 let controller: MaieuticsNotebookController | undefined;
 let fsProvider: MaieuticsFileSystemProvider | undefined;
 let treeRefresh: (() => void) | undefined;
-/** Set once activate() builds the sessions tree; the activity surface reads
- * it lazily so registration order does not matter. */
-let activityTreeProvider: { refresh(): void } | undefined;
-
 const treeEnvironment: TreeEnvironment = {
   caseInsensitive: false,
   currentOnly: false,

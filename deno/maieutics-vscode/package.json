@@ -57,7 +57,8 @@
         "entrypoint": "./media/turnRenderer.js",
         "mimeTypes": [
           "application/vnd.maieutics.turn+json"
-        ]
+        ],
+        "requiresMessaging": "always"
       },
       {
         "id": "maieutics-widget-renderer",

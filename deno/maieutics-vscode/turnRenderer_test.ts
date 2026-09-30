@@ -99,14 +99,11 @@ Deno.test("timeline collapses a failed turn's text to its retry action", () => {
     error: { code: "events_disconnected", message: "reset" },
   });
   // The raw failure markdown would duplicate the error note; only the
-  // command affordance survives, as an anchor.
+  // command affordance survives. A renderer cannot execute a command: link
+  // without the messaging bridge, so the anchor carries data-retry and the
+  // bridge posts the retry instead.
   assert(!html.includes("[\u21bb Retry turn]"), html);
-  assert(
-    html.includes(
-      `<a href="command:maieutics.retryTurn?%5B%22a%22%5D">\u21bb Retry turn</a>`,
-    ),
-    html,
-  );
+  assert(html.includes('data-retry="1"'), html);
   assert(html.includes("<code>events_disconnected</code>"), html);
 });
 

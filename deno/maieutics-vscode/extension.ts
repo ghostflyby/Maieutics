@@ -208,6 +208,23 @@ export function activate(context: vscode.ExtensionContext): void {
   const rendererMessaging = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
   context.subscriptions.push(
     rendererMessaging.onDidReceiveMessage(({ message }) => {
+      const envelope = message as {
+        source?: unknown;
+        type?: unknown;
+        notebookUri?: unknown;
+        cellIndex?: unknown;
+      };
+      if (
+        envelope.source === "maieutics-turn" && envelope.type === "retry" &&
+        typeof envelope.notebookUri === "string" && typeof envelope.cellIndex === "number"
+      ) {
+        void vscode.commands.executeCommand("maieutics.retryTurn", [
+          envelope.notebookUri,
+          envelope.cellIndex,
+        ]);
+        return;
+      }
+
       void widgetBridge.handleRendererMessage(message).catch((error: unknown) =>
         output?.appendLine(`widget bridge failed: ${error}`)
       );

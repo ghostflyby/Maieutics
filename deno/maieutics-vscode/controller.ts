@@ -69,9 +69,7 @@ import {
 } from "./serializer.ts";
 import {
   type ReplDisplayEntry,
-  subagentSnapshotLines,
   type SubagentSnapshotView,
-  toolSnapshotLines,
   type ToolSnapshotView,
   turnOutputItems,
   TurnView,
@@ -1260,32 +1258,11 @@ class RunExecution {
       return;
     }
 
-    // Final tool statuses (an entry can flip after the last streamed paint);
-    // rendered through the shared snapshot renderer so edit diffs survive.
-    const toolsKey = `tools:${this.view.runId}`;
-    if (final.tools.length > 0) {
-      const markdown = toolSnapshotLines(final.tools).join("\n");
-      const existing = this.segments.get(toolsKey);
-      const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
-      if (existing) this.execution.replaceOutputItems(items, existing);
-      else this.ensureSegment(toolsKey, new vscode.NotebookCellOutput(items));
-    }
-
-    // Final child statuses, through the same shared composition as the live
-    // subagent paint.
-    const subagentsKey = `subagents:${this.view.runId}`;
-    if (final.subagents !== undefined && final.subagents.length > 0) {
-      const markdown = subagentSnapshotLines(final.subagents).join("\n");
-      const existing = this.segments.get(subagentsKey);
-      const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
-      if (existing) this.execution.replaceOutputItems(items, existing);
-      else this.ensureSegment(subagentsKey, new vscode.NotebookCellOutput(items));
-    }
-
-    // The terminal state REPLACES the streaming markdown item with the single
-    // structured item: a markdown sibling would always win VS Code's mime
-    // display order and keep the timeline from being picked. The renderer
-    // provides the markdown fallback view for the frozen snapshot.
+    // The freeze REPLACES every streamed segment with the single structured
+    // turn+json item: its default renderer view covers tools, subagents, and
+    // the answer (with the overflow hint carried through), so keeping the
+    // streamed markdown siblings would render those timelines twice. The
+    // renderer provides the markdown fallback view for the frozen snapshot.
     this.paintAnswer();
     const answerOutput = this.segments.get(`answer:${this.view.runId}`);
     if (answerOutput) {
@@ -1293,6 +1270,14 @@ class RunExecution {
         turnOutputItems(final).map(outputItemFromSpec),
         answerOutput,
       );
+    }
+
+    for (const key of [`tools:${this.view.runId}`, `subagents:${this.view.runId}`]) {
+      const stale = this.segments.get(key);
+      if (stale !== undefined) {
+        this.execution.replaceOutputItems([], stale);
+        this.segments.delete(key);
+      }
     }
 
     this.execution.end(true, Date.now());

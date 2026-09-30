@@ -542,6 +542,7 @@ export class TurnView {
     truncated: boolean;
     repl: ReplDisplayEntry[];
     subagents?: SubagentSnapshotView[];
+    subagentsOverflow?: boolean;
     usage?: UsageSummary;
     model?: ModelIdentity;
     error?: { code: string; message: string };
@@ -553,7 +554,10 @@ export class TurnView {
       repl: this.replList(),
       tools: toolSnapshotViews(this.orderedEntries()),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
-      ...(this.subagents.size === 0 ? {} : { subagents: this.subagentSnapshots() }),
+      ...(this.subagents.size === 0 ? {} : {
+        subagents: this.subagentSnapshots(),
+        subagentsOverflow: this.subagentsOverflow,
+      }),
       ...(this.usage === undefined ? {} : { usage: this.usage }),
       ...(this.model === undefined ? {} : { model: this.model }),
       error: this.terminal?.kind === "failed"

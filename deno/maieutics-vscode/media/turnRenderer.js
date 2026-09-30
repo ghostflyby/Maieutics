@@ -60,6 +60,8 @@ const STYLE = `
 .maieutics-turn .subagent-head { opacity: 0.85; margin-bottom: 2px; }
 `;
 
+const vscodeApi = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -294,7 +296,7 @@ function toolMarkdownLines(tools) {
  * carrying the `> ` prefix so the child's own markdown cannot escape the
  * indentation level (bare `>` keeps the quote continuous across blank
  * lines). Mirrors the live segment composition of turnView.ts. */
-function subagentsMarkdown(subagents) {
+function subagentsMarkdown(subagents, overflow = false) {
   const blocks = [];
   const many = subagents.length > 1;
   const quoted = (line) => (line.length === 0 ? ">" : `> ${line}`);
@@ -309,6 +311,9 @@ function subagentsMarkdown(subagents) {
     if (child.truncated) lines.push(quoted("> ⚠️ 子代理输出被截断。"));
     while (lines.length > 0 && lines.at(-1) === ">") lines.pop();
     blocks.push(lines);
+  }
+  if (overflow) {
+    blocks.push(["> ⚠️ 子代理过多，仅显示前 16 个。"]);
   }
   const out = [];
   for (const block of blocks) {
@@ -356,7 +361,7 @@ function subagentMark(child) {
 /** The folded subagent child runs as indented sections inside the timeline:
  * a status heading, the child's tool rows, then its report text (rendered
  * through the same escape-first markdown pass as the answer). */
-function subagentsHtml(subagents) {
+function subagentsHtml(subagents, overflow = false) {
   const many = subagents.length > 1;
   const sections = subagents.map((child, index) => {
     const body = [];
@@ -368,6 +373,9 @@ function subagentsHtml(subagents) {
     }
     if (child.truncated) {
       body.push('<div class="note">⚠️ 子代理输出被截断。</div>');
+    }
+    if (overflow) {
+      body.push('<div class="note">⚠️ 子代理过多，仅显示前 16 个。</div>');
     }
     const head = `🤖 子代理${many ? ` ${index + 1}` : ""} · ${subagentMark(child)}`;
     return `<div class="subagent"><div class="subagent-head">${escapeHtml(head)}</div>${
@@ -386,22 +394,44 @@ function render(turn) {
     parts.push(toolListHtml(turn.tools));
   }
   if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
-    parts.push(subagentsHtml(turn.subagents));
+    parts.push(subagentsHtml(turn.subagents, turn.subagentsOverflow === true));
   }
   if (typeof turn.text === "string" && turn.text.length > 0) {
-    // A failed turn's text is the failure markdown and duplicates the
-    // structured error note below; surface only its command affordances
-    // (Retry) as actions and skip the rest.
+    // A failed turn's text duplicates the structured error note below in two
+    // ways the reviewers proved with deno eval: the whole failure markdown
+    // re-renders the message the error note already shows, and unlinked
+    // failure text renders a second time in the default timeline view. Keep
+    // only the Retry affordance (through the messaging bridge, which alone
+    // can execute commands from a renderer) and drop the duplicated text.
     const links = turn.error ? commandLinks(turn.text) : [];
-    parts.push(
-      links.length > 0
-        ? `<div class="actions">${
-          links
-            .map((link) => `<a href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`)
-            .join(" ")
-        }</div>`
-        : `<div class="text">${markdownToHtml(turn.text)}</div>`,
-    );
+    const retry = links.find((link) => link.href.startsWith("command:maieutics.retryTurn"));
+    if (retry !== undefined) {
+      // The anchor always renders (the affordance is the point); only the
+      // click handler needs the messaging bridge. In a bridge-less context
+      // (unit tests) the anchor is inert but visible.
+      const args = (retry.href.split("?")[1] ?? "").split("&").map((pair) =>
+        decodeURIComponent(pair.split("=").slice(1).join("="))
+      );
+      parts.push(
+        `<div class="actions"><a href="#" data-retry="1">${escapeHtml(retry.label)}</a></div>`,
+      );
+      queueMicrotask(() => {
+        // A Deno-side render (unit tests) has no DOM: the anchor renders inert.
+        if (typeof document === "undefined") return;
+        const action = document.querySelector('[data-retry="1"]');
+        action?.addEventListener("click", (event) => {
+          event.preventDefault();
+          vscodeApi.postMessage({
+            source: "maieutics-turn",
+            type: "retry",
+            notebookUri: args[0] ?? "",
+            cellIndex: Number.parseInt(args[1] ?? "-1", 10),
+          });
+        });
+      });
+    } else if (!turn.error) {
+      parts.push(`<div class="text">${markdownToHtml(turn.text)}</div>`);
+    }
   }
   if (turn.truncated) {
     parts.push(
@@ -439,7 +469,7 @@ function renderMarkdownView(turn) {
     sections.push(toolMarkdownLines(turn.tools).join("\n"));
   }
   if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
-    sections.push(subagentsMarkdown(turn.subagents));
+    sections.push(subagentsMarkdown(turn.subagents, turn.subagentsOverflow === true));
   }
   if (typeof turn.text === "string" && turn.text.length > 0) sections.push(turn.text);
   if (turn.truncated) {

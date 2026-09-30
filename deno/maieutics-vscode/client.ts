@@ -330,13 +330,21 @@ export class FrontendClient {
     return await fetched;
   }
 
-  /** Answers a pending input request announced by an `input.request` frame. */
-  async submitInput(requestId: string, value: string, signal?: AbortSignal): Promise<void> {
+  /** Answers a pending input request announced by an `input.request` frame.
+   * A REPL prompt posts a string; an MCP elicitation posts its field values
+   * as an object, or refuses with action `decline`/`cancel` (ADR 0029). */
+  async submitInput(
+    requestId: string,
+    value: string | Record<string, unknown>,
+    options: { action?: "accept" | "decline" | "cancel"; signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const body: Record<string, unknown> = { value };
+    if (options.action !== undefined && options.action !== "accept") body.action = options.action;
     const response = await this.fetchJson(
       "POST",
       `/v1/agent/inputs/${requestId}`,
-      { value },
-      signal,
+      body,
+      options.signal,
     );
     if (!response.ok) throw await this.errorOf(response);
     await response.body?.cancel();

@@ -150,6 +150,12 @@
         "title": "Clear Queued Cells",
         "category": "Maieutics",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "maieutics.retryTurn",
+        "title": "Retry Turn",
+        "icon": "$(refresh)",
+        "enablement": "notebookType == maieutics-notebook"
       }
     ],
     "configuration": {
@@ -238,6 +244,11 @@
           "command": "maieutics.mountSessionsFolder",
           "group": "navigation",
           "when": "view == maieutics.sessions"
+        },
+        {
+          "command": "maieutics.restartServer",
+          "group": "1_maintenance@0",
+          "when": "view == maieutics.sessions"
         }
       ],
       "view/item/context": [
@@ -250,6 +261,12 @@
           "command": "maieutics.copySessionId",
           "group": "1_session@2",
           "when": "view == maieutics.sessions && (viewItem == maieutics.storedSession || viewItem == maieutics.activeSession)"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "maieutics.retryTurn",
+          "when": "false"
         }
       ]
     }

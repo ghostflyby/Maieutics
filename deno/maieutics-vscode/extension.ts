@@ -43,6 +43,10 @@ let connecting: Promise<Connection> | undefined;
 let controller: MaieuticsNotebookController | undefined;
 let fsProvider: MaieuticsFileSystemProvider | undefined;
 let treeRefresh: (() => void) | undefined;
+/** Set once activate() builds the sessions tree; the activity surface reads
+ * it lazily so registration order does not matter. */
+let activityTreeProvider: { refresh(): void } | undefined;
+
 const treeEnvironment: TreeEnvironment = {
   caseInsensitive: false,
   currentOnly: false,
@@ -127,7 +131,16 @@ export function activate(context: vscode.ExtensionContext): void {
     "maieutics.currentOnly",
     treeEnvironment.currentOnly,
   );
-  const treeProvider = new MaieuticsSessionsProvider(clientOf, () => treeEnvironment);
+  const treeProvider = new MaieuticsSessionsProvider(
+    clientOf,
+    () => treeEnvironment,
+    controller.activity,
+  );
+  context.subscriptions.push(
+    ...registerActivitySurface(controller.activity, {
+      refresh: () => treeProvider.refresh(),
+    }),
+  );
   const treeView = vscode.window.createTreeView("maieutics.sessions", {
     treeDataProvider: treeProvider,
     showCollapseAll: false,
@@ -166,6 +179,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const widgetBridge = new WidgetBridge({
     connect: async () => {
       const client = await clientOf();
+      // The comm capability gate (ADR 0024): an older server without comm
+      // support would otherwise hang on a socket that never opens.
+      const capabilities = await client.capabilities();
+      if (capabilities.comm === undefined) {
+        throw new FrontendError(
+          "comm_unavailable",
+          0,
+          "This Maieutics server does not expose widget comm channels.",
+        );
+      }
+
       const session = await client.session();
       return client.commSocket(session.id);
     },
@@ -664,6 +688,29 @@ function registerQueueSurface(
       },
     ),
     vscode.commands.registerCommand(
+      "maieutics.retryTurn",
+      async (arg?: unknown) => {
+        // Args arrive from a failed cell's markdown command link:
+        // [notebookUri, cellIndex]. Reveal the notebook, then run that one
+        // cell through the normal execution pipeline (the failed cell stayed
+        // pending, so this re-submits the same turn).
+        const args = Array.isArray(arg) ? arg : [];
+        const [uriValue, indexValue] = args as [unknown, unknown];
+        if (typeof uriValue !== "string" || typeof indexValue !== "number") return;
+        const document = await Promise.resolve(
+          vscode.workspace.openNotebookDocument(vscode.Uri.parse(uriValue)),
+        ).catch(() => undefined);
+        if (document === undefined || document.notebookType !== NotebookType) return;
+        await vscode.window.showNotebookDocument(document);
+        const index = Math.min(indexValue, document.cellCount - 1);
+        if (index < 0) return;
+        await vscode.commands.executeCommand("notebook.cell.execute", {
+          start: index,
+          end: index + 1,
+        });
+      },
+    ),
+    vscode.commands.registerCommand(
       "maieutics.clearQueuedCells",
       async (arg?: unknown) => {
         const document = notebookOf(arg);
@@ -691,6 +738,37 @@ function warnedOnce(warned: Set<string>, key: string, message: string): void {
   if (warned.has(key)) return;
   warned.add(key);
   void vscode.window.showInformationMessage(message);
+}
+
+/** The run-activity surface: one status-bar item while any session has a run
+ * in flight (click opens the Sessions view) and a tree refresh whenever the
+ * busy set changes so the spinner badges follow. */
+function registerActivitySurface(
+  activity: {
+    busySessions(): readonly string[];
+    onDidChange(listener: () => void): { dispose(): void };
+  },
+  tree: { refresh(): void },
+): vscode.Disposable[] {
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 95);
+  item.name = "Maieutics Run Activity";
+  item.command = "workbench.view.extension.maieutics";
+  const refresh = () => {
+    const busy = activity.busySessions();
+    tree.refresh();
+    if (busy.length === 0) {
+      item.hide();
+      return;
+    }
+
+    item.text = `$(sync~spin) Maieutics: ${busy.length} run${
+      busy.length === 1 ? "" : "s"
+    } in flight`;
+    item.tooltip = "Maieutics: agent turn(s) running. Click to open the Sessions view.";
+    item.show();
+  };
+  refresh();
+  return [item, activity.onDidChange(refresh)];
 }
 
 /** The per-notebook token badge: sums the provider usage carried by the
@@ -843,8 +921,37 @@ async function clientOf(): Promise<FrontendClient> {
     connecting = undefined;
     throw error;
   }));
+  void warnWorkspaceMismatchAsync(connection.client);
   return connection.client;
 }
+
+/** Warns once per connection when the server serves a different workspace
+ * than this window: the protocol exposes `workspaceRoot` exactly so frontends
+ * can catch a stale executable started elsewhere. */
+async function warnWorkspaceMismatchAsync(client: FrontendClient): Promise<void> {
+  if (workspaceMismatchWarned) return;
+  workspaceMismatchWarned = true;
+  try {
+    const capabilities = await client.capabilities();
+    const serverRoot = capabilities.workspaceRoot;
+    const windowRoot = vscode.workspace.workspaceFolders?.find((folder) =>
+      folder.uri.scheme === "file"
+    )?.uri.fsPath;
+    if (serverRoot === undefined || windowRoot === undefined) return;
+    const server = vscode.Uri.file(serverRoot).fsPath.replace(/\/$/, "");
+    const window_ = vscode.Uri.file(windowRoot).fsPath.replace(/\/$/, "");
+    if (server !== window_) {
+      await vscode.window.showWarningMessage(
+        `Maieutics: the server serves workspace \`${server}\` but this window is \`${window_}\`. ` +
+          "File tools follow the server's workspace; restart the server here if that is not intended.",
+      );
+    }
+  } catch {
+    // Capability probing is advisory; the first real command surfaces errors.
+  }
+}
+
+let workspaceMismatchWarned = false;
 
 async function openConnection(): Promise<Connection> {
   const settings = vscode.workspace.getConfiguration();

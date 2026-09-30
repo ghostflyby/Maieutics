@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Configuration;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -376,8 +378,8 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     ///     and profile lease acquisition); a started run never observes it.
     /// </summary>
     /// <exception cref="FrontendFailureException">Concurrent turn, a previous turn still
-    /// settling (typed busy; the submission is recoverable), inactive session, or missing
-    /// model configuration.</exception>
+    /// settling (typed busy; the submission is recoverable), inactive session, missing
+    /// model configuration, or an attachment marker whose object is not in the store.</exception>
     public async Task<FrontendTurnAccepted> StartTurnAsync(
         string sessionId,
         string text,
@@ -388,11 +390,12 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
         var session = ResolveSession(sessionId);
         ValidateTurnConfiguration();
+        var turn = BuildTurn(text);
         IAgentRun run;
         try
         {
             run = await session
-                .StartTurnAsync(AgentTurn.FromText(text), cancellationToken)
+                .StartTurnAsync(turn, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (AgentTurnInProgressException exception)
@@ -452,6 +455,64 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
         HubFor(session.Id).Announce(stream);
         return new FrontendTurnAccepted(run.Id.Value.ToString("N"));
+    }
+
+    /// <summary>The largest object payload the ingest endpoint accepts. Large enough for
+    /// notebook-scale images and documents; a bigger transfer is a filesystem object out of
+    /// band, not an attachment upload. Internal-settable so integration tests can shrink
+    /// the bound instead of allocating a full-size payload.</summary>
+    internal long MaxIngestBytes { get; set; } = 32 * 1024 * 1024;
+
+    /// <summary>Ingests attachment bytes into the session's object library (the upload half
+    /// of the attachment flow). Content-addressed: identical bytes deduplicate by address.
+    /// The media type and display name travel with the marker the frontend writes, so the
+    /// upload itself carries only bytes.</summary>
+    /// <exception cref="FrontendFailureException">Unknown session, an unconfigured object
+    /// store, or a payload over <see cref="MaxIngestBytes" />.</exception>
+    public FrontendObjectUploaded IngestObject(string sessionId, Stream content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        ResolveSession(sessionId);
+        if (sessionManager.IngestObject(content) is not { } descriptor)
+            throw new FrontendFailureException(
+                FrontendErrors.ConfigurationError,
+                "The object store is not enabled in this host; attachments are unavailable.");
+
+        return new FrontendObjectUploaded(descriptor.Sha256, descriptor.Size);
+    }
+
+    /// <summary>Composes the turn from submitted text: attachment markers are parsed out and
+    /// become blob reference data parts (the store supplies the authoritative size), and the
+    /// remaining text stays the text part. A marker whose object was pruned or never ingested
+    /// fails the submission typed before a run starts.</summary>
+    private AgentTurn BuildTurn(string text)
+    {
+        var split = FrontendAttachmentMarkers.Split(text);
+        if (split.Markers.Count == 0) return AgentTurn.FromText(text);
+
+        var described = new Dictionary<string, AgentObjectDescriptor>(StringComparer.Ordinal);
+        foreach (var marker in split.Markers)
+        {
+            if (described.ContainsKey(marker.Sha256)) continue;
+            if (sessionManager.DescribeObject(marker.Sha256) is not { } descriptor)
+                throw new FrontendFailureException(
+                    FrontendErrors.NotFound,
+                    $"The object referenced by the attachment marker '{marker.Sha256}' is not in the store (pruned or never ingested).");
+            described.Add(marker.Sha256, descriptor);
+        }
+
+        var contents = ImmutableArray.CreateBuilder<AIContent>(split.Markers.Count + 1);
+        if (split.Remainder.Trim().Length > 0) contents.Add(new TextContent(split.Remainder));
+        foreach (var marker in split.Markers)
+        {
+            contents.Add(AgentBlobContent.Create(new AgentObjectDescriptor(
+                marker.Sha256,
+                described[marker.Sha256].Size,
+                marker.MediaType,
+                marker.Name)));
+        }
+
+        return new AgentTurn(contents.ToImmutable());
     }
 
     /// <summary>Fails a run whose stream wiring failed after the run already started:

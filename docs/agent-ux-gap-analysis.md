@@ -337,7 +337,7 @@ feasibility study, verified coupling inventory, target shape (including the
 decision that the model-profile override is session-scoped), and a four-phase
 plan. Status: **implemented**.
 
-### C2. Multimodal input has no frontend path — FRONTEND PATH DONE
+### C2. Multimodal input has no frontend path — DONE (frontend + runtime)
 
 Priority: Medium. Type: Input modality.
 
@@ -371,10 +371,14 @@ ride the queue, the turn binding, and save/reopen with no extra state, and
 committed cells show a read-only attachment chip. The wire contract — upload
 endpoint, marker grammar, server-side parsing into the turn's structured data
 parts — is documented in `docs/web-frontend-protocol.md` ("Attachments").
-Still open: the runtime half of that contract; the ingest endpoint and the
-marker parser do not exist in `Maieutics.Frontend` yet, and against today's
-server an upload fails typed per file while the rest of the batch still
-attaches.
+The runtime half shipped the same day (2026-09-30): `FrontendHost` serves the
+ingest endpoint (raw-body upload, server-side ingest bound, typed
+`not_found`/`invalid_request`), `FrontendSessionService` parses the same
+canonical grammar (`FrontendAttachmentMarkers`) in direct and queued turns,
+merges the store's authoritative size with the marker's media type and name
+into blob reference data parts, and a committed marker keeps its object alive
+across pruning (`MaieuticsAgentSessionManager.IngestObject` /
+`DescribeObject`, `ObjectStore.Describe`).
 
 ### C3. Long-conversation compaction is invisible
 

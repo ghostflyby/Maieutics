@@ -130,6 +130,17 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
             path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
     }
 
+    /// <summary>Describes a published object without opening it; null when absent. The turn
+    /// build path uses this to resolve attachment markers into sized blob references.</summary>
+    internal AgentObjectDescriptor? Describe(string sha256)
+    {
+        ValidateId(sha256);
+        var path = ObjectPath(objectsRoot, sha256);
+        if (!File.Exists(path)) return null;
+
+        return new AgentObjectDescriptor(sha256, new FileInfo(path).Length);
+    }
+
     /// <summary>Returns whether the object is present.</summary>
     public bool Exists(string sha256)
     {

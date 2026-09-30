@@ -71,6 +71,12 @@ internal sealed record FrontendTurnRequest([property: JsonPropertyName("text")] 
 /// <summary>A turn acceptance body.</summary>
 internal sealed record FrontendTurnAccepted([property: JsonPropertyName("runId")] string RunId);
 
+/// <summary>An object upload answer: the content address the marker grammar references and
+/// the published byte size. Re-ingesting identical bytes answers the same address.</summary>
+internal sealed record FrontendObjectUploaded(
+    [property: JsonPropertyName("sha256")] string Sha256,
+    [property: JsonPropertyName("byteLength")] long ByteLength);
+
 /// <summary>One queued turn item (ADR 0025). Queue frames carry ids only — clients map ids
 /// to cells locally; the GET snapshot additionally carries the text and enqueue time.</summary>
 internal sealed record FrontendQueueItem(
@@ -249,6 +255,7 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendSessionInfo[]))]
 [JsonSerializable(typeof(FrontendTurnRequest))]
 [JsonSerializable(typeof(FrontendTurnAccepted))]
+[JsonSerializable(typeof(FrontendObjectUploaded))]
 [JsonSerializable(typeof(FrontendQueueSnapshot))]
 [JsonSerializable(typeof(FrontendQueueEnqueueRequest))]
 [JsonSerializable(typeof(FrontendQueueEnqueueResponse))]

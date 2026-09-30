@@ -124,6 +124,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/gc", HandleGcSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/repair", HandleRepairSession);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/turns", HandleTurn);
+        endpoints.MapPost("/v1/agent/sessions/{sessionId}/objects", HandleIngestObject);
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/queue", HandleGetQueue);
         endpoints.MapPost("/v1/agent/sessions/{sessionId}/queue", HandleEnqueueTurns);
         endpoints.MapDelete("/v1/agent/sessions/{sessionId}/queue/{itemId}", HandleDeleteQueuedItem);
@@ -332,6 +333,105 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             await WriteErrorAsync(context, exception.Code, exception.Message);
         }
+    }
+
+    /// <summary>Ingests attachment bytes (raw body, never base64) into the session's object
+    /// library and answers the content address the marker grammar references. The session
+    /// must exist; the ingest bound is enforced server-side with a typed 400 rather than a
+    /// transport-level abort.</summary>
+    private async Task HandleIngestObject(HttpContext context, string sessionId)
+    {
+        try
+        {
+            if (context.Request.ContentLength is { } declared && declared > service.MaxIngestBytes)
+                throw Oversized();
+
+            // Kestrel's own body cap would end the request as a bare 413 before the typed
+            // failure can be written; the bounded stream below enforces the bound instead.
+            if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()
+                is { } bodySize)
+                bodySize.MaxRequestBodySize = null;
+
+            using var bounded = new BoundedBodyStream(context.Request.Body, service.MaxIngestBytes, Oversized());
+            // Kestrel forbids synchronous reads on the request body while the object store's
+            // ingest is a synchronous hash-and-write pass; the bounded async copy bridges the
+            // two. The copy is capped by the same bound, so the buffer is bounded too.
+            using var buffered = new MemoryStream(
+                (int)Math.Min(context.Request.ContentLength ?? 0, service.MaxIngestBytes));
+            await bounded.CopyToAsync(buffered, context.RequestAborted).ConfigureAwait(false);
+            buffered.Position = 0;
+            var uploaded = service.IngestObject(sessionId, buffered);
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            await context.Response.WriteAsJsonAsync(
+                uploaded,
+                FrontendJsonContext.Default.FrontendObjectUploaded).ConfigureAwait(false);
+        }
+        catch (FrontendFailureException exception)
+        {
+            await WriteErrorAsync(context, exception.Code, exception.Message);
+        }
+    }
+
+    private static FrontendFailureException Oversized()
+    {
+        return new FrontendFailureException(
+            FrontendErrors.InvalidRequest,
+            "The object payload exceeds the ingest bound; store large payloads out of band and reference them by path.");
+    }
+
+    /// <summary>Caps a request body at the ingest bound: the first read past the bound throws
+    /// the typed oversized-payload failure instead of letting a chunked body grow unchecked.</summary>
+    private sealed class BoundedBodyStream(Stream inner, long bound, FrontendFailureException over) : Stream
+    {
+        private long remaining = bound;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            if (read > 0)
+            {
+                remaining -= read;
+                if (remaining < 0) throw over;
+            }
+
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read > 0)
+            {
+                remaining -= read;
+                if (remaining < 0) throw over;
+            }
+
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private async Task HandleTranscript(HttpContext context, string sessionId)

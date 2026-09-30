@@ -403,6 +403,7 @@ Size: S for the indicator / M for manual compact.
 |---|---|---|---|
 | Failed turn has no Retry button | Re-running the cell *is* the retry (failed turns roll back), but the error output offers no affordance | S | **Delivered** |
 | No completion notification | Long runs finishing in a background notebook are silent; VSCode notification + tree badge | S | **Delivered** (notification; tree badge open) |
+| Task plane has no frontend HTTP bridge | `maieutics.listTasks` degrades to a typed "no active tasks" against today's server: the kernel task plane answers on the peer-authenticated control channel only (ADR 0028: `GET /v1/tasks`, `POST /v1/tasks/cancel`), and the bearer HTTP plane has no `/v1/agent/sessions/{sid}/tasks*` mapping yet — bridging is an auth-model decision (who authenticates a browser client to per-process task state) | M + ADR follow-up | **Staged next** |
 | VFS full-text search resumes sessions | Opening/searching lens files auto-resumes (documented side effect); mainstream search is passive | M (needs a passive transcript read path) | open |
 | `%model` / `%mcp` GUI surfaces | Still command-only; blocked on typed REST (`session-views-design.md` §6 Follow-up rows) | M | open |
 
@@ -416,6 +417,16 @@ resubmits the same turn; and `notifyBackgroundSettled`
 *Open* action when a run completes or fails in a notebook no editor is
 showing. The sessions-tree spinner is run activity, not a settled badge — that
 half stays open with the two rows below.
+
+The staged task-plane row (2026-09-30): the extension half of batch 2 ships
+`maieutics.listTasks` with a quick-pick cancel
+(`deno/maieutics-vscode/taskPicks.ts`); the server half it needs is a bridge
+from the bearer HTTP plane to the kernel's control-channel task plane
+(`ReplControlHost`'s `GET /v1/tasks` snapshot and session-owned
+`POST /v1/tasks/cancel`). Designing that bridge means deciding how a
+bearer-authenticated browser client may read and cancel per-process task
+state that ADR 0028 deliberately scoped to peer-process identity — a small
+ADR, then the mapping itself.
 
 ## Recommended sequencing
 

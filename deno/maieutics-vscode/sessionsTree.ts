@@ -40,6 +40,9 @@ export class MaieuticsSessionsProvider implements vscode.TreeDataProvider<Elemen
   constructor(
     private readonly clientOf: () => Promise<FrontendClient>,
     private readonly environment: () => TreeEnvironment,
+    /** Run-activity registry: a busy session renders a spinner badge so a
+     * background run is visible without opening its notebook. */
+    private readonly activity?: { isBusy(sessionId: string): boolean },
   ) {}
 
   refresh(): void {
@@ -73,9 +76,12 @@ export class MaieuticsSessionsProvider implements vscode.TreeDataProvider<Elemen
           element.session.title ?? element.session.id.slice(0, 12),
           vscode.TreeItemCollapsibleState.None,
         );
-        item.description = `active · ${element.session.turns} turn(s)`;
+        const busy = this.activity?.isBusy(element.session.id) === true;
+        item.description = busy
+          ? `active · ${element.session.turns} turn(s) · running`
+          : `active · ${element.session.turns} turn(s)`;
         item.tooltip = element.session.id;
-        item.iconPath = new vscode.ThemeIcon("circle-filled");
+        item.iconPath = new vscode.ThemeIcon(busy ? "sync~spin" : "circle-filled");
         item.contextValue = "maieutics.activeSession";
         item.command = {
           command: "maieutics.openSessionNotebook",

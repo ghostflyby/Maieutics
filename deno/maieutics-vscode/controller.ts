@@ -71,6 +71,8 @@ import {
   TurnView,
 } from "./turnView.ts";
 import { resolveSessionPin } from "./sessionPin.ts";
+import { SessionActivity } from "./runActivity.ts";
+import { coerceField, planElicitation } from "./elicitation.ts";
 
 const PaintIntervalMs = 60;
 /** Bridges the protocol onto one notebook's outputs. Notebook execution
@@ -107,6 +109,9 @@ export class MaieuticsNotebookController implements vscode.Disposable {
    * not submit and their streams must not be silently recreated. Cleared when
    * the document is submitted again (reopened). */
   private readonly closedNotebooks = new Set<string>();
+
+  /** Session run-activity (busy/idle) shared with the extension surface. */
+  readonly activity = new SessionActivity();
 
   constructor(
     private readonly bridge: NotebookBridge,
@@ -425,20 +430,28 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   async clearQueuedCells(document: vscode.NotebookDocument): Promise<number> {
     const queueKey = document.uri.toString();
     const items = this.projection.entriesWhere((cell) => cell.notebook.uri.toString() === queueKey);
+    if (items.length === 0) return 0;
+
+    // A notebook pins one session, so the common shape is one clear-all call;
+    // a multi-session projection (theoretical today) falls back to per-item
+    // removals. The running item is not affected either way (the server's
+    // clear endpoint leaves it; use the interrupt for that).
+    const sessionIds = [...new Set(items.map((item) => item.sessionId))];
+    try {
+      const client = await this.bridge.client();
+      if (sessionIds.length === 1) {
+        await client.clearQueue(sessionIds[0]);
+      } else {
+        for (const item of items) await client.dequeueItem(item.sessionId, item.itemId);
+      }
+    } catch (error) {
+      this.output.appendLine(`clear queue failed: ${error}`);
+    }
+
     let removed = 0;
     for (const item of items) {
-      try {
-        await (await this.bridge.client()).dequeueItem(item.sessionId, item.itemId);
-        this.projection.drop(item.sessionId, item.itemId);
-        removed++;
-      } catch (error) {
-        if (error instanceof FrontendError && error.code === "not_found") {
-          this.projection.drop(item.sessionId, item.itemId);
-          removed++;
-          continue;
-        }
-        this.output.appendLine(`clear queue failed: ${error}`);
-      }
+      this.projection.drop(item.sessionId, item.itemId);
+      removed++;
     }
     return removed;
   }
@@ -700,6 +713,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
       (runId) => this.output.appendLine(`run ${runId} finished`),
       (message) => this.output.appendLine(message),
       (snapshot) => this.applyQueueState(sessionId, snapshot),
+      this.activity,
     );
     stream.start();
     this.streams.set(sessionId, stream);
@@ -721,6 +735,10 @@ class NotebookStream {
     /** Applied queue snapshots (frames and reconnect GETs), for the marker
      * projection and run following. */
     onQueue: (snapshot: QueueState) => void,
+    /** Session run-activity registry: `run.status` busy/idle frames mark it so
+     * the status bar, tree badges, and background notifications can follow
+     * runs the active editor is not showing. */
+    private readonly activity: SessionActivity,
   ) {
     this.queue = new QueueWatcher(client, sessionId, onQueue, log);
   }
@@ -799,6 +817,16 @@ class NotebookStream {
         // started while the socket was away attaches before its run's
         // replayed frames route.
         if (await this.queue.handleFrame(frame)) continue;
+        // Run-activity frames drive the busy/idle surfaces; the idle frame
+        // trails the terminal frame (invariant 7), and the terminal frames
+        // mark idle themselves so a socket lost between the two cannot leave
+        // a session stuck busy forever.
+        if (frame.type === "run.status") {
+          if (frame.state === "busy") this.activity.markBusy(this.sessionId);
+          else this.activity.markIdle(this.sessionId);
+          continue;
+        }
+
         this.route(frame);
         // Any terminal view outcome retires the run: a settled run must not
         // stay here catching run-less frames (repl displays, input requests).
@@ -807,6 +835,7 @@ class NotebookStream {
           frame.type === "run.missing"
         ) {
           this.runs.delete(frame.runId ?? "");
+          this.activity.markIdle(this.sessionId);
         }
       }
     } catch (error) {
@@ -860,23 +889,134 @@ class RunExecution {
     this.view = new TurnView(runId);
   }
 
-  /** Routes one input request to a VS Code input box and posts the answer back. */
+  /** Routes one input request to a VS Code surface and posts the answer back.
+   * A plain REPL prompt stays an input box (dismissing posts an empty value).
+   * An MCP elicitation carrying a form schema (ADR 0029) becomes a choice —
+   * fill the form field by field, or refuse with decline/cancel, which the
+   * plain input box could never express. */
   private answerInputRequest(frame: EventFrame): void {
     const requestId = frame.requestId;
     if (requestId === undefined) return;
 
+    const extras = frame as { schema?: unknown; serverId?: unknown };
+    const plan = planElicitation(
+      frame.prompt ?? "Input requested",
+      extras.schema,
+      typeof extras.serverId === "string" ? extras.serverId : undefined,
+    );
+
     void (async () => {
-      const value = await vscode.window.showInputBox({
-        prompt: frame.prompt ?? "REPL input",
-        password: frame.password === true,
-        ignoreFocusOut: true,
-      });
-      await this.client.submitInput(requestId, value ?? "");
+      if (plan === null) {
+        const value = await vscode.window.showInputBox({
+          prompt: frame.prompt ?? "REPL input",
+          password: frame.password === true,
+          ignoreFocusOut: true,
+        });
+        await this.client.submitInput(requestId, value ?? "");
+        return;
+      }
+
+      const origin = plan.serverId === undefined ? "" : ` (server ${plan.serverId})`;
+      const choice = await vscode.window.showQuickPick(
+        [
+          { label: "$(edit) Fill in form", description: "Answer every field", action: "accept" },
+          {
+            label: "$(circle-slash) Decline",
+            description: "Refuse this request",
+            action: "decline",
+          },
+          { label: "$(close) Cancel", description: "Cancel the request", action: "cancel" },
+        ] as const,
+        {
+          title: `${plan.prompt}${origin}`,
+          placeHolder: "This MCP server asked for structured input",
+          ignoreFocusOut: true,
+        },
+      );
+      if (choice === undefined) {
+        await this.client.submitInput(requestId, "", { action: "cancel" });
+        return;
+      }
+
+      if (choice.action === "decline" || choice.action === "cancel") {
+        await this.client.submitInput(requestId, "", { action: choice.action });
+        return;
+      }
+
+      const values: Record<string, unknown> = {};
+      for (const field of plan.fields) {
+        const raw = await this.promptField(plan, field);
+        if (raw === null) {
+          // The user abandoned the form midway: cancel rather than submit a
+          // partial object the server would treat as complete.
+          await this.client.submitInput(requestId, "", { action: "cancel" });
+          return;
+        }
+
+        const coerced = coerceField(field, raw);
+        if (!coerced.ok) {
+          vscode.window.showWarningMessage(
+            `Maieutics: ${coerced.error} The request was cancelled.`,
+          );
+          await this.client.submitInput(requestId, "", { action: "cancel" });
+          return;
+        }
+
+        if (coerced.value !== undefined) values[field.name] = coerced.value;
+      }
+
+      await this.client.submitInput(requestId, values, { action: "accept" });
     })().catch((error: unknown) => {
       this.execution.replaceOutput([
         errorOutput(new FrontendError("input_failed", 0, String(error))),
       ]);
     });
+  }
+
+  /** Prompts one form field; null when the user abandoned the form. Enum
+   * fields and booleans are picks; everything else an input box. */
+  private async promptField(
+    plan: { prompt: string; serverId?: string },
+    field: {
+      name: string;
+      title: string;
+      description?: string;
+      type: "string" | "number" | "integer" | "boolean";
+      required: boolean;
+      defaultValue?: string;
+      enumValues?: readonly string[];
+    },
+  ): Promise<string | null> {
+    const title = `${plan.prompt} — ${field.title}${field.required ? "" : " (optional)"}`;
+    if (field.enumValues !== undefined) {
+      const picked = await vscode.window.showQuickPick(
+        field.enumValues.map((value) => ({
+          label: value,
+          description: value === field.defaultValue ? "default" : undefined,
+        })),
+        { title, placeHolder: field.description, ignoreFocusOut: true },
+      );
+      return picked?.label ?? null;
+    }
+
+    if (field.type === "boolean") {
+      const picked = await vscode.window.showQuickPick(
+        [
+          { label: "$(check) Yes", value: "true" },
+          { label: "$(circle-slash) No", value: "false" },
+        ],
+        { title, placeHolder: field.description, ignoreFocusOut: true },
+      );
+      return picked?.value ?? null;
+    }
+
+    const value = await vscode.window.showInputBox({
+      title,
+      prompt: field.description,
+      value: field.defaultValue,
+      ignoreFocusOut: true,
+    });
+    return value ?? null;
   }
 
   /** Paints the placeholder output so the cell shows progress before frames arrive. */
@@ -920,7 +1060,7 @@ class RunExecution {
     }
 
     const streamed = this.view.hasStreamedContent;
-    const error = errorOutput(new FrontendError(code, 0, message));
+    const error = failureOutputWithRetry(new FrontendError(code, 0, message), this.execution.cell);
     if (streamed) {
       this.paintChanged();
       this.execution.appendOutput([error]);
@@ -929,10 +1069,12 @@ class RunExecution {
     }
 
     this.execution.end(false, Date.now());
+    notifyBackgroundSettled(this.execution.cell, "failed");
   }
 
   private settle(committed: boolean): void {
     this.settled = true;
+    if (committed) notifyBackgroundSettled(this.execution.cell, "completed");
     this.resolve(committed);
   }
 
@@ -1114,6 +1256,46 @@ async function fillReplObjectItemsAsync(
   if (pending.length === 0) return;
 
   execution.replaceOutputItems([...pending, ...items], output);
+}
+
+/** A run failure's error output with an in-output Retry affordance: the
+ * failed cell stayed pending, so re-running it re-submits the same turn. */
+function failureOutputWithRetry(
+  error: unknown,
+  cell: vscode.NotebookCell,
+): vscode.NotebookCellOutput {
+  const code = error instanceof FrontendError ? error.code : "turn_failed";
+  const message = error instanceof Error ? error.message : String(error);
+  const args = encodeURIComponent(
+    JSON.stringify([cell.document.uri.toString(), cell.index]),
+  );
+  const markdown =
+    `> \u274c \`${code}\` \u2014 ${message}\n\n[\u21bb Retry turn](command:maieutics.retryTurn?${args})`;
+  return structuredOutput({
+    text: markdown,
+    tools: [],
+    truncated: false,
+    error: { code, message },
+  });
+}
+
+/** Notifies when a run settles in a notebook no editor is showing: background
+ * runs used to be silent (the agent-ux gap list). */
+function notifyBackgroundSettled(cell: vscode.NotebookCell, outcome: "completed" | "failed"): void {
+  const visible = vscode.window.visibleNotebookEditors.some(
+    (editor) => editor.notebook === cell.notebook,
+  );
+  if (visible) return;
+
+  const label = cell.notebook.cellCount > 0
+    ? cell.document.uri.path.split("/").pop() ?? "notebook"
+    : "notebook";
+  const detail = outcome === "completed"
+    ? `Maieutics: turn finished in ${label}.`
+    : `Maieutics: turn FAILED in ${label}.`;
+  void vscode.window.showInformationMessage(detail, "Open").then((picked) => {
+    if (picked === "Open") void vscode.window.showNotebookDocument(cell.notebook);
+  });
 }
 
 function errorOutput(error: unknown): vscode.NotebookCellOutput {

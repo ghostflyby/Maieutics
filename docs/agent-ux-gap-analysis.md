@@ -129,6 +129,20 @@ design before building.
 
 Size: S (args/duration) / M (todo view, needs a tool contract).
 
+**Implementation (2026-09-30).** The structured timeline is now the default
+view of every structured turn output (final paint, failure bodies, restored
+saves): a structured output carries a single
+`application/vnd.maieutics.turn+json` item (`turnOutputItems`,
+`deno/maieutics-vscode/turnView.ts`) — a sibling text/markdown item always
+wins VS Code's mime display order and kept the renderer from being picked. The
+final paint replaces the streamed markdown item with the structured one
+(`RunExecution.paintFinal`, `deno/maieutics-vscode/controller.ts`), the
+serializer restores saves as the same single item (`renderSnapshotOutputs`,
+`deno/maieutics-vscode/serializer.ts`), and the markdown fallback moved inside
+the renderer as a per-output Timeline/Markdown toggle
+(`deno/maieutics-vscode/media/turnRenderer.js`); saves older than the
+turn+json item keep the markdown fallback.
+
 ### A5. Queued follow-up while a run streams — DONE
 
 Priority: Medium. Type: Composer flow. Status: **Implemented**
@@ -323,7 +337,7 @@ feasibility study, verified coupling inventory, target shape (including the
 decision that the model-profile override is session-scoped), and a four-phase
 plan. Status: **implemented**.
 
-### C2. Multimodal input has no frontend path
+### C2. Multimodal input has no frontend path — DONE (frontend + runtime)
 
 Priority: Medium. Type: Input modality.
 
@@ -341,6 +355,30 @@ picker on cells → ingest object → submit reference. NativeAOT-safe
 source-generated shapes.
 
 Size: M.
+
+**Implementation (2026-09-30, frontend path).** The extension half shipped.
+`deno/maieutics-vscode/attachments.ts` owns the object-reference marker
+grammar
+(`[[maieutics:object sha256=<64 lowercase hex> mime=<type/subtype> name="<escaped>"]]`,
+canonical form only — anything else stays literal text, so a newer client
+against an older server degrades inertly). `FrontendClient.uploadObject`
+(`deno/maieutics-vscode/client.ts`) ingests raw bytes against
+`POST /v1/agent/sessions/{sid}/objects` (never base64, invariant 26), and the
+`maieutics.attachFile` command plus its paperclip cell status item
+(`deno/maieutics-vscode/extension.ts`, `registerAttachmentSurface`) upload
+picked files and append one marker line per object to the cell text — markers
+ride the queue, the turn binding, and save/reopen with no extra state, and
+committed cells show a read-only attachment chip. The wire contract — upload
+endpoint, marker grammar, server-side parsing into the turn's structured data
+parts — is documented in `docs/web-frontend-protocol.md` ("Attachments").
+The runtime half shipped the same day (2026-09-30): `FrontendHost` serves the
+ingest endpoint (raw-body upload, server-side ingest bound, typed
+`not_found`/`invalid_request`), `FrontendSessionService` parses the same
+canonical grammar (`FrontendAttachmentMarkers`) in direct and queued turns,
+merges the store's authoritative size with the marker's media type and name
+into blob reference data parts, and a committed marker keeps its object alive
+across pruning (`MaieuticsAgentSessionManager.IngestObject` /
+`DescribeObject`, `ObjectStore.Describe`).
 
 ### C3. Long-conversation compaction is invisible
 
@@ -361,12 +399,34 @@ Size: S for the indicator / M for manual compact.
 
 ## D. Polish
 
-| Item | Gap | Size |
-|---|---|---|
-| Failed turn has no Retry button | Re-running the cell *is* the retry (failed turns roll back), but the error output offers no affordance | S |
-| No completion notification | Long runs finishing in a background notebook are silent; VSCode notification + tree badge | S |
-| VFS full-text search resumes sessions | Opening/searching lens files auto-resumes (documented side effect); mainstream search is passive | M (needs a passive transcript read path) |
-| `%model` / `%mcp` GUI surfaces | Still command-only; blocked on typed REST (`session-views-design.md` §6 Follow-up rows) | M |
+| Item | Gap | Size | Status |
+|---|---|---|---|
+| Failed turn has no Retry button | Re-running the cell *is* the retry (failed turns roll back), but the error output offers no affordance | S | **Delivered** |
+| No completion notification | Long runs finishing in a background notebook are silent; VSCode notification + tree badge | S | **Delivered** (notification; tree badge open) |
+| Task plane has no frontend HTTP bridge | `maieutics.listTasks` degrades to a typed "no active tasks" against today's server: the kernel task plane answers on the peer-authenticated control channel only (ADR 0028: `GET /v1/tasks`, `POST /v1/tasks/cancel`), and the bearer HTTP plane has no `/v1/agent/sessions/{sid}/tasks*` mapping yet — bridging is an auth-model decision (who authenticates a browser client to per-process task state) | M + ADR follow-up | **Staged next** |
+| VFS full-text search resumes sessions | Opening/searching lens files auto-resumes (documented side effect); mainstream search is passive | M (needs a passive transcript read path) | open |
+| `%model` / `%mcp` GUI surfaces | Still command-only; blocked on typed REST (`session-views-design.md` §6 Follow-up rows) | M | open |
+
+The first two rows are delivered (2026-09-30): a failed run's paint renders an
+in-output `[↻ Retry turn](command:maieutics.retryTurn…)` link
+(`failureOutputWithRetry`, `deno/maieutics-vscode/controller.ts`) whose
+`maieutics.retryTurn` (`deno/maieutics-vscode/extension.ts`) reveals the
+notebook and re-executes the cell — failed turns stay pending, so the re-run
+resubmits the same turn; and `notifyBackgroundSettled`
+(`deno/maieutics-vscode/controller.ts`) raises a VS Code notification with an
+*Open* action when a run completes or fails in a notebook no editor is
+showing. The sessions-tree spinner is run activity, not a settled badge — that
+half stays open with the two rows below.
+
+The staged task-plane row (2026-09-30): the extension half of batch 2 ships
+`maieutics.listTasks` with a quick-pick cancel
+(`deno/maieutics-vscode/taskPicks.ts`); the server half it needs is a bridge
+from the bearer HTTP plane to the kernel's control-channel task plane
+(`ReplControlHost`'s `GET /v1/tasks` snapshot and session-owned
+`POST /v1/tasks/cancel`). Designing that bridge means deciding how a
+bearer-authenticated browser client may read and cancel per-process task
+state that ADR 0028 deliberately scoped to peer-process identity — a small
+ADR, then the mapping itself.
 
 ## Recommended sequencing
 

@@ -108,6 +108,72 @@ export interface QueueState {
   capacity: number;
 }
 
+/** The fixed task lifecycle vocabulary (ADR 0028 decision 2, the MCP tasks
+ * extension's statuses). Values outside the four are tolerated: unknown task
+ * kinds may add meanings later, and the client never gates on the word. */
+export type TaskStatus =
+  | "working"
+  | "complete"
+  | "fail"
+  | "cancel"
+  | (string & Record<never, never>);
+
+/** Terminal one-shot detail of a `task://terminal` snapshot: the registry's
+ * one-shot handle as the terminal_* tools address it. */
+export interface TerminalTaskDetail {
+  agentSessionId: string;
+  sessionId: string;
+  /** The terminal session's wire state ("running", "completed", …). */
+  state: string;
+  /** The child's exit code once the one-shot settled; absent before that. */
+  exitCode?: number;
+}
+
+/** Provider-reported token usage of one settled subagent run. */
+export interface SubagentTaskUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
+/** Subagent run detail of a `task://agent` snapshot (ADR 0030). Bounded by
+ * design: a truncated report preview and usage counts — never the child
+ * transcript, and the UI must not try to fetch one by runId. */
+export interface AgentSubagentDetail {
+  agentSessionId: string;
+  /** The child run identifier; also the live child's cancel handle. */
+  runId: string;
+  /** The final assistant text once the child completed (preview-truncated). */
+  report?: string;
+  reportTruncated?: boolean;
+  usage?: SubagentTaskUsage;
+}
+
+/** One full task snapshot as the task plane serves it: a fresh read of one
+ * live resource (children leave the plane when their parent run joins them,
+ * so any snapshot can be the last). */
+export interface TaskSnapshot {
+  uri: string;
+  /** The owning authority ("agent", "terminal", …); unknown kinds tolerated. */
+  kind: string;
+  status: TaskStatus;
+  terminal?: TerminalTaskDetail;
+  agent?: AgentSubagentDetail;
+}
+
+/** One entry of the session's task list. Entries may carry the full snapshot
+ * detail or just the catalog identity, so status and details are optional and
+ * every consumer degrades gracefully on their absence. */
+export interface TaskListEntry {
+  uri: string;
+  kind: string;
+  status?: TaskStatus;
+  name?: string;
+  description?: string;
+  terminal?: TerminalTaskDetail;
+  agent?: AgentSubagentDetail;
+}
+
 /** Typed protocol error carried by non-2xx REST responses. */
 export class FrontendError extends Error {
   constructor(

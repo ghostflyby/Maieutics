@@ -22,6 +22,7 @@
     "onCommand:maieutics.newSession",
     "onCommand:maieutics.showStatus",
     "onCommand:maieutics.listSessions",
+    "onCommand:maieutics.listTasks",
     "onCommand:maieutics.renameSession",
     "onCommand:maieutics.copySessionId",
     "onCommand:maieutics.pruneObjects",
@@ -34,7 +35,8 @@
     "onRenderer:maieutics-widget-renderer",
     "onView:maieutics.sessions",
     "onCommand:maieutics.switchBranch",
-    "onCommand:maieutics.queueTurn"
+    "onCommand:maieutics.queueTurn",
+    "onCommand:maieutics.attachFile"
   ],
   "contributes": {
     "notebooks": [
@@ -55,7 +57,8 @@
         "entrypoint": "./media/turnRenderer.js",
         "mimeTypes": [
           "application/vnd.maieutics.turn+json"
-        ]
+        ],
+        "requiresMessaging": "always"
       },
       {
         "id": "maieutics-widget-renderer",
@@ -81,6 +84,12 @@
         "command": "maieutics.listSessions",
         "title": "Resume Stored Session",
         "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.listTasks",
+        "title": "List Active Tasks",
+        "category": "Maieutics",
+        "icon": "$(checklist)"
       },
       {
         "command": "maieutics.renameSession",
@@ -156,6 +165,12 @@
         "title": "Retry Turn",
         "icon": "$(refresh)",
         "enablement": "notebookType == maieutics-notebook"
+      },
+      {
+        "command": "maieutics.attachFile",
+        "title": "Attach File to Cell",
+        "category": "Maieutics",
+        "icon": "$(paperclip)"
       }
     ],
     "configuration": {
@@ -266,6 +281,10 @@
       "commandPalette": [
         {
           "command": "maieutics.retryTurn",
+          "when": "false"
+        },
+        {
+          "command": "maieutics.attachFile",
           "when": "false"
         }
       ]

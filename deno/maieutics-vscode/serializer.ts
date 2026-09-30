@@ -1,10 +1,13 @@
 /**
  * `.maieuticsnb` serializer: bridges the frontend-owned snapshot format onto
  * the VSCode notebook model. Deserialization only reads the file; live session
- * state is never touched (invariant 13). Structured turn results ride along as
- * a custom output item so save round-trips without scraping markdown; the
- * per-cell turn binding (runId + submitted input) round-trips through cell
- * metadata so committed/stale history states survive save/reopen.
+ * state is never touched (invariant 13). Structured turn results restore as
+ * the single turn+json output item — the timeline renderer's default view and
+ * the save round-trip's source (findTurnSnapshot); the markdown fallback view
+ * lives inside the renderer. Markdown-only outputs from older files keep the
+ * markdown fallback (snapshotFromMarkdownOutputs). The per-cell turn binding
+ * (runId + submitted input) round-trips through cell metadata so
+ * committed/stale history states survive save/reopen.
  */
 
 import * as vscode from "vscode";
@@ -17,11 +20,10 @@ import {
   type OutputSnapshot,
   parseNotebook,
   serializeNotebook as serializeNotebookBytes,
-  type ToolSnapshot,
   type TurnBinding,
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
-import { toolSnapshotLines, TurnOutputMime } from "./turnView.ts";
+import { turnOutputItems, type TurnOutputItemSpec, TurnOutputMime } from "./turnView.ts";
 
 export const NotebookType = "maieutics-notebook";
 
@@ -142,16 +144,28 @@ function snapshotFromMarkdownOutputs(cell: vscode.NotebookCellData): OutputSnaps
   return { text: "" };
 }
 
+/** Restores one snapshot as cell outputs: REPL displays first, then the
+ * turn+json item — the ONLY render item, so the timeline renderer is picked
+ * automatically (a sibling text/markdown item would always win VS Code's
+ * mime display order). The same item is what serializeNotebook round-trips
+ * from (findTurnSnapshot). Cells whose outputs carry no turn+json item are
+ * older saves; they keep the markdown fallback view. */
 export function renderSnapshotOutputs(output: OutputSnapshot): vscode.NotebookCellOutput[] {
   const outputs = (output.repl ?? []).map((display) =>
     new vscode.NotebookCellOutput(bundleItems(display.data))
   );
-  const markdown = renderSnapshotMarkdown(output);
-  const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
-  // The structured item is what the serializer round-trips.
-  items.push(vscode.NotebookCellOutputItem.json(output, TurnOutputMime));
-  outputs.push(new vscode.NotebookCellOutput(items));
+  outputs.push(
+    new vscode.NotebookCellOutput(turnOutputItems(output).map(outputItemFromSpec)),
+  );
   return outputs;
+}
+
+/** Maps a pure turn output item spec (turnView) onto a vscode output item:
+ * the vscode-coupled half of the shared output composition. */
+export function outputItemFromSpec(spec: TurnOutputItemSpec): vscode.NotebookCellOutputItem {
+  return spec.encoding === "text"
+    ? vscode.NotebookCellOutputItem.text(String(spec.value), spec.mime)
+    : vscode.NotebookCellOutputItem.json(spec.value, spec.mime);
 }
 
 /** Renderable mimes in a REPL display bundle; anything else is skipped. */
@@ -240,25 +254,6 @@ async function fillObjectItem(
   } catch {
     return null;
   }
-}
-
-export function renderSnapshotMarkdown(output: OutputSnapshot): string {
-  const sections: string[] = [];
-  if (output.tools?.length) sections.push(renderTools(output.tools));
-  if (output.text) sections.push(output.text);
-  if (output.truncated) {
-    sections.push(
-      "> ⚠️ The agent turn was truncated after exhausting its model iteration budget.",
-    );
-  }
-  if (output.error) {
-    sections.push(`> ❌ \`${output.error.code}\` — ${output.error.message}`);
-  }
-  return sections.length > 0 ? sections.join("\n\n") : "";
-}
-
-function renderTools(tools: ToolSnapshot[]): string {
-  return toolSnapshotLines(tools).join("\n");
 }
 
 // NotebookKind is re-exported for the controller's notebook-type contract.

@@ -407,6 +407,23 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
     }
 
+    /// <summary>Ingests bytes into the content-addressed object store (the attachment upload
+    /// path). Identical bytes deduplicate by address. Null when this host has no object store
+    /// (Agent persistence disabled), which the frontend surfaces as a typed failure.</summary>
+    public AgentObjectDescriptor? IngestObject(Stream content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        return objectStore?.Ingest(content);
+    }
+
+    /// <summary>Describes a published object without opening it; null when the store is absent
+    /// or the address is not present. The turn build path resolves attachment markers against
+    /// this so a pruned or never-ingested address fails typed instead of entering a run.</summary>
+    public AgentObjectDescriptor? DescribeObject(string sha256)
+    {
+        return objectStore is ObjectStore store ? store.Describe(sha256) : null;
+    }
+
     /// <summary>Maintenance pass: deletes stored objects that no committed turn references and
     /// that were last written before the grace cutoff. Returns the number removed.</summary>
     /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>

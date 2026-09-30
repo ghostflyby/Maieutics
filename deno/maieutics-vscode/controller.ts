@@ -35,6 +35,9 @@
  * output at most every PaintIntervalMs (mirroring the kernel adapter's flush
  * cadence). Tool activity renders as status lines above the answer; REPL
  * presentation frames attach to their display id in a later renderer pass.
+ * Subagent child runs (ADR 0030) share the parent run's session stream under
+ * the child's own runId and fold into one indented 子代理 timeline segment of
+ * the parent cell — no child ever gets a cell or execution of its own.
  */
 
 import * as vscode from "vscode";
@@ -60,19 +63,21 @@ import {
   bundleItems,
   drainPendingObjectItems,
   NotebookType,
+  outputItemFromSpec,
   readStoredSessionId,
   StoredSessionMetadataKey,
 } from "./serializer.ts";
 import {
   type ReplDisplayEntry,
-  toolSnapshotLines,
+  type SubagentSnapshotView,
   type ToolSnapshotView,
-  TurnOutputMime,
+  turnOutputItems,
   TurnView,
 } from "./turnView.ts";
 import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
 import { coerceField, planElicitation } from "./elicitation.ts";
+import { childRunsOfParent, resolveFrameOwner } from "./runRouting.ts";
 
 const PaintIntervalMs = 60;
 /** Bridges the protocol onto one notebook's outputs. Notebook execution
@@ -724,6 +729,10 @@ export class MaieuticsNotebookController implements vscode.Disposable {
 /** Consumes the session event stream and routes frames to in-flight runs. */
 class NotebookStream {
   private readonly runs = new Map<string, RunExecution>();
+  /** Subagent child run ids (ADR 0030) folded into their parent run's cell:
+   * child frames ride the parent's session stream under the child's own
+   * runId, which this map never holds in `runs`. */
+  private readonly childRuns = new Map<string, string>();
   private readonly queue: QueueWatcher;
   private controller: AbortController | null = null;
 
@@ -752,6 +761,7 @@ class NotebookStream {
       run.fail("events_disconnected", "The Maieutics server connection was reset.");
     }
     this.runs.clear();
+    this.childRuns.clear();
     this.queue.failWaits();
     this.controller?.abort();
     this.controller = null;
@@ -762,7 +772,10 @@ class NotebookStream {
     void this.pumpAsync(this.controller.signal);
   }
 
-  /** Cancels every in-flight run (notebook closing / window unloading). */
+  /** Cancels every in-flight run (notebook closing / window unloading).
+   * Only the top-level run ids are cancelled: the server cascades a parent
+   * cancellation to every child it spawned (ADR 0030 decision 10), and the
+   * child-level cancel endpoint stays available without per-child UI. */
   cancelAll(): void {
     for (const runId of [...this.runs.keys()]) {
       void this.client.cancelRun(runId).catch((error) =>
@@ -775,6 +788,7 @@ class NotebookStream {
     }
 
     this.runs.clear();
+    this.childRuns.clear();
   }
 
   /** Registers an execution and resolves to whether the run committed (a
@@ -830,11 +844,21 @@ class NotebookStream {
         this.route(frame);
         // Any terminal view outcome retires the run: a settled run must not
         // stay here catching run-less frames (repl displays, input requests).
+        // Only a TOP-LEVEL terminal frame retires and flips idle — a child's
+        // terminal frame carries the child's runId, which `runs` never held,
+        // and the session busy/idle stays bound to the top-level run: a
+        // child finishing must not extinguish the busy badge while its
+        // parent is still running (ADR 0030 decision 6).
+        const runId = frame.runId ?? "";
         if (
-          frame.type === "run.completed" || frame.type === "run.failed" ||
-          frame.type === "run.missing"
+          (frame.type === "run.completed" || frame.type === "run.failed" ||
+            frame.type === "run.missing") && this.runs.delete(runId)
         ) {
-          this.runs.delete(frame.runId ?? "");
+          // The retiring run's children go with it, so a late frame of an
+          // old child can never be adopted by the NEXT run.
+          for (const child of childRunsOfParent(this.childRuns, runId)) {
+            this.childRuns.delete(child);
+          }
           this.activity.markIdle(this.sessionId);
         }
       }
@@ -853,18 +877,33 @@ class NotebookStream {
   }
 
   private route(frame: EventFrame): void {
-    if (frame.runId === undefined) {
-      // REPL presentation frames carry no runId; the session gate keeps at
-      // most one run in flight, so they belong to it.
-      for (const run of this.runs.values()) {
-        run.apply(frame);
+    const owner = resolveFrameOwner(frame.runId, this.runs, this.childRuns);
+    switch (owner.kind) {
+      case "session": {
+        // REPL presentation frames carry no runId; the session gate keeps at
+        // most one run in flight, so they belong to it.
+        for (const run of this.runs.values()) {
+          run.apply(frame);
+          return;
+        }
         return;
       }
-
-      return;
+      case "owned":
+        this.runs.get(owner.runId)?.apply(frame);
+        return;
+      case "child":
+        this.runs.get(owner.parentRunId)?.applyChild(frame);
+        return;
+      case "adopt":
+        // First-seen id with exactly one in-flight run: its subagent child.
+        // The wire carries no parentRunId, so attribution leans on arrival
+        // order under the single-run gate (see runRouting.ts).
+        this.childRuns.set(frame.runId ?? "", owner.parentRunId);
+        this.runs.get(owner.parentRunId)?.applyChild(frame);
+        return;
+      case "drop":
+        return;
     }
-
-    this.runs.get(frame.runId)?.apply(frame);
   }
 }
 
@@ -1044,6 +1083,17 @@ class RunExecution {
     this.paint();
   }
 
+  /** Folds one subagent child frame into this run's cell timeline (ADR 0030).
+   * Child frames only ever render inside the parent's subagent segment: they
+   * never answer input requests, never create cells or executions, and a
+   * child's terminal frame must not take the apply() terminal branch that
+   * settles the PARENT run and ends its cell execution. */
+  applyChild(frame: EventFrame): void {
+    if (this.settled) return;
+    if (!this.view.applySubagent(frame)) return;
+    this.paint();
+  }
+
   fail(code: string, message: string): void {
     if (this.settled) return;
     this.paintFailure(code, message);
@@ -1133,6 +1183,19 @@ class RunExecution {
       );
     }
 
+    if (dirty.has(`subagents:${this.view.runId}`)) {
+      const lines = this.view.subagentLines();
+      const markdown = lines.length > 0 ? lines.join("\n") : "";
+      this.ensureSegment(
+        `subagents:${this.view.runId}`,
+        markdown
+          ? new vscode.NotebookCellOutput([
+            vscode.NotebookCellOutputItem.text(markdown, "text/markdown"),
+          ])
+          : undefined,
+      );
+    }
+
     if (dirty.has(`answer:${this.view.runId}`)) this.paintAnswer();
   }
 
@@ -1182,9 +1245,10 @@ class RunExecution {
     if (output) this.execution.replaceOutputItems(items, output);
   }
 
-  /** Freezes the segments: final answer text, the structured turn snapshot
-   * (carrying the runId + input binding) appended to the answer output, and
-   * final tool statuses. */
+  /** Freezes the segments: final tool statuses, and the streamed markdown
+   * answer output REPLACED by the structured turn snapshot (carrying the
+   * runId + input binding) — the timeline renderer takes the output over as
+   * the default view. */
   private paintFinal(): void {
     const terminal = this.view.terminalState;
     const final = this.view.finalOutput(this.input);
@@ -1194,26 +1258,26 @@ class RunExecution {
       return;
     }
 
-    // Final tool statuses (an entry can flip after the last streamed paint);
-    // rendered through the shared snapshot renderer so edit diffs survive.
-    const toolsKey = `tools:${this.view.runId}`;
-    if (final.tools.length > 0) {
-      const markdown = toolSnapshotLines(final.tools).join("\n");
-      const existing = this.segments.get(toolsKey);
-      const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
-      if (existing) this.execution.replaceOutputItems(items, existing);
-      else this.ensureSegment(toolsKey, new vscode.NotebookCellOutput(items));
-    }
-
-    // Final answer text, then the structured snapshot appended to the same
-    // output: appending items never re-renders the markdown item.
+    // The freeze REPLACES every streamed segment with the single structured
+    // turn+json item: its default renderer view covers tools, subagents, and
+    // the answer (with the overflow hint carried through), so keeping the
+    // streamed markdown siblings would render those timelines twice. The
+    // renderer provides the markdown fallback view for the frozen snapshot.
     this.paintAnswer();
     const answerOutput = this.segments.get(`answer:${this.view.runId}`);
     if (answerOutput) {
-      this.execution.appendOutputItems(
-        [vscode.NotebookCellOutputItem.json(final, TurnOutputMime)],
+      this.execution.replaceOutputItems(
+        turnOutputItems(final).map(outputItemFromSpec),
         answerOutput,
       );
+    }
+
+    for (const key of [`tools:${this.view.runId}`, `subagents:${this.view.runId}`]) {
+      const stale = this.segments.get(key);
+      if (stale !== undefined) {
+        this.execution.replaceOutputItems([], stale);
+        this.segments.delete(key);
+      }
     }
 
     this.execution.end(true, Date.now());
@@ -1229,6 +1293,7 @@ export function finalOutput(final: {
   tools: ToolSnapshotView[];
   truncated: boolean;
   repl?: ReplDisplayEntry[];
+  subagents?: SubagentSnapshotView[];
   error?: { code: string; message: string };
 }): vscode.NotebookCellOutput {
   return structuredOutput(final);
@@ -1310,42 +1375,16 @@ function errorOutput(error: unknown): vscode.NotebookCellOutput {
   });
 }
 
+/** A structured turn output carries exactly the single turn+json item
+ * (turnOutputItems): the timeline renderer is the default view, and the
+ * markdown fallback lives inside that renderer as a per-output view toggle. */
 function structuredOutput(snapshot: {
   text: string;
   tools: ToolSnapshotView[];
   truncated: boolean;
   repl?: ReplDisplayEntry[];
+  subagents?: SubagentSnapshotView[];
   error?: { code: string; message: string };
 }): vscode.NotebookCellOutput {
-  const markdown = renderLiveSnapshot(snapshot);
-  return new vscode.NotebookCellOutput([
-    vscode.NotebookCellOutputItem.text(markdown, "text/markdown"),
-    vscode.NotebookCellOutputItem.json(snapshot, TurnOutputMime),
-  ]);
-}
-
-function renderLiveSnapshot(snapshot: {
-  text: string;
-  tools: ToolSnapshotView[];
-  truncated: boolean;
-  error?: { code: string; message: string };
-}): string {
-  const sections: string[] = [];
-  if (snapshot.tools.length > 0) {
-    sections.push(
-      snapshot.tools
-        .map((tool) => tool.status === "error" ? `- ❌ \`${tool.tool}\`` : `- ✅ \`${tool.tool}\``)
-        .join("\n"),
-    );
-  }
-  if (snapshot.text.length > 0) sections.push(snapshot.text);
-  if (snapshot.truncated) {
-    sections.push(
-      "> ⚠️ The agent turn was truncated after exhausting its model iteration budget.",
-    );
-  }
-  if (snapshot.error) {
-    sections.push(`> ❌ \`${snapshot.error.code}\` — ${snapshot.error.message}`);
-  }
-  return sections.join("\n\n");
+  return new vscode.NotebookCellOutput(turnOutputItems(snapshot).map(outputItemFromSpec));
 }

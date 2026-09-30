@@ -20,9 +20,17 @@ import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./
 import { QueueProjection } from "./queueProjection.ts";
 import { MaieuticsNotebookSerializer, NotebookType, readStoredSessionId } from "./serializer.ts";
 import { NotebookLanguage } from "./notebookFormat.ts";
-import { FrontendError, type Transcript } from "./protocol.ts";
+import { FrontendError, type TaskListEntry, type Transcript } from "./protocol.ts";
 import { sessionLabel, type SessionLike } from "./sessionGroups.ts";
 import { MaieuticsSessionsProvider, type TreeEnvironment } from "./sessionsTree.ts";
+import { shortTaskId, taskDetailText, taskPicks, TasksEmptyHint } from "./taskPicks.ts";
+import type { AttachmentMarker } from "./attachments.ts";
+import {
+  appendAttachmentMarkers,
+  formatAttachmentMarker,
+  guessAttachmentMediaType,
+  parseAttachmentMarkers,
+} from "./attachments.ts";
 import { WidgetBridge } from "./widgets.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
 import {
@@ -118,6 +126,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(...registerHistorySurface());
   context.subscriptions.push(...registerQueueSurface(queueProjection, queueChanges));
+  context.subscriptions.push(...registerAttachmentSurface());
   context.subscriptions.push(...registerUsageBadge());
 
   treeEnvironment.currentOnly = context.workspaceState.get(CurrentOnlyStateKey, false);
@@ -199,6 +208,23 @@ export function activate(context: vscode.ExtensionContext): void {
   const rendererMessaging = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
   context.subscriptions.push(
     rendererMessaging.onDidReceiveMessage(({ message }) => {
+      const envelope = message as {
+        source?: unknown;
+        type?: unknown;
+        notebookUri?: unknown;
+        cellIndex?: unknown;
+      };
+      if (
+        envelope.source === "maieutics-turn" && envelope.type === "retry" &&
+        typeof envelope.notebookUri === "string" && typeof envelope.cellIndex === "number"
+      ) {
+        void vscode.commands.executeCommand("maieutics.retryTurn", [
+          envelope.notebookUri,
+          envelope.cellIndex,
+        ]);
+        return;
+      }
+
       void widgetBridge.handleRendererMessage(message).catch((error: unknown) =>
         output?.appendLine(`widget bridge failed: ${error}`)
       );
@@ -240,6 +266,11 @@ export function activate(context: vscode.ExtensionContext): void {
         treeProvider.refresh();
         await openSessionNotebookForUser(picked.id);
       }
+    }),
+    vscode.commands.registerCommand("maieutics.listTasks", async () => {
+      const client = await clientOf();
+      const session = await client.session();
+      await runTaskQuickPick(client, session.id);
     }),
     vscode.commands.registerCommand(
       "maieutics.renameSession",
@@ -449,6 +480,84 @@ export function activate(context: vscode.ExtensionContext): void {
         await controller.runAsync([queued], document);
       }
     }),
+    vscode.commands.registerCommand(
+      "maieutics.attachFile",
+      async (...args: unknown[]) => {
+        // The cell status-bar item passes [cell]; the command is hidden from
+        // the palette because a cell is its only meaningful target.
+        const cell = args.find((arg): arg is vscode.NotebookCell =>
+          typeof arg === "object" && arg !== null && "document" in arg && "notebook" in arg
+        );
+        if (cell === undefined || cell.notebook.notebookType !== NotebookType) return;
+
+        // Objects are ingested into a session's library, so the notebook must
+        // already be pinned to one: attaching before the first run would
+        // reference a session the cell's eventual turn may never run against.
+        const sessionId = readStoredSessionId(cell.notebook.metadata);
+        if (sessionId === undefined) {
+          await vscode.window.showInformationMessage(
+            "Maieutics: run a cell first — attachments upload into the session this notebook runs against.",
+          );
+          return;
+        }
+
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: true,
+          openLabel: "Attach",
+          title: "Attach files to this cell",
+        });
+        if (picked === undefined || picked.length === 0) return;
+
+        const client = await clientOf();
+        const markers: string[] = [];
+        const failures: string[] = [];
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Maieutics: uploading attachments…",
+          },
+          async () => {
+            for (const uri of picked) {
+              const name = uri.path.split("/").pop() ?? "file";
+              try {
+                const bytes = new Uint8Array(await vscode.workspace.fs.readFile(uri));
+                const mediaType = guessAttachmentMediaType(name);
+                const uploaded = await client.uploadObject(sessionId, bytes, mediaType, name);
+                markers.push(
+                  formatAttachmentMarker({ sha256: uploaded.sha256, mediaType, name }),
+                );
+              } catch (error) {
+                // One bad pick must not sink the batch: the rest still attach
+                // and the failure is reported with the file's name.
+                failures.push(name);
+                output?.appendLine(`attach ${name} failed: ${error}`);
+              }
+            }
+          },
+        );
+
+        if (markers.length > 0) {
+          // The markers ride the cell TEXT (the turn-reference grammar), so
+          // they flow through the queue, the turn binding, and save/reopen
+          // with no extra state — exactly what gets submitted is what shows.
+          const text = cell.document.getText();
+          const edit = new vscode.WorkspaceEdit();
+          edit.replace(
+            cell.document.uri,
+            new vscode.Range(cell.document.positionAt(0), cell.document.positionAt(text.length)),
+            appendAttachmentMarkers(text, markers),
+          );
+          await vscode.workspace.applyEdit(edit);
+        }
+
+        if (failures.length > 0) {
+          await vscode.window.showErrorMessage(
+            `Maieutics: ${failures.length} of ${picked.length} attachment(s) failed to upload ` +
+              `(${failures.join(", ")}). The rest were attached.`,
+          );
+        }
+      },
+    ),
     vscode.commands.registerCommand("maieutics.mountSessionsFolder", async () => {
       const lens = await vscode.window.showQuickPick(
         [
@@ -729,6 +838,70 @@ function registerQueueSurface(
   ];
 }
 
+/** The attachment surface: a per-cell "$(paperclip) Attach" status-bar item
+ * on pending cells (the only cells that still submit a turn) and a read-only
+ * chip counting the object-reference markers a committed cell's turn carries.
+ * Purely derived from the cell text — attaching adds no metadata, so the
+ * markers are exactly what gets submitted and what save/reopen restores. */
+function registerAttachmentSurface(): vscode.Disposable[] {
+  const statusBarChanges = new vscode.EventEmitter<void>();
+
+  const statusProvider: vscode.NotebookCellStatusBarItemProvider = {
+    provideCellStatusBarItems(cell: vscode.NotebookCell) {
+      if (cell.notebook.notebookType !== NotebookType) return [];
+      const attachments = parseAttachmentMarkers(cell.document.getText());
+      if (cellHistoryState(taggedCell(cell)) !== "pending") {
+        if (attachments.length === 0) return [];
+        const item = new vscode.NotebookCellStatusBarItem(
+          `$(paperclip) ${attachments.length}`,
+          vscode.NotebookCellStatusBarAlignment.Left,
+        );
+        item.tooltip = attachmentListTooltip(attachments, "Committed with this turn:");
+        return [item];
+      }
+
+      const item = new vscode.NotebookCellStatusBarItem(
+        attachments.length === 0 ? "$(paperclip) Attach" : `$(paperclip) ${attachments.length}`,
+        vscode.NotebookCellStatusBarAlignment.Left,
+      );
+      item.tooltip = attachments.length === 0
+        ? "Attach files — they upload to this session's object library and the cell submits references to them."
+        : attachmentListTooltip(attachments, "Attached:");
+      item.command = {
+        command: "maieutics.attachFile",
+        title: "Attach Files",
+        arguments: [cell],
+      };
+      return [item];
+    },
+    onDidChangeCellStatusBarItems: statusBarChanges.event,
+  };
+
+  const documents = vscode.workspace.onDidChangeNotebookDocument((event) => {
+    if (event.notebook.notebookType !== NotebookType) return;
+    // Text edits (markers added/removed, commits) and structural changes both
+    // move the chips; metadata-only churn is ignored.
+    if (event.contentChanges.length > 0 || event.cellChanges.length > 0) statusBarChanges.fire();
+  });
+
+  return [
+    statusBarChanges,
+    vscode.notebooks.registerNotebookCellStatusBarItemProvider(NotebookType, statusProvider),
+    documents,
+  ];
+}
+
+/** Plain-text attachment list for status-bar tooltips. */
+function attachmentListTooltip(
+  attachments: readonly AttachmentMarker[],
+  header: string,
+): string {
+  return [
+    header,
+    ...attachments.map((attachment) => `• ${attachment.name} (${attachment.mediaType})`),
+  ].join("\n");
+}
+
 /** Shows an informational toast once per key. */
 function warnedOnce(warned: Set<string>, key: string, message: string): void {
   if (warned.has(key)) return;
@@ -765,6 +938,100 @@ function registerActivitySurface(
   };
   refresh();
   return [item, activity.onDidChange(refresh)];
+}
+
+/** The active-task quick pick (ADR 0028): lists the session's task-plane
+ * resources — subagent child runs and timed-out one-shot terminal commands —
+ * cancels working ones, and shows settled ones' bounded detail. Every action
+ * re-opens the pick so the next screen is a fresh server read, not a local
+ * guess; Esc leaves the surface. */
+async function runTaskQuickPick(client: FrontendClient, sessionId: string): Promise<void> {
+  while (true) {
+    const tasks = await client.listTasks(sessionId).then(
+      (found) => found,
+      (error: unknown) => {
+        output?.appendLine(`Task list failed: ${error}`);
+        return undefined;
+      },
+    );
+    if (tasks === undefined) {
+      // Most likely a server without the task plane yet, but any transport
+      // failure lands here too — the output channel carries the real cause.
+      await vscode.window.showErrorMessage(
+        "Maieutics: the task list is unavailable on this server.",
+      );
+      return;
+    }
+    if (tasks.length === 0) {
+      await vscode.window.showInformationMessage(`Maieutics: no active tasks. ${TasksEmptyHint}`);
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(taskPicks(tasks), {
+      placeHolder: `Active tasks of session ${
+        sessionId.slice(0, 12)
+      } — pick a working task to cancel it, a settled one for detail`,
+    });
+    if (picked === undefined) return;
+    if (picked.action.kind === "detail") {
+      await showTaskDetail(picked.action.task);
+      continue;
+    }
+    await cancelPickedTask(client, sessionId, picked.action.task);
+  }
+}
+
+/** Cancels one picked task. Agent children cancel through the run endpoint,
+ * which already resolves live child runs; every other authority goes through
+ * the task plane's uniform cancel, so an unknown future kind still cancels by
+ * URI. The wait is cooperative and may be slow (a stuck child keeps the
+ * progress toast up); the refresh happens when the pick loop re-lists. */
+async function cancelPickedTask(
+  client: FrontendClient,
+  sessionId: string,
+  task: TaskListEntry,
+): Promise<void> {
+  if (task.kind === "terminal") {
+    // Cancelling a one-shot closes its terminal session for real — confirm.
+    const answer = await vscode.window.showWarningMessage(
+      `Cancel one-shot terminal ${shortTaskId(task)}? This closes its terminal session.`,
+      { modal: true },
+      "Cancel Task",
+    );
+    if (answer !== "Cancel Task") return;
+  }
+
+  const cancellation = task.kind === "agent" && task.agent?.runId !== undefined
+    ? client.cancelRun(task.agent.runId)
+    : client.cancelTask(sessionId, task.uri);
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Maieutics: cancelling ${shortTaskId(task)}…`,
+      },
+      async () => {
+        await cancellation;
+      },
+    );
+  } catch (error) {
+    const message = error instanceof FrontendError ? error.message : String(error);
+    await vscode.window.showErrorMessage(`Maieutics: cancel failed — ${message}`);
+  }
+}
+
+/** Shows one settled task's bounded detail: a report preview goes to the
+ * output channel (modals choke on the 2000-character budget), short state
+ * detail stays a modal. Never fetches a child transcript — the plane does
+ * not expose one. */
+async function showTaskDetail(task: TaskListEntry): Promise<void> {
+  const text = taskDetailText(task);
+  if (task.agent?.report !== undefined) {
+    output?.appendLine(`— task detail —\n${text}`);
+    output?.show(false);
+    return;
+  }
+  await vscode.window.showInformationMessage(text, { modal: true });
 }
 
 /** The per-notebook token badge: sums the provider usage carried by the

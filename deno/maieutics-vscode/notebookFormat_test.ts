@@ -86,6 +86,68 @@ Deno.test("turn bindings survive the round trip", () => {
   assertEquals(parsed.cells[1].turn, { runId: "b".repeat(32), input: "original body" });
 });
 
+Deno.test("subagent reports survive the round trip instead of vanishing", () => {
+  const notebook = emptyNotebook();
+  notebook.cells.push({
+    kind: "agent",
+    text: "delegate",
+    output: {
+      text: "done",
+      truncated: false,
+      tools: [{ tool: "agent_spawn", status: "ok" }],
+      subagents: [
+        {
+          status: "ok",
+          text: "child report",
+          tools: [{ tool: "workspace_search", status: "ok" }],
+        },
+        { status: "cancelled", text: "", tools: [], code: "cancelled" },
+      ],
+    },
+  });
+
+  const parsed = parseNotebook(serializeNotebook(notebook));
+  const output = parsed.cells[1].output;
+  assertEquals(output?.subagents, [
+    { status: "ok", text: "child report", tools: [{ tool: "workspace_search", status: "ok" }] },
+    { status: "cancelled", text: "", tools: [], code: "cancelled" },
+  ]);
+});
+
+Deno.test("malformed subagent entries degrade field by field", () => {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    maieutics: "maieutics-notebook",
+    version: 1,
+    cells: [{
+      kind: "agent",
+      text: "a",
+      output: {
+        text: "t",
+        subagents: [
+          "not-an-object",
+          { status: "weird", text: 9, tools: "nope" },
+          { status: "failed", text: "partial", code: "task_failed", truncated: true },
+        ],
+      },
+    }],
+  }));
+  const parsed = parseNotebook(bytes);
+  assertEquals(parsed.cells[0].output?.subagents, [
+    { status: "running", text: "", tools: [] },
+    { status: "failed", text: "partial", tools: [], code: "task_failed", truncated: true },
+  ]);
+});
+
+Deno.test("outputs without subagents parse without the field", () => {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    maieutics: "maieutics-notebook",
+    version: 1,
+    cells: [{ kind: "agent", text: "a", output: { text: "t" } }],
+  }));
+  const parsed = parseNotebook(bytes);
+  assertEquals(parsed.cells[0].output?.subagents, undefined);
+});
+
 Deno.test("malformed turn bindings degrade to absent", () => {
   const bytes = new TextEncoder().encode(JSON.stringify({
     maieutics: "maieutics-notebook",

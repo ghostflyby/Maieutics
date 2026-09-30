@@ -90,13 +90,66 @@ export interface ReplDisplayEntry {
 }
 
 /** Identifies one cell output segment (a stable notebook output). */
-export type SegmentId = `repl:${string}` | `tools:${string}` | `answer:${string}`;
+export type SegmentId =
+  | `repl:${string}`
+  | `tools:${string}`
+  | `subagents:${string}`
+  | `answer:${string}`;
 
 /** Which output segments a frame touched. */
 export type SegmentChange = {
   created: SegmentId[];
   updated: SegmentId[];
 };
+
+/** Lifecycle status of one folded subagent child run: `cancelled` is the
+ * server's `run.failed` with code `cancelled` for a cooperative cancel. */
+export type SubagentStatus = "running" | "ok" | "failed" | "cancelled";
+
+/** One folded subagent child run as the snapshot and renderer see it: the
+ * report (text) plus its tool timeline. The child transcript itself is never
+ * persisted or refetchable — this fold is display data (ADR 0030). */
+export interface SubagentSnapshotView {
+  status: SubagentStatus;
+  text: string;
+  tools: ToolSnapshotView[];
+  truncated?: boolean;
+  /** The terminal frame's code for a failed/cancelled child. */
+  code?: string;
+}
+
+/** View-layer retention bounds. The server already bounds real fan-out
+ * (ADR 0030 decision 10: depth cap and per-turn child budget); these caps
+ * keep a hostile or buggy frame stream from growing the cell output without
+ * bound ("bound retained logs" discipline). */
+export const MaximumSubagents = 16;
+export const MaximumSubagentTextLength = 20_000;
+
+/** One in-flight subagent child view inside the parent turn. */
+interface SubagentEntry {
+  runId: string;
+  status: SubagentStatus;
+  text: string;
+  /** The fold hit the view-layer text cap (the report may be longer). */
+  textCapped: boolean;
+  /** The child announced turn.truncated (model iteration budget). */
+  truncated: boolean;
+  code?: string;
+  readonly tools: Map<string, ToolEntry>;
+  readonly toolOrder: string[];
+}
+
+function newSubagentEntry(runId: string): SubagentEntry {
+  return {
+    runId,
+    status: "running",
+    text: "",
+    textCapped: false,
+    truncated: false,
+    tools: new Map(),
+    toolOrder: [],
+  };
+}
 
 export class TurnView {
   readonly runId: string;
@@ -105,6 +158,10 @@ export class TurnView {
   private readonly toolOrder: string[] = [];
   private readonly replDisplays = new Map<string, ReplDisplayEntry>();
   private anonymousDisplays = 0;
+  /** Subagent child runs folded under the shared `subagents` segment, keyed
+   * by the child's runId in first-appearance order (ADR 0030). */
+  private readonly subagents = new Map<string, SubagentEntry>();
+  private subagentsOverflow = false;
   private truncated = false;
   private terminal: TerminalState | null = null;
   private usage: UsageSummary | undefined;
@@ -201,43 +258,11 @@ export class TurnView {
         this.dirty.add(`answer:${this.runId}`);
         return true;
       }
-      case "tool.started": {
-        if (typeof frame.callId === "string") {
-          this.tools.set(frame.callId, {
-            callId: frame.callId,
-            tool: typeof frame.tool === "string" ? frame.tool : "unknown",
-            status: "running",
-            args: summarize(frame.arguments),
-            startedAt: Date.now(),
-          });
-          this.toolOrder.push(frame.callId);
-          this.dirty.add(`tools:${this.runId}`);
-        }
-        return true;
-      }
+      case "tool.started":
+      case "tool.progress":
       case "tool.finished": {
-        if (typeof frame.callId === "string") {
-          const entry = this.tools.get(frame.callId);
-          const failed = isFailureResult(frame.result);
-          if (entry) {
-            entry.status = failed ? "error" : "ok";
-            if (!failed) entry.diff = readEditDiff(frame.result);
-            if (entry.startedAt !== undefined) entry.durationMs = Date.now() - entry.startedAt;
-          }
+        if (this.foldToolFrame(this.tools, this.toolOrder, frame)) {
           this.dirty.add(`tools:${this.runId}`);
-        }
-        return true;
-      }
-      case "tool.progress": {
-        // Progress rides the matching call's line; a call that never started
-        // has no line to update and is ignored.
-        if (typeof frame.callId === "string") {
-          const entry = this.tools.get(frame.callId);
-          const text = frame.content?.text;
-          if (entry && typeof text === "string" && text.length > 0) {
-            entry.progress = summarize(text);
-            this.dirty.add(`tools:${this.runId}`);
-          }
         }
         return true;
       }
@@ -285,9 +310,184 @@ export class TurnView {
     }
   }
 
+  /** Folds one subagent child frame (ADR 0030) into the shared `subagents`
+   * segment. Child frames keep their own runId and sequence space; they never
+   * touch the parent's text, tools, or terminal state — a child's terminal
+   * frame only settles the child's status mark, never the parent run. Frames
+   * without a runId and frame types the child timeline does not render
+   * (repl presentations are denied to children, input requests are answered
+   * server-side) are ignored. Returns whether anything changed. */
+  applySubagent(frame: EventFrame): boolean {
+    if (this.terminal !== null || frame.runId === undefined) return false;
+
+    if (frame.type === "run.started") {
+      if (this.subagents.has(frame.runId)) return false; // idempotent replay
+      if (this.subagents.size >= MaximumSubagents) return this.subagentsOverflowChanged();
+      this.subagents.set(frame.runId, newSubagentEntry(frame.runId));
+      this.dirty.add(`subagents:${this.runId}`);
+      return true;
+    }
+
+    // Content frames adopt their child lazily (replay order is best-effort,
+    // so content may precede a lost run.started); frame types the child
+    // timeline does not render must never conjure a phantom child view.
+    switch (frame.type) {
+      case "text.delta":
+      case "message.completed":
+      case "tool.started":
+      case "tool.progress":
+      case "tool.finished":
+      case "turn.truncated":
+      case "run.completed":
+      case "run.failed":
+        break;
+      default:
+        return false;
+    }
+
+    let child = this.subagents.get(frame.runId);
+    if (child === undefined) {
+      if (this.subagents.size >= MaximumSubagents) return this.subagentsOverflowChanged();
+      child = newSubagentEntry(frame.runId);
+      this.subagents.set(frame.runId, child);
+    }
+
+    let changed = false;
+    switch (frame.type) {
+      case "text.delta": {
+        if (typeof frame.text === "string" && frame.text.length > 0) {
+          const room = MaximumSubagentTextLength - child.text.length;
+          if (room > 0) {
+            child.text += frame.text.slice(0, room);
+            child.textCapped = child.textCapped || frame.text.length > room;
+            changed = true;
+          }
+        }
+        break;
+      }
+      case "message.completed": {
+        // The completed message is authoritative over the eagerly folded
+        // deltas, mirroring the parent text fold.
+        const parts = frame.agentMessage?.parts;
+        if (Array.isArray(parts)) {
+          const joined = parts
+            .filter((part) => part.kind === "text")
+            .map((part) => part.text ?? "")
+            .join("");
+          child.textCapped = child.textCapped || joined.length > MaximumSubagentTextLength;
+          child.text = joined.slice(0, MaximumSubagentTextLength);
+          changed = true;
+        }
+        break;
+      }
+      case "tool.started":
+      case "tool.progress":
+      case "tool.finished":
+        changed = this.foldToolFrame(child.tools, child.toolOrder, frame);
+        break;
+      case "turn.truncated":
+        child.truncated = true;
+        changed = true;
+        break;
+      case "run.completed":
+        child.status = "ok";
+        changed = true;
+        break;
+      case "run.failed": {
+        const code = typeof frame.code === "string" ? frame.code : "agent_error";
+        child.status = code === "cancelled" ? "cancelled" : "failed";
+        child.code = code;
+        changed = true;
+        break;
+      }
+    }
+    if (changed) this.dirty.add(`subagents:${this.runId}`);
+    return changed;
+  }
+
+  /** Marks the shared segment dirty once the overflow note appears. */
+  private subagentsOverflowChanged(): boolean {
+    if (!this.subagentsOverflow) {
+      this.subagentsOverflow = true;
+      this.dirty.add(`subagents:${this.runId}`);
+      return true;
+    }
+    return false;
+  }
+
+  /** Folds one tool lifecycle frame into a tool map (shared by the parent
+   * timeline and the subagent folds); returns whether a visible field
+   * changed. Progress rides the matching call's line; a call that never
+   * started has no line to update and is ignored. */
+  private foldToolFrame(
+    tools: Map<string, ToolEntry>,
+    order: string[],
+    frame: EventFrame,
+  ): boolean {
+    if (typeof frame.callId !== "string") return false;
+    switch (frame.type) {
+      case "tool.started": {
+        tools.set(frame.callId, {
+          callId: frame.callId,
+          tool: typeof frame.tool === "string" ? frame.tool : "unknown",
+          status: "running",
+          args: summarize(frame.arguments),
+          startedAt: Date.now(),
+        });
+        order.push(frame.callId);
+        return true;
+      }
+      case "tool.finished": {
+        const entry = tools.get(frame.callId);
+        const failed = isFailureResult(frame.result);
+        if (entry) {
+          entry.status = failed ? "error" : "ok";
+          if (!failed) entry.diff = readEditDiff(frame.result);
+          if (entry.startedAt !== undefined) entry.durationMs = Date.now() - entry.startedAt;
+        }
+        return true;
+      }
+      case "tool.progress": {
+        const entry = tools.get(frame.callId);
+        const text = frame.content?.text;
+        if (entry && typeof text === "string" && text.length > 0) {
+          entry.progress = summarize(text);
+          return true;
+        }
+        return false;
+      }
+      default:
+        return false;
+    }
+  }
+
   /** The final assistant markdown, rendered for the cell output. */
   markdown(): string {
     return this.text;
+  }
+
+  /** Markdown lines of the shared subagent timeline segment (the live view
+   * and the final paint share one composition). */
+  subagentLines(): string[] {
+    return subagentSnapshotLines(
+      this.subagentSnapshots(),
+      this.subagentsOverflow,
+    );
+  }
+
+  /** The folded subagent views in first-appearance order. */
+  private subagentSnapshots(): SubagentSnapshotView[] {
+    const snapshots: SubagentSnapshotView[] = [];
+    for (const child of this.subagents.values()) {
+      snapshots.push({
+        status: child.status,
+        text: child.textCapped ? `${child.text}\n…` : child.text,
+        tools: toolSnapshotViews(child.toolOrder.map((callId) => child.tools.get(callId))),
+        ...(child.truncated ? { truncated: true } : {}),
+        ...(child.code === undefined ? {} : { code: child.code }),
+      });
+    }
+    return snapshots;
   }
 
   /** Markdown lines summarizing tool activity, in call order, with argument
@@ -310,9 +510,15 @@ export class TurnView {
     return lines;
   }
 
-  /** Whether anything user-visible streamed (answer text or REPL displays). */
+  /** Whether anything user-visible streamed (answer text, REPL displays, or
+   * subagent child activity): a run that streamed children keeps them when
+   * the run fails instead of collapsing to the error alone. */
   get hasStreamedContent(): boolean {
-    return this.text.length > 0 || this.replDisplays.size > 0;
+    if (this.text.length > 0 || this.replDisplays.size > 0) return true;
+    for (const child of this.subagents.values()) {
+      if (child.text.length > 0 || child.toolOrder.length > 0) return true;
+    }
+    return false;
   }
 
   /** The provider-reported usage carried by the terminal frame, when known. */
@@ -335,6 +541,7 @@ export class TurnView {
     tools: ToolSnapshotView[];
     truncated: boolean;
     repl: ReplDisplayEntry[];
+    subagents?: SubagentSnapshotView[];
     usage?: UsageSummary;
     model?: ModelIdentity;
     error?: { code: string; message: string };
@@ -344,17 +551,9 @@ export class TurnView {
       ...(input === undefined ? {} : { input }),
       text: this.text,
       repl: this.replList(),
-      tools: this.toolOrder
-        .map((callId) => this.tools.get(callId))
-        .filter((entry) => entry !== undefined)
-        .map((entry) => ({
-          tool: entry.tool,
-          status: entry.status === "error" ? "error" as const : "ok" as const,
-          ...(entry.args === undefined ? {} : { argsSummary: entry.args }),
-          ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
-          ...(entry.diff === undefined ? {} : { diff: entry.diff }),
-        })),
+      tools: toolSnapshotViews(this.orderedEntries()),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
+      ...(this.subagents.size === 0 ? {} : { subagents: this.subagentSnapshots() }),
       ...(this.usage === undefined ? {} : { usage: this.usage }),
       ...(this.model === undefined ? {} : { model: this.model }),
       error: this.terminal?.kind === "failed"
@@ -362,6 +561,68 @@ export class TurnView {
         : undefined,
     };
   }
+}
+
+/** Maps tool entries onto their snapshot shape (shared by the parent turn
+ * and the subagent folds). */
+function toolSnapshotViews(entries: readonly (ToolEntry | undefined)[]): ToolSnapshotView[] {
+  return entries
+    .filter((entry) => entry !== undefined)
+    .map((entry) => ({
+      tool: entry.tool,
+      status: entry.status === "error" ? "error" as const : "ok" as const,
+      ...(entry.args === undefined ? {} : { argsSummary: entry.args }),
+      ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+      ...(entry.diff === undefined ? {} : { diff: entry.diff }),
+    }));
+}
+
+/** Status marks of the subagent timeline (matching the tool bullet marks
+ * plus a cancelled mark). */
+function subagentMark(status: SubagentStatus): string {
+  return status === "running"
+    ? "⏳"
+    : status === "failed"
+    ? "❌"
+    : status === "cancelled"
+    ? "🚫"
+    : "✅";
+}
+
+/** Renders the subagent timeline as markdown: one quoted block per child —
+ * the `🤖 子代理` status heading, the child's tool bullets, then the child's
+ * report text. EVERY line carries the `> ` prefix so the child's own
+ * markdown structure (headings, fences, lists) cannot escape the subagent
+ * indentation level; bare `>` keeps the quote continuous across blank
+ * lines, and a true blank line separates the children's blocks. Shared by
+ * the live segment paint and the final snapshot paint. */
+export function subagentSnapshotLines(
+  subagents: readonly SubagentSnapshotView[],
+  overflow = false,
+): string[] {
+  const blocks: string[][] = [];
+  const quoted = (line: string): string => line.length === 0 ? ">" : `> ${line}`;
+  for (const child of subagents) {
+    const lines: string[] = [];
+    const code = child.code === undefined ? "" : ` (\`${child.code}\`)`;
+    lines.push(`> 🤖 **子代理** · ${subagentMark(child.status)}${code}`);
+    for (const line of toolSnapshotLines(child.tools)) lines.push(quoted(line));
+    if (child.text.length > 0) {
+      for (const line of child.text.split("\n")) lines.push(quoted(line));
+    }
+    if (child.truncated === true) lines.push(quoted("> ⚠️ 子代理输出被截断。"));
+    while (lines.length > 0 && lines.at(-1) === ">") lines.pop();
+    blocks.push(lines);
+  }
+  if (overflow) {
+    blocks.push([quoted(`⚠️ 子代理过多，仅显示前 ${MaximumSubagents} 个。`)]);
+  }
+  const out: string[] = [];
+  for (const block of blocks) {
+    if (out.length > 0) out.push("");
+    out.push(...block);
+  }
+  return out;
 }
 
 export interface ToolSnapshotView {
@@ -444,10 +705,43 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
-/** Output item mimes: markdown renders; the turn snapshot round-trips structure. */
+/** Output item mimes: the turn+json item is the ONLY render item of a
+ * structured turn output (the timeline renderer is the default view and
+ * carries the markdown fallback view itself); markdown remains the streamed
+ * answer's item and the legacy snapshot restore fallback. */
 export const AgentOutputMime = "text/markdown";
 export const ToolOutputMime = "application/vnd.maieutics.tool+json";
 export const TurnOutputMime = "application/vnd.maieutics.turn+json";
+
+/** A transport-neutral description of one item of a structured turn output:
+ * the payload plus its mime and encoding. Pure data so the live paint and the
+ * snapshot restore share one composition that tests can assert without a
+ * vscode runtime. */
+export interface TurnOutputItemSpec {
+  readonly mime: string;
+  /** "text" items carry the string payload verbatim; "json" items serialize
+   * the payload value. */
+  readonly encoding: "text" | "json";
+  readonly value: unknown;
+}
+
+/** The items a structured turn result renders as: exactly the single
+ * turn+json item. The timeline renderer is the DEFAULT view — VS Code picks
+ * the first mime with an available renderer by display order, and
+ * text/markdown always wins that race when it shares the output — so the
+ * markdown fallback moved inside the renderer (a per-output view toggle)
+ * instead of riding a sibling item. The turn+json payload is also what the
+ * serializer round-trips (findTurnSnapshot) and the usage badge scans, so
+ * every structured output must keep carrying it. */
+export function turnOutputItems(snapshot: {
+  text?: string;
+  tools?: readonly ToolSnapshotView[];
+  truncated?: boolean;
+  error?: { code: string; message: string };
+  subagents?: readonly SubagentSnapshotView[];
+}): readonly [TurnOutputItemSpec] {
+  return [{ mime: TurnOutputMime, encoding: "json", value: snapshot }];
+}
 
 function isFailureResult(result: unknown): boolean {
   if (typeof result !== "object" || result === null) return false;

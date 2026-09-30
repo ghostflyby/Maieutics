@@ -70,6 +70,9 @@ function startMockServer(): Promise<{
   onEventsConnection(handler: (connection: MockEventsConnection) => void): void;
   /** Object fetch counts by path. */
   objectHits(): Record<string, number>;
+  /** The object uploads the mock received, in arrival order (`name` is the
+   * raw query parameter, null when the request carried none). */
+  uploadedObjects(): { bytes: Uint8Array; mediaType: string; name: string | null }[];
   /** The server-side turn queue the /queue endpoints serve. */
   queue: MockQueue;
 }> {
@@ -80,6 +83,7 @@ function startMockServer(): Promise<{
   const eventConnections: MockEventsConnection[] = [];
   let onEventsConnection: ((connection: MockEventsConnection) => void) | undefined;
   const objectFetches = new Map<string, number>();
+  const uploadedObjects: { bytes: Uint8Array; mediaType: string; name: string | null }[] = [];
   const abort = new AbortController();
 
   // The server-owned turn queue: REST mutations move it and every mutation
@@ -91,6 +95,40 @@ function startMockServer(): Promise<{
   let nextItemId = 0;
   let queueGetHits = 0;
   const queuePostedBatches: string[][] = [];
+
+  // The session task plane's fixture list: a full agent snapshot (working),
+  // a settled one-shot terminal, and a catalog-identity entry of an unknown
+  // authority with no status — the three shapes the list must tolerate.
+  const agentSession = "a".repeat(32);
+  const foreignTaskUri = `task://agent/${"f".repeat(32)}/0123456789abcdef0123456789abcdef`;
+  const stuckTaskUri = `task://future/${agentSession}/task-stuck`;
+  const mockTaskList = [
+    {
+      uri: `task://agent/${agentSession}/0123456789abcdef0123456789abcdef`,
+      kind: "agent",
+      status: "working",
+      agent: {
+        agentSessionId: agentSession,
+        runId: "0123456789abcdef0123456789abcdef",
+      },
+    },
+    {
+      uri: `task://terminal/${agentSession}/ts-9e58c0d2`,
+      kind: "terminal",
+      status: "fail",
+      terminal: {
+        agentSessionId: agentSession,
+        sessionId: "ts-9e58c0d2",
+        state: "completed",
+        exitCode: 2,
+      },
+    },
+    {
+      uri: stuckTaskUri,
+      kind: "future",
+      description: "A running future task.",
+    },
+  ];
   const queueSnapshot = (): QueueState => ({
     sessionId,
     running: queueRunning,
@@ -208,6 +246,35 @@ function startMockServer(): Promise<{
         return json(200, { markdown: "**View** ensured 4 object link(s)" });
       }
 
+      // The attachment ingest endpoint: raw binary body, the object's media
+      // type as Content-Type, optional ?name= display name. The mock answers
+      // the real content address of the received bytes, so a test can prove
+      // the body arrived as native binary (same bytes → same sha256).
+      const objectUpload = url.pathname.match(/^\/v1\/agent\/sessions\/([^/]+)\/objects$/);
+      if (objectUpload !== null && request.method === "POST") {
+        if (objectUpload[1] === "f".repeat(32)) {
+          return json(404, { code: "not_found", message: "no such session" });
+        }
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (bytes.byteLength > 8) {
+          return json(400, { code: "invalid_request", message: "oversized object payload" });
+        }
+        const name = url.searchParams.get("name");
+        if (name === "__malformed__") {
+          return json(200, { unexpected: true });
+        }
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        const sha256 = [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+        uploadedObjects.push({
+          bytes,
+          mediaType: request.headers.get("Content-Type") ?? "",
+          name,
+        });
+        return json(200, { sha256, byteLength: bytes.byteLength });
+      }
+
       const queueMatch = url.pathname.match(/^\/v1\/agent\/sessions\/[^/]+\/queue(\/([^/]+))?$/);
       if (queueMatch !== null) {
         if (request.method === "GET") {
@@ -253,6 +320,45 @@ function startMockServer(): Promise<{
           queueItems.splice(at, 1);
           broadcastQueueUpdate();
           return new Response(null, { status: 204 });
+        }
+      }
+
+      // The session task plane: list, single read, cancel by URI. The mock
+      // mirrors the planned Frontend routes (`/v1/agent/sessions/{sid}/tasks…`)
+      // and the control channel's error mapping (task_forbidden → 403).
+      const tasksMatch = url.pathname.match(
+        /^\/v1\/agent\/sessions\/([^/]+)\/tasks(?:\/cancel|(?:\/([^/]+)\/([^/]+)))?$/,
+      );
+      if (tasksMatch !== null) {
+        if (request.method === "POST") {
+          const body = await request.json() as { uri?: string };
+          if (typeof body.uri !== "string" || !body.uri.startsWith("task://")) {
+            return json(400, { code: "resource_invalid_uri", message: "not a task URI" });
+          }
+          if (body.uri === foreignTaskUri) {
+            return json(403, { code: "task_forbidden", message: "not your session's task" });
+          }
+          if (body.uri === stuckTaskUri) {
+            return json(502, { code: "task_cancel_failed", message: "the source refused" });
+          }
+          const found = mockTaskList.find((task) => task.uri === body.uri);
+          if (found === undefined) {
+            return json(404, { code: "resource_not_found", message: body.uri });
+          }
+          return json(200, { ...found, status: "cancel" });
+        }
+        if (request.method === "GET" && tasksMatch[2] === undefined) {
+          return json(200, mockTaskList);
+        }
+        if (request.method === "GET") {
+          const [kind, id] = [tasksMatch[2], tasksMatch[3]];
+          const found = mockTaskList.find((task) =>
+            task.kind === kind && (task.uri.endsWith(id ?? "") || task.terminal?.sessionId === id)
+          );
+          if (found === undefined) {
+            return json(404, { code: "resource_not_found", message: url.pathname });
+          }
+          return json(200, { ...found, status: found.status ?? "working" });
         }
       }
 
@@ -326,6 +432,7 @@ function startMockServer(): Promise<{
       onEventsConnection = handler;
     },
     objectHits: () => Object.fromEntries(objectFetches),
+    uploadedObjects: () => uploadedObjects.map((entry) => ({ ...entry })),
     queue,
     shutdown: async () => {
       // Upgraded WebSocket requests and keep-alive connections are long-lived: on Linux,
@@ -433,6 +540,72 @@ Deno.test("rename over the cap surfaces the typed invalid request", async () => 
   }
 });
 
+Deno.test("uploadObject ingests native binary bytes and answers the content address", async () => {
+  const { discovery, shutdown, uploadedObjects } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const bytes = new Uint8Array([0, 1, 2, 250, 255]);
+    const answer = await client.uploadObject(
+      "a".repeat(32),
+      bytes,
+      "image/png",
+      "diagram.png",
+    );
+    // The answer is a content address: 64 lowercase hex characters.
+    assert(/^[0-9a-f]{64}$/.test(answer.sha256), `not a sha256: ${answer.sha256}`);
+    assertEquals(answer.byteLength, bytes.byteLength);
+
+    // The body arrived as the native bytes (not base64) with the media type
+    // and the display name.
+    const [received] = uploadedObjects();
+    assertEquals(received.mediaType, "image/png");
+    assertEquals(received.name, "diagram.png");
+    assertEquals([...received.bytes], [...bytes]);
+
+    // Re-ingesting identical bytes answers the same address (the store is
+    // content-addressed), and omitting the name sends no name parameter.
+    const again = await client.uploadObject("a".repeat(32), bytes, "image/png");
+    assertEquals(again.sha256, answer.sha256);
+    assertEquals(uploadedObjects()[1].name, null);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("uploadObject failures are typed: oversized, unknown session, malformed answer", async () => {
+  const { discovery, shutdown } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const oversized = await client.uploadObject(
+      "a".repeat(32),
+      new Uint8Array(9),
+      "application/octet-stream",
+      "toobig.bin",
+    ).then(() => null, (error: unknown) => error);
+    assert(oversized instanceof FrontendError);
+    assertEquals(oversized.code, "invalid_request");
+
+    const unknownSession = await client.uploadObject(
+      "f".repeat(32),
+      new Uint8Array(1),
+      "text/plain",
+    ).then(() => null, (error: unknown) => error);
+    assert(unknownSession instanceof FrontendError);
+    assertEquals(unknownSession.code, "not_found");
+
+    const malformed = await client.uploadObject(
+      "a".repeat(32),
+      new Uint8Array(1),
+      "text/plain",
+      "__malformed__",
+    ).then(() => null, (error: unknown) => error);
+    assert(malformed instanceof FrontendError);
+    assertEquals(malformed.code, "protocol_error");
+  } finally {
+    await shutdown();
+  }
+});
+
 Deno.test("events stream yields frames and requires the bearer token", async () => {
   const { discovery, shutdown } = await startMockServer();
   const client = FrontendClient.fromDiscovery(discovery);
@@ -459,19 +632,22 @@ Deno.test("events resume passes the live run's last sequence, not an earlier run
       [Symbol.asyncIterator]();
     assertEquals((await iterator.next()).value?.type, "hello");
 
-    // Run A streamed to sequence 60, then run B replaced it and is at
-    // sequence 5 (the session's single-run gate keeps one run in flight).
+    // Run A streamed to sequence 60 and settled (its terminal frame retires
+    // its sequence space — wire order puts it before the next run starts);
+    // run B replaced it and is at sequence 5 (the session's single-run gate
+    // keeps one run in flight).
     const runA = "1".repeat(32);
     const runB = "2".repeat(32);
     eventConnections()[0].send({ type: "run.started", runId: runA });
     for (let sequence = 58; sequence <= 60; sequence++) {
       eventConnections()[0].send({ type: "text.delta", runId: runA, sequence, text: "x" });
     }
+    eventConnections()[0].send({ type: "run.completed", runId: runA, sequence: 61 });
     eventConnections()[0].send({ type: "run.started", runId: runB });
     for (let sequence = 1; sequence <= 5; sequence++) {
       eventConnections()[0].send({ type: "text.delta", runId: runB, sequence, text: "y" });
     }
-    for (let i = 0; i < 10; i++) await iterator.next();
+    for (let i = 0; i < 11; i++) await iterator.next();
 
     // The server drops the connection; pulling drives the reconnect and the
     // next frame is the new connection's hello.
@@ -546,6 +722,157 @@ Deno.test("replayed frames within a run are delivered exactly once", async () =>
     }
     // The overlap (2, 3) is deduplicated against the run's high-water mark.
     assertEquals(sequences, [1, 2, 3, 4]);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("child run frames never raise the reconnect offset", async () => {
+  const { discovery, shutdown, eventConnections } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const iterator = client.events("a".repeat(32), { signal: controller.signal })
+      [Symbol.asyncIterator]();
+    assertEquals((await iterator.next()).value?.type, "hello");
+
+    // The parent run is live at mark 5 while its subagent child (ADR 0030)
+    // streams its own run-local sequence space up to 30. The child's
+    // run-local numbers must never claim the reconnect offset: the offset
+    // feeds the server's sinceSequence filter, and a raised offset would
+    // silently drop every remaining parent frame.
+    const parent = "1".repeat(32);
+    const child = "3".repeat(32);
+    eventConnections()[0].send({ type: "run.started", runId: parent });
+    for (let sequence = 1; sequence <= 5; sequence++) {
+      eventConnections()[0].send({ type: "text.delta", runId: parent, sequence, text: "p" });
+    }
+    eventConnections()[0].send({ type: "run.started", runId: child });
+    for (let sequence = 1; sequence <= 30; sequence++) {
+      eventConnections()[0].send({ type: "text.delta", runId: child, sequence, text: "c" });
+    }
+    for (let i = 0; i < 37; i++) await iterator.next();
+
+    eventConnections()[0].close();
+    assertEquals((await iterator.next()).value?.type, "hello");
+    assertEquals(eventConnections().length, 2);
+    // The offset is the live PARENT's mark (5), never the child's 30.
+    assertEquals(eventConnections()[1].sinceSequence, 5);
+    controller.abort();
+    await iterator.next();
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("child run.started keeps the parent's dedupe mark across reconnects", async () => {
+  const { discovery, shutdown, onEventsConnection } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const parent = "1".repeat(32);
+    const child = "3".repeat(32);
+    onEventsConnection((connection) => {
+      if (connection.sinceSequence === 0) {
+        connection.send({ type: "run.started", runId: parent });
+        for (let sequence = 1; sequence <= 3; sequence++) {
+          connection.send({ type: "text.delta", runId: parent, sequence, text: "x" });
+        }
+        // The child announces itself mid-parent: this frame must not wipe
+        // the parent's high-water mark.
+        connection.send({ type: "run.started", runId: child });
+        setTimeout(() => connection.close(), 25);
+        return;
+      }
+      // The reconnect replays the parent's whole window and continues.
+      for (let sequence = 1; sequence <= 5; sequence++) {
+        connection.send({ type: "text.delta", runId: parent, sequence, text: "x" });
+      }
+    });
+
+    const sequences: number[] = [];
+    for await (const frame of client.events("a".repeat(32))) {
+      if (frame.runId !== parent || typeof frame.sequence !== "number") continue;
+      sequences.push(frame.sequence);
+      if (frame.sequence === 5) break;
+    }
+    // A wiped mark would re-deliver 1..3 on every reconnect (the parent
+    // answer text rendering three times over).
+    assertEquals(sequences, [1, 2, 3, 4, 5]);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("child replay dedupes against the child's own mark", async () => {
+  const { discovery, shutdown, onEventsConnection } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const parent = "1".repeat(32);
+    const child = "3".repeat(32);
+    onEventsConnection((connection) => {
+      if (connection.sinceSequence === 0) {
+        connection.send({ type: "run.started", runId: parent });
+        connection.send({ type: "run.started", runId: child });
+        for (let sequence = 1; sequence <= 3; sequence++) {
+          connection.send({ type: "text.delta", runId: child, sequence, text: "c" });
+        }
+        setTimeout(() => connection.close(), 25);
+        return;
+      }
+      // The child's replay window overlaps (2 and 3 again): its own mark
+      // dedupes it without dragging the offset up (child marks never claim
+      // the reconnect offset, so the reconnect restarts from 0 here).
+      for (let sequence = 2; sequence <= 4; sequence++) {
+        connection.send({ type: "text.delta", runId: child, sequence, text: "c" });
+      }
+    });
+
+    const sequences: number[] = [];
+    for await (const frame of client.events("a".repeat(32))) {
+      if (frame.runId !== child || typeof frame.sequence !== "number") continue;
+      sequences.push(frame.sequence);
+      if (frame.sequence === 4) break;
+    }
+    assertEquals(sequences, [1, 2, 3, 4]);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("child terminal frames retire the child; the next run starts clean", async () => {
+  const { discovery, shutdown, eventConnections } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    const controller = new AbortController();
+    const iterator = client.events("a".repeat(32), { signal: controller.signal })
+      [Symbol.asyncIterator]();
+    assertEquals((await iterator.next()).value?.type, "hello");
+
+    const parent = "1".repeat(32);
+    const child = "3".repeat(32);
+    const next = "4".repeat(32);
+    eventConnections()[0].send({ type: "run.started", runId: parent });
+    eventConnections()[0].send({ type: "text.delta", runId: parent, sequence: 1, text: "p" });
+    eventConnections()[0].send({ type: "run.started", runId: child });
+    for (let sequence = 1; sequence <= 30; sequence++) {
+      eventConnections()[0].send({ type: "text.delta", runId: child, sequence, text: "c" });
+    }
+    eventConnections()[0].send({ type: "run.completed", runId: child });
+    eventConnections()[0].send({ type: "run.completed", runId: parent, sequence: 2 });
+    // The next TOP-LEVEL run starts: it must be classified as top-level
+    // (not as a child of the retired parent) and the child's high-water 30
+    // must not leak into its resume request.
+    eventConnections()[0].send({ type: "run.started", runId: next });
+    eventConnections()[0].send({ type: "text.delta", runId: next, sequence: 1, text: "n" });
+    eventConnections()[0].send({ type: "text.delta", runId: next, sequence: 2, text: "n" });
+    for (let i = 0; i < 38; i++) await iterator.next();
+
+    eventConnections()[0].close();
+    assertEquals((await iterator.next()).value?.type, "hello");
+    assertEquals(eventConnections().length, 2);
+    assertEquals(eventConnections()[1].sinceSequence, 2);
+    controller.abort();
+    await iterator.next();
   } finally {
     await shutdown();
   }
@@ -786,6 +1113,76 @@ Deno.test("enqueue rejects command text and full queues with typed errors", asyn
     assert(full instanceof FrontendError);
     assertEquals(full.code, "queue_full");
     assertEquals(full.status, 409);
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("task list, single read, and cancel round-trip the task plane", async () => {
+  const { discovery, shutdown } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  const sessionId = "a".repeat(32);
+  try {
+    const tasks = await client.listTasks(sessionId);
+    assertEquals(tasks.length, 3);
+    // The full snapshot shape parses through; the unknown authority's
+    // catalog-identity entry has no status and the type leaves it optional.
+    assertEquals(tasks[0].kind, "agent");
+    assertEquals(tasks[0].status, "working");
+    assertEquals(tasks[0].agent?.runId, "0123456789abcdef0123456789abcdef");
+    assertEquals(tasks[1].terminal?.exitCode, 2);
+    assertEquals(tasks[2].kind, "future");
+    assertEquals(tasks[2].status, undefined);
+
+    // Single read by authority and path id; a missed one is the typed 404.
+    const terminal = await client.readTask(sessionId, "terminal", "ts-9e58c0d2");
+    assertEquals(terminal.status, "fail");
+    const missing = await client.readTask(sessionId, "agent", "e".repeat(32))
+      .then(() => null, (error: unknown) => error);
+    assert(missing instanceof FrontendError);
+    assertEquals(missing.code, "resource_not_found");
+    assertEquals(missing.status, 404);
+
+    // Cancel posts the URI and answers the terminal snapshot.
+    const cancelled = await client.cancelTask(sessionId, tasks[1].uri);
+    assertEquals(cancelled.status, "cancel");
+    const gone = await client.cancelTask(sessionId, "task://agent/x/not-here")
+      .then(() => null, (error: unknown) => error);
+    assert(gone instanceof FrontendError);
+    assertEquals(gone.code, "resource_not_found");
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("task cancel maps ownership and source failures to typed errors", async () => {
+  const { discovery, shutdown } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  const sessionId = "a".repeat(32);
+  try {
+    // Another session's task: denial wins, always 403 task_forbidden.
+    const foreign = await client.cancelTask(
+      sessionId,
+      `task://agent/${"f".repeat(32)}/0123456789abcdef0123456789abcdef`,
+    )
+      .then(() => null, (error: unknown) => error);
+    assert(foreign instanceof FrontendError);
+    assertEquals(foreign.code, "task_forbidden");
+    assertEquals(foreign.status, 403);
+
+    // A source that could not settle its task: 502, still typed.
+    const failed = await client.cancelTask(sessionId, `task://future/${sessionId}/task-stuck`)
+      .then(() => null, (error: unknown) => error);
+    assert(failed instanceof FrontendError);
+    assertEquals(failed.code, "task_cancel_failed");
+    assertEquals(failed.status, 502);
+
+    // A body that is not a task URI: 400.
+    const invalid = await client.cancelTask(sessionId, "https://example.invalid/not-a-task")
+      .then(() => null, (error: unknown) => error);
+    assert(invalid instanceof FrontendError);
+    assertEquals(invalid.code, "resource_invalid_uri");
+    assertEquals(invalid.status, 400);
   } finally {
     await shutdown();
   }

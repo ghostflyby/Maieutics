@@ -107,6 +107,59 @@ always object references — never base64, regardless of payload size
 (invariant 26); a value under a binary mime that is not a reference carries
 no renderable data and clients fall back to the bundle's other mimes.
 
+## Attachments (object references inside turn text)
+
+A frontend attaches a file to a turn by ingesting the bytes first and then
+referencing the content address inside the turn text. Upload:
+
+```
+POST /v1/agent/sessions/{sid}/objects?name=<display name>
+Content-Type: <media type>
+<body: raw bytes>
+→ 200 {"sha256": "<64 lowercase hex>", "byteLength": 12345}
+```
+
+The bytes travel natively in the request body — never base64 (invariant 26).
+`name` is optional display metadata. The object is content-addressed: the
+answer's `sha256` is the path of the same `GET /v1/objects/{sha256}` stream
+the display-bundle references above use, and re-ingesting identical bytes is
+idempotent. Typed failures: unknown session `404 not_found`; a payload over
+the server's ingest bound `400 invalid_request` (the queue's oversized-payload
+precedent); malformed answers are client-side `protocol_error`. There is
+deliberately no capability flag: a server without the endpoint answers
+`404`, which frontends surface as "attachments unsupported".
+
+The turn references the object with a **marker** in the turn text (the same
+text `POST /turns` and `POST /queue` already carry — no wire-shape change):
+
+```
+[[maieutics:object sha256=<64 lowercase hex> mime=<type/subtype> name="<escaped>"]]
+```
+
+The server parses markers out of the submitted text into the turn's
+structured data parts (`application/vnd.maieutics.blob+json`) and composes
+the turn from the remaining text plus those references. The grammar is
+strict, and both sides must agree exactly:
+
+- fields are fixed-order (`sha256`, `mime`, `name`), each preceded by exactly
+  one space; `name` is double-quoted and may contain any printable character
+  except `"` and `\`, which travel escaped as `\"` and `\\` (control
+  characters never appear — emitters replace them).
+- only the exact canonical form is a marker. Anything else — uppercase sha,
+  reordered or missing fields, stray whitespace, a bad mime token, an
+  unterminated quote — is ordinary text and stays literal, so a user-written
+  look-alike can never become a reference and a **client newer than its
+  server degrades safely**: the markers reach the model as plain text and the
+  feature is inert, never a crash.
+
+Markers ride unchanged through the queue (items carry `text`, so attached
+turns enqueue like any other), the transcript (the user message keeps the
+text part plus one data part per marker), and notebook turn bindings.
+Object lifetime is the object store's: an upload becomes referenced when its
+turn commits, and unreferenced objects are pruned by `%session gc` after the
+grace period — a marker whose object was pruned fails typed (`not_found`),
+not silently.
+
 ## Input requests (REPL stdin and MCP elicitation)
 
 A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
@@ -201,6 +254,7 @@ implement comms ignore it and never open the endpoint.
 | POST | `/v1/agent/sessions/{sid}/fork` | Fork a stored session at a turn and make the fork active |
 | POST | `/v1/agent/sessions/{sid}/gc?graceHours=24` | Prune unreferenced objects |
 | POST | `/v1/agent/sessions/{sid}/repair` | Rebuild the derived object view |
+| POST | `/v1/agent/sessions/{sid}/objects` | Ingest one binary object into the session's object library |
 | POST | `/v1/agent/sessions/{sid}/turns` | Submit one Agent turn → `202 {runId}` |
 | GET | `/v1/agent/sessions/{sid}/transcript` | Authoritative history snapshot |
 | POST | `/v1/agent/runs/{runId}/cancel` | Cooperative cancel; waits for termination. A runId matching a live subagent child run of the session cancels that child |

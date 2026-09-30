@@ -1,7 +1,15 @@
 /// <reference lib="deno.window" />
 
 import { assert, assertEquals } from "@std/assert";
-import { fencedDiffLines, TurnView } from "./turnView.ts";
+import {
+  fencedDiffLines,
+  MaximumSubagents,
+  subagentSnapshotLines,
+  turnOutputItems,
+  type TurnOutputItemSpec,
+  TurnOutputMime,
+  TurnView,
+} from "./turnView.ts";
 
 Deno.test("text deltas fold in order", () => {
   const view = new TurnView("run-1");
@@ -434,4 +442,236 @@ Deno.test("diff fences cap the preview and honor the server truncation flag", ()
     truncated: true,
   });
   assertEquals(flagged.some((line) => line.startsWith("… diff preview truncated")), true);
+});
+
+Deno.test("structured output composition: exactly the single turn+json item", () => {
+  // The shared composition of the live paint (controller structuredOutput)
+  // and the snapshot restore (serializer renderSnapshotOutputs): the timeline
+  // renderer is the default view, and a text/markdown sibling would always
+  // win VS Code's mime display order — so there must be exactly one item,
+  // and it must be the turn+json item the serializer round-trips and the
+  // usage badge scans.
+  const snapshot = {
+    runId: "run-1",
+    input: "question",
+    text: "answer",
+    tools: [{ tool: "workspace_list", status: "ok" as const }],
+    truncated: false,
+  };
+  const items: readonly TurnOutputItemSpec[] = turnOutputItems(snapshot);
+  assertEquals(items.length, 1);
+  const [item] = items;
+  assertEquals(item.mime, TurnOutputMime);
+  assert(item.mime !== "text/markdown");
+  assertEquals(item.encoding, "json");
+  // The payload is embedded verbatim, so save round-trips the full snapshot.
+  assertEquals(item.value, snapshot);
+
+  // The restore path feeds the persisted OutputSnapshot shape (all fields
+  // optional); the composition accepts it unchanged.
+  const persisted = turnOutputItems({ truncated: true, tools: [{ tool: "x", status: "error" }] });
+  assertEquals(persisted.length, 1);
+  assertEquals(persisted[0].mime, TurnOutputMime);
+});
+
+Deno.test("subagent deltas fold in order into their child view", () => {
+  const view = new TurnView("run-1");
+  assert(view.applySubagent({ type: "run.started", runId: "child-1" }));
+  assert(view.applySubagent({ type: "text.delta", runId: "child-1", sequence: 1, text: "hel" }));
+  assert(view.applySubagent({ type: "text.delta", runId: "child-1", sequence: 2, text: "lo" }));
+  // A second child folds alongside, in first-appearance order.
+  assert(view.applySubagent({ type: "run.started", runId: "child-2" }));
+  assert(view.applySubagent({ type: "text.delta", runId: "child-2", sequence: 1, text: "salut" }));
+
+  assertEquals(view.markdown(), ""); // the parent text is untouched
+  const [first, second] = view.finalOutput().subagents ?? [];
+  assertEquals(first, { status: "running", text: "hello", tools: [] });
+  assertEquals(second, { status: "running", text: "salut", tools: [] });
+  assertEquals(view.isTerminal, false);
+});
+
+Deno.test("subagent tool lifecycle, progress, and authoritative message text fold", () => {
+  const view = new TurnView("run-1");
+  view.applySubagent({ type: "run.started", runId: "child-1" });
+  view.applySubagent({
+    type: "tool.started",
+    runId: "child-1",
+    callId: "c1",
+    tool: "workspace_search",
+    arguments: { pattern: "route(" },
+  });
+  view.applySubagent({
+    type: "tool.progress",
+    runId: "child-1",
+    callId: "c1",
+    content: { kind: "text", text: "scanning src/" },
+  });
+  view.applySubagent({
+    type: "tool.finished",
+    runId: "child-1",
+    callId: "c1",
+    result: { status: "ok", value: [] },
+  });
+  view.applySubagent({ type: "text.delta", runId: "child-1", sequence: 1, text: "draft" });
+  // The completed message is authoritative over the streamed deltas.
+  view.applySubagent({
+    type: "message.completed",
+    runId: "child-1",
+    agentMessage: { role: "assistant", parts: [{ kind: "text", text: "final report" }] },
+  });
+
+  const [child] = view.finalOutput().subagents ?? [];
+  assertEquals(child.status, "running");
+  assertEquals(child.text, "final report");
+  assertEquals(child.tools.length, 1);
+  assertEquals(child.tools[0].tool, "workspace_search");
+  assertEquals(child.tools[0].argsSummary, `{"pattern":"route("}`);
+  assertEquals(child.tools[0].status, "ok");
+});
+
+Deno.test("child terminal frames settle the child, never the parent", () => {
+  const view = new TurnView("run-1");
+  view.applySubagent({ type: "run.started", runId: "child-1" });
+  assert(view.applySubagent({ type: "run.completed", runId: "child-1", sequence: 9 }));
+  assert(!view.isTerminal);
+  assertEquals(view.terminalState, null);
+
+  view.applySubagent({ type: "run.started", runId: "child-2" });
+  assert(view.applySubagent({ type: "run.failed", runId: "child-2", code: "cancelled" }));
+  view.applySubagent({ type: "run.started", runId: "child-3" });
+  assert(view.applySubagent({ type: "run.failed", runId: "child-3", code: "task_failed" }));
+
+  const subagents = view.finalOutput().subagents ?? [];
+  assertEquals(subagents.map((child) => ({ status: child.status, code: child.code })), [
+    { status: "ok", code: undefined },
+    { status: "cancelled", code: "cancelled" },
+    { status: "failed", code: "task_failed" },
+  ]);
+  // The parent stays runnable: apply() still owns its lifecycle.
+  assert(view.apply({ type: "run.completed", runId: "run-1", truncated: false }));
+  assertEquals(view.terminalState, { kind: "completed", truncated: false });
+});
+
+Deno.test("apply still rejects foreign runIds; the parent state is never polluted", () => {
+  const view = new TurnView("run-1");
+  assertEquals(view.apply({ type: "text.delta", runId: "child-1", sequence: 1, text: "x" }), false);
+  assertEquals(view.apply({ type: "run.completed", runId: "child-1" }), false);
+  assertEquals(view.markdown(), "");
+  assertEquals(view.isTerminal, false);
+  assertEquals(view.finalOutput().subagents, undefined);
+  // And the child fold ignores run-less frames (repl/input are parent-only
+  // or server-declined for children).
+  assertEquals(view.applySubagent({ type: "text.delta", text: "x" }), false);
+  assertEquals(view.applySubagent({ type: "repl.display", runId: "child-1", data: {} }), false);
+  assertEquals((view.finalOutput().subagents ?? []).length, 0);
+});
+
+Deno.test("subagent folds report the shared subagents segment as dirty", () => {
+  const view = new TurnView("run-1");
+  view.applySubagent({ type: "run.started", runId: "child-1" });
+  let dirty = view.takeDirty();
+  assertEquals([...dirty], [`subagents:run-1`]);
+
+  view.applySubagent({ type: "text.delta", runId: "child-1", sequence: 1, text: "hi" });
+  dirty = view.takeDirty();
+  assertEquals([...dirty], [`subagents:run-1`]);
+  assertEquals(view.takeDirty().size, 0); // drained
+
+  // Terminal child frames dirty the segment too (the status mark flips).
+  view.applySubagent({ type: "run.completed", runId: "child-1" });
+  assertEquals([...view.takeDirty()], [`subagents:run-1`]);
+});
+
+Deno.test("hasStreamedContent includes child activity", () => {
+  const view = new TurnView("run-1");
+  assertEquals(view.hasStreamedContent, false);
+  view.applySubagent({ type: "run.started", runId: "child-1" });
+  // A bare registration is not content yet.
+  assertEquals(view.hasStreamedContent, false);
+  view.applySubagent({ type: "tool.started", runId: "child-1", callId: "c1", tool: "t" });
+  assertEquals(view.hasStreamedContent, true);
+});
+
+Deno.test("a failed parent run keeps the streamed child timeline", () => {
+  const view = new TurnView("run-1");
+  view.applySubagent({ type: "run.started", runId: "child-1" });
+  view.applySubagent({ type: "text.delta", runId: "child-1", sequence: 1, text: "partial" });
+  view.apply({ type: "run.failed", runId: "run-1", code: "agent_error", message: "down" });
+  const final = view.finalOutput();
+  assertEquals(final.error, { code: "agent_error", message: "down" });
+  assertEquals(final.subagents?.[0].text, "partial");
+  // The failure paint keeps streamed content: the segment lines still render.
+  assert(view.subagentLines().some((line) => line.includes("partial")));
+});
+
+Deno.test("subagentLines quote-prefix every line so child markdown cannot escape", () => {
+  const view = new TurnView("run-1");
+  view.applySubagent({ type: "run.started", runId: "child-1" });
+  view.applySubagent({
+    type: "tool.started",
+    runId: "child-1",
+    callId: "c1",
+    tool: "workspace_read",
+    arguments: "src/a.ts",
+  });
+  view.applySubagent({
+    type: "tool.finished",
+    runId: "child-1",
+    callId: "c1",
+    result: { status: "ok", value: {} },
+  });
+  view.applySubagent({
+    type: "text.delta",
+    runId: "child-1",
+    sequence: 1,
+    text: "# Heading\n\n- list item\n",
+  });
+
+  const lines = view.subagentLines();
+  assert(lines[0].startsWith("> 🤖 **子代理** · ⏳"), lines.join("\n"));
+  for (const line of lines) {
+    // Bare ">" is the quote-continuation marker for blank child lines.
+    assert(line === "" || line === ">" || line.startsWith("> "), line);
+  }
+  // The tool finished ok before the text arrived.
+  assert(lines.some((line) => line.startsWith("> - ✅ `workspace_read`")), lines.join("\n"));
+  assert(lines.some((line) => line.startsWith("> # Heading")), lines.join("\n"));
+});
+
+Deno.test("subagent folds cap child count and text length", () => {
+  const view = new TurnView("run-1");
+  for (let index = 0; index < MaximumSubagents + 3; index++) {
+    view.applySubagent({ type: "run.started", runId: `child-${index}` });
+  }
+  assertEquals((view.finalOutput().subagents ?? []).length, MaximumSubagents);
+  // The overflow note renders once in the shared segment.
+  assert(
+    view.subagentLines().some((line) => line.includes("子代理过多")),
+    view.subagentLines().join("\n"),
+  );
+
+  const capped = new TurnView("run-1");
+  capped.applySubagent({ type: "run.started", runId: "child-1" });
+  const chunk = "x".repeat(1500);
+  for (let index = 0; index < 30; index++) {
+    capped.applySubagent({ type: "text.delta", runId: "child-1", sequence: index, text: chunk });
+  }
+  const [child] = capped.finalOutput().subagents ?? [];
+  // The stored fold capped at 20 000 chars; the snapshot appends the marker.
+  assertEquals(child.text.length, 20_002);
+  assert(child.text.endsWith("\n…"), "capped text carries the ellipsis marker");
+});
+
+Deno.test("subagentSnapshotLines composes blocks with blank-line separators", () => {
+  const lines = subagentSnapshotLines([
+    { status: "ok", text: "done\n", tools: [{ tool: "workspace_list", status: "ok" }] },
+    { status: "failed", text: "", tools: [], code: "cancelled" },
+  ]);
+  assertEquals(lines, [
+    "> 🤖 **子代理** · ✅",
+    "> - ✅ `workspace_list`",
+    "> done",
+    "",
+    "> 🤖 **子代理** · ❌ (`cancelled`)",
+  ]);
 });

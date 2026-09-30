@@ -5,10 +5,12 @@
  * live server session (invariant 13). The codec is tolerant on read — missing
  * optional fields degrade, and unknown fields are ignored (they do not
  * survive a round trip; forward-compatible data must become explicit fields,
- * as `CellSnapshot.turn` did) — and strict enough that a foreign document is
- * rejected with a typed error instead of silently corrupting a user's
- * notebook.
+ * as `CellSnapshot.turn` and `OutputSnapshot.subagents` did) — and strict
+ * enough that a foreign document is rejected with a typed error instead of
+ * silently corrupting a user's notebook.
  */
+
+import type { SubagentSnapshotView } from "./turnView.ts";
 
 export const NotebookKind = "maieutics-notebook";
 export const NotebookVersion = 1;
@@ -30,6 +32,10 @@ export interface OutputSnapshot {
   tools?: ToolSnapshot[];
   /** REPL rich displays in first-appearance order. */
   repl?: ReplDisplaySnapshot[];
+  /** Folded subagent child reports (ADR 0030): display data only — the
+   * child transcript itself is never persisted ("carry reports, never live
+   * child state"). */
+  subagents?: SubagentSnapshotView[];
 }
 
 export interface ReplDisplaySnapshot {
@@ -150,6 +156,9 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
       data: isRecord(display.data) ? display.data : {},
     }))
     : undefined;
+  const subagents = Array.isArray(value.subagents)
+    ? value.subagents.filter(isRecord).map(parseSubagent)
+    : undefined;
   return {
     text: typeof value.text === "string" ? value.text : undefined,
     truncated: typeof value.truncated === "boolean" ? value.truncated : undefined,
@@ -161,8 +170,31 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
       : undefined,
     tools,
     repl,
+    subagents,
   };
 }
+
+/** One folded subagent child report; malformed entries degrade field by
+ * field (an unknown status reads as running, matching the live mark). */
+function parseSubagent(value: Record<string, unknown>): SubagentSnapshotView {
+  const status = SubagentStatuses.has(value.status as string)
+    ? value.status as SubagentSnapshotView["status"]
+    : "running";
+  return {
+    status,
+    text: typeof value.text === "string" ? value.text : "",
+    tools: Array.isArray(value.tools)
+      ? value.tools.filter(isRecord).map((tool) => ({
+        tool: typeof tool.tool === "string" ? tool.tool : "unknown",
+        status: tool.status === "error" ? "error" as const : "ok" as const,
+      }))
+      : [],
+    ...(value.truncated === true ? { truncated: true } : {}),
+    ...(typeof value.code === "string" ? { code: value.code } : {}),
+  };
+}
+
+const SubagentStatuses: Set<string> = new Set(["running", "ok", "failed", "cancelled"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

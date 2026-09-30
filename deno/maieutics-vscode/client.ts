@@ -22,6 +22,8 @@ import type {
   QueueState,
   SessionInfo,
   StoredSession,
+  TaskListEntry,
+  TaskSnapshot,
   Transcript,
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
@@ -50,6 +52,13 @@ export interface DiscoveryFile {
   url: string;
   token: string;
   pid: number;
+}
+
+/** One ingested binary object: its content address (the marker grammar's
+ * `sha256` and the `/v1/objects/{sha256}` fetch URL) and the stored size. */
+export interface UploadedObject {
+  sha256: string;
+  byteLength: number;
 }
 
 export type CommandAnswer = {
@@ -270,6 +279,42 @@ export class FrontendClient {
     await response.body?.cancel();
   }
 
+  /** Lists the session's live task-plane resources (ADR 0028): the subagent
+   * child runs and timed-out one-shot terminal commands the session owns,
+   * `task://{kind}/{agentSessionId}/{…}`. Entries may be full snapshots or
+   * catalog identities (status optional), and unknown kinds are tolerated —
+   * list first, decide per entry. Children vanish from the plane when their
+   * parent run joins them, so entries disappear between reads. */
+  async listTasks(sessionId: string, signal?: AbortSignal): Promise<TaskListEntry[]> {
+    return await this.get(`/v1/agent/sessions/${sessionId}/tasks`, signal);
+  }
+
+  /** Reads one task snapshot by authority and path id. A task that already
+   * left the plane (a settled child its parent joined, a closed one-shot) is
+   * `404 resource_not_found`; a malformed pair is `400`. */
+  async readTask(
+    sessionId: string,
+    kind: string,
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<TaskSnapshot> {
+    return await this.get(
+      `/v1/agent/sessions/${sessionId}/tasks/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`,
+      signal,
+    );
+  }
+
+  /** Cancels one session-owned task by URI and answers its terminal snapshot;
+   * cancelling an already-terminal task answers it unchanged (idempotent).
+   * Cancellation waits cooperatively for termination, so a stuck child keeps
+   * the request in flight — surface a busy state instead of retrying. The
+   * routed session is the ownership anchor: another session's task is
+   * `403 task_forbidden`, an unknown URI `404`, a malformed body `400`, a
+   * source that could not settle the task `502 task_cancel_failed`. */
+  async cancelTask(sessionId: string, uri: string, signal?: AbortSignal): Promise<TaskSnapshot> {
+    return await this.post(`/v1/agent/sessions/${sessionId}/tasks/cancel`, { uri }, signal);
+  }
+
   /**
    * Submits one cell. Command cells answer inline with markdown; agent cells
    * start a run and answer with its identifier.
@@ -330,6 +375,51 @@ export class FrontendClient {
     return await fetched;
   }
 
+  /** Uploads one binary object into the session's object library (the
+   * attachment path of the turn-reference grammar). The bytes travel natively
+   * in the request body — never base64 (invariant 26) — with the object's
+   * media type as the Content-Type and its display name as `?name=`. The
+   * answer carries the content address the marker grammar references. A
+   * server without the endpoint (404), an oversized payload, or a malformed
+   * answer is a typed error. */
+  async uploadObject(
+    sessionId: string,
+    bytes: Uint8Array,
+    mediaType: string,
+    name?: string,
+    signal?: AbortSignal,
+  ): Promise<UploadedObject> {
+    const query = name === undefined ? "" : `?name=${encodeURIComponent(name)}`;
+    const response = await fetch(
+      `${this.baseUrl}/v1/agent/sessions/${encodeURIComponent(sessionId)}/objects${query}`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Content-Type": mediaType,
+        },
+        // The view is request-owned and never mutated by the fetch; the
+        // ArrayBufferLike → ArrayBuffer narrowing is a TS-lib pin (node's
+        // BodyInit), not a runtime conversion.
+        body: bytes as Uint8Array<ArrayBuffer>,
+        signal,
+      },
+    );
+    if (!response.ok) throw await this.errorOf(response);
+    const body = await response.json() as { sha256?: unknown; byteLength?: unknown };
+    if (typeof body.sha256 !== "string" || /^[0-9a-f]{64}$/.test(body.sha256) === false) {
+      throw new FrontendError(
+        "protocol_error",
+        response.status,
+        "The object upload answer carries no sha256 content address.",
+      );
+    }
+    return {
+      sha256: body.sha256,
+      byteLength: typeof body.byteLength === "number" ? body.byteLength : bytes.byteLength,
+    };
+  }
+
   /** Answers a pending input request announced by an `input.request` frame.
    * A REPL prompt posts a string; an MCP elicitation posts its field values
    * as an object, or refuses with action `decline`/`cancel` (ADR 0029). */
@@ -385,13 +475,19 @@ export class FrontendClient {
    */
   async *events(sessionId: string, options: EventsOptions = {}): AsyncGenerator<EventFrame> {
     const lastSeenByRun = new Map<string, number>();
+    // Subagent child runs (ADR 0030) share the session events socket under
+    // their own runId and run-local sequence space: their marks dedupe only
+    // child replay and never claim the reconnect offset (see resumeOffset).
+    const childRuns = new Set<string>();
     let backoffMs = InitialBackoffMs;
     let firstConnect = true;
     while (!options.signal?.aborted) {
       // One monotonic offset would mix run-local sequence spaces and hide
       // every frame of the next run; only a still-live run's mark is a
       // meaningful resume point (see resumeOffset).
-      const sinceSequence = firstConnect ? options.sinceSequence ?? 0 : resumeOffset(lastSeenByRun);
+      const sinceSequence = firstConnect
+        ? options.sinceSequence ?? 0
+        : resumeOffset(lastSeenByRun, childRuns);
       firstConnect = false;
       const connectedAt = Date.now();
       const handle = this.openSocket(sessionId, sinceSequence, options.signal);
@@ -403,7 +499,7 @@ export class FrontendClient {
       let delivered = 0;
       try {
         for await (const frame of handle.messages) {
-          if (markDelivered(frame, lastSeenByRun)) continue;
+          if (markDelivered(frame, lastSeenByRun, childRuns)) continue;
           delivered++;
           yield frame;
         }
@@ -670,15 +766,17 @@ const HealthyConnectionMs = 10_000;
 /** Cached immutable object fetches per client (see {@link FrontendClient.fetchObject}). */
 const ObjectCacheCapacity = 64;
 
-/** The reconnect offset: the last sequence of a run that is still live — a
- * run that produced no terminal frame. Settled runs drop out of the map, so
- * their numbers cannot leak into the next run's replay request (sequences are
- * strictly run-local); 0 means "no run is live". Run-less sequenced frames
- * (keyed "") never claim the offset. */
-function resumeOffset(lastSeenByRun: Map<string, number>): number {
+/** The reconnect offset: the last sequence of a top-level run that is still
+ * live — a run that produced no terminal frame. Settled runs drop out of the
+ * map, so their numbers cannot leak into the next run's replay request
+ * (sequences are strictly run-local); child runs are skipped — their marks
+ * dedupe only child replay, and letting a child-local number claim the offset
+ * would make the server filter away the live parent's frames; 0 means "no run
+ * is live". Run-less sequenced frames (keyed "") never claim the offset. */
+function resumeOffset(lastSeenByRun: Map<string, number>, childRuns: ReadonlySet<string>): number {
   let offset = 0;
   for (const [runId, mark] of lastSeenByRun) {
-    if (runId !== "" && mark > offset) offset = mark;
+    if (runId !== "" && !childRuns.has(runId) && mark > offset) offset = mark;
   }
   return offset;
 }
@@ -687,8 +785,13 @@ function resumeOffset(lastSeenByRun: Map<string, number>): number {
  * frame was already delivered on this connection (replay overlap) and must be
  * skipped — sequences are strictly increasing run-local, so a frame at or
  * below the mark is a repeat. Terminal frames settle their run (the entry
- * goes) and a new run replaces the previous one, keeping the map bounded. */
-function markDelivered(frame: EventFrame, lastSeenByRun: Map<string, number>): boolean {
+ * goes); a run.started replaces the previous top-level run's marks unless it
+ * announces a subagent child of the live run, keeping the map bounded. */
+function markDelivered(
+  frame: EventFrame,
+  lastSeenByRun: Map<string, number>,
+  childRuns: Set<string>,
+): boolean {
   const runId = typeof frame.runId === "string" ? frame.runId : "";
   if (typeof frame.sequence === "number") {
     const mark = lastSeenByRun.get(runId);
@@ -697,19 +800,47 @@ function markDelivered(frame: EventFrame, lastSeenByRun: Map<string, number>): b
   }
 
   if (frame.type === "run.started") {
-    // The session's single-run gate keeps one run in flight: a new run's
-    // sequence space starts over, so earlier runs' marks are stale. Run-less
-    // frames ("") stay — their numbers are not a run's and still dedupe.
-    for (const key of [...lastSeenByRun.keys()]) {
-      if (key !== runId && key !== "") lastSeenByRun.delete(key);
+    // The session's single-run gate keeps one TOP-LEVEL run in flight: a
+    // run.started arriving while another run's marks are live is a subagent
+    // child run (ADR 0030) — it runs on its own run-local sequence space and
+    // must not wipe the live run's mark, or every reconnect would replay the
+    // parent's frames from zero (dedupe broken, duplicated answer text).
+    // With no live run it is the next top-level run: earlier runs' marks are
+    // stale and go. Run-less frames ("") stay — their numbers are not a
+    // run's and still dedupe.
+    if (liveTopLevelRun(lastSeenByRun, childRuns, runId) === undefined) {
+      childRuns.clear();
+      for (const key of [...lastSeenByRun.keys()]) {
+        if (key !== runId && key !== "") lastSeenByRun.delete(key);
+      }
+    } else {
+      childRuns.add(runId);
     }
   } else if (
     frame.type === "run.completed" || frame.type === "run.failed" ||
     frame.type === "run.missing"
   ) {
+    // A child terminal frame retires the child entry too (its replay dedupe
+    // ends with it); run.missing only ever targets the top-level run.
     lastSeenByRun.delete(runId);
+    childRuns.delete(runId);
   }
   return false;
+}
+
+/** The one live top-level run's key, if any: a non-empty key other than
+ * `exclude` that is not a registered child. Child keys survive a lost child
+ * terminal frame (child replay is best-effort), so they must not count as
+ * the live run or the next top-level run.started would read as a child. */
+function liveTopLevelRun(
+  lastSeenByRun: Map<string, number>,
+  childRuns: ReadonlySet<string>,
+  exclude: string,
+): string | undefined {
+  for (const key of lastSeenByRun.keys()) {
+    if (key !== "" && key !== exclude && !childRuns.has(key)) return key;
+  }
+  return undefined;
 }
 
 function sleep(ms: number): Promise<void> {

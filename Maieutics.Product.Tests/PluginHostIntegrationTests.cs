@@ -966,10 +966,16 @@ public sealed class PluginHostIntegrationTests
             await WaitForApprovalAsync(manager, "extra", timeout.Token);
             await manager.ApproveAsync("extra", timeout.Token);
 
+            // Both plugins must be live before asserting: `extra` alone can show up while the
+            // restart's fallback generation is still tearing the registry down (its approval
+            // upsert lands undelivered and triggers another generation), which is not the
+            // convergence this phase asserts.
             await WaitForRegistryConditionAsync(
                 manager,
                 ReplExtensionPointName.McpDiscover,
-                registrations => registrations.Any(registration => registration.PluginId == "extra"),
+                registrations =>
+                    registrations.Any(registration => registration.PluginId == rootPluginId) &&
+                    registrations.Any(registration => registration.PluginId == "extra"),
                 timeout.Token);
             manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
                 .Should().Contain(registration => registration.PluginId == rootPluginId)
@@ -1056,14 +1062,15 @@ public sealed class PluginHostIntegrationTests
     }
 
     /// <summary>
-    ///     Waits until the plugin host's registration set for <paramref name="extensionPoint"/>
-    ///     satisfies <paramref name="condition"/>, consuming the manager's
-    ///     <c>RegistryChanges</c> snapshots instead of polling: every channel frame is the
-    ///     complete registration set written when the host publishes a registry payload. The
-    ///     channel is bounded drop-oldest, so a satisfying frame can be overwritten before it
-    ///     is read, and approval transitions rebuild the live set without a host frame — hence
-    ///     the live <c>GetRegistrations</c> check alongside each snapshot read, and once before
-    ///     the first read.
+    ///     Waits until the plugin host's live registration set for <paramref name="extensionPoint"/>
+    ///     satisfies <paramref name="condition"/>, waking on the manager's registry frames instead
+    ///     of polling: every channel frame is the complete registration set written when the host
+    ///     publishes a registry payload. Only the live <c>GetRegistrations</c> set decides — a
+    ///     satisfying frame of a superseded generation must not pass, because the restart that
+    ///     supersedes it (e.g. the fallback restart when an approval upsert cannot be delivered)
+    ///     wipes the live registry right after. A restart also swaps the channel itself, so each
+    ///     pass re-captures it and additionally wakes on <c>RegistryChangesReplaced</c> rather
+    ///     than blocking on frames the superseded channel will never produce.
     /// </summary>
     private static async Task WaitForRegistryConditionAsync(
         PluginHostManager manager,
@@ -1071,13 +1078,19 @@ public sealed class PluginHostIntegrationTests
         Func<IReadOnlyList<PluginRegistration>, bool> condition,
         CancellationToken cancellationToken)
     {
-        if (condition(manager.GetRegistrations(extensionPoint))) return;
-
-        await foreach (var snapshot in manager.RegistryChanges.Reader
-                           .ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        while (true)
         {
-            if (condition(snapshot) || condition(manager.GetRegistrations(extensionPoint)))
-                return;
+            if (condition(manager.GetRegistrations(extensionPoint))) return;
+
+            var channel = manager.RegistryChanges;
+            Task replaced = manager.RegistryChangesReplaced;
+            Task winner = await Task.WhenAny(
+                channel.Reader.WaitToReadAsync(cancellationToken).AsTask(),
+                replaced.WaitAsync(cancellationToken)).ConfigureAwait(false);
+            if (winner == replaced) continue;
+
+            // A frame was pending or arrived: drain it and re-check the live set next pass.
+            while (channel.Reader.TryRead(out _)) { }
         }
     }
 

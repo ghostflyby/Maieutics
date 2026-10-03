@@ -396,6 +396,30 @@ internal sealed class PluginHostManager(
     internal Channel<PluginRegistration[]> RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
 
+    /// <summary>Internal test observability: completed when a host restart replaced
+    /// <see cref="RegistryChanges"/> with the fresh generation's channel. Completion and
+    /// <see cref="RegistryChangesReplaced"/>'s per-read swap share the gate, so a reader
+    /// either observes the completed task or hands the completer the fresh source; a
+    /// completed task is replaced on the next read. A waiter parked on the superseded
+    /// channel's frames must re-capture on this signal — the replaced channel never
+    /// produces another frame.</summary>
+    private TaskCompletionSource registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes when the registry channel was replaced
+    /// by a host restart (see the field above).</summary>
+    internal Task RegistryChangesReplaced
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (registryChangesReplaced.Task.IsCompleted)
+                    registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return registryChangesReplaced.Task;
+            }
+        }
+    }
+
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
 
@@ -1086,6 +1110,14 @@ internal sealed class PluginHostManager(
                 // safe and closes the NotStarted observation window.
                 startupTask = StartCoreAsync(startupToken);
                 starting = startupTask;
+            }
+
+            // Reported after the swap, under the state gate so a reader's per-read swap cannot
+            // strand the fresh source: a waiter parked on the superseded channel's frames
+            // re-captures the live one (RegistryChangesReplaced).
+            lock (gate)
+            {
+                registryChangesReplaced.TrySetResult();
             }
 
             // Wait for the new generation to be ready before the re-check below: descriptors

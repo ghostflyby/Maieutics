@@ -26,6 +26,7 @@ internal sealed class PluginApprovalStore
     private readonly string path;
     private readonly Lock gate = new();
     private Dictionary<string, PluginApprovalRecord> approvals = new(StringComparer.Ordinal);
+    private bool writable = true;
 
     private PluginApprovalStore(string path)
     {
@@ -41,8 +42,10 @@ internal sealed class PluginApprovalStore
 
     /// <summary>Loads the store from disk. A missing file yields an empty store; a file that
     /// exists but cannot be used (invalid JSON, unknown schema version) yields an empty store
-    /// plus a visible error — nothing stays approved on a corrupt file. The in-memory snapshot
-    /// then persists for the process lifetime; the file is not watched.</summary>
+    /// plus a visible error — nothing stays approved on a corrupt file, and a
+    /// version-rejected file stays read-only so a later approval cannot destroy records
+    /// this version cannot parse. The in-memory snapshot then persists for the process
+    /// lifetime; the file is not watched.</summary>
     public static PluginApprovalStore Load(string path, out string? error)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -57,6 +60,7 @@ internal sealed class PluginApprovalStore
                 PluginApprovalsJsonContext.Default.PluginApprovalsFile);
             if (file is null || file.Version != CurrentVersion)
             {
+                store.writable = false;
                 error = file is null
                     ? "The plugin approvals file is null."
                     : $"The plugin approvals file version {file.Version} is not supported (expected {CurrentVersion}).";
@@ -78,6 +82,7 @@ internal sealed class PluginApprovalStore
             exception is JsonException or IOException or UnauthorizedAccessException or
             NotSupportedException or InvalidOperationException)
         {
+            store.writable = false;
             error = $"The plugin approvals file '{path}' could not be read: {exception.Message}";
             return store;
         }
@@ -102,12 +107,18 @@ internal sealed class PluginApprovalStore
     /// <summary>Replaces (or creates) one plugin's approval and persists it. A failed persist
     /// leaves both the file and the in-memory store unchanged — an approval that was not
     /// written never counts.</summary>
+    /// <exception cref="InvalidOperationException">The loaded file was rejected (unreadable
+    /// or an unknown version) and must not be overwritten.</exception>
     public void Set(string pluginId, PluginApprovalRecord record)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
         ArgumentNullException.ThrowIfNull(record);
         lock (gate)
         {
+            if (!writable)
+                throw new InvalidOperationException(
+                    "The plugin approvals file was rejected at load time (invalid or unsupported version); " +
+                    "it is read-only until inspected or removed.");
             var next = new Dictionary<string, PluginApprovalRecord>(approvals, StringComparer.Ordinal)
             {
                 [pluginId] = record
@@ -118,11 +129,17 @@ internal sealed class PluginApprovalStore
     }
 
     /// <summary>Removes one plugin's approval (a revoke) and persists it.</summary>
+    /// <exception cref="InvalidOperationException">The loaded file was rejected (unreadable
+    /// or an unknown version) and must not be overwritten.</exception>
     public bool Remove(string pluginId)
     {
         ArgumentNullException.ThrowIfNull(pluginId);
         lock (gate)
         {
+            if (!writable)
+                throw new InvalidOperationException(
+                    "The plugin approvals file was rejected at load time (invalid or unsupported version); " +
+                    "it is read-only until inspected or removed.");
             if (!approvals.ContainsKey(pluginId)) return false;
             var next = new Dictionary<string, PluginApprovalRecord>(approvals, StringComparer.Ordinal);
             next.Remove(pluginId);

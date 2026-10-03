@@ -56,8 +56,10 @@ async function main(): Promise<void> {
   // kernel answers by republishing the plugin's MCP registrations.
   host.setTriggerSinks({
     async onEvent(pluginId, trigger, detail) {
-      const workers = (config.plugins ?? []).find((plugin) => plugin.id === pluginId)?.workers ??
-        [];
+      // Resolve targets through the LIVE plugin registry: a plugin activated (or
+      // reshaped) after boot — the normal first-run approval flow — exists only
+      // there; the frozen boot config would silently drop its events.
+      const workers = host.workersOf(pluginId);
       const delivered = await Promise.allSettled(
         workers.map((worker) =>
           host.invoke(pluginId, worker.exportName, "PluginEvent", {

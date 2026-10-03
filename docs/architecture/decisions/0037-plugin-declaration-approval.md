@@ -39,9 +39,13 @@ revokes the effect until the user re-approves.
    `inspections.contentReadAll`. Canonicalization follows the `McpServerGeneration` key
    style: fixed field order, Ordinal-sorted lists, length-prefixed UTF-8 into SHA-256,
    and a recursive canonical JSON form for embedded `JsonElement` data so formatting-only
-   manifest edits (for example `deno fmt`) do not revoke approval. **Module code is not
-   fingerprinted**: an approved plugin's source edits keep their approval — approval
-   covers the grant set, not the code identity, exactly like kernel permission profiles.
+   manifest edits (for example `deno fmt`) or number respellings (`1` vs `1.0`) do not
+   revoke approval. **Module code is not fingerprinted**: an approved plugin's source
+   edits keep their approval — approval covers the grant set, not the code identity,
+   exactly like kernel permission profiles. Paths enter the fingerprint in their resolved
+   form (entry URLs, expanded trigger paths, path-resolved MCP definitions), so
+   relocating the plugins root or changing the expansion environment revokes —
+   approving again re-establishes, fail-closed by construction.
 2. **Exemption**: a descriptor with no workers, no data entries, no capabilities, no
    extensions, no MCP servers, no triggers, no permission grants, and no content
    observation declares nothing privileged and needs no approval (the first-boot plugins
@@ -75,7 +79,15 @@ revokes the effect until the user re-approves.
    now treats as an **upsert**: a replacement for an unknown worker creates and starts it
    (and restarts dependents that a stop cascade had closed). The host protocol change is
    additive — a `stop` field on `PluginReloadPayload` and upsert semantics for
-   replacement-bearing reloads — under the existing versioned envelope.
+   replacement-bearing reloads — under the existing versioned envelope. Deployment
+   compatibility is lockstep (the Deno module graph is embedded in the kernel binary);
+   the one asymmetric combination — an OLD host checkout against a NEW kernel in dev —
+   is shape-tolerated but semantically wrong (the old host ignores `stop` and restarts
+   with old grants), so dev checkouts must refresh with the kernel. Approvals, revokes,
+   and the approval branch of watcher reloads run single-flight on the kernel side, so
+   two reconciles can never interleave their frames and leave the host's worker set
+   contradicting the kernel's approval state; any frame that cannot ship falls back to a
+   coalesced host-generation restart.
 7. **Trust model**: the approvals file is a consent gate at the same trust level as
    `permissions.json` — a local attacker who can rewrite it can already rewrite the
    plugin code it authorizes. It is not a boundary against the local user, and it does

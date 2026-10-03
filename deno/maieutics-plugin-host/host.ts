@@ -379,6 +379,10 @@ export class PluginHost {
    * the kernel watcher); timers fire at most once per tick. Bounded: one
    * listener per trigger, replaced wholesale on reinstall. */
   #installTriggers(): void {
+    // A lifecycle mutation that resumed across dispose() must not re-arm watchers or
+    // timers the disposal just cleared (invariant 15): leaked intervals would keep the
+    // host process alive after its unload handler.
+    if (this.#disposed) return;
     for (const dispose of this.#triggerDisposers.splice(0)) {
       try {
         dispose();
@@ -730,13 +734,15 @@ export class PluginHost {
     const key = workerKey(pluginId, exportName);
     let handle = this.#workers.get(key);
     if (nextConfig !== undefined && nextConfig !== null) {
-      this.#plugins.set(nextConfig.id, nextConfig);
       if (handle === undefined) {
         // Upsert (ADR 0037): a replacement for a worker the host does not know — a
         // plugin activated after boot — creates and starts it instead of being a
-        // no-op. The approval activation path rides this.
+        // no-op. The approval activation path rides this. The live plugin registry
+        // is updated only once the worker is found, so a replacement naming no such
+        // export leaves no half-applied state.
         const created = nextConfig.workers.find((w) => w.exportName === exportName);
         if (created === undefined) return;
+        this.#plugins.set(nextConfig.id, nextConfig);
         handle = {
           plugin: nextConfig,
           config: created,
@@ -751,6 +757,7 @@ export class PluginHost {
         this.#workers.set(key, handle);
         this.#bySpecifier.set(handle.specifier, key);
       } else {
+        this.#plugins.set(nextConfig.id, nextConfig);
         handle.plugin = nextConfig;
         const nextWorker = nextConfig.workers.find((w) => w.exportName === exportName);
         if (nextWorker !== undefined) {
@@ -772,16 +779,26 @@ export class PluginHost {
     // dependents) in topological waves; restarting only the target would leave
     // dependents permanently Stopped until the next host-process restart.
     await this.#startSubgraph(this.#dependencyClosure(key));
+    // Re-check after the restart waves: dispose() during the subgraph start must not
+    // refresh extensions or re-arm triggers against a torn-down host.
+    if (this.#disposed) return;
     this.#refreshExtensions(this.#collectExtensions());
     this.#installTriggers();
+  }
+
+  /** The live worker list of one plugin, from the same registry reloads and stops
+   * maintain (NOT the frozen boot config): trigger delivery resolves its targets
+   * through this, so a plugin activated or reshaped after boot still receives its
+   * events (ADR 0036/0037). */
+  workersOf(pluginId: string): readonly PluginWorkerConfig[] {
+    return this.#plugins.get(pluginId)?.workers ?? [];
   }
 
   /** Stops one worker and its transitive dependents WITHOUT restarting them and
    * removes the worker from the host set (ADR 0037 revocation): the plugin's approval
    * no longer covers its declarations, so the workers leave entirely instead of
    * rebooting with stale grants. Re-approval re-adds them through a
-   * replacement-bearing reload (the upsert path of `reload`). */
-  stop(
+   * replacement-bearing reload (the upsert path of `reload`). */ stop(
     pluginId: string,
     exportName: string,
   ): Promise<void> {
@@ -798,6 +815,9 @@ export class PluginHost {
     // without the dependency); their handles stay so a later re-approval of the
     // dependency restarts them through the upsert closure.
     await this.#cascade(key);
+    // Dispose() ran during the awaited cascade: the host is tearing down and must not
+    // re-arm triggers (the #installTriggers fence) or mutate registry state behind it.
+    if (this.#disposed) return;
     this.#workers.delete(key);
     this.#bySpecifier.delete(handle.specifier);
     let remains = false;

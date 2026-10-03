@@ -207,8 +207,9 @@ public sealed class PluginApprovalTests
         var reloaded = PluginApprovalStore.Load(path, out loadError);
         loadError.Should().BeNull();
         reloaded.TryGet("probe", out var record).Should().BeTrue();
-        record!.Fingerprint.Should().Be("F1");
-        record.Grants.Env.Values.Should().Equal("A");
+        var persisted = record ?? throw new InvalidOperationException("The record is missing.");
+        persisted.Fingerprint.Should().Be("F1");
+        persisted.Grants.Env.Values.Should().Equal("A");
 
         store.Remove("probe").Should().BeTrue();
         PluginApprovalStore.Load(path, out _).TryGet("probe", out _).Should().BeFalse();
@@ -240,7 +241,10 @@ public sealed class PluginApprovalTests
 
         var root = CreateProbePluginsRoot("approval-pending");
         var pluginId = Path.GetFileName(root);
-        var manager = CreateManager(root, approvalsPath: null);
+        // An explicit per-test approvals path: the null fallback derives a fixed shared
+        // temp location, and the approve/revoke below would poison later runs through it.
+        var approvalsPath = Path.Combine(Path.GetTempPath(), $"mc-plugin-approvals-{Guid.NewGuid():N}.json");
+        var manager = CreateManager(root, approvalsPath);
         try
         {
             await StartAsync(manager);
@@ -279,6 +283,7 @@ public sealed class PluginApprovalTests
         {
             await manager.DisposeAsync();
             Cleanup(root);
+            if (File.Exists(approvalsPath)) File.Delete(approvalsPath);
         }
     }
 
@@ -441,7 +446,8 @@ public sealed class PluginApprovalTests
 
         var root = CreateProbePluginsRoot("approval-commands");
         var pluginId = Path.GetFileName(root);
-        var manager = CreateManager(root, approvalsPath: null);
+        var approvalsPath = Path.Combine(Path.GetTempPath(), $"mc-plugin-approvals-{Guid.NewGuid():N}.json");
+        var manager = CreateManager(root, approvalsPath);
         var executor = new MaieuticsCommandExecutor(null, null, null, null, null, manager);
         try
         {
@@ -472,6 +478,7 @@ public sealed class PluginApprovalTests
         {
             await manager.DisposeAsync();
             Cleanup(root);
+            if (File.Exists(approvalsPath)) File.Delete(approvalsPath);
         }
     }
 
@@ -485,7 +492,7 @@ public sealed class PluginApprovalTests
         File.WriteAllText(Path.Combine(directory, "maieutics.json"), maieuticsJson);
         PluginManifest.TryLoad(directory, out var descriptor, out var error).Should()
             .BeTrue(error);
-        return descriptor;
+        return descriptor ?? throw new InvalidOperationException("The manifest did not load.");
     }
 
     /// <summary>A plugins root that is itself one declarative probe plugin: an mcp data

@@ -801,6 +801,66 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task RevokingAnApprovedPluginStopsItsWorkersOnTheLiveHost()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The plugin host harness attaches over a Unix-socket control channel.");
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(90));
+        var registry = new ReplControlSessionRegistry();
+        var socketPath = ReplControlHost.CreateSocketPath();
+        var pluginsRoot = CreateRootWithoutExtraPlugin();
+        var manager = new PluginHostManager(
+            pluginsRoot,
+            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
+            socketPath,
+            new DenoReplOptions { Executable = "deno" },
+            new PluginHostModule(),
+            registry,
+            NullLogger<PluginHostManager>.Instance,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
+        var controlHost = new ReplControlHost(
+            socketPath,
+            registry,
+            NullLogger<ReplControlHost>.Instance,
+            pluginHosts: manager);
+        var application = await ReplControlTestHost.StartAsync(socketPath, controlHost, timeout.Token);
+        await manager.StartAsync(timeout.Token);
+        await using (application)
+        await using (manager)
+        {
+            var rootPluginId = (await WaitForRegistrationsAsync(
+                    manager,
+                    ReplExtensionPointName.McpDiscover,
+                    timeout.Token))
+                .Single().PluginId;
+
+            // Revocation drives the stop form of plugin.reload end to end (ADR 0037):
+            // the live host closes the worker, its post-stop registry frame withdraws
+            // the registration, and the kernel classifies the plugin pending.
+            await manager.RevokeAsync(rootPluginId, timeout.Token);
+            var withdrawn = await WaitForAsync(
+                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Count == 0,
+                timeout.Token);
+            withdrawn.Should().BeTrue("the live host must withdraw a revoked plugin's registration");
+            manager.GetStatus().PendingApprovals.Should().Be(1);
+
+            // Re-approval upserts the worker back without a host-process restart.
+            await manager.ApproveAsync(rootPluginId, timeout.Token);
+            var restored = await WaitForAsync(
+                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Count > 0,
+                timeout.Token);
+            restored.Should().BeTrue("re-approval must upsert the worker back onto the live host");
+            manager.GetStatus().PendingApprovals.Should().Be(0);
+        }
+
+        if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ReloadWarnsWhenThePluginImportMapChanges()
     {

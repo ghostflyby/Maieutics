@@ -195,7 +195,11 @@ internal static class PluginDeclarationFingerprint
                 writer.WriteStringValue(element.GetString());
                 break;
             case JsonValueKind.Number:
-                writer.WriteRawValue(element.GetRawText(), skipInputValidation: true);
+                // Canonicalize through an invariant round-trip so equal values written in
+                // different spellings (1, 1.0, 1e2) hash identically.
+                if (element.TryGetInt64(out var integer)) writer.WriteNumberValue(integer);
+                else if (element.TryGetDouble(out var real)) writer.WriteNumberValue(real);
+                else writer.WriteRawValue(element.GetRawText(), skipInputValidation: true);
                 break;
             case JsonValueKind.True:
                 writer.WriteBooleanValue(true);

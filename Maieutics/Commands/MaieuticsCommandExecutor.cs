@@ -243,7 +243,8 @@ internal sealed class MaieuticsCommandExecutor(
                 .Append(", ")
                 .Append(plugin.WorkerCount)
                 .Append(" worker(s)");
-            if (plugin.State == PluginApprovalState.Approved)
+            if (plugin.State == PluginApprovalState.Approved &&
+                plugin.RequestedFingerprint.Length >= 8)
                 output.Append(", fingerprint ")
                     .Append(MarkdownText.CodeSpan(plugin.RequestedFingerprint[..8]));
             else if (plugin.RequestedFingerprint.Length >= 8)

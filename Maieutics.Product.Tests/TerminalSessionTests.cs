@@ -471,14 +471,66 @@ public sealed class TerminalSessionTests
         await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "sleep", ["60"]);
         using var cancel = new CancellationTokenSource();
 
-        // Start the run, then cancel while it waits for the child to exit.
+        // Start the run, then cancel once the start has settled: the wire "running" state
+        // proves the spawn was adopted (the idle transition happens after the process is
+        // published), so the cancel lands on the run's dispose-before-rethrow path and the
+        // assertion below is deterministic. The old fixed 50ms pacing raced the
+        // fire-and-forget late-spawn reclaim under suite load: the spawn was still in
+        // flight at cancel time, and the reclaim disposed the child only after this
+        // assertion had already read it.
         var run = session.RunOnceAsync(TimeSpan.FromSeconds(60), new TerminalSnapshotRequest(), cancel.Token);
-        await Task.Delay(50, TestContext.Current.CancellationToken);
+        await WaitForStateAsync(session, "running", TestContext.Current.CancellationToken);
         cancel.Cancel();
 
         var failure = () => run;
         await failure.Should().ThrowAsync<OperationCanceledException>();
         fake.Disposed.Should().BeTrue();
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task OneShotRunCancelDuringStartReclaimsTheLateSpawn()
+    {
+        var fake = new FakeTerminalProcess();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var session = new TerminalSession(
+            AgentSessionId.Create(),
+            Guid.NewGuid().ToString("N"),
+            true,
+            Directory.GetCurrentDirectory(),
+            TerminalSessionKind.OneShot,
+            "sleep",
+            ["60"],
+            EffectivePolicy.Default,
+            TestOptions(),
+            new StalledTerminalProcessFactory(release.Task, fake),
+            NullLogger<TerminalSession>.Instance);
+        try
+        {
+            using var cancel = new CancellationTokenSource();
+
+            // Cancel while the spawn is still blocked: the OCE surfaces before any process
+            // is adopted, so the only disposer is the fire-and-forget late-spawn reclaim.
+            // It must still dispose the child — asynchronously, because cancellation must
+            // not wait on a pathological spawn.
+            var run = session.RunOnceAsync(TimeSpan.FromSeconds(60), new TerminalSnapshotRequest(), cancel.Token);
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+            cancel.Cancel();
+
+            var failure = () => run;
+            await failure.Should().ThrowAsync<OperationCanceledException>();
+            release.TrySetResult();
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (!fake.Disposed && DateTime.UtcNow < deadline)
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+
+            fake.Disposed.Should().BeTrue("the reclaim must dispose the late spawn even though the cancellation surfaced first");
+        }
+        finally
+        {
+            release.TrySetResult();
+            await session.DisposeAsync();
+        }
     }
 
     [Fact(Timeout = 10_000)]
@@ -580,8 +632,11 @@ internal sealed class FakeTerminalProcessFactory(FakeTerminalProcess process) : 
 
 /// <summary>Blocks Start until released, simulating a pathological PTY allocation that
 /// exceeds the session's start budget. The product runs Start on a dedicated thread, so
-/// blocking there is safe.</summary>
-internal sealed class StalledTerminalProcessFactory(Task pendingRelease) : ITerminalProcessFactory
+/// blocking there is safe. An explicit <paramref name="process" /> is returned after the
+/// release so a test can cancel while the spawn is still in flight and assert on the very
+/// process the late-spawn reclaim disposes.</summary>
+internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTerminalProcess? process = null)
+    : ITerminalProcessFactory
 {
     public ITerminalProcess Start(
         string shell,
@@ -592,7 +647,7 @@ internal sealed class StalledTerminalProcessFactory(Task pendingRelease) : ITerm
         int rows)
     {
         pendingRelease.Wait();
-        return new FakeTerminalProcess();
+        return process ?? new FakeTerminalProcess();
     }
 }
 

@@ -3,14 +3,15 @@ using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Execution;
 using Maieutics.Mcp;
+using Maieutics.Plugins;
 
 namespace Maieutics.Commands;
 
 /// <summary>
-///     Executes Maieutics command cells (<c>%model</c>, <c>%mcp</c>, <c>%session</c>,
-///     <c>%status</c>, <c>%workspace</c>, legacy <c>%maieutics</c>) and renders their markdown
-///     answer. This is the shared control surface every frontend adapter delegates to, so
-///     command semantics cannot drift between frontends.
+///     Executes Maieutics command cells (<c>%model</c>, <c>%mcp</c>, <c>%plugin</c>,
+///     <c>%session</c>, <c>%status</c>, <c>%workspace</c>, legacy <c>%maieutics</c>) and renders
+///     their markdown answer. This is the shared control surface every frontend adapter
+///     delegates to, so command semantics cannot drift between frontends.
 ///     Unavailable subsystems and expected failures surface as
 ///     <see cref="MaieuticsCommandException" />.
 /// </summary>
@@ -19,7 +20,8 @@ internal sealed class MaieuticsCommandExecutor(
     IMaieuticsRuntimeConfiguration? runtimeConfiguration,
     Workspace? workspace,
     MaieuticsStatusProvider? statusProvider,
-    IMaieuticsMcpController? mcpController)
+    IMaieuticsMcpController? mcpController,
+    PluginHostManager? pluginHosts = null)
 {
     /// <summary>The command cell's markdown rendering plus whether this execution moved
     /// the foreground session (a switch the calling notebook should follow).</summary>
@@ -66,6 +68,12 @@ internal sealed class MaieuticsCommandExecutor(
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Mcp, StringComparison.OrdinalIgnoreCase))
                 return new MaieuticsCommandAnswer(ExecuteMcpCommand(arguments), MovedForeground: false);
+
+            if (string.Equals(arguments[1], MaieuticsCommandLanguage.Plugin, StringComparison.OrdinalIgnoreCase))
+            {
+                var markdown = await ExecutePluginCommandAsync(arguments, cancellationToken).ConfigureAwait(false);
+                return new MaieuticsCommandAnswer(markdown, MovedForeground: false);
+            }
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Status, StringComparison.OrdinalIgnoreCase))
                 return new MaieuticsCommandAnswer(ExecuteStatusCommand(arguments), MovedForeground: false);
@@ -176,6 +184,130 @@ internal sealed class MaieuticsCommandExecutor(
 
         throw new MaieuticsCommandException(
             MaieuticsCommandException.CommandError, "Unknown MCP command or invalid arguments.");
+    }
+
+    /// <summary>The plugin approval commands (ADR 0037): <c>%plugin list</c> renders every
+    /// discovered plugin's approval state with the requested-versus-approved grant summary;
+    /// <c>%plugin approve/revoke &lt;id&gt;</c> persist and apply the decision.</summary>
+    private async Task<string> ExecutePluginCommandAsync(
+        string[] arguments,
+        CancellationToken cancellationToken)
+    {
+        if (pluginHosts is null)
+            throw new MaieuticsCommandException(
+                MaieuticsCommandException.Unavailable, "Plugin commands are not available in this host.");
+
+        if (arguments.Length == 2 ||
+            (arguments.Length == 3 &&
+             string.Equals(arguments[2], MaieuticsCommandLanguage.List, StringComparison.OrdinalIgnoreCase)))
+            return RenderPluginList(pluginHosts.ListPluginApprovals());
+
+        if (arguments.Length == 4 &&
+            (string.Equals(arguments[2], MaieuticsCommandLanguage.Approve, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(arguments[2], MaieuticsCommandLanguage.Revoke, StringComparison.OrdinalIgnoreCase)))
+        {
+            var approving = string.Equals(
+                arguments[2],
+                MaieuticsCommandLanguage.Approve,
+                StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                return approving
+                    ? await pluginHosts.ApproveAsync(arguments[3], cancellationToken).ConfigureAwait(false)
+                    : await pluginHosts.RevokeAsync(arguments[3], cancellationToken).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new MaieuticsCommandException(MaieuticsCommandException.CommandError, exception.Message);
+            }
+        }
+
+        throw new MaieuticsCommandException(
+            MaieuticsCommandException.CommandError,
+            "Unknown plugin command; expected list, approve <id>, or revoke <id>.");
+    }
+
+    private static string RenderPluginList(IReadOnlyList<PluginApprovalInfo> plugins)
+    {
+        if (plugins.Count == 0) return "### Plugins\n\nNo plugins are discovered.";
+
+        var output = new System.Text.StringBuilder("### Plugins\n\n");
+        foreach (var plugin in plugins)
+        {
+            output.Append("- ")
+                .Append(MarkdownText.CodeSpan(plugin.PluginId))
+                .Append(" (")
+                .Append(string.IsNullOrWhiteSpace(plugin.Name) ? plugin.PluginId : plugin.Name)
+                .Append(") — ")
+                .Append(MarkdownText.CodeSpan(StateName(plugin.State)))
+                .Append(", ")
+                .Append(plugin.WorkerCount)
+                .Append(" worker(s)");
+            if (plugin.State == PluginApprovalState.Approved)
+                output.Append(", fingerprint ")
+                    .Append(MarkdownText.CodeSpan(plugin.RequestedFingerprint[..8]));
+            else if (plugin.RequestedFingerprint.Length >= 8)
+                output.Append(", requested ")
+                    .Append(MarkdownText.CodeSpan(plugin.RequestedFingerprint[..8]));
+
+            output.AppendLine();
+            switch (plugin.State)
+            {
+                case PluginApprovalState.PendingApproval:
+                    output.Append("  - requested: ")
+                        .Append(MarkdownText.PlainText(RenderGrantSummary(plugin.RequestedGrants)))
+                        .AppendLine();
+                    if (plugin.ApprovedGrants is { } approved)
+                        output.Append("  - approved (stale): ")
+                            .Append(MarkdownText.PlainText(RenderGrantSummary(approved)))
+                            .AppendLine(" — the declarations changed since approval");
+                    else
+                        output.Append("  - approve with ")
+                            .Append(MarkdownText.CodeSpan($"%plugin approve {plugin.PluginId}"))
+                            .AppendLine();
+                    break;
+                case PluginApprovalState.BlockedByDependency:
+                    output.Append("  - a transitive dependency is pending approval; approving it reactivates this plugin")
+                        .AppendLine();
+                    break;
+            }
+        }
+
+        return output.ToString();
+    }
+
+    private static string StateName(PluginApprovalState state)
+    {
+        return state switch
+        {
+            PluginApprovalState.Exempt => "exempt",
+            PluginApprovalState.Approved => "approved",
+            PluginApprovalState.PendingApproval => "pending approval",
+            PluginApprovalState.BlockedByDependency => "blocked by dependency",
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state, "Unknown plugin approval state.")
+        };
+    }
+
+    /// <summary>One line summarizing which kinds carry grants (<c>env=all</c>,
+    /// <c>read=/a,/b</c>); kinds without grants are omitted.</summary>
+    private static string RenderGrantSummary(PluginPermissionGrants grants)
+    {
+        var parts = new List<string>();
+        Add("env", grants.Env);
+        Add("net", grants.Net);
+        Add("read", grants.Read);
+        Add("write", grants.Write);
+        Add("run", grants.Run);
+        Add("ffi", grants.Ffi);
+        Add("sys", grants.Sys);
+        Add("import", grants.Import);
+        return parts.Count == 0 ? "no permission grants" : string.Join("; ", parts);
+
+        void Add(string kind, PluginPermissionGrant grant)
+        {
+            if (grant.AllowAll) parts.Add($"{kind}=all");
+            else if (grant.Values.Count > 0) parts.Add($"{kind}={string.Join(",", grant.Values)}");
+        }
     }
 
     private string ExecuteWorkspaceCommand(string code, string[] arguments, int pathTokenCount)

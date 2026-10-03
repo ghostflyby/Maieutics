@@ -93,6 +93,14 @@ Each row is load-bearing for a decision below. Repro sketches in §11.
   skips `jsr:`/`npm:` targets today, so installed plugins are not discovered. The
   mechanism sketch and open questions are in §9; it is explicitly out of scope for this
   implementation round.
+- **D7 — Declarations are approval-gated (ADR 0037).** A discovered plugin's
+  declarations (workers, MCP data entries, capabilities, extensions, triggers,
+  permissions) take effect only under a persisted approval whose fingerprint matches
+  the declaration surface exactly; any change revokes until re-approved
+  (`%plugin list` / `%plugin approve <id>` / `%plugin revoke <id>`). The registry is
+  `<DataRoot>/plugin-approvals.json` (`MAIEUTICS_PLUGIN_APPROVALS` relocates it,
+  mirroring `MAIEUTICS_PLUGINS_ROOT`). Module code is never fingerprinted: an approved
+  plugin's source edits keep their approval; only declaration changes revoke.
 
 ## 4. Kernel merge algorithm
 

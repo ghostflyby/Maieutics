@@ -123,6 +123,12 @@ Every change must preserve these invariants:
     each with an explicit direction (simplex, half-duplex, full-duplex) and any number of connections per
     endpoint, is available; every message's endpoint and protocol are deliberate internal API design, following
     the same discipline as a public web API.
+28. Plugin declarations take effect only under a persisted approval record whose fingerprint covers the full
+    security-relevant declaration surface (permissions, entrypoints, dependencies, isolation, capabilities,
+    extensions, data entries, MCP servers, triggers, content observation); any change to that surface revokes
+    the effect — workers stop and declarations clear — until re-approved (ADR 0037). The plugin-host exception
+    (invariants 19 and 22) is unchanged: approval gates which declarations participate, never the host's own
+    permission ceiling.
 
 Use structured concurrency. Every long-lived loop or child process needs an owner, cancellation source, completion task,
 and deterministic disposal path. Observe background exceptions. Do not hold locks while awaiting provider streams, tool

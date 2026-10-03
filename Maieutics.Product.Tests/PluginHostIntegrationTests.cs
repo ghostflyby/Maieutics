@@ -183,7 +183,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -248,7 +249,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             new DebugConsoleLogger<PluginHostManager>(),
             new DebugConsoleLoggerFactory(),
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -295,6 +297,7 @@ public sealed class PluginHostIntegrationTests
         var socketPath = ReplControlHost.CreateSocketPath();
         var modules = new PluginHostModule();
         var pluginsRoot = CreatePluginsRoot("rejecting");
+        var pluginsApprovals = PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot);
         var workspaceRoot = Path.Combine(Path.GetTempPath(), $"mc-hook-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspaceRoot);
         var functions = new WorkspaceFunctions(Workspace.Create(workspaceRoot, workspaceRoot)).Functions;
@@ -307,7 +310,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: pluginsApprovals);
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -398,7 +402,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -563,7 +568,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(root));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -651,7 +657,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(root));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -763,7 +770,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -809,7 +817,8 @@ public sealed class PluginHostIntegrationTests
             new ReplControlSessionRegistry(),
             logger,
             logger,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
 
         try
         {
@@ -860,7 +869,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -882,9 +892,15 @@ public sealed class PluginHostIntegrationTests
 
             // Adding a sibling plugin plus its local import entry changes the plugin set:
             // the new module entry belongs to the process import map, so the manager must
-            // restart the host instead of attempting an in-process reload.
+            // restart the host instead of attempting an in-process reload. The new plugin
+            // arrives unapproved (ADR 0037): the restart discovers it, and approving it
+            // activates its registration without another restart.
             WriteExtraPlugin(pluginsRoot);
             AddLocalImport(pluginsRoot, "@acme/extra/main", "./extra/mod.ts");
+            await WaitForAsync(
+                () => manager.ListPluginApprovals().Any(approval => approval.PluginId == "extra"),
+                timeout.Token);
+            await manager.ApproveAsync("extra", timeout.Token);
 
             var extraAppeared = await WaitForAsync(
                 () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
@@ -936,7 +952,8 @@ public sealed class PluginHostIntegrationTests
             registry,
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot));
         var controlHost = new ReplControlHost(
             socketPath,
             registry,

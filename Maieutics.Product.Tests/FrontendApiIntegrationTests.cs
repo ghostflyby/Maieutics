@@ -1138,6 +1138,11 @@ public sealed class FrontendApiIntegrationTests
         Directory.CreateDirectory(pluginsRoot);
         var previousPluginsRoot = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT");
         Environment.SetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT", pluginsRoot);
+        // The approval registry is redirected beside the sandbox and seeded for the
+        // root project's mcp data entry (ADR 0037); without it the data file stays
+        // pending and no MCP server is ever acquired.
+        var previousApprovals = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS");
+        string approvalsPath;
             await File.WriteAllTextAsync(
                 Path.Combine(pluginsRoot, "maieutics.json"),
                 """{ "entrypoints": { "mcp": "mcp.json" } }""",
@@ -1163,6 +1168,9 @@ public sealed class FrontendApiIntegrationTests
                     .Replace("{{model}}", "test-model")
                     .Replace("{{endpoint}}", provider.Endpoint.ToString()),
                 deadline.Token);
+
+            approvalsPath = PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot);
+            Environment.SetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS", approvalsPath);
 
             var harness = await FrontendHarness.StartAsync(
                 deadline.Token, provider, hanging: false, configureBuilder: null);
@@ -1191,6 +1199,8 @@ public sealed class FrontendApiIntegrationTests
         {
             await harness.DisposeAsync();
             Environment.SetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT", previousPluginsRoot);
+            Environment.SetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS", previousApprovals);
+            if (File.Exists(approvalsPath)) File.Delete(approvalsPath);
             DeleteDirectoryWithRetry(root);
         }
     }

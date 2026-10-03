@@ -253,6 +253,11 @@ export class PluginHost {
   #workers = new Map<string, WorkerHandle>();
   #bySpecifier = new Map<string, string>(); // specifier → workerKey
   #options: HostOptions;
+  /** Live per-plugin config registry (ADR 0037): the boot-time options snapshot was
+   * frozen, so triggers could never re-arm after a reload added, replaced, or removed a
+   * plugin in-process. Reloads and stops keep this map current; `#installTriggers`
+   * reads it instead of the frozen options. */
+  #plugins = new Map<string, PluginConfig>();
   /** ADR 0035 reference ledgers: in-flight extension-point invocations and
    * live actor serve channels per worker key. Zero for the whole idle grace
    * makes a running worker reclaimable. */
@@ -317,6 +322,7 @@ export class PluginHost {
       writeDirs: dataRoot === undefined ? [] : [dataRoot],
     });
     for (const plugin of options.plugins) {
+      this.#plugins.set(plugin.id, plugin);
       for (const workerConfig of plugin.workers) {
         const key = workerKey(plugin.id, workerConfig.exportName);
         this.#workers.set(key, {
@@ -382,7 +388,7 @@ export class PluginHost {
     }
 
     if (this.#triggerSinks === undefined) return;
-    for (const plugin of this.#options.plugins) {
+    for (const plugin of this.#plugins.values()) {
       for (const trigger of plugin.triggers ?? []) {
         this.#installTrigger(plugin.id, trigger);
       }
@@ -722,22 +728,44 @@ export class PluginHost {
   ): Promise<void> {
     if (this.#disposed) return;
     const key = workerKey(pluginId, exportName);
-    const handle = this.#workers.get(key);
-    if (handle === undefined) return;
+    let handle = this.#workers.get(key);
     if (nextConfig !== undefined && nextConfig !== null) {
-      handle.plugin = nextConfig;
-      const nextWorker = nextConfig.workers.find((w) => w.exportName === exportName);
-      if (nextWorker !== undefined) {
-        // The rebuilt worker must load the replacement entry URL, not the
-        // stale one from the pre-reload config.
-        handle.config = { ...handle.config, ...nextWorker };
+      this.#plugins.set(nextConfig.id, nextConfig);
+      if (handle === undefined) {
+        // Upsert (ADR 0037): a replacement for a worker the host does not know — a
+        // plugin activated after boot — creates and starts it instead of being a
+        // no-op. The approval activation path rides this.
+        const created = nextConfig.workers.find((w) => w.exportName === exportName);
+        if (created === undefined) return;
+        handle = {
+          plugin: nextConfig,
+          config: created,
+          specifier: specifierOf(nextConfig, created),
+          actor: undefined as never,
+          worker: undefined as never,
+          state: State.Stopped,
+          extensionPoints: new Set(),
+          contractIdentities: [],
+          restarts: 0,
+        };
+        this.#workers.set(key, handle);
+        this.#bySpecifier.set(handle.specifier, key);
+      } else {
+        handle.plugin = nextConfig;
+        const nextWorker = nextConfig.workers.find((w) => w.exportName === exportName);
+        if (nextWorker !== undefined) {
+          // The rebuilt worker must load the replacement entry URL, not the
+          // stale one from the pre-reload config.
+          handle.config = { ...handle.config, ...nextWorker };
+        }
+        // Specifier identity is the worker's canonical interop name; a config
+        // change may rename an entrypoint, so refresh the by-specifier map.
+        this.#bySpecifier.delete(handle.specifier);
+        handle.specifier = nextWorker?.specifier ?? handle.specifier;
+        this.#bySpecifier.set(handle.specifier, key);
       }
-      // Specifier identity is the worker's canonical interop name; a config
-      // change may rename an entrypoint, so refresh the by-specifier map.
-      this.#bySpecifier.delete(handle.specifier);
-      handle.specifier = nextWorker?.specifier ?? handle.specifier;
-      this.#bySpecifier.set(handle.specifier, key);
     }
+    if (handle === undefined) return;
     await this.#cascade(key);
     if (this.#disposed) return;
     // Restart the whole cascaded closure (the worker plus its transitive
@@ -745,6 +773,43 @@ export class PluginHost {
     // dependents permanently Stopped until the next host-process restart.
     await this.#startSubgraph(this.#dependencyClosure(key));
     this.#refreshExtensions(this.#collectExtensions());
+    this.#installTriggers();
+  }
+
+  /** Stops one worker and its transitive dependents WITHOUT restarting them and
+   * removes the worker from the host set (ADR 0037 revocation): the plugin's approval
+   * no longer covers its declarations, so the workers leave entirely instead of
+   * rebooting with stale grants. Re-approval re-adds them through a
+   * replacement-bearing reload (the upsert path of `reload`). */
+  stop(
+    pluginId: string,
+    exportName: string,
+  ): Promise<void> {
+    // Serialized behind any in-flight lifecycle mutation, like a reload.
+    return this.#enqueueLifecycle(() => this.#stopCore(pluginId, exportName));
+  }
+
+  async #stopCore(pluginId: string, exportName: string): Promise<void> {
+    if (this.#disposed) return;
+    const key = workerKey(pluginId, exportName);
+    const handle = this.#workers.get(key);
+    if (handle === undefined) return;
+    // The cascade closes the dependents too (they cannot honor their declarations
+    // without the dependency); their handles stay so a later re-approval of the
+    // dependency restarts them through the upsert closure.
+    await this.#cascade(key);
+    this.#workers.delete(key);
+    this.#bySpecifier.delete(handle.specifier);
+    let remains = false;
+    for (const candidate of this.#workers.keys()) {
+      if (candidate.startsWith(`${pluginId}\u0000`)) {
+        remains = true;
+        break;
+      }
+    }
+    if (!remains) this.#plugins.delete(pluginId);
+    this.#refreshExtensions(this.#collectExtensions());
+    this.#installTriggers();
   }
 
   /** Collects the current registry snapshot from every worker's extension points. */

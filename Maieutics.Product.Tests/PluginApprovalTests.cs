@@ -298,7 +298,11 @@ public sealed class PluginApprovalTests
         var manager = CreateManager(root, approvalsPath);
         try
         {
-            await StartAsync(manager);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
             manager.GetStatus().PendingApprovals.Should().Be(0);
         }
@@ -322,7 +326,11 @@ public sealed class PluginApprovalTests
         var manager = CreateManager(root, approvalsPath);
         try
         {
-            await StartAsync(manager);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
 
             // Widen the declared read grant: the fingerprint no longer matches the
@@ -336,7 +344,7 @@ public sealed class PluginApprovalTests
                   "permissions": { "default": { "read": ["./", "/tmp"] } }
                 }
                 """);
-            await applied.WaitAsync(Deadline);
+            await applied.WaitAsync(deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             manager.GetStatus().PendingApprovals.Should().Be(1);
             var approval = manager.ListPluginApprovals().Should().ContainSingle().Which;
@@ -354,7 +362,7 @@ public sealed class PluginApprovalTests
                   "permissions": { "default": { "read": ["./"] } }
                 }
                 """);
-            await reverted.WaitAsync(Deadline);
+            await reverted.WaitAsync(deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
             manager.GetStatus().PendingApprovals.Should().Be(0);
 
@@ -369,7 +377,7 @@ public sealed class PluginApprovalTests
                   "permissions": { "default": { "read": ["./", "/tmp"] } }
                 }
                 """);
-            await widened.WaitAsync(Deadline);
+            await widened.WaitAsync(deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();

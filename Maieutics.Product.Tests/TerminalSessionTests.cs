@@ -197,7 +197,7 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("hello\r\nworld\r\n");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var first = session.Snapshot(new TerminalSnapshotRequest());
         first.Frame.Full.Should().BeTrue();
@@ -210,7 +210,7 @@ public sealed class TerminalSessionTests
 
         before = session.ScreenVersion;
         fake.Emit("changed\r\n");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
         var changed = session.Snapshot(new TerminalSnapshotRequest());
         changed.Frame.Full.Should().BeFalse();
         changed.Frame.Lines.Should().Contain(row => row.Row == 2 && row.Text.Contains("changed"));
@@ -226,7 +226,7 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("\x1b[?1049h");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var frame = session.Snapshot(new TerminalSnapshotRequest()).Frame;
         frame.AlternateBuffer.Should().BeTrue();
@@ -294,10 +294,10 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("foo(bar)baz");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
         before = session.ScreenVersion;
         fake.Emit("\x1b[5G"); // cursor to column 5 (1-based) = cell column 4
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
         cursor.Visible.Should().BeTrue();
@@ -318,7 +318,7 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("\x1b[6 q"); // DECSCUSR 6: steady bar (vim insert mode)
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
         cursor.Style.Should().Be("bar");
@@ -334,10 +334,10 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("aaaaaaaa\r\nbbbbbb");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
         before = session.ScreenVersion;
         fake.Emit("\x1b[2;3H"); // row 2 (1-based) = row 1 (0-based), column 3 (1-based) = column 2
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
         cursor.Row.Should().Be(1);
@@ -357,10 +357,10 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("aaaaaaaaaa");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
         before = session.ScreenVersion;
         fake.Emit("\x1b[1;8H"); // row 1 (1-based) = row 0, column 8 (1-based) = column 7
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
         cursor.Row.Should().Be(0);
@@ -379,7 +379,7 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("\x1b[?25l"); // DECTCEM hide cursor
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
         cursor.Visible.Should().BeFalse();
@@ -395,7 +395,7 @@ public sealed class TerminalSessionTests
 
         var before = session.ScreenVersion;
         fake.Emit("row one\r\nrow two\r\nrow three\r\nrow four\r\n");
-        await WaitForVersionAsync(session, before + 1, TestContext.Current.CancellationToken);
+        await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         // A tight budget truncates the frame mid-way and keeps the cursor row anchored.
         var first = session.Snapshot(new TerminalSnapshotRequest(null, 20));
@@ -545,6 +545,11 @@ public sealed class TerminalSessionTests
         session.GetSnapshot().ExitCode.Should().BeNull();
     }
 
+    /// <summary>State polling is the residual wait in this fixture: the session writes its
+    /// state enum under a plain lock with no state-change signal (only the one-shot exit has a
+    /// completion task, via <see cref="TerminalSession.WaitExitedAsync"/>), so there is no
+    /// event to await for a general transition. Bounded, unlike a sleep: the deadline names
+    /// the state that never arrived.</summary>
     private static async Task WaitForStateAsync(
         TerminalSession session,
         string expected,
@@ -554,19 +559,6 @@ public sealed class TerminalSessionTests
         while (!string.Equals(session.GetSnapshot().State, expected, StringComparison.Ordinal))
         {
             if (DateTime.UtcNow >= deadline) throw new TimeoutException($"state never became {expected}");
-            await Task.Delay(10, cancellationToken);
-        }
-    }
-
-    private static async Task WaitForVersionAsync(
-        TerminalSession session,
-        long minimum,
-        CancellationToken cancellationToken)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (session.ScreenVersion < minimum)
-        {
-            if (DateTime.UtcNow >= deadline) throw new TimeoutException("the emitted output was never applied");
             await Task.Delay(10, cancellationToken);
         }
     }

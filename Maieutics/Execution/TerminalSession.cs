@@ -515,6 +515,29 @@ internal sealed class TerminalSession : IAsyncDisposable
         return exitCompletion.Task.WaitAsync(cancellationToken);
     }
 
+    /// <summary>Waits until the output pump has applied at least <paramref name="minimum"/>
+    /// screen writes. Signal-driven: the wait wakes on each screen-change notification and
+    /// re-checks the version under the same lock that swaps the notification source, so no
+    /// wakeup can be lost; a notification without a version bump (the child-exit path notifies
+    /// without applying output) merely re-arms the wait.</summary>
+    internal async Task WaitForScreenVersionAsync(long minimum, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Task signal;
+            lock (signalGate)
+            {
+                if (Volatile.Read(ref screenVersion) >= minimum) return;
+
+                signal = screenChanged.Task;
+            }
+
+            await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     internal async Task<TerminalInterruptResult> InterruptAsync(
         TerminalSnapshotRequest snapshotRequest,
         CancellationToken cancellationToken)

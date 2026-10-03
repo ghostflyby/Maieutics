@@ -90,17 +90,52 @@ public sealed class McpServerGenerationTests
 
     private sealed class FakeToolSurfaceAdjuster(Func<JsonElement, JsonElement?> handler) : IMcpToolSurfaceAdjuster
     {
+        private readonly Lock gate = new();
         private int invocations;
+        private TaskCompletionSource invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal int Invocations => invocations;
 
-        public Task<JsonElement?> AdjustToolsAsync(
+        /// <summary>Waits until the adjuster has completed at least <paramref name="count"/>
+        /// invocations. Signal-driven: each completed invocation (the handler has run and its
+        /// result is known) completes a fresh source, so the wait needs no polling of
+        /// <see cref="Invocations"/>.</summary>
+        internal async Task WaitForInvocationsAsync(int count, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Task signal;
+                lock (gate)
+                {
+                    if (invocations >= count) return;
+
+                    signal = invoked.Task;
+                }
+
+                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        public async Task<JsonElement?> AdjustToolsAsync(
             string serverId,
             JsonElement listing,
             CancellationToken cancellationToken)
         {
-            Interlocked.Increment(ref invocations);
-            return Task.FromResult(handler(listing));
+            TaskCompletionSource completed;
+            lock (gate)
+            {
+                invocations++;
+                completed = invoked;
+                invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            var result = handler(listing);
+            // Completed only after the handler ran, so an awaiter observes the invocation's
+            // outcome, not merely its start.
+            completed.TrySetResult();
+            return result;
         }
     }
 
@@ -250,11 +285,14 @@ public sealed class McpServerGenerationTests
 
         // The adjuster stops producing: the refresh fails closed (nothing exposed)
         // instead of resurrecting the raw surface — the sticky-last-good decision
-        // belongs to the chain above this layer.
+        // belongs to the chain above this layer. The refresh signal — not the bare
+        // invocation count — is what proves the failed listing was applied, so the
+        // lease below cannot race the refresh chain's application step.
         fail = true;
+        var refreshesBefore = generation.ToolRefreshApplications;
         generation.RequestToolRefresh();
-        while (adjuster.Invocations < 2)
-            await Task.Delay(25, deadline.Token);
+        await adjuster.WaitForInvocationsAsync(2, deadline.Token);
+        await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var refreshedLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
         refreshedLease.Tools.Should().BeEmpty();
@@ -293,10 +331,13 @@ public sealed class McpServerGenerationTests
         firstLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
         await firstLease.DisposeAsync();
 
+        // As above: await the refresh's application, not just the adjuster call, so the
+        // lease below observes the sticky surface the refresh chain actually applied.
         fail = true;
+        var refreshesBefore = generation.ToolRefreshApplications;
         generation.RequestToolRefresh();
-        while (adjuster.Invocations < 2)
-            await Task.Delay(25, deadline.Token);
+        await adjuster.WaitForInvocationsAsync(2, deadline.Token);
+        await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var stickyLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
         stickyLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");

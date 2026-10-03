@@ -198,6 +198,12 @@ internal sealed class PluginHostManager(
     /// connection (see <see cref="HostConnectionReleased"/>).</summary>
     private TaskCompletionSource hostConnectionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>Internal test observability: completed when a host connection is accepted, in
+    /// the same locked section that installs the socket. Swapped for a fresh source at the
+    /// accept and again when the live connection detaches, so the property always reflects the
+    /// next accept (see <see cref="HostConnectionAttached"/>).</summary>
+    private TaskCompletionSource hostConnectionAttached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     private readonly ILoggerFactory loggerFactory =
@@ -339,6 +345,18 @@ internal sealed class PluginHostManager(
     internal Task HostConnectionReleased
     {
         get { lock (gate) return hostConnectionReleased.Task; }
+    }
+
+    /// <summary>Internal test observability: completes when a live host connection is accepted —
+    /// the same locked transition that installs the socket — so an awaited task proves the
+    /// attach (and with it the connected status) without polling <c>GetStatus()</c>. The
+    /// completed source is replaced in the same lock section, and a fresh source is installed
+    /// again when the current connection detaches, so the property always reflects the next
+    /// accept: capture the task before triggering the attach and await it under the caller's
+    /// deadline.</summary>
+    internal Task HostConnectionAttached
+    {
+        get { lock (gate) return hostConnectionAttached.Task; }
     }
 
     /// <summary>
@@ -1445,6 +1463,10 @@ internal sealed class PluginHostManager(
             refused = Socket is not null;
             if (!refused)
             {
+                // The accept completes the attach signal and swaps a fresh source in the same
+                // locked section that installs the socket, so one await observes one accept.
+                hostConnectionAttached.TrySetResult();
+                hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 // A fresh release signal per accepted connection: tests capture it before
                 // detaching and await it instead of polling re-attach attempts.
                 hostConnectionReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1512,6 +1534,9 @@ internal sealed class PluginHostManager(
                     // Signaled after the slot is cleared, under the same lock, so an awaiter is
                     // guaranteed to observe the released slot.
                     hostConnectionReleased.TrySetResult();
+                    // A fresh attach signal per detached connection: awaits captured after the
+                    // detach wait for the next accept instead of observing the retired one.
+                    hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 }
             }
 

@@ -863,6 +863,39 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
     }
 
+    /// <summary>
+    ///     Waits until the active configuration snapshot's version reaches at least
+    ///     <paramref name="version"/> — the observable "reload applied" transition. A reload
+    ///     commits the replacement snapshot under the gate before the reload loop completes its
+    ///     signal, so an awaited task guarantees the configuration that version represents is
+    ///     active and a subsequent <see cref="Version"/> (or status) read cannot observe an
+    ///     older snapshot. The wait wakes on every completed reload attempt (applied, unchanged,
+    ///     or rejected) and re-checks the version, so a rejected or no-op reload keeps the
+    ///     waiter waiting instead of falsely satisfying it.
+    /// </summary>
+    internal Task WaitForVersionAsync(long version, CancellationToken cancellationToken)
+    {
+        return WaitForVersionCoreAsync(version, cancellationToken);
+    }
+
+    private async Task WaitForVersionCoreAsync(long version, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            TaskCompletionSource signal;
+            lock (gate)
+            {
+                if (current is { } snapshot && snapshot.Version >= version) return;
+
+                signal = reloadCompletionSignal;
+            }
+
+            await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private async Task WaitForReloadDrainAsync()
     {
         if (reloadLoop.IsCompleted) return;

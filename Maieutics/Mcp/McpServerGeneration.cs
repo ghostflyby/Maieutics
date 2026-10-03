@@ -153,6 +153,13 @@ internal sealed class McpServerGeneration
     private Task? retirement;
     private Task supervisor = Task.CompletedTask;
 
+    // Internal test observability: one refresh attempt of the live connection has finished
+    // (applied, failed closed, or rejected). The counter is the waited fact; the source is
+    // swapped per finished attempt so waiters wake without polling (same shape as
+    // MaieuticsRuntimeConfiguration's reload signals).
+    private long refreshApplications;
+    private TaskCompletionSource refreshApplication = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private McpServerGeneration(
         McpServerDefinition definition,
         ILoggerFactory loggerFactory,
@@ -303,6 +310,53 @@ internal sealed class McpServerGeneration
         }
     }
 
+    /// <summary>How many refresh attempts of the live connection have finished — applied,
+    /// failed closed, or rejected. Internal test observability: capture it before triggering a
+    /// refresh and pass it to <see cref="WaitForToolRefreshApplicationAsync"/>.</summary>
+    internal long ToolRefreshApplications => Interlocked.Read(ref refreshApplications);
+
+    /// <summary>Internal test observability: waits until at least one more live-connection
+    /// refresh attempt has finished since <paramref name="afterApplications"/> — the same
+    /// transition that replaced (or deliberately kept) the exposed tool surface — so a test can
+    /// await the refresh's effect instead of polling the adjuster invocation count. The wait
+    /// wakes per finished attempt and re-checks the counter; a rejected attempt counts too, so
+    /// the wait cannot hang on a refresh the server refused.</summary>
+    internal async Task WaitForToolRefreshApplicationAsync(
+        long afterApplications,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Task signal;
+            lock (gate)
+            {
+                if (Interlocked.Read(ref refreshApplications) > afterApplications) return;
+
+                signal = refreshApplication.Task;
+            }
+
+            await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Records one finished refresh attempt and wakes its waiters. Called by the
+    /// supervisor after a refresh attempt returned (its catch paths included), outside the
+    /// gate.</summary>
+    private void RecordRefreshApplication()
+    {
+        TaskCompletionSource signal;
+        lock (gate)
+        {
+            Interlocked.Increment(ref refreshApplications);
+            signal = refreshApplication;
+            refreshApplication = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        signal.TrySetResult();
+    }
+
     internal Task Retire()
     {
         TaskCompletionSource? completion = null;
@@ -399,6 +453,9 @@ internal sealed class McpServerGeneration
                             exception.GetType().Name);
                     }
 
+                    // The attempt finished: its surface change (or deliberate keep) is visible
+                    // to later acquisitions, so waiters on the refresh signal may proceed.
+                    RecordRefreshApplication();
                     continue;
                 }
 

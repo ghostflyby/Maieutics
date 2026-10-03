@@ -38,7 +38,7 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // Park the direct run first so the queue drains behind in-flight work.
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
 
         // The direct run settles, then the queue drains head-first, serially. The gated
@@ -98,7 +98,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         await EnqueueAsync(harness, sessionId, deadline.Token, "queued one");
 
         // Direct submissions keep their semantics: busy, never queued (invariant 4).
@@ -136,7 +136,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         ItemIds(empty).Should().BeEmpty();
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
 
         // The worker dequeues the head as soon as it is enqueued and then waits out the
@@ -176,7 +176,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         var ids = await EnqueueAsync(
             harness,
             sessionId,
@@ -243,7 +243,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         Trace("direct run parked");
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
         Trace("enqueued two items");
@@ -431,7 +431,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // a release must WAIT for the request to park — releasing earlier is a no-op that
         // parks the request forever (the Windows CI failure: every step before this was
         // instant, and the released-into-nothing request froze the run mid-flight).
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         Trace($"parked before release: {provider.ParkedRequests}");
         await ReleaseOneAsync(provider, deadline.Token);
         Trace("released item one");
@@ -446,10 +446,10 @@ public sealed class FrontendTurnQueueIntegrationTests
             deadline.Token);
         Trace("both sockets saw second running state");
 
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, thirdIds[0]), deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         await ReleaseOneAsync(provider, deadline.Token);
         Trace("released items two and three");
         await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
@@ -478,7 +478,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // A direct run holds the single-run gate when the worker pops its first item: the
         // submission hits the busy gate, waits the direct run out, and retries.
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
 
         // The worker dequeued the first item and is waiting for the in-flight run.
@@ -515,7 +515,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // the release on such a sample — leaves that request parked forever, which is exactly
         // the Windows CI hang (the harness's host disposal then blocks on the run's lease).
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
-        await WaitForParkedAsync(provider, 1, deadline.Token);
+        await provider.WaitForParkedAsync(1, deadline.Token);
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one");
         await WaitForQueueAsync(
             harness,
@@ -649,21 +649,8 @@ public sealed class FrontendTurnQueueIntegrationTests
         GatedOpenAiServer provider,
         CancellationToken cancellationToken)
     {
-        await WaitForParkedAsync(provider, 1, cancellationToken).ConfigureAwait(false);
+        await provider.WaitForParkedAsync(1, cancellationToken).ConfigureAwait(false);
         provider.ReleaseNext();
-    }
-
-    private static async Task WaitForParkedAsync(
-        GatedOpenAiServer provider,
-        int count,
-        CancellationToken cancellationToken)
-    {
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(45));
-        while (provider.ParkedRequests < count)
-        {
-            await Task.Delay(25, wait.Token).ConfigureAwait(false);
-        }
     }
 
     /// <summary>Releases parked provider requests until the queue has fully drained, so no
@@ -834,16 +821,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         await zombie.Client.SendAsync(request, TestContext.Current.CancellationToken);
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(10));
-        while (provider.ParkedRequests < 1)
-        {
-            await Task.Delay(25, wait.Token);
-        }
+        await provider.WaitForParkedAsync(1, wait.Token);
 
         zombie.Close();
-        while (provider.ParkedRequests > 0)
-        {
-            await Task.Delay(25, wait.Token);
-        }
+        await provider.WaitForParkedDrainedAsync(wait.Token);
 
         // The gate must serve the LIVE head now that the zombie is gone.
         var probe = provider.ParkForTest();
@@ -864,6 +845,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         private readonly Task serveLoop;
         private readonly Lock gate = new();
         private readonly List<TaskCompletionSource> parked = [];
+        private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly List<Task> connections = [];
 
         public GatedOpenAiServer()
@@ -891,6 +873,57 @@ public sealed class FrontendTurnQueueIntegrationTests
             }
         }
 
+        /// <summary>Waits until at least <paramref name="minimum"/> provider requests have
+        /// arrived and are waiting for release. Signal-driven: every parked-count mutation
+        /// (park, release, or a vanished client) completes a fresh source, so the wait needs
+        /// no polling of <see cref="ParkedRequests"/>.</summary>
+        internal async Task WaitForParkedAsync(int minimum, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Task signal;
+                lock (gate)
+                {
+                    if (parked.Count >= minimum) return;
+
+                    signal = parkedChanged.Task;
+                }
+
+                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Waits until every parked provider request has left the gate (released, or
+        /// its client vanished). Signal-driven like <see cref="WaitForParkedAsync"/>.</summary>
+        internal async Task WaitForParkedDrainedAsync(CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Task signal;
+                lock (gate)
+                {
+                    if (parked.Count == 0) return;
+
+                    signal = parkedChanged.Task;
+                }
+
+                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Completes the parked-count signal and swaps in a fresh source, under the
+        /// caller's hold of <see cref="gate"/>. RunContinuationsAsynchronously keeps waiter
+        /// continuations off the mutating thread.</summary>
+        private void NotifyParkedChangedLocked()
+        {
+            parkedChanged.TrySetResult();
+            parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
         /// <summary>Releases the oldest provider request that is still awaiting release.
         /// <para>
         /// The released entry leaves <see cref="parked" /> under the same lock that releases
@@ -914,6 +947,8 @@ public sealed class FrontendTurnQueueIntegrationTests
                     release = next;
                     break;
                 }
+
+                if (release is not null) NotifyParkedChangedLocked();
             }
 
             // Completed outside the lock: the entry is no longer listed, so only this call
@@ -929,6 +964,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             {
                 releases = [.. parked];
                 parked.Clear();
+                if (releases.Length > 0) NotifyParkedChangedLocked();
             }
 
             foreach (var release in releases) release.TrySetResult();
@@ -942,6 +978,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             lock (gate)
             {
                 parked.Add(release);
+                NotifyParkedChangedLocked();
             }
 
             return release;
@@ -1014,6 +1051,7 @@ public sealed class FrontendTurnQueueIntegrationTests
                     lock (gate)
                     {
                         parked.Add(release);
+                        NotifyParkedChangedLocked();
                     }
 
                     // The release call owns removing a released entry; a client that walks
@@ -1027,7 +1065,7 @@ public sealed class FrontendTurnQueueIntegrationTests
                     await parkedWait.CancelAsync().ConfigureAwait(false);
                     lock (gate)
                     {
-                        parked.Remove(release);
+                        if (parked.Remove(release)) NotifyParkedChangedLocked();
                     }
 
                     if (cancellationToken.IsCancellationRequested ||

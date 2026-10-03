@@ -878,30 +878,21 @@ public sealed class FrontendApiIntegrationTests
             .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("answer from model one");
 
         // Rewrite the configuration file: the runtime hot reload picks the new endpoint up
-        // and the next turn runs against the second provider. The reload loop swaps a fresh
-        // completion source per completed reload, so await the reload that follows the write
-        // instead of polling /v1/status; the status read after each awaited reload checks
-        // the surfaced model, and a stale no-op reload just waits for the next one.
+        // and the next turn runs against the second provider. A reload commits the replacement
+        // snapshot (and its version) before the reload loop completes its signal, so awaiting
+        // the version bump the write must produce guarantees the new configuration is active;
+        // the single status read afterwards only confirms the surfaced model.
         var runtimeConfiguration = harness.RuntimeConfiguration;
-        var beforeReload = runtimeConfiguration.ReloadRequest;
+        var beforeVersion = runtimeConfiguration.Version;
         await File.WriteAllTextAsync(
             harness.ConfigurationFile,
             CreateSmokeConfiguration(secondProvider.Endpoint.ToString(), "model-two"),
             deadline.Token);
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         wait.CancelAfter(TimeSpan.FromSeconds(30));
-        while (true)
-        {
-            await runtimeConfiguration.WaitForReloadCompletionAsync(beforeReload, wait.Token);
-            var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
-            if (status.GetProperty("markdown").GetString() is { } markdown &&
-                markdown.Contains("model-two"))
-            {
-                break;
-            }
-
-            beforeReload = runtimeConfiguration.ReloadRequest;
-        }
+        await runtimeConfiguration.WaitForVersionAsync(beforeVersion + 1, wait.Token);
+        var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
+        status.GetProperty("markdown").GetString().Should().Contain("model-two");
 
         await harness.SubmitTurnAsync(sessionId, "second", deadline.Token);
         var reloaded = await WaitForTranscriptTurnsAsync(

@@ -422,13 +422,13 @@ public sealed class PluginHostInvokeTests
         harness.Host!.Dispose();
         await released.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
 
+        var thirdAttached = harness.Manager.HostConnectionAttached;
         var third = new FakeHostWebSocket();
         var thirdAttach = harness.Manager.AttachHostAsync(third, deadline.Token);
-        // A refusal completes the attach task immediately (synchronous policy-violation close);
-        // an accepted attach keeps running its receive loop, so the task stays incomplete. A
-        // refusal would land within the window; acceptance never completes on its own.
-        await Task.WhenAny(thirdAttach, Task.Delay(TimeSpan.FromSeconds(5), deadline.Token));
-        thirdAttach.IsCompleted.Should().BeFalse("a fresh attach after the detach must be accepted, not refused");
+        // The manager completes the attach signal only for an accepted connection: a refused
+        // attach closes the socket without touching the signal, so awaiting it proves the fresh
+        // attach was accepted instead of probing a bounded window for the refusal.
+        await thirdAttached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
         third.CloseStatus.Should().BeNull("a fresh attach after the detach must not be refused");
         harness.Manager.GetStatus().ControlConnected.Should().BeTrue();
         third.Dispose();
@@ -461,11 +461,12 @@ public sealed class PluginHostInvokeTests
         await manager.StartAsync(cancellationToken);
 
         var fakeSocket = new FakeHostWebSocket();
+        var attached = manager.HostConnectionAttached;
         var attach = manager.AttachHostAsync(fakeSocket, cancellationToken);
-        // The receive loop reads the socket only after the accept transition installed it,
-        // so the first receive is the attach-accepted signal — awaited instead of polling
-        // GetStatus().ControlConnected.
-        await fakeSocket.ReceiveStarted.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        // The manager completes the attach signal in the same locked transition that installed
+        // the socket, so the awaited task proves acceptance instead of inferring it from the
+        // fake's first receive or polling GetStatus().ControlConnected.
+        await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
         manager.GetStatus().ControlConnected.Should().BeTrue();
 
         var harness = new HostHarness(fakeSocket, manager, fakeDenoPath);
@@ -523,7 +524,6 @@ public sealed class PluginHostInvokeTests
     private sealed class FakeHostWebSocket : WebSocket
     {
         private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource receiveStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Channel<string> sent = Channel.CreateUnbounded<string>();
         private WebSocketCloseStatus? closeStatus;
         private WebSocketState state = WebSocketState.Open;
@@ -535,12 +535,6 @@ public sealed class PluginHostInvokeTests
         public override string? CloseStatusDescription => null;
 
         public override string? SubProtocol => null;
-
-        /// <summary>Completes when the manager's receive loop first reads this socket. The
-        /// loop only starts after the accept transition installed the connection, so awaiting
-        /// this task proves the attach was accepted; a refused attach closes the socket
-        /// without ever receiving and never completes it.</summary>
-        internal Task ReceiveStarted => receiveStarted.Task;
 
         internal ValueTask<string> ReadSentAsync(CancellationToken cancellationToken)
         {
@@ -584,7 +578,6 @@ public sealed class PluginHostInvokeTests
             ArraySegment<byte> buffer,
             CancellationToken cancellationToken)
         {
-            receiveStarted.TrySetResult();
             await closed.Task.WaitAsync(cancellationToken);
             state = WebSocketState.CloseReceived;
             return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
@@ -594,7 +587,6 @@ public sealed class PluginHostInvokeTests
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-            receiveStarted.TrySetResult();
             await closed.Task.WaitAsync(cancellationToken);
             state = WebSocketState.CloseReceived;
             return new ValueWebSocketReceiveResult(0, WebSocketMessageType.Close, true);

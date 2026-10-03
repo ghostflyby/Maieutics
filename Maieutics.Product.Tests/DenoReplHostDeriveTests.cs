@@ -606,8 +606,10 @@ public sealed class DenoReplHostDeriveTests
 
         var fakeSocket = new FakeHostWebSocket();
         var attach = manager.AttachHostAsync(fakeSocket, cancellationToken);
-        for (var attempt = 0; attempt < 100 && !manager.GetStatus().ControlConnected; attempt++)
-            await Task.Delay(50, cancellationToken);
+        // The receive loop reads the socket only after the accept transition installed it,
+        // so the first receive is the attach-accepted signal — awaited instead of polling
+        // GetStatus().ControlConnected.
+        await fakeSocket.ReceiveStarted.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
         manager.GetStatus().ControlConnected.Should().BeTrue();
 
         var harness = new HostHarness
@@ -889,6 +891,7 @@ public sealed class DenoReplHostDeriveTests
     private sealed class FakeHostWebSocket : WebSocket
     {
         private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource receiveStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Channel<string> sent = Channel.CreateUnbounded<string>();
         private WebSocketCloseStatus? closeStatus;
         private WebSocketState state = WebSocketState.Open;
@@ -900,6 +903,12 @@ public sealed class DenoReplHostDeriveTests
         public override string? CloseStatusDescription => null;
 
         public override string? SubProtocol => null;
+
+        /// <summary>Completes when the manager's receive loop first reads this socket. The
+        /// loop only starts after the accept transition installed the connection, so awaiting
+        /// this task proves the attach was accepted; a refused attach closes the socket
+        /// without ever receiving and never completes it.</summary>
+        internal Task ReceiveStarted => receiveStarted.Task;
 
         internal Task Closed => closed.Task;
 
@@ -945,6 +954,7 @@ public sealed class DenoReplHostDeriveTests
             ArraySegment<byte> buffer,
             CancellationToken cancellationToken)
         {
+            receiveStarted.TrySetResult();
             await closed.Task.WaitAsync(cancellationToken);
             state = WebSocketState.CloseReceived;
             return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
@@ -954,6 +964,7 @@ public sealed class DenoReplHostDeriveTests
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
+            receiveStarted.TrySetResult();
             await closed.Task.WaitAsync(cancellationToken);
             state = WebSocketState.CloseReceived;
             return new ValueWebSocketReceiveResult(0, WebSocketMessageType.Close, true);

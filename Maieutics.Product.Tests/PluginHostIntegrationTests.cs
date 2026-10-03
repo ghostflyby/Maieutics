@@ -843,18 +843,24 @@ public sealed class PluginHostIntegrationTests
             // the live host closes the worker, its post-stop registry frame withdraws
             // the registration, and the kernel classifies the plugin pending.
             await manager.RevokeAsync(rootPluginId, timeout.Token);
-            var withdrawn = await WaitForAsync(
-                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Count == 0,
+            await WaitForRegistryConditionAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                registrations => registrations.Count == 0,
                 timeout.Token);
-            withdrawn.Should().BeTrue("the live host must withdraw a revoked plugin's registration");
+            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
+                .Should().BeEmpty("the live host must withdraw a revoked plugin's registration");
             manager.GetStatus().PendingApprovals.Should().Be(1);
 
             // Re-approval upserts the worker back without a host-process restart.
             await manager.ApproveAsync(rootPluginId, timeout.Token);
-            var restored = await WaitForAsync(
-                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Count > 0,
+            await WaitForRegistryConditionAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                registrations => registrations.Count > 0,
                 timeout.Token);
-            restored.Should().BeTrue("re-approval must upsert the worker back onto the live host");
+            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
+                .Should().NotBeEmpty("re-approval must upsert the worker back onto the live host");
             manager.GetStatus().PendingApprovals.Should().Be(0);
         }
 
@@ -957,36 +963,37 @@ public sealed class PluginHostIntegrationTests
             // activates its registration without another restart.
             WriteExtraPlugin(pluginsRoot);
             AddLocalImport(pluginsRoot, "@acme/extra/main", "./extra/mod.ts");
-            await WaitForAsync(
-                () => manager.ListPluginApprovals().Any(approval => approval.PluginId == "extra"),
-                timeout.Token);
+            await WaitForApprovalAsync(manager, "extra", timeout.Token);
             await manager.ApproveAsync("extra", timeout.Token);
 
-            var extraAppeared = await WaitForAsync(
-                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                    .Any(registration => registration.PluginId == "extra"),
+            await WaitForRegistryConditionAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                registrations => registrations.Any(registration => registration.PluginId == "extra"),
                 timeout.Token);
-            extraAppeared.Should().BeTrue("the restart must load the newly added plugin");
             manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
                 .Should().Contain(registration => registration.PluginId == rootPluginId)
-                .And.Contain(registration => registration.PluginId == "extra");
+                .And.Contain(registration => registration.PluginId == "extra",
+                    "the restart must load the newly added plugin");
 
             // Removing the plugin (directory and import entry) recomputes the set the
             // other way: the removed plugin's registrations disappear after the restart.
-            // The poll waits for the NEW generation's convergence (root re-registered,
+            // The wait targets the NEW generation's convergence (root re-registered,
             // extra gone): the teardown phase clears every registration, so a negative
             // condition alone would "pass" mid-restart with the root still missing.
             Directory.Delete(Path.Combine(pluginsRoot, "extra"), true);
             RemoveLocalImport(pluginsRoot, "@acme/extra/main");
 
-            var extraRemoved = await WaitForAsync(
-                () => manager.GetRegistrations(ReplExtensionPointName.McpDiscover) is { } current &&
-                     current.Any(registration => registration.PluginId == rootPluginId) &&
-                     current.All(registration => registration.PluginId != "extra"),
+            await WaitForRegistryConditionAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                registrations =>
+                    registrations.Any(registration => registration.PluginId == rootPluginId) &&
+                    registrations.All(registration => registration.PluginId != "extra"),
                 timeout.Token);
-            extraRemoved.Should().BeTrue("the restart must drop the removed plugin");
             manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                .Should().Contain(registration => registration.PluginId == rootPluginId);
+                .Should().Contain(registration => registration.PluginId == rootPluginId,
+                    "the restart must drop the removed plugin");
         }
 
         if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
@@ -1048,19 +1055,47 @@ public sealed class PluginHostIntegrationTests
         if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
     }
 
-    /// <summary>Bounded condition poll for asynchronous restart outcomes (the restart spans a
-    /// process teardown, fresh discovery, a new host process, and worker re-registration).</summary>
-    private static async Task<bool> WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
+    /// <summary>
+    ///     Waits until the plugin host's registration set for <paramref name="extensionPoint"/>
+    ///     satisfies <paramref name="condition"/>, consuming the manager's
+    ///     <c>RegistryChanges</c> snapshots instead of polling: every channel frame is the
+    ///     complete registration set written when the host publishes a registry payload. The
+    ///     channel is bounded drop-oldest, so a satisfying frame can be overwritten before it
+    ///     is read, and approval transitions rebuild the live set without a host frame — hence
+    ///     the live <c>GetRegistrations</c> check alongside each snapshot read, and once before
+    ///     the first read.
+    /// </summary>
+    private static async Task WaitForRegistryConditionAsync(
+        PluginHostManager manager,
+        string extensionPoint,
+        Func<IReadOnlyList<PluginRegistration>, bool> condition,
+        CancellationToken cancellationToken)
+    {
+        if (condition(manager.GetRegistrations(extensionPoint))) return;
+
+        await foreach (var snapshot in manager.RegistryChanges.Reader
+                           .ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (condition(snapshot) || condition(manager.GetRegistrations(extensionPoint)))
+                return;
+        }
+    }
+
+    /// <summary>Bounded poll for an approval classification appearing after a plugin-set
+    /// change. The manager exposes no awaited signal for approval state: registry snapshots
+    /// only carry approved registrations, so a pending classification never writes a frame.</summary>
+    private static async Task WaitForApprovalAsync(
+        PluginHostManager manager,
+        string pluginId,
+        CancellationToken cancellationToken)
     {
         var deadline = TimeSpan.FromSeconds(100);
         while (deadline > TimeSpan.Zero)
         {
-            if (condition()) return true;
+            if (manager.ListPluginApprovals().Any(approval => approval.PluginId == pluginId)) return;
             await Task.Delay(250, cancellationToken).ConfigureAwait(false);
             deadline -= TimeSpan.FromMilliseconds(250);
         }
-
-        return condition();
     }
 
     private static string CreateRootWithoutExtraPlugin()

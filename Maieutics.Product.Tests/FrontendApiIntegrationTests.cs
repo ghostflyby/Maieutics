@@ -878,7 +878,12 @@ public sealed class FrontendApiIntegrationTests
             .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("answer from model one");
 
         // Rewrite the configuration file: the runtime hot reload picks the new endpoint up
-        // and the next turn runs against the second provider.
+        // and the next turn runs against the second provider. The reload loop swaps a fresh
+        // completion source per completed reload, so await the reload that follows the write
+        // instead of polling /v1/status; the status read after each awaited reload checks
+        // the surfaced model, and a stale no-op reload just waits for the next one.
+        var runtimeConfiguration = harness.RuntimeConfiguration;
+        var beforeReload = runtimeConfiguration.ReloadRequest;
         await File.WriteAllTextAsync(
             harness.ConfigurationFile,
             CreateSmokeConfiguration(secondProvider.Endpoint.ToString(), "model-two"),
@@ -887,9 +892,15 @@ public sealed class FrontendApiIntegrationTests
         wait.CancelAfter(TimeSpan.FromSeconds(30));
         while (true)
         {
+            await runtimeConfiguration.WaitForReloadCompletionAsync(beforeReload, wait.Token);
             var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
-            if (status.GetProperty("markdown").GetString()!.Contains("model-two")) break;
-            await Task.Delay(100, wait.Token);
+            if (status.GetProperty("markdown").GetString() is { } markdown &&
+                markdown.Contains("model-two"))
+            {
+                break;
+            }
+
+            beforeReload = runtimeConfiguration.ReloadRequest;
         }
 
         await harness.SubmitTurnAsync(sessionId, "second", deadline.Token);
@@ -903,6 +914,16 @@ public sealed class FrontendApiIntegrationTests
             .Should().Equal(["user", "assistant"]);
     }
 
+    /// <summary>
+    ///     Waits for <paramref name="minimumTurns"/> committed turns, driven by the session's
+    ///     event stream instead of polling: the transcript is read once at attach and then
+    ///     re-read only after each distinct run's terminal frame — never on a timer. A
+    ///     terminal frame publishes strictly after the run's completion task settles, which
+    ///     follows the turn commit, so each re-read observes everything committed so far.
+    ///     The socket replays the latest run's retained frames, so a run that settled just
+    ///     before attach is still observed; a failed run publishes run.failed, commits no
+    ///     turn, and merely triggers the next re-read.
+    /// </summary>
     private static async Task<JsonElement> WaitForTranscriptTurnsAsync(
         FrontendHarness harness,
         string sessionId,
@@ -911,16 +932,32 @@ public sealed class FrontendApiIntegrationTests
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(30));
-        while (true)
+
+        var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript",
+            wait.Token);
+        if (transcript.GetProperty("turns").GetArrayLength() >= minimumTurns)
+            return transcript;
+
+        var countedRuns = new HashSet<string>(StringComparer.Ordinal);
+        await using var events = await harness.OpenEventsAsync(sessionId, wait.Token);
+        while (transcript.GetProperty("turns").GetArrayLength() < minimumTurns)
         {
-            var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+            var frame = await events.ReceiveFrameAsync(wait.Token);
+            if (frame.GetProperty("type").GetString() is not "run.completed" ||
+                !frame.TryGetProperty("runId", out var runId) ||
+                runId.GetString() is not { } completedRun ||
+                !countedRuns.Add(completedRun))
+            {
+                continue;
+            }
+
+            transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
                 wait.Token);
-            if (transcript.GetProperty("turns").GetArrayLength() >= minimumTurns)
-                return transcript;
-
-            await Task.Delay(50, wait.Token);
         }
+
+        return transcript;
     }
 
     private static string CreateSmokeConfiguration(string endpoint, string model)
@@ -1663,6 +1700,12 @@ public sealed class FrontendApiIntegrationTests
         /// that the server-side turn queue drives (ADR 0025).</summary>
         public Maieutics.Commands.MaieuticsAgentSessionManager SessionManager =>
             host.Services.GetRequiredService<Maieutics.Commands.MaieuticsAgentSessionManager>();
+
+        /// <summary>The live runtime configuration, so tests can await hot-reload completion
+        /// (each completed reload swaps a fresh completion task) instead of polling the
+        /// status surface.</summary>
+        public Maieutics.Configuration.MaieuticsRuntimeConfiguration RuntimeConfiguration =>
+            host.Services.GetRequiredService<Maieutics.Configuration.MaieuticsRuntimeConfiguration>();
 
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real

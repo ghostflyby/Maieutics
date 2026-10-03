@@ -26,7 +26,34 @@ internal sealed record PluginHostStatus(
     int PluginCount,
     int RegistrationCount,
     bool HostProcessRequired,
-    bool ControlConnected);
+    bool ControlConnected,
+    int PendingApprovals = 0);
+
+/// <summary>One plugin's approval classification (ADR 0037) for status and command
+/// rendering. <see cref="Exempt"/> declares nothing privileged; <see cref="Approved"/>
+/// matches a persisted record; <see cref="PendingApproval"/> has no matching record;
+/// <see cref="BlockedByDependency"/> matches its own record but a transitive dependency
+/// does not.</summary>
+internal enum PluginApprovalState
+{
+    Exempt,
+    Approved,
+    PendingApproval,
+    BlockedByDependency
+}
+
+/// <summary>The approval view of one discovered plugin: current classification, the
+/// requested versus approved declaration fingerprints, and both grant summaries so a
+/// renderer can show what changed since the last approval.</summary>
+internal sealed record PluginApprovalInfo(
+    string PluginId,
+    string Name,
+    PluginApprovalState State,
+    string RequestedFingerprint,
+    string? ApprovedFingerprint,
+    PluginPermissionGrants RequestedGrants,
+    PluginPermissionGrants? ApprovedGrants,
+    int WorkerCount);
 
 internal enum PluginHostState
 {
@@ -99,7 +126,8 @@ internal sealed class PluginHostManager(
     TimeProvider timeProvider,
     IMcpWorkspaceRootsSource? workspaceRootsSource = null,
     IMcpElicitationPresenter? elicitationPresenter = null,
-    DenoPermissionBroker? broker = null)
+    DenoPermissionBroker? broker = null,
+    string? pluginApprovalsPath = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
     private const int EnvelopeVersion = 1;
@@ -113,6 +141,15 @@ internal sealed class PluginHostManager(
     {
         var raw = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_IDLE_GRACE_MS");
         return int.TryParse(raw, out var parsed) && parsed > 0 ? parsed : 30_000;
+    }
+
+    /// <summary>Default approvals-file location: beside the plugin data root (the data
+    /// root's parent), so a test that relocates only the data root stays isolated.</summary>
+    private static string DeriveApprovalsPath(string dataRoot)
+    {
+        var trimmed = dataRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var parent = Path.GetDirectoryName(trimmed);
+        return Path.Combine(string.IsNullOrEmpty(parent) ? trimmed : parent, "plugin-approvals.json");
     }
 
     /// <summary>The synthetic export name given to manifest-declared extension entries.
@@ -180,7 +217,8 @@ internal sealed class PluginHostManager(
         lock (gate)
         {
             return descriptors.Any(descriptor =>
-                descriptor.Id == pluginId && descriptor.InspectionsContentReadAll);
+                descriptor.Id == pluginId && descriptor.InspectionsContentReadAll &&
+                !IsApprovalBlockedLock(descriptor.Id));
         }
     }
 
@@ -219,6 +257,33 @@ internal sealed class PluginHostManager(
     /// cannot be parsed stays registered with its previous contribution retained by the
     /// coordinator; discovery for it fails until the file is repaired.</summary>
     private readonly Dictionary<string, string> descriptorMcpServerErrors =
+        new(StringComparer.Ordinal);
+
+    // —— Plugin declaration approval (ADR 0037) ——
+
+    /// <summary>The persisted approval registry, loaded once from
+    /// <c>pluginApprovalsPath</c> (derived from the data root when null) on first use.</summary>
+    private readonly string approvalsPath =
+        pluginApprovalsPath ?? DeriveApprovalsPath(pluginDataRoot);
+
+    private PluginApprovalStore approvalStore = PluginApprovalStore.Empty();
+    private volatile bool approvalStoreLoaded;
+
+    /// <summary>Single-flight for approval reconciles (approve, revoke, and the approval
+    /// branch of watcher reloads): each pass spans state mutation, frame construction,
+    /// and frame delivery, so two passes can never interleave their sends and leave the
+    /// host's worker set contradicting the kernel's approval state. Approval states are
+    /// mutated only while this is held.</summary>
+    private readonly SemaphoreSlim reconcile = new(1, 1);
+
+    /// <summary>Current declaration fingerprint per plugin id, recomputed with the
+    /// descriptor set at start and reload.</summary>
+    private readonly Dictionary<string, string> declarationFingerprints =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Current approval classification per plugin id. Pending and blocked entries
+    /// are excluded from the host config, declaration recording, and extension invokes.</summary>
+    private readonly Dictionary<string, PluginApprovalState> approvalStates =
         new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
         new(StringComparer.Ordinal);
@@ -380,11 +445,14 @@ internal sealed class PluginHostManager(
         int pluginCount;
         int registrationCount;
         bool controlConnected;
+        int pendingApprovals;
         lock (gate)
         {
             pluginCount = descriptors.Count;
             registrationCount = registrations.Count;
             controlConnected = Socket?.State == WebSocketState.Open;
+            pendingApprovals = approvalStates.Values.Count(static state =>
+                state is PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency);
         }
 
         var hostProcessRequired = hostProcess is not null || pluginCount > 0;
@@ -405,7 +473,8 @@ internal sealed class PluginHostManager(
             pluginCount,
             registrationCount,
             hostProcessRequired,
-            controlConnected);
+            controlConnected,
+            pendingApprovals);
     }
 
     private async Task StartCoreAsync(CancellationToken cancellationToken)
@@ -414,6 +483,10 @@ internal sealed class PluginHostManager(
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // The approval registry is a tiny local read; loading it before discovery keeps
+            // every later gate decision off the filesystem.
+            EnsureApprovalStoreLoaded();
 
             // Discovery waits on child processes and touches no gated state, so it runs
             // before the lifecycle gate. Holding that gate across it blocked GetStatus for
@@ -566,13 +639,27 @@ internal sealed class PluginHostManager(
         {
             descriptors.Clear();
             descriptors.AddRange(plan.Enabled);
+            RecomputeApprovalStatesLock(descriptors);
             capabilityGrants.Clear();
-            RecordCapabilityGrants(descriptors);
             descriptorExtensions.Clear();
             descriptorMcpServers.Clear();
             descriptorMcpServerErrors.Clear();
             foreach (var descriptor in descriptors)
+            {
+                // Approval gate (ADR 0037): an unapproved plugin stays discovered but
+                // completely inert — no declarations recorded, no grants, no workers.
+                if (IsApprovalBlockedLock(descriptor.Id))
+                {
+                    logger.LogWarning(
+                        "Plugin '{PluginId}' declarations are not approved; its workers, MCP servers, triggers, and capabilities stay inactive until approved (%plugin approve {PluginId}).",
+                        descriptor.Id,
+                        descriptor.Id);
+                    continue;
+                }
+
                 RecordDescriptorDeclarationsLock(descriptor);
+                capabilityGrants[descriptor.Id] = descriptor.Capabilities;
+            }
 
             // Manifest-declared entries seed the registry before any host payload:
             // a declarative-only plugin contributes without ever spawning a worker.
@@ -974,7 +1061,9 @@ internal sealed class PluginHostManager(
     /// <summary>Locates the plugin owning a changed path and ships its fresh config to the host
     /// via <c>plugin.reload</c>, so the host rebuilds that worker (and its dependents) with the
     /// latest permissions. Config/dependency changes re-resolve the descriptor; pure source edits
-    /// reload with the same config so new module text is picked up.</summary>
+    /// reload with the same config so new module text is picked up. A re-read whose declaration
+    /// fingerprint no longer matches the persisted approval instead stops the plugin's workers
+    /// and clears its declarations — the change-revokes rule of ADR 0037.</summary>
     private async Task ReloadChangedPluginAsync(string changedPath)
     {
         // Find the most specific owning plugin: the longest root directory that
@@ -1000,12 +1089,14 @@ internal sealed class PluginHostManager(
         }
 
         if (owner is null) return;
+        EnsureApprovalStoreLoaded();
 
         // Re-resolve the descriptor from disk so manifest, permission, and mcp.json
         // changes apply. A failed re-read keeps the previous snapshot active — the same
         // last-known-good rule the kernel applies to its own configuration reloads —
         // and must degrade visibly, not silently.
         PluginHostConfigPlugin? replacement = null;
+        var shipOwnerReload = true;
         if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out var loadFailure))
         {
             if (!PluginImportMerger.SameMapping(owner.Imports, reloaded.Imports))
@@ -1031,30 +1122,62 @@ internal sealed class PluginHostManager(
             }
             else
             {
-                var config = BuildConfig([reloaded]);
-                replacement = config.Plugins.FirstOrDefault();
-                // A reload re-reads the manifest, so the capability-grant and
-                // declarative-extension snapshots must follow it (the grant and
-                // interpretation authority stays in the kernel). The upsert also
-                // removes the snapshot entry when the section disappears entirely.
-                PluginRegistration[] mcpSnapshotForReload;
-                lock (gate)
+                // Approval gate first (ADR 0037): fingerprint the re-read declarations
+                // before anything ships. A mismatch (or first sighting) revokes —
+                // stops the workers, clears the declarations — and the plugin returns
+                // to pending until re-approved; a revert to the approved shape re-matches
+                // the still-stored record and reactivates through the upsert path. The
+                // whole pass runs under the reconcile serialization so a concurrent
+                // approve/revoke cannot interleave its frames with these.
+                await reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                try
                 {
-                    RecordDescriptorDeclarationsLock(reloaded);
+                    HashSet<string> previouslyBlocked;
+                    lock (gate)
+                    {
+                        previouslyBlocked = BlockedIdsLock();
+                        ReplaceDescriptorLock(reloaded);
+                        RecomputeApprovalStatesLock(descriptors);
+                    }
 
-                    // A declarative-only change (or a plugin without workers) never
-                    // triggers a host registry resend: rebuild the merged snapshot so
-                    // the coordinator regenerates from the new manifest data.
-                    registrations.Clear();
-                    registrations.AddRange(hostRegistrations);
-                    registrations.AddRange(DeclarativeRegistrationsLock());
-                    mcpSnapshotForReload = registrations
-                        .Where(static r => r.ExtensionPoint == ReplExtensionPointName.McpDiscover)
-                        .ToArray();
+                    if (IsApprovalBlocked(reloaded.Id))
+                    {
+                        if (!previouslyBlocked.Contains(reloaded.Id))
+                            logger.LogWarning(
+                                "Plugin '{PluginId}' declarations changed since approval; its approval is revoked " +
+                                "and the plugin stays inactive until re-approved (%plugin approve {PluginId}).",
+                                reloaded.Id,
+                                reloaded.Id);
+                        await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
+                        shipOwnerReload = false;
+                    }
+                    else
+                    {
+                        var config = BuildConfig([reloaded]);
+                        replacement = config.Plugins.FirstOrDefault();
+                        // Declarations and capability grants follow the re-read manifest
+                        // (authority stays in the kernel); dependents a re-approval just
+                        // unblocked join through the same snapshot pass.
+                        await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
+                        if (previouslyBlocked.Contains(reloaded.Id))
+                        {
+                            // The owner just transitioned blocked→active and already
+                            // received its upsert from the snapshot pass.
+                            shipOwnerReload = false;
+                        }
+                        else
+                        {
+                            foreach (var worker in owner.Workers)
+                                await SendReloadAsync(owner.Id, worker.ExportName, replacement)
+                                    .ConfigureAwait(false);
+                            shipOwnerReload = false;
+                        }
+                    }
                 }
-
-                RepublishRegistry(mcpSnapshotForReload);
-                UpdateAdjustmentSnapshot();
+                finally
+                {
+                    reconcile.Release();
+                }
             }
         }
 
@@ -1066,8 +1189,18 @@ internal sealed class PluginHostManager(
                 loadFailure);
         }
 
-        foreach (var worker in owner.Workers)
-            await SendReloadAsync(owner.Id, worker.ExportName, replacement).ConfigureAwait(false);
+        if (shipOwnerReload)
+        {
+            // An in-process reload that cannot apply (isolation or import-map change)
+            // still restarts the owner with its previous config so new module text is
+            // picked up — but never against the approval gate: a concurrent revoke must
+            // not let this resurrect old grants.
+            if (!IsApprovalBlocked(owner.Id))
+            {
+                foreach (var worker in owner.Workers)
+                    await SendReloadAsync(owner.Id, worker.ExportName, replacement).ConfigureAwait(false);
+            }
+        }
     }
 
     private static bool IsWithin(string path, string root, StringComparison comparison)
@@ -1076,45 +1209,82 @@ internal sealed class PluginHostManager(
         return path.StartsWith(root + Path.DirectorySeparatorChar, comparison);
     }
 
-    private async Task SendReloadAsync(string pluginId, string exportName, PluginHostConfigPlugin? replacement)
+    private Task<bool> SendReloadAsync(string pluginId, string exportName, PluginHostConfigPlugin? replacement)
+    {
+        return SendPluginLifecycleAsync(new PluginReloadPayload(pluginId, exportName, replacement), "reload");
+    }
+
+    /// <summary>Stops one worker and its transitive dependents without restarting them —
+    /// the revocation form of <c>plugin.reload</c> (ADR 0037): the workers leave the host
+    /// set entirely instead of rebooting with stale grants.</summary>
+    private Task<bool> SendStopAsync(string pluginId, string exportName)
+    {
+        return SendPluginLifecycleAsync(
+            new PluginReloadPayload(pluginId, exportName, null, Stop: true),
+            "stop");
+    }
+
+    /// <summary>Sends one lifecycle frame; the result is whether it was delivered, so the
+    /// reconcile pass can fall back to a generation restart when a frame is lost.</summary>
+    private async Task<bool> SendPluginLifecycleAsync(PluginReloadPayload payload, string action)
     {
         WebSocket? socket;
+        CancellationToken lifetimeToken;
         lock (gate)
         {
             socket = Socket;
+            lifetimeToken = lifetime.Token;
         }
 
         if (socket is not { State: WebSocketState.Open })
         {
             logger.LogWarning(
-                "Plugin reload for '{PluginId}/{ExportName}' skipped: host not connected.",
-                pluginId,
-                exportName);
-            return;
+                "Plugin {Action} for '{PluginId}/{ExportName}' skipped: host not connected.",
+                action,
+                payload.PluginId,
+                payload.ExportName);
+            return false;
         }
 
-        var payload = new PluginReloadPayload(pluginId, exportName, replacement);
-        var delivered = await PushAsync(
-            socket,
-            new ReplEnvelope(
-                EnvelopeVersion,
-                ReplMessageType.PluginReload,
-                Guid.NewGuid().ToString("N"),
-                JsonSerializer.SerializeToElement(payload, PluginHostJsonContext.Default.PluginReloadPayload)),
-            lifetime.Token).ConfigureAwait(false);
-        if (!delivered)
+        try
         {
-            logger.LogWarning(
-                "Plugin reload request for '{PluginId}/{ExportName}' could not be delivered (the host connection is detached).",
-                pluginId,
-                exportName);
-            return;
+            var delivered = await PushAsync(
+                socket,
+                new ReplEnvelope(
+                    EnvelopeVersion,
+                    ReplMessageType.PluginReload,
+                    Guid.NewGuid().ToString("N"),
+                    JsonSerializer.SerializeToElement(payload, PluginHostJsonContext.Default.PluginReloadPayload)),
+                lifetimeToken).ConfigureAwait(false);
+            if (!delivered)
+            {
+                logger.LogWarning(
+                    "Plugin {Action} request for '{PluginId}/{ExportName}' could not be delivered (the host connection is detached).",
+                    action,
+                    payload.PluginId,
+                    payload.ExportName);
+                return false;
+            }
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException)
+        {
+            // A lifecycle frame racing the generation's shutdown dies with it; treat it
+            // as undelivered rather than surfacing a raw cancellation out of the command.
+            logger.LogDebug(
+                exception,
+                "Plugin {Action} for '{PluginId}/{ExportName}' was cut off by shutdown.",
+                action,
+                payload.PluginId,
+                payload.ExportName);
+            return false;
         }
 
         logger.LogInformation(
-            "Plugin reload requested for '{PluginId}/{ExportName}'.",
-            pluginId,
-            exportName);
+            "Plugin {Action} requested for '{PluginId}/{ExportName}'.",
+            action,
+            payload.PluginId,
+            payload.ExportName);
+        return true;
     }
 
     /// <summary>
@@ -1134,6 +1304,14 @@ internal sealed class PluginHostManager(
         JsonElement? request,
         CancellationToken cancellationToken)
     {
+        // Approval gate (ADR 0037): a stopped-but-registered worker would otherwise be
+        // woken on demand (ADR 0035), so refusal happens here — the kernel authority —
+        // before any frame reaches the host.
+        if (IsApprovalBlocked(pluginId))
+            return ExtensionCallOutcome.Error(
+                "plugin_pending_approval",
+                $"Plugin '{pluginId}' declarations are not approved ({extensionPoint}).");
+
         var correlationId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1632,6 +1810,369 @@ internal sealed class PluginHostManager(
                descriptor.Permissions.Ffi.AllowAll || descriptor.Permissions.Ffi.Values.Count > 0;
     }
 
+    // —— Plugin declaration approval (ADR 0037) ——
+
+    /// <summary>Loads the approval store once, lazily (constructors stay side-effect
+    /// free). A load error leaves the empty fail-closed store and surfaces visibly; the
+    /// file is not watched, so a mid-run corruption cannot silently approve anything.</summary>
+    private void EnsureApprovalStoreLoaded()
+    {
+        if (approvalStoreLoaded) return;
+        lock (gate)
+        {
+            if (approvalStoreLoaded) return;
+            approvalStore = PluginApprovalStore.Load(approvalsPath, out var error);
+            if (error is { } loadError)
+                logger.LogError("Plugin approvals are unavailable: {Error}.", loadError);
+            approvalStoreLoaded = true;
+        }
+    }
+
+    /// <summary>Whether the plugin's declarations are currently blocked from taking
+    /// effect (pending approval, or blocked by a pending transitive dependency).</summary>
+    private bool IsApprovalBlocked(string pluginId)
+    {
+        lock (gate)
+        {
+            return IsApprovalBlockedLock(pluginId);
+        }
+    }
+
+    /// <summary>Called under <see cref="gate" />.</summary>
+    private bool IsApprovalBlockedLock(string pluginId)
+    {
+        return approvalStates.GetValueOrDefault(pluginId) is
+            PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency;
+    }
+
+    /// <summary>The snapshot of blocked plugin ids, for transition detection. Called under
+    /// <see cref="gate" />.</summary>
+    private HashSet<string> BlockedIdsLock()
+    {
+        var blocked = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (pluginId, state) in approvalStates)
+        {
+            if (state is PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency)
+                blocked.Add(pluginId);
+        }
+
+        return blocked;
+    }
+
+    /// <summary>Recomputes fingerprints and approval classifications for the current
+    /// descriptor set: exempt declarations pass, matching persisted fingerprints are
+    /// approved, everything else is pending, and pending cascades to transitive dependents
+    /// (their own code cannot honor its declarations without the dependency). Called under
+    /// <see cref="gate" /> after the descriptors or the approval store changed.</summary>
+    private void RecomputeApprovalStatesLock(IReadOnlyList<PluginDescriptor> current)
+    {
+        declarationFingerprints.Clear();
+        approvalStates.Clear();
+        foreach (var descriptor in current)
+        {
+            var fingerprint = PluginDeclarationFingerprint.Compute(descriptor);
+            declarationFingerprints[descriptor.Id] = fingerprint;
+            if (PluginDeclarationFingerprint.IsApprovalExempt(descriptor))
+                approvalStates[descriptor.Id] = PluginApprovalState.Exempt;
+            else if (approvalStore.TryGet(descriptor.Id, out var record) && record is { } approved &&
+                     string.Equals(approved.Fingerprint, fingerprint, StringComparison.Ordinal))
+                approvalStates[descriptor.Id] = PluginApprovalState.Approved;
+            else
+                approvalStates[descriptor.Id] = PluginApprovalState.PendingApproval;
+        }
+
+        var grew = true;
+        while (grew)
+        {
+            grew = false;
+            foreach (var descriptor in current)
+            {
+                if (approvalStates.GetValueOrDefault(descriptor.Id) != PluginApprovalState.Approved) continue;
+                if (descriptor.Dependencies.Any(dependency =>
+                        approvalStates.GetValueOrDefault(dependency) is
+                            PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency))
+                {
+                    approvalStates[descriptor.Id] = PluginApprovalState.BlockedByDependency;
+                    grew = true;
+                }
+            }
+        }
+    }
+
+    /// <summary>Replaces one plugin's descriptor in the loaded set (a reload re-read it
+    /// from disk). Keeps discovery order; an unseen id appends. Called under
+    /// <see cref="gate" />.</summary>
+    private void ReplaceDescriptorLock(PluginDescriptor reloaded)
+    {
+        for (var index = 0; index < descriptors.Count; index++)
+        {
+            if (!string.Equals(descriptors[index].Id, reloaded.Id, StringComparison.Ordinal)) continue;
+            descriptors[index] = reloaded;
+            return;
+        }
+
+        descriptors.Add(reloaded);
+    }
+
+    /// <summary>Reconciles every approval-driven surface after the approval states
+    /// changed (approve, revoke, or a reload whose re-read descriptor changed
+    /// classification): rebuilds capability grants and declarative snapshots for the newly
+    /// active set, republishes the MCP registry subset and the adjustment snapshot, ships
+    /// an upsert reload to every plugin that just became active (its config joins the host
+    /// worker set), and a stop to every plugin that just became blocked (its workers and
+    /// their dependents close without restart). Callers hold <see cref="reconcile" />: the
+    /// whole pass — state capture, frame construction, frame delivery — is single-flight,
+    /// so two approvals/reloads can never interleave their sends and leave the host's
+    /// worker set contradicting the kernel's approval state. Nothing here awaits under
+    /// <see cref="gate" />.</summary>
+    private async Task ApplyApprovalSnapshotAsync(HashSet<string> previouslyBlocked)
+    {
+        var activations = new List<(string PluginId, PluginHostConfigPlugin Config, string[] Exports)>();
+        var stops = new List<(string PluginId, string[] Exports)>();
+        PluginRegistration[] mcpSnapshot;
+        lock (gate)
+        {
+            capabilityGrants.Clear();
+            descriptorExtensions.Clear();
+            descriptorMcpServers.Clear();
+            descriptorMcpServerErrors.Clear();
+            foreach (var descriptor in descriptors)
+            {
+                if (IsApprovalBlockedLock(descriptor.Id)) continue;
+                RecordDescriptorDeclarationsLock(descriptor);
+                capabilityGrants[descriptor.Id] = descriptor.Capabilities;
+            }
+
+            registrations.Clear();
+            registrations.AddRange(hostRegistrations
+                .Where(registration => !IsApprovalBlockedLock(registration.PluginId)));
+            registrations.AddRange(DeclarativeRegistrationsLock());
+
+            var blocked = BlockedIdsLock();
+            // Activation configs are assigned over the FULL active set, not just the
+            // transitioning plugin: the storage name-collision rule (same-named plugins
+            // never silently share a data dir) must hold for post-boot approvals too.
+            IReadOnlyList<PluginHostConfigPlugin> activeConfigs = [];
+            if (descriptors.Any(descriptor =>
+                    descriptor.Workers.Count > 0 &&
+                    !RequiresProcessIsolation(descriptor) &&
+                    previouslyBlocked.Contains(descriptor.Id) &&
+                    !blocked.Contains(descriptor.Id)))
+            {
+                activeConfigs = BuildConfig(
+                    [.. descriptors.Where(descriptor => !blocked.Contains(descriptor.Id))]).Plugins;
+            }
+
+            foreach (var descriptor in descriptors)
+            {
+                if (descriptor.Workers.Count == 0 || RequiresProcessIsolation(descriptor)) continue;
+                var wasBlocked = previouslyBlocked.Contains(descriptor.Id);
+                if (wasBlocked == blocked.Contains(descriptor.Id)) continue;
+                var exports = descriptor.Workers
+                    .Select(static worker => worker.ExportName)
+                    .ToArray();
+                if (blocked.Contains(descriptor.Id))
+                {
+                    stops.Add((descriptor.Id, exports));
+                }
+                else
+                {
+                    var plugin = activeConfigs.FirstOrDefault(candidate => candidate.Id == descriptor.Id);
+                    if (plugin is not null) activations.Add((descriptor.Id, plugin, exports));
+                }
+            }
+
+            mcpSnapshot = registrations
+                .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
+                .ToArray();
+        }
+
+        RepublishRegistry(mcpSnapshot);
+        UpdateAdjustmentSnapshot();
+        var allDelivered = true;
+        foreach (var (pluginId, config, exports) in activations)
+            foreach (var exportName in exports)
+                allDelivered &= await SendReloadAsync(pluginId, exportName, config).ConfigureAwait(false);
+        foreach (var (pluginId, exports) in stops)
+            foreach (var exportName in exports)
+                allDelivered &= await SendStopAsync(pluginId, exportName).ConfigureAwait(false);
+
+        // Convergence fallback: any frame that could not ship — no live connection, or a
+        // send that failed mid-delivery — has no later event that would resend it (an
+        // unstarted activation strands an approved plugin; a lost stop leaves revoked
+        // workers running), so rebuild the generation; the fresh boot config reflects the
+        // approval state. Declarative-only transitions recorded above need no host.
+        if ((activations.Count > 0 || stops.Count > 0) && !allDelivered)
+        {
+            logger.LogInformation(
+                "A plugin approval transition could not ship to the host connection; restarting the plugin host generation.");
+            _ = RestartForPluginSetChangeAsync();
+        }
+    }
+
+    /// <summary>Persists an approval for one discovered plugin's current declarations and
+    /// activates it — plus any dependents the approval unblocks — without restarting the
+    /// host process: each activation ships the plugin's full config as an upsert
+    /// <c>plugin.reload</c>. The whole decision runs under <see cref="reconcile" />, so a
+    /// concurrent watcher reload cannot interleave (a descriptor replaced mid-approve is
+    /// re-read and the message reflects the resulting state, never a stranded record
+    /// reported as active).</summary>
+    /// <exception cref="InvalidOperationException">No discovered plugin matches the id, or
+    /// the plugin cannot run in the in-process host.</exception>
+    /// <exception cref="IOException">The approval could not be persisted.</exception>
+    public async Task<string> ApproveAsync(string pluginId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureApprovalStoreLoaded();
+        PluginDescriptor descriptor;
+        lock (gate)
+        {
+            descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)
+                         ?? throw new InvalidOperationException($"No discovered plugin matches '{pluginId}'.");
+        }
+
+        if (PluginDeclarationFingerprint.IsApprovalExempt(descriptor))
+            return $"Plugin '{descriptor.Name}' declares nothing that requires approval.";
+
+        if (RequiresProcessIsolation(descriptor))
+            throw new InvalidOperationException(
+                $"Plugin '{pluginId}' requires process isolation (run/ffi grants or isolation=process); " +
+                "the in-process plugin host cannot run it.");
+
+        PluginApprovalState finalState;
+        await reconcile.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            lock (gate)
+            {
+                if (approvalStates.GetValueOrDefault(pluginId) == PluginApprovalState.Approved)
+                    return $"Plugin '{descriptor.Name}' declarations are already approved.";
+            }
+
+            // Re-read under the reconcile serialization: a watcher reload that replaced
+            // the descriptor while this command ran must be what gets persisted.
+            lock (gate)
+            {
+                descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId) ?? descriptor;
+            }
+
+            var fingerprint = PluginDeclarationFingerprint.Compute(descriptor);
+            approvalStore.Set(
+                pluginId,
+                new PluginApprovalRecord(
+                    fingerprint,
+                    descriptor.Name,
+                    timeProvider.GetUtcNow(),
+                    descriptor.Permissions));
+
+            HashSet<string> previouslyBlocked;
+            lock (gate)
+            {
+                previouslyBlocked = BlockedIdsLock();
+                RecomputeApprovalStatesLock(descriptors);
+                finalState = approvalStates.GetValueOrDefault(pluginId);
+            }
+
+            await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
+            logger.LogInformation(
+                "Plugin '{PluginId}' declarations approved (fingerprint {FingerprintPrefix}).",
+                pluginId,
+                fingerprint[..8]);
+        }
+        finally
+        {
+            reconcile.Release();
+        }
+
+        return finalState switch
+        {
+            PluginApprovalState.Approved =>
+                $"Approved '{descriptor.Name}' — {descriptor.Workers.Count} worker(s) active.",
+            PluginApprovalState.BlockedByDependency =>
+                $"Approved '{descriptor.Name}' — its declarations match, but a dependency is still pending approval.",
+            _ => $"The declarations of '{descriptor.Name}' changed while approving; approve again.",
+        };
+    }
+
+    /// <summary>Removes one plugin's persisted approval and stops its workers — plus the
+    /// dependents the stop cascade closes — in-process; the plugin returns to pending
+    /// until re-approved.</summary>
+    /// <exception cref="InvalidOperationException">No discovered plugin matches the id.</exception>
+    /// <exception cref="IOException">The approval removal could not be persisted.</exception>
+    public async Task<string> RevokeAsync(string pluginId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureApprovalStoreLoaded();
+        PluginDescriptor descriptor;
+        lock (gate)
+        {
+            descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)
+                         ?? throw new InvalidOperationException($"No discovered plugin matches '{pluginId}'.");
+            if (!approvalStore.TryGet(pluginId, out _))
+            {
+                return IsApprovalBlockedLock(pluginId)
+                    ? $"Plugin '{descriptor.Name}' is already unapproved (pending)."
+                    : $"Plugin '{descriptor.Name}' has no approval to revoke.";
+            }
+        }
+
+        await reconcile.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            HashSet<string> previouslyBlocked;
+            lock (gate)
+            {
+                previouslyBlocked = BlockedIdsLock();
+            }
+
+            approvalStore.Remove(pluginId);
+            lock (gate)
+            {
+                RecomputeApprovalStatesLock(descriptors);
+            }
+
+            await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
+        }
+        finally
+        {
+            reconcile.Release();
+        }
+
+        logger.LogInformation("Plugin '{PluginId}' approval revoked; workers stopped.", pluginId);
+        return $"Revoked '{descriptor.Name}' — workers stopped pending re-approval.";
+    }
+
+    /// <summary>The approval view of every discovered plugin (classification, requested
+    /// versus approved fingerprints, grant summaries), for <c>%plugin list</c> and status
+    /// rendering.</summary>
+    public IReadOnlyList<PluginApprovalInfo> ListPluginApprovals()
+    {
+        EnsureApprovalStoreLoaded();
+        lock (gate)
+        {
+            var result = new List<PluginApprovalInfo>(descriptors.Count);
+            foreach (var descriptor in descriptors)
+            {
+                var state = approvalStates.GetValueOrDefault(descriptor.Id);
+                declarationFingerprints.TryGetValue(descriptor.Id, out var requested);
+                approvalStore.TryGet(descriptor.Id, out var record);
+                result.Add(new PluginApprovalInfo(
+                    descriptor.Id,
+                    descriptor.Name,
+                    state,
+                    requested ?? string.Empty,
+                    record?.Fingerprint,
+                    descriptor.Permissions,
+                    record?.Grants,
+                    descriptor.Workers.Count));
+            }
+
+            return result;
+        }
+    }
+
     private string WriteConfigFile(IReadOnlyList<PluginDescriptor> plugins)
     {
         var config = BuildConfig(plugins);
@@ -1654,7 +2195,11 @@ internal sealed class PluginHostManager(
             pluginDataRoot,
             plugins.Select(descriptor =>
                 string.IsNullOrWhiteSpace(descriptor.Name) ? descriptor.Id : descriptor.Name));
+        // Storage assignment sees the full input set (collision detection), but the
+        // approval gate filters which plugins actually join the host worker set — a
+        // pending plugin ships no workers and no triggers (ADR 0037).
         var configured = plugins
+            .Where(descriptor => !IsApprovalBlocked(descriptor.Id))
             .Select(descriptor =>
             {
                 var identity = string.IsNullOrWhiteSpace(descriptor.Name) ? descriptor.Id : descriptor.Name;
@@ -2092,19 +2637,6 @@ internal sealed class PluginHostManager(
         await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
     }
 
-    /// <summary>Refreshes the capability-grant snapshot from the kernel-parsed
-    /// descriptors (startup and reload).</summary>
-    private void RecordCapabilityGrants(IEnumerable<PluginDescriptor> descriptors)
-    {
-        lock (gate)
-        {
-            foreach (var descriptor in descriptors)
-            {
-                capabilityGrants[descriptor.Id] = descriptor.Capabilities;
-            }
-        }
-    }
-
     /// <summary>Replaces one plugin's capability grants (the kernel-parsed manifest
     /// snapshot is the authority; this seam also lets tests drive the gate without a
     /// real manifest scan).</summary>
@@ -2117,12 +2649,16 @@ internal sealed class PluginHostManager(
     }
 
     /// <summary>Whether the plugin declared this capability in its manifest. Grants come
-    /// from the kernel-parsed manifest snapshot, never from the host connection.</summary>
+    /// from the kernel-parsed manifest snapshot, never from the host connection. The
+    /// approval gate is re-checked here as depth: grants are rebuilt per reconcile, and a
+    /// call racing a revoke must not slip through the microsecond between the state flip
+    /// and the grant clear.</summary>
     private bool IsCapabilityGranted(string pluginId, string capability)
     {
         lock (gate)
         {
-            return capabilityGrants.TryGetValue(pluginId, out var grants) &&
+            return !IsApprovalBlockedLock(pluginId) &&
+                   capabilityGrants.TryGetValue(pluginId, out var grants) &&
                    grants.Contains(capability);
         }
     }
@@ -2155,6 +2691,12 @@ internal sealed class PluginHostManager(
         {
             hostRegistrations.Clear();
             foreach (var plugin in payload.Plugins)
+            {
+                // The approval gate must hold here too (ADR 0037): a host payload can
+                // still carry a worker the kernel just revoked or stopped — routing its
+                // hooks would fail every dispatch with plugin_pending_approval until the
+                // host's post-stop registry frame lands.
+                if (IsApprovalBlockedLock(plugin.PluginId)) continue;
                 foreach (var extensionPoint in plugin.ExtensionPoints)
                 {
                     // The kernel dispatches only catalogued names; unknown names are
@@ -2169,6 +2711,7 @@ internal sealed class PluginHostManager(
                             extensionPoint);
                     hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
                 }
+            }
 
             registrations.Clear();
             registrations.AddRange(hostRegistrations);

@@ -132,3 +132,78 @@ Deno.test("a cron trigger fires only on matching minutes", () => {
   assertEquals(wildcard, true);
   assertEquals(stepped, true);
 });
+
+// ADR 0037 — the live plugin registry: triggers must arm for plugins that join after
+// boot (the approval activation path) and disarm when the plugin stops; the worker
+// list the event sink resolves must follow the same registry, not the boot config.
+
+Deno.test("a plugin activated after boot arms its triggers and receives events", async () => {
+  const fired: Array<{ plugin: string; trigger: string }> = [];
+  const bootDir = Deno.makeTempDirSync();
+  const activatedDir = Deno.makeTempDirSync();
+  const host = makeHost([triggerPlugin("boot", bootDir, [])]);
+  host.setTriggerSinks({
+    onEvent(pluginId, trigger) {
+      fired.push({ plugin: pluginId, trigger });
+      return Promise.resolve();
+    },
+    onRediscover() {},
+  });
+  await host.startAll();
+  assertEquals(host.workersOf("activated"), [], "not yet known to the live registry");
+
+  // The upsert reload (the approval activation form) carries the trigger declaration;
+  // arming must follow the live registry, and the sink's target resolution too.
+  const activated = triggerPlugin("activated", activatedDir, [
+    { name: "beat", kind: "interval", seconds: 1, action: "event" },
+  ]);
+  await host.reload("activated", "./main", activated);
+
+  const armed = Date.now() + 5_000;
+  while (fired.length === 0 && Date.now() < armed) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assertEquals(fired[0], { plugin: "activated", trigger: "beat" });
+  assertEquals(host.workersOf("activated").length, 1);
+
+  // Revocation disarms: after the stop, no further fires land.
+  const firedAtStop = fired.length;
+  await host.stop("activated", "./main");
+  const quiet = Date.now() + 2_500;
+  while (Date.now() < quiet) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assertEquals(fired.length, firedAtStop, "a stopped plugin's triggers must not fire");
+  assertEquals(host.workersOf("activated"), []);
+  await host.dispose();
+});
+
+Deno.test("a replacement reload re-arms triggers from the new declaration", async () => {
+  const fired: Array<{ plugin: string; trigger: string }> = [];
+  const dir = Deno.makeTempDirSync();
+  const plugin = triggerPlugin("reshaped", dir, []);
+  const host = makeHost([plugin]);
+  host.setTriggerSinks({
+    onEvent(pluginId, trigger) {
+      fired.push({ plugin: pluginId, trigger });
+      return Promise.resolve();
+    },
+    onRediscover() {},
+  });
+  await host.startAll();
+  assertEquals(host.workersOf("reshaped").length, 1);
+
+  // The replacement adds an interval trigger; the reload path must re-arm from the
+  // live registry (the frozen boot snapshot had none).
+  const reshaped = triggerPlugin("reshaped", dir, [
+    { name: "tick", kind: "interval", seconds: 1, action: "event" },
+  ]);
+  await host.reload("reshaped", "./main", reshaped);
+
+  const deadline = Date.now() + 5_000;
+  while (fired.length < 2 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assertEquals(fired.length >= 2, true);
+  await host.dispose();
+});

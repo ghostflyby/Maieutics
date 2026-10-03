@@ -16,7 +16,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionExpandsAnExactCommandAndHandlesPrefixes()
     {
         var exact = Complete("%maieutics");
-        exact.Matches.Should().Equal("%maieutics mcp", "%maieutics model", "%maieutics session", "%maieutics workspace");
+        exact.Matches.Should().Equal("%maieutics mcp", "%maieutics model", "%maieutics plugin", "%maieutics session", "%maieutics workspace");
         exact.CursorStart.Should().Be(0);
         exact.CursorEnd.Should().Be(10);
 
@@ -26,7 +26,7 @@ public sealed class MaieuticsCompletionTests
         prefix.CursorEnd.Should().Be(4);
 
         var afterRoot = Complete("%maieutics ");
-        afterRoot.Matches.Should().Equal("mcp", "model", "session", "workspace");
+        afterRoot.Matches.Should().Equal("mcp", "model", "plugin", "session", "workspace");
         afterRoot.CursorStart.Should().Be(11);
         afterRoot.CursorEnd.Should().Be(11);
     }
@@ -233,7 +233,7 @@ public sealed class MaieuticsCompletionTests
     public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
     {
         var all = Complete("/");
-        all.Matches.Should().Equal("%mcp", "%model", "%session", "%status", "%workspace");
+        all.Matches.Should().Equal("%mcp", "%model", "%plugin", "%session", "%status", "%workspace");
         all.CursorStart.Should().Be(0);
         all.CursorEnd.Should().Be(1);
 
@@ -265,10 +265,13 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
     {
         var all = Complete("%");
-        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%session", "%status", "%workspace");
+        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%plugin", "%session", "%status", "%workspace");
 
         var sharedPrefix = Complete("%m");
         sharedPrefix.Matches.Should().Equal("%maieutics", "%mcp", "%model");
+
+        var pluginPrefix = Complete("%p");
+        pluginPrefix.Matches.Should().Equal("%plugin");
     }
 
     [Fact]
@@ -278,6 +281,11 @@ public sealed class MaieuticsCompletionTests
         mcp.Matches.Should().Equal("list");
         mcp.CursorStart.Should().Be(5);
         mcp.CursorEnd.Should().Be(5);
+
+        var plugin = Complete("%plugin ");
+        plugin.Matches.Should().Equal("approve", "list", "revoke");
+        plugin.CursorStart.Should().Be(8);
+        plugin.CursorEnd.Should().Be(8);
 
         var model = Complete("%model ");
         model.Matches.Should().Equal("available", "current", "list", "reset", "use");

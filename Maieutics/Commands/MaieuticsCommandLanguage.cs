@@ -12,20 +12,24 @@ internal static class MaieuticsCommandLanguage
     internal const string LegacyRoot = "%maieutics";
     private const string CanonicalMcpCommand = "%mcp";
     private const string CanonicalModelCommand = "%model";
+    private const string CanonicalPluginCommand = "%plugin";
     private const string CanonicalSessionCommand = "%session";
     private const string CanonicalStatusCommand = "%status";
     private const string CanonicalWorkspaceCommand = "%workspace";
     private const string SlashLeader = "/";
     internal const string Mcp = "mcp";
     internal const string Model = "model";
+    internal const string Plugin = "plugin";
     internal const string Session = "session";
     internal const string Status = "status";
     internal const string Workspace = "workspace";
+    internal const string Approve = "approve";
     internal const string Current = "current";
     internal const string Open = "open";
     internal const string Close = "close";
     internal const string Fork = "fork";
     internal const string List = "list";
+    internal const string Revoke = "revoke";
     internal const string Use = "use";
     internal const string Reset = "reset";
     internal const string New = "new";
@@ -38,22 +42,23 @@ internal static class MaieuticsCommandLanguage
 
     private static readonly string[] CommandPrefixes =
     [
-        CanonicalMcpCommand, CanonicalModelCommand, CanonicalSessionCommand, CanonicalStatusCommand,
-        CanonicalWorkspaceCommand, LegacyRoot
+        CanonicalMcpCommand, CanonicalModelCommand, CanonicalPluginCommand, CanonicalSessionCommand,
+        CanonicalStatusCommand, CanonicalWorkspaceCommand, LegacyRoot
     ];
 
     private static readonly string[] RootCompletionMatches =
     [
-        CanonicalMcpCommand, CanonicalModelCommand, CanonicalSessionCommand, CanonicalStatusCommand,
-        CanonicalWorkspaceCommand, LegacyRoot
+        CanonicalMcpCommand, CanonicalModelCommand, CanonicalPluginCommand, CanonicalSessionCommand,
+        CanonicalStatusCommand, CanonicalWorkspaceCommand, LegacyRoot
     ];
 
     private static readonly string[] SlashCompletionMatches =
-        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalSessionCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand];
+        [CanonicalMcpCommand, CanonicalModelCommand, CanonicalPluginCommand, CanonicalSessionCommand, CanonicalStatusCommand, CanonicalWorkspaceCommand];
 
-    private static readonly string[] RootCommandMatches = [Mcp, Model, Session, Workspace];
+    private static readonly string[] RootCommandMatches = [Mcp, Model, Plugin, Session, Workspace];
     private static readonly string[] McpCommandMatches = [List];
     private static readonly string[] ModelCommandMatches = [Current, List, Use, Reset, Available];
+    private static readonly string[] PluginCommandMatches = [Approve, List, Revoke];
     private static readonly string[] SessionCommandMatches = [Current, Fork, Gc, List, New, Rename, Repair, Resume];
     private static readonly string[] WorkspaceCommandMatches = [Current, Open, Close];
 
@@ -87,6 +92,9 @@ internal static class MaieuticsCommandLanguage
         if (arguments[0].Equals(CanonicalMcpCommand, StringComparison.OrdinalIgnoreCase))
             return [LegacyRoot, Mcp, .. arguments[1..]];
 
+        if (arguments[0].Equals(CanonicalPluginCommand, StringComparison.OrdinalIgnoreCase))
+            return [LegacyRoot, Plugin, .. arguments[1..]];
+
         if (arguments[0].Equals(CanonicalStatusCommand, StringComparison.OrdinalIgnoreCase))
             return [LegacyRoot, Status, .. arguments[1..]];
 
@@ -100,6 +108,7 @@ internal static class MaieuticsCommandLanguage
             if (arguments.Length >= 2 &&
                 (arguments[1].Equals(Mcp, StringComparison.OrdinalIgnoreCase) ||
                  arguments[1].Equals(Model, StringComparison.OrdinalIgnoreCase) ||
+                 arguments[1].Equals(Plugin, StringComparison.OrdinalIgnoreCase) ||
                  arguments[1].Equals(Session, StringComparison.OrdinalIgnoreCase) ||
                  arguments[1].Equals(Workspace, StringComparison.OrdinalIgnoreCase)))
                 return [.. arguments];
@@ -186,6 +195,8 @@ internal static class MaieuticsCommandLanguage
                 McpCommandMatches,
             [var command] when command.Equals(CanonicalModelCommand, StringComparison.OrdinalIgnoreCase) =>
                 ModelCommandMatches,
+            [var command] when command.Equals(CanonicalPluginCommand, StringComparison.OrdinalIgnoreCase) =>
+                PluginCommandMatches,
             [var command] when command.Equals(CanonicalSessionCommand, StringComparison.OrdinalIgnoreCase) =>
                 SessionCommandMatches,
             [var command] when command.Equals(CanonicalWorkspaceCommand, StringComparison.OrdinalIgnoreCase) =>
@@ -208,6 +219,10 @@ internal static class MaieuticsCommandLanguage
                 when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
                      family.Equals(Model, StringComparison.OrdinalIgnoreCase) =>
                 ModelCommandMatches,
+            [var command, var family]
+                when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
+                     family.Equals(Plugin, StringComparison.OrdinalIgnoreCase) =>
+                PluginCommandMatches,
             [var command, var family]
                 when command.Equals(LegacyRoot, StringComparison.OrdinalIgnoreCase) &&
                      family.Equals(Session, StringComparison.OrdinalIgnoreCase) =>

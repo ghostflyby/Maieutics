@@ -26,16 +26,7 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateDeclarativePluginsRoot("declarative");
         var pluginName = Path.GetFileName(root);
-        var manager = new PluginHostManager(
-            root,
-            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
-            ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
-            new PluginHostModule(),
-            new ReplControlSessionRegistry(),
-            NullLogger<PluginHostManager>.Instance,
-            NullLoggerFactory.Instance,
-            TimeProvider.System);
+        var manager = CreateManager(root);
 
         try
         {
@@ -72,16 +63,7 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateDeclarativePluginsRoot("declarative-unknown", includeUnknownKind: true);
         var pluginName = Path.GetFileName(root);
-        var manager = new PluginHostManager(
-            root,
-            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
-            ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
-            new PluginHostModule(),
-            new ReplControlSessionRegistry(),
-            NullLogger<PluginHostManager>.Instance,
-            NullLoggerFactory.Instance,
-            TimeProvider.System);
+        var manager = CreateManager(root);
 
         try
         {
@@ -115,16 +97,7 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateDeclarativePluginsRoot("declarative-reload");
         var pluginId = Path.GetFileName(root);
-        var manager = new PluginHostManager(
-            root,
-            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
-            ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
-            new PluginHostModule(),
-            new ReplControlSessionRegistry(),
-            NullLogger<PluginHostManager>.Instance,
-            NullLoggerFactory.Instance,
-            TimeProvider.System);
+        var manager = CreateManager(root);
 
         try
         {
@@ -182,16 +155,7 @@ public sealed class PluginDeclarativeExtensionsTests
               "capabilities": ["tools.invoke"]
             }
             """);
-        var manager = new PluginHostManager(
-            root,
-            Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
-            ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
-            new PluginHostModule(),
-            new ReplControlSessionRegistry(),
-            NullLogger<PluginHostManager>.Instance,
-            NullLoggerFactory.Instance,
-            TimeProvider.System);
+        var manager = CreateManager(root);
 
         try
         {
@@ -218,6 +182,12 @@ public sealed class PluginDeclarativeExtensionsTests
                 }
                 """);
             await applied.WaitAsync(deadline.Token);
+
+            // The added extensions section changed the declaration surface, so the
+            // approval gate holds the contribution until the user approves it (ADR 0037);
+            // approval then activates it without a restart.
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            await manager.ApproveAsync(Path.GetFileName(root), deadline.Token);
 
             var registrations = manager.GetRegistrations(PluginExtensionKind.McpDiscover);
             var registration = registrations.Should().ContainSingle().Which;
@@ -299,7 +269,9 @@ public sealed class PluginDeclarativeExtensionsTests
             original.IsSuccess.Should().BeTrue(original.Failure);
 
             // Rewriting the data file with a different transport is a declarative-only
-            // change: the watcher reload re-parses it and the generation key follows.
+            // change, but it changes the declaration surface: the approval gate holds
+            // the contribution until the user approves the new servers (ADR 0037).
+            // Approval then serves them with the new generation key.
             var applied = CaptureReloadApplied(manager);
             WriteMcpDataFile(
                 root,
@@ -311,6 +283,8 @@ public sealed class PluginDeclarativeExtensionsTests
                 }
                 """);
             await applied.WaitAsync(deadline.Token);
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            await manager.ApproveAsync(pluginId, deadline.Token);
 
             var reloaded = manager.DiscoverManifestMcpAsync(registration);
             reloaded.IsSuccess.Should().BeTrue(reloaded.Failure);
@@ -349,18 +323,18 @@ public sealed class PluginDeclarativeExtensionsTests
             var original = manager.DiscoverManifestMcpAsync(registration);
             original.IsSuccess.Should().BeTrue(original.Failure);
 
-            // The broken rewrite must degrade visibly and keep the plugin registered:
-            // discovery fails (so the coordinator retains the previous contribution),
-            // and repairing the file brings the contribution straight back.
+            // The broken rewrite is a declaration-surface change the approval gate treats
+            // fail-closed (ADR 0037): the contribution is withdrawn and the plugin goes
+            // pending. Repairing the file restores the EXACT approved fingerprint, so the
+            // still-stored record re-matches and the contribution returns without a new
+            // approval — the repair form of sticky-last-good.
             var applied = CaptureReloadApplied(manager);
             WriteMcpDataFile(root, "{");
             await applied.WaitAsync(deadline.Token);
 
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover)
-                .Should().ContainSingle().Which.PluginId.Should().Be(pluginId);
-            var broken = manager.DiscoverManifestMcpAsync(registration);
-            broken.IsSuccess.Should().BeFalse(broken.Failure);
-            broken.Failure.Should().Be("invalid_data_file");
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.ListPluginApprovals().Should().ContainSingle()
+                .Which.State.Should().Be(PluginApprovalState.PendingApproval);
 
             var repaired = CaptureReloadApplied(manager);
             WriteMcpDataFile(
@@ -373,6 +347,8 @@ public sealed class PluginDeclarativeExtensionsTests
                 }
                 """);
             await repaired.WaitAsync(deadline.Token);
+            manager.GetRegistrations(PluginExtensionKind.McpDiscover)
+                .Should().ContainSingle().Which.PluginId.Should().Be(pluginId);
             var recovered = manager.DiscoverManifestMcpAsync(registration);
             recovered.IsSuccess.Should().BeTrue(recovered.Failure);
             recovered.Definitions[0].GenerationKey.Should().Be(original.Definitions[0].GenerationKey);
@@ -391,6 +367,10 @@ public sealed class PluginDeclarativeExtensionsTests
         return manager.ReloadApplied;
     }
 
+    /// <summary>The manager construction every test in this suite shares, seeded with
+    /// approvals for the current declarations (ADR 0037): these tests assert what an
+    /// APPROVED declarative plugin does, so they approve the boot state through the real
+    /// approvals file.</summary>
     private static PluginHostManager CreateManager(string root)
     {
         return new PluginHostManager(
@@ -402,7 +382,8 @@ public sealed class PluginDeclarativeExtensionsTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            TimeProvider.System,
+            pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(root));
     }
 
     /// <summary>A workerless plugin project that declares MCP servers purely through an

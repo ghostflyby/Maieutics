@@ -25,6 +25,10 @@ internal sealed record ApplicationPaths(
 {
     public string PluginDataRoot => Path.Combine(DataRoot, "plugin-data");
 
+    /// <summary>The persisted plugin approval registry (ADR 0037): one consent record per
+    /// plugin id, keyed by declaration fingerprint.</summary>
+    public string PluginApprovalsPath => Path.Combine(DataRoot, "plugin-approvals.json");
+
     public string AgentRoot => Path.Combine(DataRoot, "agent");
 
     /// <summary>Per-family transcript databases: one <c>history.db</c> per fork family, keyed

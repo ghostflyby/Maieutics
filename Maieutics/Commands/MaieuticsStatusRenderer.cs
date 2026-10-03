@@ -101,6 +101,16 @@ internal static class MaieuticsStatusRenderer
             .AppendLine(plugins.HostProcessRequired
                 ? plugins.ControlConnected ? "connected" : "disconnected"
                 : "not required");
+        if (plugins.PendingApprovals > 0)
+        {
+            output.Append("  - ")
+                .Append(MarkdownText.CodeSpan(plugins.PendingApprovals.ToString()))
+                .Append(" plugin(s) pending approval (")
+                .Append(MarkdownText.CodeSpan("%plugin list"))
+                .Append(", ")
+                .Append(MarkdownText.CodeSpan("%plugin approve <id>"))
+                .AppendLine(")");
+        }
 
         if (snapshot.McpServers.Count == 0)
         {

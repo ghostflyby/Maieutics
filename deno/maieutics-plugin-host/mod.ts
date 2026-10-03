@@ -56,8 +56,10 @@ async function main(): Promise<void> {
   // kernel answers by republishing the plugin's MCP registrations.
   host.setTriggerSinks({
     async onEvent(pluginId, trigger, detail) {
-      const workers = (config.plugins ?? []).find((plugin) => plugin.id === pluginId)?.workers ??
-        [];
+      // Resolve targets through the LIVE plugin registry: a plugin activated (or
+      // reshaped) after boot — the normal first-run approval flow — exists only
+      // there; the frozen boot config would silently drop its events.
+      const workers = host.workersOf(pluginId);
       const delivered = await Promise.allSettled(
         workers.map((worker) =>
           host.invoke(pluginId, worker.exportName, "PluginEvent", {
@@ -198,10 +200,16 @@ async function main(): Promise<void> {
         pluginId?: string;
         exportName?: string;
         plugin?: PluginConfig;
+        stop?: boolean;
       };
       if (typeof payload?.pluginId === "string" && typeof payload.exportName === "string") {
-        const next = payload.plugin;
-        void host.reload(payload.pluginId, payload.exportName, next).then(() => {
+        // `stop` is the revocation form (ADR 0037): close the worker and its
+        // dependents without restarting; otherwise a replacement config rebuilds
+        // the worker — creating it first when the host does not know it (upsert).
+        const done = payload.stop === true
+          ? host.stop(payload.pluginId, payload.exportName)
+          : host.reload(payload.pluginId, payload.exportName, payload.plugin);
+        void done.then(() => {
           busHolder.bus!.send({
             type: "extension.registry",
             payload: registryPayload(host.extensions, host.states()),

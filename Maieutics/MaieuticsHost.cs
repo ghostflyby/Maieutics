@@ -245,7 +245,8 @@ public static class MaieuticsHost
             services.GetService<IMaieuticsRuntimeConfiguration>(),
             services.GetRequiredService<Workspace>(),
             services.GetRequiredService<MaieuticsStatusProvider>(),
-            services.GetService<IMaieuticsMcpController>()));
+            services.GetService<IMaieuticsMcpController>(),
+            services.GetService<PluginHostManager>()));
         builder.Services.AddSingleton<ReplControlSessionRegistry>();
         var controlSocketPath = ReplControlHost.CreateSocketPath();
         builder.WebHost.ConfigureKestrel(options =>
@@ -295,8 +296,9 @@ public static class MaieuticsHost
 
         builder.Services.AddSingleton<PluginHostModule>();
         builder.Services.TryAddSingleton(ApplicationPaths.Resolve());
-        // MAIEUTICS_PLUGINS_ROOT relocates the plugin workspace (portable setups and test
-        // isolation); the default stays under the roaming application-data Maieutics directory.
+        // MAIEUTICS_PLUGINS_ROOT relocates the plugin workspace and MAIEUTICS_PLUGIN_APPROVALS
+        // the approval registry (portable setups and test isolation); the defaults stay under
+        // the roaming application-data Maieutics directory.
         var pluginsRoot = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT") is
                 { } configuredPluginsRoot and not { Length: 0 }
             ? Path.GetFullPath(configuredPluginsRoot)
@@ -304,6 +306,10 @@ public static class MaieuticsHost
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "Maieutics",
                 "plugins");
+        var pluginApprovalsPath = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS") is
+                { } configuredApprovals and not { Length: 0 }
+            ? Path.GetFullPath(configuredApprovals)
+            : ApplicationPaths.Resolve().PluginApprovalsPath;
         builder.Services.AddSingleton(services => new PluginHostManager(
             pluginsRoot,
             services.GetRequiredService<ApplicationPaths>().PluginDataRoot,
@@ -316,7 +322,8 @@ public static class MaieuticsHost
             services.GetRequiredService<TimeProvider>(),
             services.GetService<IMcpWorkspaceRootsSource>(),
             services.GetService<IMcpElicitationPresenter>(),
-            services.GetService<DenoPermissionBroker>()));
+            services.GetService<DenoPermissionBroker>(),
+            pluginApprovalsPath));
         // The host manager is the kernel-facing REPL policy registrar (ADR 0020 decision 1): the
         // session factory pre-caches a REPL's policy through it before the host derives the REPL.
         builder.Services.AddSingleton<IReplPolicyRegistrar>(static services =>

@@ -170,8 +170,12 @@ internal sealed record PluginHostConfigPermissions(
 /// <summary>Payload for the in-process <c>plugin.reload</c> bus message: the target worker plus the
 /// plugin's full replacement config (permissions, workers, dependencies) so the host can rebuild
 /// the worker with the new grants. <see cref="Plugin"/> is null for a pure source-change reload
-/// (same config, new module text).</summary>
+/// (same config, new module text). <see cref="Stop"/> selects the revocation form (ADR 0037):
+/// the worker and its transitive dependents close without restarting and leave the host set, and a
+/// replacement for a worker the host does not know creates and starts it (upsert — the approval
+/// activation path).</summary>
 internal sealed record PluginReloadPayload(
     string PluginId,
     string ExportName,
-    PluginHostConfigPlugin? Plugin);
+    PluginHostConfigPlugin? Plugin,
+    bool Stop = false);

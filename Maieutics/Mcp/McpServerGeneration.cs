@@ -133,7 +133,10 @@ internal sealed record McpServerDefinition(
 
 internal sealed class McpServerGeneration
 {
-    private static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);
+    /// <summary>First reconnect wait after the live connection drops; each failed attempt
+    /// doubles it up to <see cref="MaximumReconnectDelay"/>. Internal so tests advancing a
+    /// fake time provider step past exactly this wait.</summary>
+    internal static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumReconnectDelay = TimeSpan.FromSeconds(30);
 
     private readonly McpServerDefinition definition;
@@ -159,6 +162,49 @@ internal sealed class McpServerGeneration
     // MaieuticsRuntimeConfiguration's reload signals).
     private long refreshApplications;
     private TaskCompletionSource refreshApplication = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // Internal test observability for virtual time: the reconnect wait is registered with the
+    // injected time provider before ReconnectDelayRegistered completes, so advancing a fake
+    // clock past the pending delay once the signal completed is guaranteed to fire the wait,
+    // and a reconnection is reported only in the same locked section that installs the
+    // replacement. Both completions and the properties' per-read swaps run under the gate,
+    // so a reader either observes the completed task or hands the completer the fresh source;
+    // a completed task is replaced on the next read (one await observes one occurrence).
+    private TaskCompletionSource reconnectDelayRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes when the supervisor's reconnect wait
+    /// has been registered with the time provider. Capture a read before disconnecting the
+    /// live connection to await exactly that cycle's registration.</summary>
+    internal Task ReconnectDelayRegistered
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (reconnectDelayRegistered.Task.IsCompleted)
+                    reconnectDelayRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return reconnectDelayRegistered.Task;
+            }
+        }
+    }
+
+    /// <summary>Internal test observability: completes when a reconnected replacement
+    /// connection has been installed — the same locked transition that clears the pending
+    /// reconnect delay — so a test awaits reconnection deterministically instead of polling
+    /// <see cref="GetInfo"/>. Capture a read before the disconnect that starts the cycle.</summary>
+    internal Task Reconnected
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (reconnected.Task.IsCompleted)
+                    reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return reconnected.Task;
+            }
+        }
+    }
 
     private McpServerGeneration(
         McpServerDefinition definition,
@@ -489,9 +535,20 @@ internal sealed class McpServerGeneration
                 nextReconnectDelay = reconnectDelay;
             }
 
+            // The wait rides the injected time provider (a fake clock in tests advances past
+            // it) with unchanged lifetime-token cancellation. The wait is registered before
+            // ReconnectDelayRegistered fires — Task.Delay creates the provider timer before
+            // returning — so advancing a fake clock past the delay after the signal is
+            // guaranteed to fire this wait rather than race its registration.
+            Task reconnectWait = Task.Delay(reconnectDelay, timeProvider, lifetime.Token);
+            lock (gate)
+            {
+                reconnectDelayRegistered.TrySetResult();
+            }
+
             try
             {
-                await Task.Delay(reconnectDelay, timeProvider, lifetime.Token).ConfigureAwait(false);
+                await reconnectWait.ConfigureAwait(false);
                 var replacement = await CreateConnectionAsync(
                     definition,
                     loggerFactory,
@@ -512,6 +569,8 @@ internal sealed class McpServerGeneration
                     {
                         retiredConnections.Add(replacement.Retire());
                     }
+
+                    reconnected.TrySetResult();
                 }
 
                 reconnectDelay = InitialReconnectDelay;

@@ -163,7 +163,10 @@ internal sealed class PluginHostManager(
     // the outer hook await gives up first, after which the capability result no
     // longer has an observer and is simply dropped.
     private static readonly TimeSpan CapabilityCallTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Debounce window a watched plugin-file change waits before its reload starts.
+    /// Internal so tests advancing a fake time provider step past exactly this window.</summary>
+    internal static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
 
     /// <summary>How long a <c>host.repl.derive</c> instruction waits for the host's spawned /
     /// deriveFailed report before the derive is treated as failed (bounded by the session
@@ -330,6 +333,32 @@ internal sealed class PluginHostManager(
                     reloadApplied = new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously);
                 return reloadApplied.Task;
+            }
+        }
+    }
+
+    /// <summary>The per-event debounced wait, completed (under the gate) only after its
+    /// timer is registered with the injected time provider; the completion and the
+    /// property's per-read swap share the same gate, so a reader either observes the
+    /// completed task or hands the completer the fresh source. Internal test observability
+    /// for virtual time: advancing a fake clock past <see cref="PluginReloadDebounce"/> once
+    /// this completes is guaranteed to fire the wait, so tests never sleep out the debounce
+    /// in real time. A completed task is replaced on the next read (one await observes one
+    /// registered debounce); capture a read before the watched change to await exactly its
+    /// registration.</summary>
+    private TaskCompletionSource watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes when a watcher event's debounced wait
+    /// has been registered with the time provider (see the field above).</summary>
+    internal Task WatcherDebounceRegistered
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (watcherDebounceRegistered.Task.IsCompleted)
+                    watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return watcherDebounceRegistered.Task;
             }
         }
     }
@@ -867,9 +896,21 @@ internal sealed class PluginHostManager(
             {
                 if (generation.IsCancellationRequested) return;
 
+                // The debounce rides the injected time provider (a fake clock in tests
+                // advances past it) with the same linked-CTS cancellation as before: the
+                // linked debounce token cancels the wait, an earlier event supersedes it,
+                // and generation shutdown cancels the linked source. The registration is
+                // reported (WatcherDebounceRegistered) only after Task.Delay returned, so
+                // the wait's timer provably exists in the provider by then.
+                Task debounceWait = Task.Delay(PluginReloadDebounce, timeProvider, debounce.Token);
+                lock (gate)
+                {
+                    watcherDebounceRegistered.TrySetResult();
+                }
+
                 try
                 {
-                    await Task.Delay(PluginReloadDebounce, debounce.Token).ConfigureAwait(false);
+                    await debounceWait.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {

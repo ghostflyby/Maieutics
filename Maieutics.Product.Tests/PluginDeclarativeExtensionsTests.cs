@@ -5,6 +5,7 @@ using Maieutics.DenoRepl;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Maieutics.Product.Tests;
 
@@ -26,7 +27,8 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateDeclarativePluginsRoot("declarative");
         var pluginName = Path.GetFileName(root);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -63,7 +65,8 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateDeclarativePluginsRoot("declarative-unknown", includeUnknownKind: true);
         var pluginName = Path.GetFileName(root);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -97,7 +100,8 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateDeclarativePluginsRoot("declarative-reload");
         var pluginId = Path.GetFileName(root);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -118,7 +122,8 @@ public sealed class PluginDeclarativeExtensionsTests
                   "capabilities": ["tools.invoke"]
                 }
                 """);
-            await applied.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
 
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             var discovery = manager.DiscoverManifestMcpAsync(
@@ -155,7 +160,8 @@ public sealed class PluginDeclarativeExtensionsTests
               "capabilities": ["tools.invoke"]
             }
             """);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -181,7 +187,8 @@ public sealed class PluginDeclarativeExtensionsTests
                   }
                 }
                 """);
-            await applied.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
 
             // The added extensions section changed the declaration surface, so the
             // approval gate holds the contribution until the user approves it (ADR 0037);
@@ -215,7 +222,8 @@ public sealed class PluginDeclarativeExtensionsTests
         // registration and discovery path the manifest section uses.
         var root = CreateMcpDataFilePluginsRoot("declarative-data");
         var pluginId = Path.GetFileName(root);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -252,7 +260,8 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateMcpDataFilePluginsRoot("declarative-data-edit");
         var pluginId = Path.GetFileName(root);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -282,7 +291,8 @@ public sealed class PluginDeclarativeExtensionsTests
                   }
                 }
                 """);
-            await applied.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             await manager.ApproveAsync(pluginId, deadline.Token);
 
@@ -307,7 +317,8 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = CreateMcpDataFilePluginsRoot("declarative-data-broken");
         var pluginId = Path.GetFileName(root);
-        var manager = CreateManager(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
 
         try
         {
@@ -330,7 +341,8 @@ public sealed class PluginDeclarativeExtensionsTests
             // approval — the repair form of sticky-last-good.
             var applied = CaptureReloadApplied(manager);
             WriteMcpDataFile(root, "{");
-            await applied.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
 
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             manager.ListPluginApprovals().Should().ContainSingle()
@@ -346,7 +358,8 @@ public sealed class PluginDeclarativeExtensionsTests
                   }
                 }
                 """);
-            await repaired.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, repaired, deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover)
                 .Should().ContainSingle().Which.PluginId.Should().Be(pluginId);
             var recovered = manager.DiscoverManifestMcpAsync(registration);
@@ -370,8 +383,10 @@ public sealed class PluginDeclarativeExtensionsTests
     /// <summary>The manager construction every test in this suite shares, seeded with
     /// approvals for the current declarations (ADR 0037): these tests assert what an
     /// APPROVED declarative plugin does, so they approve the boot state through the real
-    /// approvals file.</summary>
-    private static PluginHostManager CreateManager(string root)
+    /// approvals file. The fake clock owns the watcher debounce: tests that change watched
+    /// files advance it past <see cref="PluginHostManager.PluginReloadDebounce"/> through
+    /// <see cref="PluginWatcherTestWaits"/> instead of waiting the window out in real time.</summary>
+    private static PluginHostManager CreateManager(string root, FakeTimeProvider clock)
     {
         return new PluginHostManager(
             root,
@@ -382,7 +397,7 @@ public sealed class PluginDeclarativeExtensionsTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System,
+            clock,
             pluginApprovalsPath: PluginApprovalSeeds.SeedLocalPlugins(root));
     }
 

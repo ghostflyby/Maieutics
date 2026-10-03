@@ -132,9 +132,12 @@ public sealed class PluginHostReplRegistrationTests
             manager.RegisterReplPolicy("disconnect-session", EffectivePolicy.Default);
 
             var socket = new FakeHostWebSocket();
+            var attached = manager.HostConnectionAttached;
             var attach = manager.AttachHostAsync(socket, deadline.Token);
-            for (var attempt = 0; attempt < 100 && !manager.GetStatus().ControlConnected; attempt++)
-                await Task.Delay(50, deadline.Token);
+            // The manager completes the attach signal in the same locked transition that
+            // installed the socket, so the awaited task proves acceptance instead of inferring
+            // it from the fake's first receive or polling GetStatus().ControlConnected.
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
             manager.GetStatus().ControlConnected.Should().BeTrue();
 
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
@@ -175,9 +178,12 @@ public sealed class PluginHostReplRegistrationTests
             manager.RegisterReplPolicy("disconnect-session", EffectivePolicy.Default);
 
             var socket = new FakeHostWebSocket();
+            var attached = manager.HostConnectionAttached;
             var attach = manager.AttachHostAsync(socket, deadline.Token);
-            for (var attempt = 0; attempt < 100 && !manager.GetStatus().ControlConnected; attempt++)
-                await Task.Delay(50, deadline.Token);
+            // The manager completes the attach signal in the same locked transition that
+            // installed the socket, so the awaited task proves acceptance instead of inferring
+            // it from the fake's first receive or polling GetStatus().ControlConnected.
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
             manager.GetStatus().ControlConnected.Should().BeTrue();
 
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(

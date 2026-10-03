@@ -504,10 +504,12 @@ public sealed class DenoReplHostDeriveTests
         var application = await StartHostAsync(socketPath, controlHost, evalHost, outputHost, cancellationToken);
 
         // The manager's host process connects the control bus (its hello registers the host pid);
-        // the manager then accepts host.repl.* reports from the real host.
+        // the manager then accepts host.repl.* reports from the real host. The attach signal is
+        // completed by the same locked transition that installs the socket, so awaiting it
+        // replaces the status poll; the status read afterwards is a plain assertion, not a wait.
+        var attached = manager.HostConnectionAttached;
         await manager.StartAsync(cancellationToken);
-        for (var attempt = 0; attempt < 200 && !manager.GetStatus().ControlConnected; attempt++)
-            await Task.Delay(100, cancellationToken);
+        await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
         manager.GetStatus().ControlConnected.Should().BeTrue();
 
         var harness = new HostHarness
@@ -605,9 +607,12 @@ public sealed class DenoReplHostDeriveTests
         registry.RegisterPluginHost(Environment.ProcessId, "test-host");
 
         var fakeSocket = new FakeHostWebSocket();
+        var attached = manager.HostConnectionAttached;
         var attach = manager.AttachHostAsync(fakeSocket, cancellationToken);
-        for (var attempt = 0; attempt < 100 && !manager.GetStatus().ControlConnected; attempt++)
-            await Task.Delay(50, cancellationToken);
+        // The manager completes the attach signal in the same locked transition that installed
+        // the socket, so the awaited task proves acceptance instead of inferring it from the
+        // fake's first receive or polling GetStatus().ControlConnected.
+        await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
         manager.GetStatus().ControlConnected.Should().BeTrue();
 
         var harness = new HostHarness

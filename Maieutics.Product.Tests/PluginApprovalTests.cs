@@ -5,6 +5,7 @@ using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Maieutics.Product.Tests;
 
@@ -244,7 +245,7 @@ public sealed class PluginApprovalTests
         // An explicit per-test approvals path: the null fallback derives a fixed shared
         // temp location, and the approve/revoke below would poison later runs through it.
         var approvalsPath = Path.Combine(Path.GetTempPath(), $"mc-plugin-approvals-{Guid.NewGuid():N}.json");
-        var manager = CreateManager(root, approvalsPath);
+        var manager = CreateManager(root, approvalsPath, new FakeTimeProvider());
         try
         {
             await StartAsync(manager);
@@ -295,7 +296,7 @@ public sealed class PluginApprovalTests
 
         var root = CreateProbePluginsRoot("approval-seeded");
         var approvalsPath = PluginApprovalSeeds.SeedLocalPlugins(root);
-        var manager = CreateManager(root, approvalsPath);
+        var manager = CreateManager(root, approvalsPath, new FakeTimeProvider());
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
@@ -323,7 +324,8 @@ public sealed class PluginApprovalTests
         var root = CreateProbePluginsRoot("approval-revoke");
         var pluginId = Path.GetFileName(root);
         var approvalsPath = PluginApprovalSeeds.SeedLocalPlugins(root);
-        var manager = CreateManager(root, approvalsPath);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, approvalsPath, clock);
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
@@ -344,7 +346,8 @@ public sealed class PluginApprovalTests
                   "permissions": { "default": { "read": ["./", "/tmp"] } }
                 }
                 """);
-            await applied.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             manager.GetStatus().PendingApprovals.Should().Be(1);
             var approval = manager.ListPluginApprovals().Should().ContainSingle().Which;
@@ -362,7 +365,8 @@ public sealed class PluginApprovalTests
                   "permissions": { "default": { "read": ["./"] } }
                 }
                 """);
-            await reverted.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, reverted, deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
             manager.GetStatus().PendingApprovals.Should().Be(0);
 
@@ -377,7 +381,8 @@ public sealed class PluginApprovalTests
                   "permissions": { "default": { "read": ["./", "/tmp"] } }
                 }
                 """);
-            await widened.WaitAsync(deadline.Token);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, widened, deadline.Token);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
             await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken);
             manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
@@ -417,7 +422,7 @@ public sealed class PluginApprovalTests
         var approvalsPath = PluginApprovalSeeds.SeedPlugins(
             Path.Combine(root, "consumer"));
 
-        var manager = CreateManager(root, approvalsPath);
+        var manager = CreateManager(root, approvalsPath, new FakeTimeProvider());
         try
         {
             await StartAsync(manager);
@@ -455,7 +460,7 @@ public sealed class PluginApprovalTests
         var root = CreateProbePluginsRoot("approval-commands");
         var pluginId = Path.GetFileName(root);
         var approvalsPath = Path.Combine(Path.GetTempPath(), $"mc-plugin-approvals-{Guid.NewGuid():N}.json");
-        var manager = CreateManager(root, approvalsPath);
+        var manager = CreateManager(root, approvalsPath, new FakeTimeProvider());
         var executor = new MaieuticsCommandExecutor(null, null, null, null, null, manager);
         try
         {
@@ -572,7 +577,11 @@ public sealed class PluginApprovalTests
         await manager.WaitUntilReadyAsync(deadline.Token);
     }
 
-    private static PluginHostManager CreateManager(string root, string? approvalsPath)
+    /// <summary>The manager construction every suite test shares. The fake clock owns the
+    /// watcher debounce: tests that change watched files advance it past
+    /// <see cref="PluginHostManager.PluginReloadDebounce"/> through
+    /// <see cref="PluginWatcherTestWaits"/> instead of waiting the window out in real time.</summary>
+    private static PluginHostManager CreateManager(string root, string? approvalsPath, FakeTimeProvider clock)
     {
         return new PluginHostManager(
             root,
@@ -583,7 +592,7 @@ public sealed class PluginApprovalTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System,
+            clock,
             pluginApprovalsPath: approvalsPath);
     }
 

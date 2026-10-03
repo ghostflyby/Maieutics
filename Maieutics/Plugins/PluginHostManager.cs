@@ -163,7 +163,10 @@ internal sealed class PluginHostManager(
     // the outer hook await gives up first, after which the capability result no
     // longer has an observer and is simply dropped.
     private static readonly TimeSpan CapabilityCallTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Debounce window a watched plugin-file change waits before its reload starts.
+    /// Internal so tests advancing a fake time provider step past exactly this window.</summary>
+    internal static readonly TimeSpan PluginReloadDebounce = TimeSpan.FromMilliseconds(500);
 
     /// <summary>How long a <c>host.repl.derive</c> instruction waits for the host's spawned /
     /// deriveFailed report before the derive is treated as failed (bounded by the session
@@ -197,6 +200,12 @@ internal sealed class PluginHostManager(
     /// source when a connection is accepted, so the property always reflects the current
     /// connection (see <see cref="HostConnectionReleased"/>).</summary>
     private TaskCompletionSource hostConnectionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completed when a host connection is accepted, in
+    /// the same locked section that installs the socket. Swapped for a fresh source at the
+    /// accept and again when the live connection detaches, so the property always reflects the
+    /// next accept (see <see cref="HostConnectionAttached"/>).</summary>
+    private TaskCompletionSource hostConnectionAttached = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -328,6 +337,32 @@ internal sealed class PluginHostManager(
         }
     }
 
+    /// <summary>The per-event debounced wait, completed (under the gate) only after its
+    /// timer is registered with the injected time provider; the completion and the
+    /// property's per-read swap share the same gate, so a reader either observes the
+    /// completed task or hands the completer the fresh source. Internal test observability
+    /// for virtual time: advancing a fake clock past <see cref="PluginReloadDebounce"/> once
+    /// this completes is guaranteed to fire the wait, so tests never sleep out the debounce
+    /// in real time. A completed task is replaced on the next read (one await observes one
+    /// registered debounce); capture a read before the watched change to await exactly its
+    /// registration.</summary>
+    private TaskCompletionSource watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes when a watcher event's debounced wait
+    /// has been registered with the time provider (see the field above).</summary>
+    internal Task WatcherDebounceRegistered
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (watcherDebounceRegistered.Task.IsCompleted)
+                    watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return watcherDebounceRegistered.Task;
+            }
+        }
+    }
+
     /// <summary>Internal test observability: completes when the live host connection's receive
     /// loop releases the attach slot — the same locked transition that clears the slot, so an
     /// awaited task guarantees a subsequent attach is accepted. A fresh source is installed when
@@ -341,6 +376,18 @@ internal sealed class PluginHostManager(
         get { lock (gate) return hostConnectionReleased.Task; }
     }
 
+    /// <summary>Internal test observability: completes when a live host connection is accepted —
+    /// the same locked transition that installs the socket — so an awaited task proves the
+    /// attach (and with it the connected status) without polling <c>GetStatus()</c>. The
+    /// completed source is replaced in the same lock section, and a fresh source is installed
+    /// again when the current connection detaches, so the property always reflects the next
+    /// accept: capture the task before triggering the attach and await it under the caller's
+    /// deadline.</summary>
+    internal Task HostConnectionAttached
+    {
+        get { lock (gate) return hostConnectionAttached.Task; }
+    }
+
     /// <summary>
     ///     Publishes the latest registry snapshot produced by the plugin host so tests can wait for a
     ///     registration without polling. Completed when the manager is disposed. Bounded and
@@ -348,6 +395,30 @@ internal sealed class PluginHostManager(
     /// </summary>
     internal Channel<PluginRegistration[]> RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
+
+    /// <summary>Internal test observability: completed when a host restart replaced
+    /// <see cref="RegistryChanges"/> with the fresh generation's channel. Completion and
+    /// <see cref="RegistryChangesReplaced"/>'s per-read swap share the gate, so a reader
+    /// either observes the completed task or hands the completer the fresh source; a
+    /// completed task is replaced on the next read. A waiter parked on the superseded
+    /// channel's frames must re-capture on this signal — the replaced channel never
+    /// produces another frame.</summary>
+    private TaskCompletionSource registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes when the registry channel was replaced
+    /// by a host restart (see the field above).</summary>
+    internal Task RegistryChangesReplaced
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (registryChangesReplaced.Task.IsCompleted)
+                    registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return registryChangesReplaced.Task;
+            }
+        }
+    }
 
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
@@ -849,9 +920,21 @@ internal sealed class PluginHostManager(
             {
                 if (generation.IsCancellationRequested) return;
 
+                // The debounce rides the injected time provider (a fake clock in tests
+                // advances past it) with the same linked-CTS cancellation as before: the
+                // linked debounce token cancels the wait, an earlier event supersedes it,
+                // and generation shutdown cancels the linked source. The registration is
+                // reported (WatcherDebounceRegistered) only after Task.Delay returned, so
+                // the wait's timer provably exists in the provider by then.
+                Task debounceWait = Task.Delay(PluginReloadDebounce, timeProvider, debounce.Token);
+                lock (gate)
+                {
+                    watcherDebounceRegistered.TrySetResult();
+                }
+
                 try
                 {
-                    await Task.Delay(PluginReloadDebounce, debounce.Token).ConfigureAwait(false);
+                    await debounceWait.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -1027,6 +1110,14 @@ internal sealed class PluginHostManager(
                 // safe and closes the NotStarted observation window.
                 startupTask = StartCoreAsync(startupToken);
                 starting = startupTask;
+            }
+
+            // Reported after the swap, under the state gate so a reader's per-read swap cannot
+            // strand the fresh source: a waiter parked on the superseded channel's frames
+            // re-captures the live one (RegistryChangesReplaced).
+            lock (gate)
+            {
+                registryChangesReplaced.TrySetResult();
             }
 
             // Wait for the new generation to be ready before the re-check below: descriptors
@@ -1445,6 +1536,10 @@ internal sealed class PluginHostManager(
             refused = Socket is not null;
             if (!refused)
             {
+                // The accept completes the attach signal and swaps a fresh source in the same
+                // locked section that installs the socket, so one await observes one accept.
+                hostConnectionAttached.TrySetResult();
+                hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 // A fresh release signal per accepted connection: tests capture it before
                 // detaching and await it instead of polling re-attach attempts.
                 hostConnectionReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1512,6 +1607,9 @@ internal sealed class PluginHostManager(
                     // Signaled after the slot is cleared, under the same lock, so an awaiter is
                     // guaranteed to observe the released slot.
                     hostConnectionReleased.TrySetResult();
+                    // A fresh attach signal per detached connection: awaits captured after the
+                    // detach wait for the next accept instead of observing the retired one.
+                    hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 }
             }
 

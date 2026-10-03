@@ -8,6 +8,7 @@ using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -90,17 +91,52 @@ public sealed class McpServerGenerationTests
 
     private sealed class FakeToolSurfaceAdjuster(Func<JsonElement, JsonElement?> handler) : IMcpToolSurfaceAdjuster
     {
+        private readonly Lock gate = new();
         private int invocations;
+        private TaskCompletionSource invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal int Invocations => invocations;
 
-        public Task<JsonElement?> AdjustToolsAsync(
+        /// <summary>Waits until the adjuster has completed at least <paramref name="count"/>
+        /// invocations. Signal-driven: each completed invocation (the handler has run and its
+        /// result is known) completes a fresh source, so the wait needs no polling of
+        /// <see cref="Invocations"/>.</summary>
+        internal async Task WaitForInvocationsAsync(int count, CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Task signal;
+                lock (gate)
+                {
+                    if (invocations >= count) return;
+
+                    signal = invoked.Task;
+                }
+
+                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        public async Task<JsonElement?> AdjustToolsAsync(
             string serverId,
             JsonElement listing,
             CancellationToken cancellationToken)
         {
-            Interlocked.Increment(ref invocations);
-            return Task.FromResult(handler(listing));
+            TaskCompletionSource completed;
+            lock (gate)
+            {
+                invocations++;
+                completed = invoked;
+                invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            var result = handler(listing);
+            // Completed only after the handler ran, so an awaiter observes the invocation's
+            // outcome, not merely its start.
+            completed.TrySetResult();
+            return result;
         }
     }
 
@@ -250,11 +286,14 @@ public sealed class McpServerGenerationTests
 
         // The adjuster stops producing: the refresh fails closed (nothing exposed)
         // instead of resurrecting the raw surface — the sticky-last-good decision
-        // belongs to the chain above this layer.
+        // belongs to the chain above this layer. The refresh signal — not the bare
+        // invocation count — is what proves the failed listing was applied, so the
+        // lease below cannot race the refresh chain's application step.
         fail = true;
+        var refreshesBefore = generation.ToolRefreshApplications;
         generation.RequestToolRefresh();
-        while (adjuster.Invocations < 2)
-            await Task.Delay(25, deadline.Token);
+        await adjuster.WaitForInvocationsAsync(2, deadline.Token);
+        await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var refreshedLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
         refreshedLease.Tools.Should().BeEmpty();
@@ -293,10 +332,13 @@ public sealed class McpServerGenerationTests
         firstLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
         await firstLease.DisposeAsync();
 
+        // As above: await the refresh's application, not just the adjuster call, so the
+        // lease below observes the sticky surface the refresh chain actually applied.
         fail = true;
+        var refreshesBefore = generation.ToolRefreshApplications;
         generation.RequestToolRefresh();
-        while (adjuster.Invocations < 2)
-            await Task.Delay(25, deadline.Token);
+        await adjuster.WaitForInvocationsAsync(2, deadline.Token);
+        await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var stickyLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
         stickyLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
@@ -363,6 +405,89 @@ public sealed class McpServerGenerationTests
             new MaieuticsMcpToolInfo("echo", "echo", false));
         var retirement = generation.Retire();
         await acquired.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AForcedDisconnectReconnectsAfterAdvancingTheVirtualBackoff()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var clock = new FakeTimeProvider();
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            clock,
+            deadline.Token,
+            serverFactory.CreateTransportAsync);
+
+        // Drop the server side; the supervisor observes the closed client and enters the
+        // reconnect wait, registered with the fake clock. Both signals are captured before
+        // the drop: a read after the drop can land after the registration already completed,
+        // and the property hands that read the (uncompletable) replacement source.
+        var reconnected = generation.Reconnected;
+        var registered = generation.ReconnectDelayRegistered;
+        await serverFactory.DisconnectClientsAsync();
+        await registered.WaitAsync(deadline.Token);
+        var waiting = generation.GetInfo();
+        waiting.State.Should().Be(MaieuticsMcpServerState.Reconnecting);
+        waiting.NextReconnectDelay.Should().Be(McpServerGeneration.InitialReconnectDelay);
+
+        clock.Advance(McpServerGeneration.InitialReconnectDelay);
+        await reconnected.WaitAsync(deadline.Token);
+        var lease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
+        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
+        generation.GetInfo().State.Should().Be(MaieuticsMcpServerState.Connected);
+        var retirement = generation.Retire();
+        await lease.DisposeAsync();
+        await retirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AFailedReconnectAttemptDoublesTheBackoffBeforeTheNextTry()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var clock = new FakeTimeProvider();
+        await using var serverFactory = new StreamServerFactory();
+        var definition = CreateStdioDefinition();
+        var generation = await McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            clock,
+            deadline.Token,
+            serverFactory.CreateTransportAsync);
+
+        // Both signals are captured before the drop: a read after the drop can land after
+        // the registration already completed, and the property hands that read the
+        // (uncompletable) replacement source. The second capture takes the replacement
+        // handed back after the first await consumed the initial registration.
+        var reconnected = generation.Reconnected;
+        var firstRegistration = generation.ReconnectDelayRegistered;
+        await serverFactory.DisconnectClientsAsync();
+        serverFactory.FailNextTransport = true;
+        await firstRegistration.WaitAsync(deadline.Token);
+        var reRegistration = generation.ReconnectDelayRegistered;
+
+        // The failed attempt fired by the advance doubles the delay and re-arms it on the
+        // fake clock, completing the re-registration signal; the state flip happens under
+        // the same gate before the signal, so the read below observes the doubled delay.
+        clock.Advance(McpServerGeneration.InitialReconnectDelay);
+        await reRegistration.WaitAsync(deadline.Token);
+        var doubled = TimeSpan.FromSeconds(2);
+        generation.GetInfo().NextReconnectDelay.Should().Be(doubled);
+
+        serverFactory.FailNextTransport = false;
+        clock.Advance(doubled);
+        await reconnected.WaitAsync(deadline.Token);
+        var lease = generation.TryAcquire()
+            ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
+        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
+        var retirement = generation.Retire();
+        await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
     }
 
@@ -717,15 +842,57 @@ public sealed class McpServerGenerationTests
     private sealed class StreamServerFactory(bool reportProgress = false, bool requestRoots = false, bool elicit = false)
         : IAsyncDisposable
     {
-        private readonly CancellationTokenSource lifetime = new();
-        private readonly List<(McpServer Server, Task Completion)> servers = [];
+        private CancellationTokenSource lifetime = new();
+
+        // The client-facing pipe ends are kept per connection: disposing the server does not
+        // close them, and completing them is what makes the connected client observe a drop.
+        private readonly List<(McpServer Server, Task Completion, PipeWriter ClientSend, PipeWriter ServerSend)> servers = [];
+
+        /// <summary>Makes the next transport creation fail, exercising the supervisor's
+        /// reconnect backoff without a real server fault.</summary>
+        internal bool FailNextTransport { get; set; }
+
+        /// <summary>Ends every live client connection (the supervisor's reconnect path) by
+        /// completing the client-facing pipe ends and stopping the servers, while the factory
+        /// keeps accepting replacement transports on a fresh lifetime so the reconnect can
+        /// succeed.</summary>
+        internal async Task DisconnectClientsAsync()
+        {
+            CancellationTokenSource previous = lifetime;
+            lifetime = new CancellationTokenSource();
+            await previous.CancelAsync().ConfigureAwait(false);
+            previous.Dispose();
+
+            // Sequential with the supervisor's reconnect attempts in these tests: a
+            // replacement transport is created only after this returns.
+            var disconnected = servers.ToArray();
+            servers.Clear();
+            foreach (var (server, _, clientSend, serverSend) in disconnected)
+            {
+                // ClientSend EOF fails the client's next outbound write; ServerSend EOF ends
+                // its receive loop — the session completion the supervisor waits on.
+                clientSend.Complete();
+                serverSend.Complete();
+                await server.DisposeAsync().ConfigureAwait(false);
+            }
+
+            foreach (var (_, completion, _, _) in disconnected)
+                try
+                {
+                    await completion.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Canceled with the replaced lifetime — the disconnect itself.
+                }
+        }
 
         public async ValueTask DisposeAsync()
         {
             await lifetime.CancelAsync();
-            foreach (var (server, _) in servers) await server.DisposeAsync();
+            foreach (var (server, _, _, _) in servers) await server.DisposeAsync();
 
-            foreach (var (_, completion) in servers)
+            foreach (var (_, completion, _, _) in servers)
                 try
                 {
                     await completion;
@@ -743,6 +910,12 @@ public sealed class McpServerGenerationTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (FailNextTransport)
+            {
+                FailNextTransport = false;
+                throw new IOException("The test server factory simulated a transport failure.");
+            }
+
             var clientToServer = new Pipe();
             var serverToClient = new Pipe();
             var serverTransport = new StreamServerTransport(
@@ -792,7 +965,7 @@ public sealed class McpServerGenerationTests
                 },
                 loggerFactory,
                 null);
-            servers.Add((server, server.RunAsync(lifetime.Token)));
+            servers.Add((server, server.RunAsync(lifetime.Token), clientToServer.Writer, serverToClient.Writer));
             IClientTransport clientTransport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),
                 serverToClient.Reader.AsStream(),

@@ -10,7 +10,8 @@
     "npm:@types/vscode@1.99.1": "1.99.1",
     "npm:acorn@8": "8.18.0",
     "npm:astring@1": "1.9.0",
-    "npm:esbuild-wasm@0.25.12": "0.25.12"
+    "npm:esbuild-wasm@0.25.12": "0.25.12",
+    "npm:preact@10.26.9": "10.26.9"
   },
   "jsr": {
     "@ghostflyby/aves@0.6.0": {
@@ -59,6 +60,9 @@
       "integrity": "sha512-rZqkjL3Y6FwLpSHzLnaEy8Ps6veCNo1kZa9EOfJvmWtBq5dJH4iVjfmOO6Mlkv9B0tt9WFPFmb/VxlgJOnueNg==",
       "bin": true
     },
+    "preact@10.26.9": {
+      "integrity": "sha512-SSjF9vcnF27mJK1XyFMNJzFd5u3pQiATFqoaDy03XuN00u4ziveVVEGt5RKJrDR8MHE/wJo9Nnad56RLzS2RMA=="
+    },
     "undici-types@6.21.0": {
       "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="
     }
@@ -69,7 +73,8 @@
       "jsr:@ghostflyby/worker-actor@0.6.0",
       "jsr:@std/assert@^1.0.19",
       "npm:@preact/signals-core@1.14.4",
-      "npm:esbuild-wasm@0.25.12"
+      "npm:esbuild-wasm@0.25.12",
+      "npm:preact@10.26.9"
     ],
     "members": {
       "maieutics-deno-repl": {

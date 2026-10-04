@@ -8,7 +8,17 @@
   ],
   "fmt": {
     "lineWidth": 100,
-    "indentWidth": 2
+    "indentWidth": 2,
+    "exclude": [
+      "maieutics-vscode/media/widgetRenderer.js",
+      "maieutics-vscode/media/viewRenderer.js"
+    ]
+  },
+  "lint": {
+    "exclude": [
+      "maieutics-vscode/media/widgetRenderer.js",
+      "maieutics-vscode/media/viewRenderer.js"
+    ]
   },
   "imports": {
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
@@ -17,6 +27,7 @@
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "maieutics-widgets": "./maieutics-plugin-sdk/widgets/index.ts",
     "maieutics-widgets/jsx-runtime": "./maieutics-plugin-sdk/widgets/jsx-runtime.ts",
+    "preact": "npm:preact@10.26.9",
     "esbuild-wasm": "npm:esbuild-wasm@0.25.12"
   },
   "tasks": {

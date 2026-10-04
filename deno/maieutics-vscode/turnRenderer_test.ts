@@ -2,19 +2,14 @@
 
 import { assert, assertEquals } from "@std/assert";
 
-// The renderer script is a classic script that assigns to `exports` (the
-// notebook webview provides that global); preset it so the ES module import
-// below evaluates against the same shape, then read the view functions back
-// off the global (the module has no ESM exports).
-(globalThis as { exports?: Record<string, unknown> }).exports = {};
-await import("./media/turnRenderer.js");
-const renderer = (globalThis as { exports: Record<string, unknown> }).exports;
-const render = renderer.render as (turn: Record<string, unknown>) => string;
-const renderMarkdownView = renderer.renderMarkdownView as (
-  turn: Record<string, unknown>,
-) => string;
-const viewToggleHtml = renderer.viewToggleHtml as (mode: string) => string;
-const subagentsHtml = renderer.subagentsHtml as (subagents: unknown) => string;
+// The renderer is an ES module (VS Code loads entrypoints with a native
+// dynamic import), so the pure view functions import directly.
+const {
+  render,
+  renderMarkdownView,
+  viewToggleHtml,
+  subagentsHtml,
+} = await import("./media/turnRenderer.js");
 
 Deno.test("timeline renders the structured edit diff and its stat", () => {
   const html = render({

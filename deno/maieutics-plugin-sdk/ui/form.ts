@@ -8,7 +8,7 @@
  * const { form } = maieutics.ui;
  * const answer = form(
  *   { title: "Approve?", fields: [{ name: "note", type: "text" }] },
- *   (values) => { /* submit *&#47; },
+ *   { onSubmit: (values) => { /* submit *&#47; } },
  * );
  * answer; // displays the live form via its announcement
  * ```

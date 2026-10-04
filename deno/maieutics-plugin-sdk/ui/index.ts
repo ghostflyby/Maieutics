@@ -6,7 +6,10 @@
  *
  * ```ts
  * const { form } = maieutics.ui;
- * form({ fields: [{ name: "q", type: "text" }] }, (values) => { /* … *&#47; });
+ * form(
+ *   { fields: [{ name: "q", type: "text" }] },
+ *   { onSubmit: (values) => { /* … *&#47; } },
+ * );
  * ```
  *
  * The `jupyter.widget` family keeps its own runtime and API
@@ -15,7 +18,7 @@
  * bound host leaves the runtime unbound and `useUiRuntime()` throws.
  */
 
-import { createForm, type FormState, FormFamilyContract } from "./form.ts";
+import { createForm, FormFamilyContract, type FormState } from "./form.ts";
 import { JUPYTER_DISPLAY, type UiBroadcast } from "./family.ts";
 import { UiModelRuntime } from "./runtime.ts";
 import type { UiModel } from "./runtime.ts";

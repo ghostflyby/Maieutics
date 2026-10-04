@@ -254,3 +254,25 @@ Deno.test("dispose closes the socket exactly once and settles the pump", async (
   await bridge.dispose();
   assertEquals(scripted.closeCount, 1);
 });
+
+Deno.test("state for a model without a cached open posts under both sources", async () => {
+  const scripted = scriptedSocket();
+  const { bridge, posted } = bridgeOver(scripted);
+  // An update frame for a model whose comm_open was lost to replay
+  // truncation: the state must still reach either renderer.
+  await bridge.handleRendererMessage({ source: "maieutics-ui", type: "mount", modelId: "u1" });
+  scripted.emit({
+    sequence: 1,
+    kind: 1,
+    commId: "u1",
+    data: { method: "update", state: { a: 1 } },
+  });
+  await flush();
+  assertEquals(
+    posted.filter((entry) => (entry as { modelId?: string }).modelId === "u1")
+      .map((entry) => (entry as { source: string }).source)
+      .sort(),
+    ["maieutics-ui", "maieutics-widget"],
+  );
+  await bridge.dispose();
+});

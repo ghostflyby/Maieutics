@@ -45,9 +45,12 @@ component registry in place of a hard-coded renderer.
 
 2. **Announcement is a native display mime beside the compat one.**
    `application/vnd.maieutics.view+json`
-   `{modelId, viewFamily, version, esm?, css?}` — the esm/css members
-   ADR 0024 designed, realized as content-addressed `$object` references
-   (invariant 26). The Jupyter compat mime stays byte-stable forever;
+   `{modelId, viewFamily, version, state, esmSource?, cssSource?}` — the
+   esm/css members ADR 0024 designed, shipped (stage 1b) as inline source
+   text bounded at 1 MiB and stripped from persisted snapshots; the
+   content-addressed `$object` form remains the production path for larger
+   payloads (invariant 26). `state` is the display-time snapshot a frozen
+   view renders. The Jupyter compat mime stays byte-stable forever;
    unknown mimes are ignored (invariant 17).
 
 3. **Transport unchanged; targets namespaced.** The ADR 0024 plane serves

@@ -154,7 +154,15 @@ export class UiBridge {
   #postState(modelId: string): void {
     const state = this.#states.get(modelId);
     if (state === undefined) return;
-    const source = this.#sources.get(modelId) ?? WIDGET_SOURCE;
+    const source = this.#sources.get(modelId);
+    if (source === undefined) {
+      // No cached comm_open for this model (e.g. its open fell out of the
+      // server's bounded replay): post under both sources so either
+      // renderer receives its own frames — each filters by source.
+      this.#options.post({ source: WIDGET_SOURCE, type: "state", modelId, state });
+      this.#options.post({ source: UI_SOURCE, type: "state", modelId, state });
+      return;
+    }
     this.#options.post({ source, type: "state", modelId, state });
   }
 }

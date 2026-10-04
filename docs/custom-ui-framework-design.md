@@ -175,19 +175,25 @@ Two members, one per mime:
      "modelId": "<uuid>",          // pairs with the comm channel
      "viewFamily": "maieutics/form",
      "version": "1.0",             // family protocol version
-     "esm":  { "$object": "/v1/objects/<sha256>", "byteLength": 12345 },  // optional
-     "css":  { "$object": "/v1/objects/<sha256>", "byteLength": 678 }     // optional
+     "state": { … },               // display-time state: seeds the view and
+                                   // is what a snapshot restore renders
+     "esmSource": "…",             // optional bundled component source (1b; ≤1 MiB;
+                                   // stripped from persisted snapshots)
+     "cssSource": "…"              // optional stylesheet scoped to the family
    }
    ```
 
-   - `esm`/`css` realize what ADR 0024 decision 7 sketched: a family's
-     component payload delivered as content-addressed object references
-     (invariant 26 — never base64; served by the existing
-     `GET /v1/objects/{sha256}` endpoint, immutable and cache-forever).
-     Large states likewise ride `$object` references inside family state.
-   - `esm` is the **bundled-family** mechanism (§4): a module that
-     registers its family's components in the renderer. `css` is a
-     stylesheet scoped to that family's mount points.
+   - `state` is the display-time snapshot: it seeds the view before (or
+     instead of) live comm state, and the frozen view a reopened notebook
+     renders.
+   - `esmSource`/`cssSource` realize what ADR 0024 decision 7 sketched for
+     esm/css, delivered as inline text in stage 1b (the notebook webview
+     CSP admits no URL-based module sources — §4): a module that registers
+     its family's components in the renderer, plus its scoped stylesheet.
+     The serializer strips both when persisting snapshots (untrusted
+     notebook files carry no executable renderer code). The `$object`
+     content-addressed form remains the production path for larger
+     payloads once a cell-side upload surface exists.
    - Both are optional. Native families with built-in components
      (`maieutics/form` ships in the renderer) omit them.
 
@@ -267,11 +273,16 @@ its source of truth moves from hand-written JS to a bundled entry point.
 envelopes, still transport- and vscode-free and unit-tested:
 
 ```
-renderer → bridge: { source: "maieutics-ui", type: "mount",  modelId, viewFamily }
+renderer → bridge: { source: "maieutics-ui", type: "mount",  modelId }
 renderer → bridge: { source: "maieutics-ui", type: "update", modelId, state }
 renderer → bridge: { source: "maieutics-ui", type: "event",  modelId, name, payload }
-bridge → renderer: { source: "maieutics-ui", type: "state",  modelId, viewFamily, state }
+bridge → renderer: { source: "maieutics-ui", type: "state",  modelId, state }
 ```
+
+- The outbound source follows the model's comm target (`jupyter.widget` →
+  `maieutics-widget`, byte-compatible with the old widget bridge; native
+  targets → `maieutics-ui`). A model with no cached open (replay
+  truncation) posts under both sources; renderers filter by their own.
 
 - One bridge instance per host surface serves every renderer messaging
   channel (the widget renderer's channel today, the native view renderer's

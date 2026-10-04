@@ -1,6 +1,10 @@
 # Custom UI Framework Design
 
+<<<<<<< HEAD
 Status: Accepted for stages 0–1b (implemented 2026-10-04); later stages
+=======
+Status: Accepted for stages 0–1a (implemented 2026-10-04); later stages
+>>>>>>> origin/main
 remain design-only.
 
 Date: 2026-10-04
@@ -466,7 +470,11 @@ UI → web lane.**
 | Concern | Mechanism |
 |---|---|
 | Consent over what UI may appear | Declaration-plane: plugin UI kinds/names are catalogued, deny-by-default, and fingerprint-covered (§6.3); ADR 0037 approval, change-revokes, and blocked-state enforcement apply verbatim |
+<<<<<<< HEAD
 | Producer code in the frontend | Built-in families: none (components ship with the renderer). Bundled families (stage 1b, shipped): producer source rides the announcement as text, the renderer materializes it by evaluation with a guarded, tiny injected API (validated module shape; built-in families cannot be overridden; ≤1 MiB; failures memoized and degraded to the fallback view). The serializer strips bundled sources when persisting snapshots, so untrusted `.maieuticsnb` files never carry executable renderer code — bundled code only ever arrives as live output of a running session. CSP gating applies only in the experimental CSP-on posture; the default posture relies on the webview sandbox plus the injected-API boundary. Web lane: producer code stays in the plugin worker / iframe origin, never in the product's context |
+=======
+| Producer code in the frontend | Built-in families: none (components ship with the renderer). Bundled families: producer ESM in the renderer sandbox, content-addressed, CSP-gated — behind the feasibility spike. Web lane: producer code stays in the plugin worker / iframe origin, never in the product's context |
+>>>>>>> origin/main
 | Plugin isolation | Plugin frames relay through the host control bus with the plugin id attached; the kernel drops models of blocked/revoked plugins (same enforcement points as extension invokes and capability grants) |
 | Binary integrity | esm/css/large state ride `$object` content-addressed references (invariant 26); the objects endpoint is immutable and bearer-authed like every frontend route |
 | Unknown/unsafe frames | Family payload validation on both ends; malformed or unknown-family frames are ignored (invariant 18); unknown announcement mimes are ignored by old frontends (invariant 17) |
@@ -552,6 +560,7 @@ renderer contribution for the native mime in `package.json`.
 Accept: a TSX cell renders a `maieutics/form` model live; jupyter widgets
 unchanged on the wire (fixture diff empty).
 
+<<<<<<< HEAD
 **Stage 1b — bundled-family spike. — CONCLUDED 2026-10-04: both CSP
 postures green; bundled families ship on the inline-materialization path.**
 The mechanism: a producer family may carry `esmSource` (bounded at 1 MiB;
@@ -585,6 +594,16 @@ extension-side `uploadObject` can store objects). Review hardening
 to override already-registered families; the renderer bounds the source at
 1 MiB and degrades a throwing component to the fallback view (invariant
 18).
+=======
+**Stage 1b — bundled-family spike.** The CSP facts are already verified
+(Appendix A); the spike validates the materialization path, not
+permission: producer ESM fetched by the bridge and materialized as an
+inline module, exercised under both postures — today's default (notebook
+CSP meta absent) and the experimental CSP-on. Module-by-URL
+(`import()` of `blob:`/`data:`) is expected blocked and is not the path.
+Accept: spike report with both postures green on the bridge-delivery
+path; no product dependency beyond the report.
+>>>>>>> origin/main
 
 **Stage 2 — kernel producers + first built-in consumer.** Comm ownership
 in `FrontendCommRouter` (owner-routed uplink); C# UI model host;

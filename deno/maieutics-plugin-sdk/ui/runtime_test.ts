@@ -94,7 +94,12 @@ Deno.test("unknown comm ids and malformed payloads are ignored", () => {
   const { runtime } = recordingRuntime();
   const model = runtime.create(FORM_FAMILY, { fields: [], values: {} });
   runtime.handleIncoming({ kind: 0, commId: model.commId, buffers: [] });
-  runtime.handleIncoming({ kind: 1, commId: "missing", data: { method: "update", state: {} }, buffers: [] });
+  runtime.handleIncoming({
+    kind: 1,
+    commId: "missing",
+    data: { method: "update", state: {} },
+    buffers: [],
+  });
   runtime.handleIncoming({ kind: 1, commId: model.commId, data: { method: "other" }, buffers: [] });
   runtime.handleIncoming({ kind: 1, commId: model.commId, data: 7, buffers: [] });
   assertEquals(model.get("values"), {});

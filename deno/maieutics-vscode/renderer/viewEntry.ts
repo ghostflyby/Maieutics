@@ -8,7 +8,7 @@
  * the snapshot-restore posture.
  */
 
-import { formFamily, FORM_CSS } from "./families/formFamily.tsx";
+import { FORM_CSS, formFamily } from "./families/formFamily.tsx";
 import { registerViewFamily } from "./registry.ts";
 import { createRendererScript } from "./script.ts";
 

@@ -141,7 +141,9 @@ export const FormView: FunctionalComponent<ViewProps> = (props) => {
         ))}
         <div class="actions">
           <button type="button" class="submit" onClick={submit}>{def.submitLabel}</button>
-          <button type="button" class="cancel" onClick={() => send("cancel")}>{def.cancelLabel}</button>
+          <button type="button" class="cancel" onClick={() => send("cancel")}>
+            {def.cancelLabel}
+          </button>
         </div>
       </div>
     </div>
@@ -153,8 +155,7 @@ function fieldControl(
   initial: unknown,
   ref: (el: HTMLElement | null) => void,
 ): VNode {
-  const initialText =
-    initial === undefined || initial === null ? "" : String(initial);
+  const initialText = initial === undefined || initial === null ? "" : String(initial);
   if (field.type === "boolean") {
     return (
       <input

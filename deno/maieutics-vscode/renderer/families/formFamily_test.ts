@@ -102,17 +102,26 @@ Deno.test("the form renders typed fields and actions from live state", () => {
   const title = find(vnode, (n) => (n.props as { class?: string }).class === "title");
   assertEquals(title !== undefined, true);
   assertEquals(
-    find(vnode, (n) => n.type === "input" && (n.props as Record<string, unknown>).type === "text") !==
+    find(
+      vnode,
+      (n) => n.type === "input" && (n.props as Record<string, unknown>).type === "text",
+    ) !==
       undefined,
     true,
   );
   assertEquals(
-    find(vnode, (n) => n.type === "input" && (n.props as Record<string, unknown>).type === "number") !==
+    find(
+      vnode,
+      (n) => n.type === "input" && (n.props as Record<string, unknown>).type === "number",
+    ) !==
       undefined,
     true,
   );
   assertEquals(
-    find(vnode, (n) => n.type === "input" && (n.props as Record<string, unknown>).type === "checkbox") !==
+    find(
+      vnode,
+      (n) => n.type === "input" && (n.props as Record<string, unknown>).type === "checkbox",
+    ) !==
       undefined,
     true,
   );

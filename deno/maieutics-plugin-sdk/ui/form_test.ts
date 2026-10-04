@@ -41,7 +41,9 @@ Deno.test("normalizeChoices maps plain strings to label=value pairs", () => {
 
 Deno.test("initialValues seeds booleans false and the rest empty strings", () => {
   assertEquals(
-    initialValues({ fields: [{ name: "a", type: "number" }, { name: "b", type: "boolean", default: true }] }),
+    initialValues({
+      fields: [{ name: "a", type: "number" }, { name: "b", type: "boolean", default: true }],
+    }),
     { a: "", b: true },
   );
 });
@@ -126,9 +128,18 @@ Deno.test("registerFamily admits custom native families", () => {
     displayMime: "application/vnd.maieutics.view+json",
     version: "1.0",
     commOpenData: (state) => ({ state }),
-    commUpdateData: (key, value) => ({ method: "update", state: { [key]: value }, buffer_paths: [] }),
+    commUpdateData: (key, value) => ({
+      method: "update",
+      state: { [key]: value },
+      buffer_paths: [],
+    }),
     decodeIncoming: () => undefined,
-    announcement: (commId, state) => ({ modelId: commId, viewFamily: "test/echo", version: "1.0", state }),
+    announcement: (commId, state) => ({
+      modelId: commId,
+      viewFamily: "test/echo",
+      version: "1.0",
+      state,
+    }),
   });
   assertEquals(runtime.hasFamily("test/echo"), true);
 });

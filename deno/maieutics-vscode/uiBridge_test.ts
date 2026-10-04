@@ -6,7 +6,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { CommKind, type CommMessage } from "../shared/comm_codec.ts";
+import type { CommMessage } from "../shared/comm_codec.ts";
 import type { CommFrame } from "./protocol.ts";
 import { UiBridge, type UiCommSocket } from "./uiBridge.ts";
 
@@ -59,7 +59,14 @@ function scriptedSocket() {
       wake();
     },
   };
-  return { socket, sent, emit, get closeCount() { return closeCount; } };
+  return {
+    socket,
+    sent,
+    emit,
+    get closeCount() {
+      return closeCount;
+    },
+  };
 }
 
 function bridgeOver(scripted: ReturnType<typeof scriptedSocket>) {
@@ -88,7 +95,13 @@ Deno.test("mount replies with the widget-family state from comm_open", async () 
   const scripted = scriptedSocket();
   const { bridge, posted } = bridgeOver(scripted);
   await mounted(bridge, "w1");
-  scripted.emit({ sequence: 1, kind: 0, commId: "w1", targetName: "jupyter.widget", data: { state: { value: 5 } } });
+  scripted.emit({
+    sequence: 1,
+    kind: 0,
+    commId: "w1",
+    targetName: "jupyter.widget",
+    data: { state: { value: 5 } },
+  });
   await flush();
   assertEquals(posted, [
     { source: "maieutics-widget", type: "state", modelId: "w1", state: { value: 5 } },
@@ -119,7 +132,13 @@ Deno.test("renderer updates merge locally and relay upstream", async () => {
   const scripted = scriptedSocket();
   const { bridge, posted } = bridgeOver(scripted);
   await mounted(bridge, "w1");
-  scripted.emit({ sequence: 1, kind: 0, commId: "w1", targetName: "jupyter.widget", data: { state: { value: 1 } } });
+  scripted.emit({
+    sequence: 1,
+    kind: 0,
+    commId: "w1",
+    targetName: "jupyter.widget",
+    data: { state: { value: 1 } },
+  });
   await flush();
   await bridge.handleRendererMessage({
     source: "maieutics-widget",
@@ -133,7 +152,12 @@ Deno.test("renderer updates merge locally and relay upstream", async () => {
     data: { method: "update", state: { value: 2 }, buffer_paths: [] },
     buffers: [],
   }]);
-  scripted.emit({ sequence: 2, kind: 1, commId: "w1", data: { method: "update", state: { other: "x" } } });
+  scripted.emit({
+    sequence: 2,
+    kind: 1,
+    commId: "w1",
+    data: { method: "update", state: { other: "x" } },
+  });
   await flush();
   assertEquals(posted.at(-1), {
     source: "maieutics-widget",
@@ -169,7 +193,13 @@ Deno.test("comm_close drops the cached state; a later mount stays silent", async
   const scripted = scriptedSocket();
   const { bridge, posted } = bridgeOver(scripted);
   await mounted(bridge, "w1");
-  scripted.emit({ sequence: 1, kind: 0, commId: "w1", targetName: "jupyter.widget", data: { state: { a: 1 } } });
+  scripted.emit({
+    sequence: 1,
+    kind: 0,
+    commId: "w1",
+    targetName: "jupyter.widget",
+    data: { state: { a: 1 } },
+  });
   await flush();
   scripted.emit({ sequence: 2, kind: 2, commId: "w1" });
   await flush();
@@ -184,7 +214,13 @@ Deno.test("frames for never-mounted models are cached; unknown-model updates rel
   const { bridge, posted } = bridgeOver(scripted);
   // Mount another model to open the socket; w1's open is cached silently.
   await mounted(bridge, "other");
-  scripted.emit({ sequence: 1, kind: 0, commId: "w1", targetName: "jupyter.widget", data: { state: { a: 1 } } });
+  scripted.emit({
+    sequence: 1,
+    kind: 0,
+    commId: "w1",
+    targetName: "jupyter.widget",
+    data: { state: { a: 1 } },
+  });
   await flush();
   // Updates for unknown models relay upstream (the kernel answers a typed
   // comm_not_found error in production); nothing is posted back for them.
@@ -195,7 +231,10 @@ Deno.test("frames for never-mounted models are cached; unknown-model updates rel
     state: { a: 2 },
   });
   assertEquals(scripted.sent.length, 1);
-  assertEquals(posted.some((entry) => (entry as { modelId?: string }).modelId === "unknown"), false);
+  assertEquals(
+    posted.some((entry) => (entry as { modelId?: string }).modelId === "unknown"),
+    false,
+  );
   // The late mount for w1 answers from the cache.
   await mounted(bridge, "w1");
   assertEquals(posted.at(-1), {

@@ -15,26 +15,36 @@
  * bound host leaves the runtime unbound and `useUiRuntime()` throws.
  */
 
-import { createForm, FormFamilyContract } from "./form.ts";
-import { JUPYTER_DISPLAY, type UiBroadcast, type UiIncomingMessage } from "./family.ts";
+import { createForm, type FormState, FormFamilyContract } from "./form.ts";
+import { JUPYTER_DISPLAY, type UiBroadcast } from "./family.ts";
 import { UiModelRuntime } from "./runtime.ts";
 import type { UiModel } from "./runtime.ts";
 
-export type { UiBroadcast, UiIncomingMessage, UiIncomingDispatch, ViewFamilyContract } from "./family.ts";
-export { JUPYTER_DISPLAY, NativeFamilyContract, NATIVE_DISPLAY_MIME, nativeTarget } from "./family.ts";
+export type {
+  UiBroadcast,
+  UiIncomingDispatch,
+  UiIncomingMessage,
+  ViewFamilyContract,
+} from "./family.ts";
+export {
+  JUPYTER_DISPLAY,
+  NATIVE_DISPLAY_MIME,
+  NativeFamilyContract,
+  nativeTarget,
+} from "./family.ts";
 export { UiModelRuntime } from "./runtime.ts";
 export type { UiModel, UiModelHandlers } from "./runtime.ts";
 export {
   createForm,
   FORM_FAMILY,
-  formState,
-  initialValues,
-  normalizeChoices,
   type FormDef,
   type FormFieldDef,
   type FormFieldType,
   type FormHandlers,
   type FormState,
+  formState,
+  initialValues,
+  normalizeChoices,
 } from "./form.ts";
 
 /** The host surface the REPL worker injects (broadcast + comm subscription). */
@@ -95,7 +105,7 @@ export function bindUiHost(host: UiHost): UiModelRuntime {
 export function form(
   def: Parameters<typeof createForm>[1],
   handlers: Parameters<typeof createForm>[2] = {},
-) {
+): DisplayableModel<FormState> {
   return displayable(createForm(useUiRuntime(), def, handlers));
 }
 
@@ -109,9 +119,14 @@ export function model<State extends Record<string, unknown>>(
   family: string,
   state: State,
   handlers: Parameters<UiModelRuntime["create"]>[2] = {},
-) {
+): DisplayableModel<State> {
   return displayable(useUiRuntime().create<State>(family, state, handlers));
 }
+
+/** A UI model wrapped for display as a cell result. */
+export type DisplayableModel<State extends Record<string, unknown>> = UiModel<State> & {
+  [JUPYTER_DISPLAY]: () => Promise<Record<string, unknown>>;
+};
 
 /**
  * Make a model displayable as a cell result: evaluating it in a cell emits
@@ -119,7 +134,7 @@ export function model<State extends Record<string, unknown>>(
  */
 export function displayable<State extends Record<string, unknown>>(
   model: UiModel<State>,
-): UiModel<State> & { [JUPYTER_DISPLAY]: () => Promise<Record<string, unknown>> } {
+): DisplayableModel<State> {
   return {
     ...model,
     // announce is sync; the display contract expects a thenable.

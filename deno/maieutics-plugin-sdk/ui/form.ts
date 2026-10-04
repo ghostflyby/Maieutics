@@ -71,12 +71,11 @@ export class FormFamilyContract extends NativeFamilyContract {
     if (dispatch?.event === undefined) return dispatch;
     const { name, payload } = dispatch.event;
     if (name === "submit") {
-      const values =
-        typeof payload === "object" && payload !== null &&
-        "values" in payload &&
-        typeof (payload as { values: unknown }).values === "object"
-          ? (payload as { values: Record<string, unknown> }).values
-          : {};
+      const values = typeof payload === "object" && payload !== null &&
+          "values" in payload &&
+          typeof (payload as { values: unknown }).values === "object"
+        ? (payload as { values: Record<string, unknown> }).values
+        : {};
       return { event: { name, payload: values } };
     }
     return dispatch;

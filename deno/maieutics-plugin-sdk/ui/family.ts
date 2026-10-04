@@ -49,7 +49,9 @@ export interface UiIncomingDispatch {
  * The wire contract of one view family. `State` is the producer-side shape
  * the family validates; the runtime stores it opaquely beyond decodeIncoming.
  */
-export interface ViewFamilyContract<State extends Record<string, unknown> = Record<string, unknown>> {
+export interface ViewFamilyContract<
+  State extends Record<string, unknown> = Record<string, unknown>,
+> {
   /** Catalog name, e.g. `maieutics/form`. */
   readonly family: string;
   /** comm_open target name, e.g. `maieutics.view/maieutics.form`. */

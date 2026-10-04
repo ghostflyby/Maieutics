@@ -181,16 +181,45 @@ elicitation, or send `{"value":"", "action":"decline"|"cancel"}` to refuse. If t
 arrives, the request is cancelled server-side and any late answer is `404`.
 Dismissing the input box should post an empty value.
 
-## Comm channels (interactive widgets)
+## Comm channels (interactive widgets and view families)
 
-Interactive widgets (ADR 0024) pair a **display mime** that announces the
-widget with a **comm channel** that carries the model's life:
+Interactive widgets (ADR 0024) and native view families (ADR 0038, the
+custom-UI framework) pair a **display mime** that announces the model with a
+**comm channel** that carries its life:
 
 - A REPL display bundle may carry
   `application/vnd.jupyter.widget-view+json`:
   `{"model_id": "…", "version_major": 2, "version_minor": 0}` — the model's
   state travels on the comm channel, not in the bundle.
-- Everything else about a widget travels on the comm WebSocket below.
+- A REPL display bundle may also carry
+  `application/vnd.maieutics.view+json` (native families, additive; clients
+  that do not know it ignore it under the unknown-field tolerance):
+
+  ```json
+  {
+    "modelId": "…",
+    "viewFamily": "maieutics/form",
+    "version": "1.0",
+    "state": { … initial state; seeds the view before/instead of live comm … }
+  }
+  ```
+
+  The embedded `state` is the display-time snapshot: a reopened notebook
+  renders it with a stale marker when the producing model is no longer live.
+- Everything else about a model travels on the comm WebSocket below.
+
+Native families speak their own comm dialect alongside the ipywidgets one:
+
+- `comm_open.target_name` is `maieutics.view/<family>` (e.g.
+  `maieutics.view/maieutics.form`); `jupyter.widget` remains verbatim for the
+  compat family. The relay treats target names as opaque.
+- `comm_open.data` is `{"state": {…}}`.
+- Downlink/uplink state deltas are `comm_msg.data`
+  `{"method": "update", "state": {key: value}, "buffer_paths": []}` (the same
+  shape widgets use).
+- One-shot actions flow uplink-only as `comm_msg.data`
+  `{"method": "event", "name": "submit" | "cancel" | …, "payload": {…}}`;
+  families without actions never emit it.
 
 ### `GET /v1/agent/sessions/{sid}/comms?sinceSeq=<n>&token=<hex>`
 

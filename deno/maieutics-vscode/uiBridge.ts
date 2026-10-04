@@ -1,40 +1,57 @@
 /**
- * Widget bridge (ADR 0024): connects the widget renderer's messaging to the
- * session comms socket. State lives kernel-side; the bridge caches the
- * latest known state per model id so a renderer mounting late — or after a
- * re-render — gets the current state immediately instead of replaying frames.
- * The class is transport- and vscode-free: the socket and the post sink are
- * injected, which keeps it unit-testable.
+ * UI bridge (custom-UI framework, ADR 0038): connects notebook renderer
+ * messaging for BOTH the jupyter.widget compat family and the native view
+ * families to the session comms socket — one socket, family-dispatched
+ * envelopes. State lives kernel-side; the bridge caches the latest known
+ * state per model id so a renderer mounting late — or after a re-render —
+ * gets the current state immediately instead of replaying frames. The class
+ * is transport- and vscode-free: the socket and the post sink are injected,
+ * which keeps it unit-testable.
+ *
+ * Envelopes (renderer ↔ host):
+ *   renderer → host: { source: "maieutics-widget"|"maieutics-ui", type: "mount",  modelId }
+ *   renderer → host: { source, type: "update", modelId, state }
+ *   renderer → host: { source: "maieutics-ui", type: "event",  modelId, name, payload? }
+ *   host → renderer: { source, type: "state",  modelId, state }
+ *
+ * The outbound source follows the model's comm target: `jupyter.widget`
+ * models speak "maieutics-widget" (byte-compatible with the old widget
+ * bridge); targets under `maieutics.view/` speak "maieutics-ui".
  */
 
 import type { CommFrame, CommMessage } from "./protocol.ts";
 
-export interface WidgetCommSocket {
+export interface UiCommSocket {
   send(message: CommMessage): void;
   messages: AsyncGenerator<CommFrame>;
   close(): void;
 }
 
-export interface WidgetBridgeOptions {
-  connect(): Promise<WidgetCommSocket>;
-  /** Broadcasts a message to every widget renderer output. */
+export interface UiBridgeOptions {
+  connect(): Promise<UiCommSocket>;
+  /** Broadcasts a message to every UI renderer output. */
   post(message: unknown): void;
   log(message: string): void;
 }
 
-export class WidgetBridge {
-  readonly #options: WidgetBridgeOptions;
+const WIDGET_SOURCE = "maieutics-widget";
+const UI_SOURCE = "maieutics-ui";
+const WIDGET_TARGET = "jupyter.widget";
+
+export class UiBridge {
+  readonly #options: UiBridgeOptions;
   readonly #states = new Map<string, Record<string, unknown>>();
-  #socket: WidgetCommSocket | undefined;
+  readonly #sources = new Map<string, string>();
+  #socket: UiCommSocket | undefined;
   #pump: Promise<void> | undefined;
   #connect: Promise<void> | undefined;
   #closed = false;
 
-  constructor(options: WidgetBridgeOptions) {
+  constructor(options: UiBridgeOptions) {
     this.#options = options;
   }
 
-  /** A renderer mounted a widget view: reply with the cached state, opening
+  /** A renderer mounted a model view: reply with the cached state, opening
    * the socket lazily on the first mount. */
   async handleRendererMessage(message: unknown): Promise<void> {
     if (typeof message !== "object" || message === null) return;
@@ -47,7 +64,7 @@ export class WidgetBridge {
       this.#connect ??= this.#startAsync();
       await this.#connect.catch((error: unknown) => {
         this.#connect = undefined;
-        this.#options.log(`widget connect failed: ${error}`);
+        this.#options.log(`ui connect failed: ${error}`);
       });
       this.#postState(modelId);
       return;
@@ -61,6 +78,18 @@ export class WidgetBridge {
         kind: 1,
         commId: modelId,
         data: { method: "update", state, buffer_paths: [] },
+        buffers: [],
+      });
+      return;
+    }
+
+    if (record.type === "event" && record.source === UI_SOURCE && this.#socket) {
+      const name = record.name;
+      if (typeof name !== "string" || name.length === 0) return;
+      this.#socket.send({
+        kind: 1,
+        commId: modelId,
+        data: { method: "event", name, payload: record.payload },
         buffers: [],
       });
     }
@@ -96,17 +125,24 @@ export class WidgetBridge {
         if (message.kind === 0) {
           const state = isRecord(data?.state) ? data.state as Record<string, unknown> : {};
           this.#states.set(message.commId, { ...state });
+          this.#sources.set(
+            message.commId,
+            message.targetName === WIDGET_TARGET || message.targetName === undefined
+              ? WIDGET_SOURCE
+              : UI_SOURCE,
+          );
         } else if (message.kind === 1 && isRecord(data?.state)) {
           this.#merge(message.commId, data.state as Record<string, unknown>);
         } else if (message.kind === 2) {
           this.#states.delete(message.commId);
+          this.#sources.delete(message.commId);
           continue;
         }
 
         this.#postState(message.commId);
       }
     } catch (error) {
-      this.#options.log(`widget bridge pump ended: ${error}`);
+      this.#options.log(`ui bridge pump ended: ${error}`);
     }
   }
 
@@ -118,7 +154,16 @@ export class WidgetBridge {
   #postState(modelId: string): void {
     const state = this.#states.get(modelId);
     if (state === undefined) return;
-    this.#options.post({ source: "maieutics-widget", type: "state", modelId, state });
+    const source = this.#sources.get(modelId);
+    if (source === undefined) {
+      // No cached comm_open for this model (e.g. its open fell out of the
+      // server's bounded replay): post under both sources so either
+      // renderer receives its own frames — each filters by source.
+      this.#options.post({ source: WIDGET_SOURCE, type: "state", modelId, state });
+      this.#options.post({ source: UI_SOURCE, type: "state", modelId, state });
+      return;
+    }
+    this.#options.post({ source, type: "state", modelId, state });
   }
 }
 

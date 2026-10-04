@@ -189,6 +189,20 @@ async function installMaieuticsNamespace(): Promise<void> {
     createWidget: widgetModule.createWidget,
     useWidgetRuntime: widgetModule.useWidgetRuntime,
   };
+
+  // Bind the native-UI model runtime (custom-UI framework, ADR 0038) to the
+  // same comm transport and expose it as `maieutics.ui`; the jupyter.widget
+  // family keeps its own runtime above.
+  const uiModule = await import("../maieutics-plugin-sdk/ui/index.ts");
+  uiModule.bindUiHost({
+    broadcast: (messageType, content, extra) => Deno.jupyter.broadcast(messageType, content, extra),
+    onComm: (event, handler) => comm.on(event, handler),
+  });
+  (globalThis as unknown as { maieutics: Record<string, unknown> }).maieutics.ui = {
+    form: uiModule.form,
+    model: uiModule.model,
+    registerFamily: uiModule.registerFamily,
+  };
 }
 
 interface CommProxy {

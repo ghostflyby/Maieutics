@@ -177,6 +177,9 @@ const DisplayMimes = new Set([
   // Widget views ride display bundles as structured JSON; the widget
   // renderer claims them (ADR 0024).
   "application/vnd.jupyter.widget-view+json",
+  // Native view-family announcements (custom-UI framework, ADR 0038); the
+  // view renderer claims them.
+  "application/vnd.maieutics.view+json",
 ]);
 
 /** A reference to an immutable binary display payload, addressed by its

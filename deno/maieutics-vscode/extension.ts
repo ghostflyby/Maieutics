@@ -31,7 +31,7 @@ import {
   guessAttachmentMediaType,
   parseAttachmentMarkers,
 } from "./attachments.ts";
-import { WidgetBridge } from "./widgets.ts";
+import { UiBridge } from "./uiBridge.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
 import {
   MaieuticsFileSystemProvider,
@@ -178,10 +178,12 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  // The widget renderer talks to the kernel's widget models through this
-  // bridge; the comms socket opens lazily on the first widget mount so plain
-  // notebooks never pay for it (ADR 0024).
-  const widgetBridge = new WidgetBridge({
+  // UI renderers (widget compat + native view families) talk to the kernel's
+  // UI models through this bridge; the comms socket opens lazily on the first
+  // mount so plain notebooks never pay for it (ADR 0024, ADR 0038).
+  const widgetChannel = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
+  const viewChannel = vscode.notebooks.createRendererMessaging("maieutics-view-renderer");
+  const uiBridge = new UiBridge({
     connect: async () => {
       const client = await clientOf();
       // The comm capability gate (ADR 0024): an older server without comm
@@ -198,38 +200,52 @@ export function activate(context: vscode.ExtensionContext): void {
       const session = await client.session();
       return client.commSocket(session.id);
     },
+    // State frames broadcast to both channels; renderers filter by source.
     post: (message) => {
-      void Promise.resolve(rendererMessaging.postMessage(message)).catch(
-        (error: unknown) => output?.appendLine(`widget post failed: ${error}`),
-      );
+      for (const channel of [widgetChannel, viewChannel]) {
+        void Promise.resolve(channel.postMessage(message)).catch(
+          (error: unknown) => output?.appendLine(`ui post failed: ${error}`),
+        );
+      }
     },
     log: (message) => output?.appendLine(message),
   });
-  const rendererMessaging = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
   context.subscriptions.push(
-    rendererMessaging.onDidReceiveMessage(({ message }) => {
-      const envelope = message as {
-        source?: unknown;
-        type?: unknown;
-        notebookUri?: unknown;
-        cellIndex?: unknown;
-      };
-      if (
-        envelope.source === "maieutics-turn" && envelope.type === "retry" &&
-        typeof envelope.notebookUri === "string" && typeof envelope.cellIndex === "number"
-      ) {
-        void vscode.commands.executeCommand("maieutics.retryTurn", [
-          envelope.notebookUri,
-          envelope.cellIndex,
-        ]);
-        return;
-      }
-
-      void widgetBridge.handleRendererMessage(message).catch((error: unknown) =>
-        output?.appendLine(`widget bridge failed: ${error}`)
+    // The turn timeline's retry anchor (requiresMessaging: always).
+    vscode.notebooks.createRendererMessaging("maieutics-turn-renderer").onDidReceiveMessage(
+      ({ message }) => {
+        const envelope = message as {
+          source?: unknown;
+          type?: unknown;
+          notebookUri?: unknown;
+          cellIndex?: unknown;
+        };
+        if (
+          envelope.source === "maieutics-turn" && envelope.type === "retry" &&
+          typeof envelope.notebookUri === "string" && typeof envelope.cellIndex === "number"
+        ) {
+          void vscode.commands.executeCommand("maieutics.retryTurn", [
+            envelope.notebookUri,
+            envelope.cellIndex,
+          ]);
+        }
+      },
+    ),
+    widgetChannel.onDidReceiveMessage(({ message }) => {
+      const envelope = message as { source?: unknown };
+      if (envelope.source !== "maieutics-widget") return;
+      void uiBridge.handleRendererMessage(message).catch((error: unknown) =>
+        output?.appendLine(`ui bridge failed: ${error}`)
       );
     }),
-    { dispose: () => void widgetBridge.dispose().catch(() => {}) },
+    viewChannel.onDidReceiveMessage(({ message }) => {
+      const envelope = message as { source?: unknown };
+      if (envelope.source !== "maieutics-ui") return;
+      void uiBridge.handleRendererMessage(message).catch((error: unknown) =>
+        output?.appendLine(`ui bridge failed: ${error}`)
+      );
+    }),
+    { dispose: () => void uiBridge.dispose().catch(() => {}) },
   );
 
   context.subscriptions.push(

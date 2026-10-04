@@ -250,7 +250,9 @@ internal sealed class FrontendCommRouter
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(message);
-        PlaneFor(sessionId).Publish(message);
+        // The owner is registered before the open is published: a frontend that
+        // learned the comm id from the live open must never win a race that
+        // misroutes its first uplink frame to the child instead of the owner.
         lock (gate)
         {
             var key = (sessionId, message.CommId);
@@ -258,6 +260,7 @@ internal sealed class FrontendCommRouter
             if (message.Kind == ReplCommKind.Close) kernelOwners.Remove(key);
         }
 
+        PlaneFor(sessionId).Publish(message);
         return ValueTask.CompletedTask;
     }
 
@@ -325,7 +328,11 @@ internal sealed class FrontendCommRouter
 
     /// <summary>Returns the session's plane, creating it and recycling the oldest planes
     /// when sessions rotate beyond the retained window. Kernel-owned comms belong to
-    /// their session's plane, so recycling drops their owners too.</summary>
+    /// their session's plane, so recycling drops their owners too — the owning model is
+    /// not notified (a later uplink degrades to a typed comm_not_found); owners dispose
+    /// through their own lifecycle, and a stale model's close publish may resurrect a
+    /// fresh empty plane for the recycled session id (bounded by the retained window).
+    /// </summary>
     internal FrontendCommStream PlaneFor(string sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);

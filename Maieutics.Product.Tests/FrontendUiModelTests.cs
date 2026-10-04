@@ -272,6 +272,40 @@ public sealed class FrontendUiModelTests
         answer.Action.Should().Be("accept");
         answer.ContentJson.Should().Contain("t0k");
         childPushes.Should().BeEmpty("the kernel-owned form never reaches the child");
+        router.PlaneFor(session.ToString()).SnapshotLive().Should().BeEmpty(
+            "answering the elicitation closes the form's comm");
+    }
+
+    [Fact]
+    public async Task KernelFormOpenCarriesTheStatePayloadAndDoubleDisposeIsIdempotent()
+    {
+        var (router, _) = CreateRouter();
+        var publisher = new FakePublisher();
+        var host = new FrontendFormModelHost(router, publisher);
+        var session = AgentSessionId.Create();
+        var closedCount = 0;
+        var model = await host.TryCreateFormAsync(
+            session,
+            new FrontendUiFormState(Title: "T", Fields: [new FrontendUiFormField("note", Type: "text")]),
+            new FrontendFormHandlers(Closed: () => Interlocked.Increment(ref closedCount)),
+            TestContext.Current.CancellationToken);
+
+        // The comm_open's replayed data carries the native state payload.
+        var plane = router.PlaneFor(session.ToString());
+        var open = plane.Subscribe(0).Initial.Should().ContainSingle().Which;
+        open.Message.TargetName.Should().Be("maieutics.view/maieutics.form");
+        open.Message.Data.Should().NotBeNull();
+        open.Message.Data!.Value.GetProperty("state").GetProperty("title").GetString().Should().Be("T");
+
+        // Frontend close uplink and the owner's own dispose race in production;
+        // the closed handler fires exactly once across both paths.
+        await router.PushToReplAsync(
+            session.ToString(),
+            Uplink(model!.CommId, null, ReplCommKind.Close),
+            TestContext.Current.CancellationToken);
+        await model.DisposeAsync();
+        closedCount.Should().Be(1);
+        plane.SnapshotLive().Should().BeEmpty();
     }
 
     private sealed class FakePublisher(bool publishable = true) : IFrontendSessionFramePublisher

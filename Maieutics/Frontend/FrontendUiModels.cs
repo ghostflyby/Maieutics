@@ -40,10 +40,7 @@ internal sealed record FrontendUiFormState(
     [property: JsonPropertyName("submitLabel")] string? SubmitLabel = null,
     [property: JsonPropertyName("cancelLabel")] string? CancelLabel = null,
     [property: JsonPropertyName("values")] Dictionary<string, object?>? Values = null)
-{
-    /// <summary>The declared fields; an absent list reads as none.</summary>
-    public IReadOnlyList<FrontendUiFormField> FieldList => Fields ?? [];
-}
+{}
 
 /// <summary>The announcement value inside the <see cref="FrontendUiWire.ViewMime" /> display member.</summary>
 internal sealed record FrontendUiFormAnnouncement(
@@ -98,8 +95,6 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
 
     internal string CommId => commId;
 
-    internal FrontendUiFormState State => state;
-
     /// <summary>Uplink routing (kernel-owned): message frames decode through the native
     /// dialect, close releases the model. Unknown shapes are ignored (invariant 18).</summary>
     public async ValueTask OnUplinkAsync(ReplCommMessage message, CancellationToken cancellationToken)
@@ -109,7 +104,7 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
         {
             case ReplCommKind.Message:
             {
-                if (message.Data is not { ValueKind: JsonValueKind.Object } data) return;
+                if (message.Data is not { ValueKind: JsonValueKind.Object }) return;
                 FrontendUiUplinkPayload? payload;
                 try
                 {
@@ -142,24 +137,6 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
                 await DisposeAsync().ConfigureAwait(false);
                 return;
         }
-    }
-
-    /// <summary>Sync one state key to the frontend (the native update dialect).</summary>
-    internal async ValueTask SyncAsync(string key, object? value, CancellationToken cancellationToken)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        if (state.Values is { } values)
-        {
-            values[key] = value;
-        }
-        var update = JsonSerializer.SerializeToElement(
-            new FrontendUiUplinkPayload(Method: "update", State: new Dictionary<string, object?> { [key] = value }),
-            FrontendJsonContext.Default.FrontendUiUplinkPayload);
-        await router.PublishFromKernelAsync(
-            sessionId.ToString(),
-            new ReplCommMessage(ReplCommKind.Message, commId, null, update, null, []),
-            owner: null,
-            cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

@@ -27,7 +27,9 @@ export function activate() {
       const initialState = isRecord(record.state) ? record.state : undefined;
       const esmSource = typeof record.esmSource === "string" ? record.esmSource : undefined;
       const cssSource = typeof record.cssSource === "string" ? record.cssSource : undefined;
-      const bundled = esmSource === undefined ? undefined : { esmSource, ...(cssSource === undefined ? {} : { cssSource }) };
+      const bundled = esmSource === undefined
+        ? undefined
+        : { esmSource, ...(cssSource === undefined ? {} : { cssSource }) };
       return { family: viewFamily, modelId, initialState, bundled };
     },
   });

@@ -3,10 +3,7 @@
 
 import { assertEquals } from "@std/assert";
 import type { VNode } from "preact";
-import {
-  materializeBundledFamily,
-  resetBundledMaterialization,
-} from "./bundled.ts";
+import { materializeBundledFamily, resetBundledMaterialization } from "./bundled.ts";
 import { viewFamily } from "./registry.ts";
 
 Deno.test("a bundled module registers its family through the injected API", () => {
@@ -14,8 +11,9 @@ Deno.test("a bundled module registers its family through the injected API", () =
   const family = "test/spike-one";
   assertEquals(viewFamily(family), undefined);
   const result = materializeBundledFamily(family, {
-    esmSource:
-      `registerViewFamily(${JSON.stringify(family)}, { component: (props) => h("div", { class: "spike" }, props.state.title) });`,
+    esmSource: `registerViewFamily(${
+      JSON.stringify(family)
+    }, { component: (props) => h("div", { class: "spike" }, props.state.title) });`,
   });
   assertEquals(result, { ok: true });
   const module = viewFamily(family);
@@ -51,13 +49,20 @@ Deno.test("the injected h builds preact vnodes inside a bundled module", () => {
   resetBundledMaterialization();
   const family = "test/spike-h";
   materializeBundledFamily(family, {
-    esmSource:
-      `registerViewFamily(${JSON.stringify(family)}, { component: (props) => h("span", { class: "x" }, props.state.text) });`,
+    esmSource: `registerViewFamily(${
+      JSON.stringify(family)
+    }, { component: (props) => h("span", { class: "x" }, props.state.text) });`,
   });
   const module = viewFamily(family);
   if (module === undefined) throw new Error("family not registered");
   const component = module.component as (props: unknown) => VNode;
-  const vnode = component({ state: { text: "hi" }, modelId: "m", models: new Map(), post: () => {}, hasState: true });
+  const vnode = component({
+    state: { text: "hi" },
+    modelId: "m",
+    models: new Map(),
+    post: () => {},
+    hasState: true,
+  });
   assertEquals(vnode.type, "span");
   assertEquals((vnode.props as { class?: string }).class, "x");
   assertEquals((vnode.props as { children?: unknown }).children, "hi");

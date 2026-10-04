@@ -35,7 +35,8 @@ const ECHO_CONTRACT = {
 Deno.test("a bundled family's announcement embeds the component source", async () => {
   bindUiHost(fakeHost());
   registerFamily(ECHO_CONTRACT, {
-    esmSource: `registerViewFamily("test/echo", { component: (p) => h("div", {}, p.state.title) });`,
+    esmSource:
+      `registerViewFamily("test/echo", { component: (p) => h("div", {}, p.state.title) });`,
     cssSource: ".test-echo { color: red; }",
   });
   const view = model("test/echo", { title: "hi" });

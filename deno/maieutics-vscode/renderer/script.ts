@@ -14,7 +14,7 @@
  */
 
 import { h, render } from "preact";
-import { materializeBundledFamily, type BundledSource } from "./bundled.ts";
+import { type BundledSource, materializeBundledFamily } from "./bundled.ts";
 import { FALLBACK_FAMILY, viewFamily, type ViewProps } from "./registry.ts";
 
 export interface RendererScriptOptions {

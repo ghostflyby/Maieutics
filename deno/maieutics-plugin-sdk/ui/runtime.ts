@@ -60,7 +60,10 @@ interface RegisteredModel {
 export class UiModelRuntime {
   readonly #broadcast: UiBroadcast;
   readonly #models = new Map<string, RegisteredModel>();
-  readonly #families = new Map<string, { contract: ViewFamilyContract; bundled?: BundledFamilySource }>();
+  readonly #families = new Map<
+    string,
+    { contract: ViewFamilyContract; bundled?: BundledFamilySource }
+  >();
 
   constructor(broadcast: UiBroadcast) {
     this.#broadcast = broadcast;
@@ -178,7 +181,11 @@ export class UiModelRuntime {
           // The bundled component source rides every announcement so any
           // renderer can bootstrap the family (stage 1b).
           return {
-            [model.family.displayMime]: { ...announcement, esmSource: bundled.esmSource, ...(bundled.cssSource === undefined ? {} : { cssSource: bundled.cssSource }) },
+            [model.family.displayMime]: {
+              ...announcement,
+              esmSource: bundled.esmSource,
+              ...(bundled.cssSource === undefined ? {} : { cssSource: bundled.cssSource }),
+            },
           };
         }
         return { [model.family.displayMime]: announcement };

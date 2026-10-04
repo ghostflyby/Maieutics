@@ -124,7 +124,13 @@ export function createRendererScript(options: RendererScriptOptions): RendererSc
       return;
     }
     try {
-      view.deps = module.collectDeps?.(view.modelId, models) ?? new Set([view.modelId]);
+      // Defensive union: the root is always a dep regardless of what a
+      // family returns, so a family that forgets it cannot orphan its own
+      // view (PR #175 review).
+      view.deps = new Set([
+        view.modelId,
+        ...(module.collectDeps?.(view.modelId, models) ?? []),
+      ]);
     } catch (error) {
       console.warn(`maieutics: view '${view.family}' collectDeps threw — ${String(error)}`);
       view.deps = new Set([view.modelId]);

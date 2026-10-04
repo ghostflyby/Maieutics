@@ -621,7 +621,14 @@ path closes the form deterministically. Accept met: elicitation flow
 completes inside the notebook over the comm plane; the input endpoint path
 remains the fallback; suite + AOT publish green.
 
-**Stage 3 — plugin UI lane.** `ui` service extension point (SDK +
+**Stage 3 — plugin UI lane. — KERNEL LANE IMPLEMENTED 2026-10-04 (code form): the
+`ui.models` capability (catalog + deny-by-default grant + ADR 0037 approval via grant
+clearing) receives worker-pushed frames and publishes them into the foreground
+session's comm plane with a `PluginUiOwner` routing frontend uplink back to the
+plugin's `UiEvent` export through the generic host.invoke path (zero new control-bus
+message types: downlink rides `capability.invoke`, uplink rides `host.invoke`).
+Remaining stage-3 work: the SDK worker-side surface (UiEvent extension-point
+definition + model API) and the `ui` data-entry form.** `ui` service extension point (SDK +
 `deno/maieutics-plugin-host` relay + `PluginHostManager` invoke path with
 `plugin_pending_approval` enforcement) and/or `ui` data-entry interpreter;
 `ui.models` capability in `PluginCapabilityCatalog`; fingerprint coverage

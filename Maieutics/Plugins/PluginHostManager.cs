@@ -75,6 +75,13 @@ internal delegate Task<JsonElement> PluginCapabilityExecutor(
     JsonElement arguments,
     CancellationToken cancellationToken);
 
+/// <summary>Receives one plugin UI frame for publication into the session's comm plane
+/// (ADR 0038 stage 3); bound by the composition root.</summary>
+internal delegate ValueTask PluginUiFrameSink(
+    string pluginId,
+    PluginUiFramePayload frame,
+    CancellationToken cancellationToken);
+
 internal readonly record struct ExtensionCallOutcome(
     bool IsError,
     JsonElement? Value,
@@ -500,6 +507,30 @@ internal sealed class PluginHostManager(
     /// this to the control host's script tool registry; capability requests arriving
     /// before it is bound are refused with a typed <c>capability_unavailable</c> error.</summary>
     internal PluginCapabilityExecutor? CapabilityExecutor { get; set; }
+
+    /// <summary>
+    ///     Composition-root sink for plugin UI frames (ADR 0038 stage 3): the comm plane
+    ///     lives in <c>Frontend</c>, which this namespace must not reference, so the
+    ///     frame crosses the boundary through this delegate. Typed producer failures are
+    ///     raised as <see cref="InvalidOperationException" /> and answered to the worker
+    ///     as <c>ui_frame_rejected</c>.
+    /// </summary>
+    internal PluginUiFrameSink? UiFrameSink { get; set; }
+
+    /// <summary>The export name serving <c>UiEvent</c> for a plugin (ADR 0038 stage 3):
+    /// the kernel routes frontend uplink for the plugin's models there via
+    /// <see cref="InvokeExtensionPointAsync" />. Null when the plugin registers none.</summary>
+    internal string? FindUiEventExport(string pluginId)
+    {
+        lock (gate)
+        {
+            return hostRegistrations
+                .FirstOrDefault(registration =>
+                    registration.PluginId == pluginId &&
+                    registration.ExtensionPoint == ReplExtensionPointName.UiEvent)
+                ?.ExportName;
+        }
+    }
 
     internal PluginHostStatus GetStatus()
     {
@@ -2631,6 +2662,70 @@ internal sealed class PluginHostManager(
                     envelope.CorrelationId,
                     "invalid_capability_invoke",
                     "The capability.invoke payload requires a capability payload object.",
+                    budget.Token).ConfigureAwait(false);
+                return;
+            }
+
+            if (request.Capability == ReplCapabilityName.UiModels)
+            {
+                // Plugin-owned UI models (ADR 0038 stage 3): the frame routes to the
+                // composition-root sink (the comm plane lives in Frontend, which Plugins
+                // must not reference). Invalid frames answer before the sink runs.
+                var frame = JsonSerializer.Deserialize(
+                    payload.GetRawText(),
+                    ReplControlJsonContext.Default.PluginUiFramePayload);
+                if (frame is null ||
+                    string.IsNullOrWhiteSpace(frame.CommId) ||
+                    (frame.Kind != "open" && frame.Kind != "message" && frame.Kind != "close") ||
+                    (frame.Kind == "open" && string.IsNullOrWhiteSpace(frame.TargetName)))
+                {
+                    await PushCapabilityErrorAsync(
+                        socket,
+                        envelope.CorrelationId,
+                        "invalid_capability_invoke",
+                        "The ui.models payload requires a kind (open|message|close), a commId, and a targetName on open.",
+                        budget.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                var uiSink = UiFrameSink;
+                if (uiSink is null)
+                {
+                    await PushCapabilityErrorAsync(
+                        socket,
+                        envelope.CorrelationId,
+                        "capability_unavailable",
+                        "The kernel UI frame sink is not available.",
+                        budget.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                try
+                {
+                    await uiSink(request.PluginId, frame, budget.Token).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException exception)
+                {
+                    // Typed producer failures (no active session, unknown family, …).
+                    await PushCapabilityErrorAsync(
+                        socket,
+                        envelope.CorrelationId,
+                        "ui_frame_rejected",
+                        exception.Message,
+                        budget.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                await PushCapabilityReplyAsync(
+                    socket,
+                    new ReplEnvelope(
+                        envelope.Version,
+                        ReplMessageType.CapabilityResult,
+                        envelope.CorrelationId,
+                        JsonSerializer.SerializeToElement(
+                            new CapabilityResultPayload(
+                                JsonDocument.Parse("{\"status\":\"ok\"}").RootElement.Clone()),
+                            ReplControlJsonContext.Default.CapabilityResultPayload)),
                     budget.Token).ConfigureAwait(false);
                 return;
             }

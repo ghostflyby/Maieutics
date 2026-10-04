@@ -49,6 +49,7 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(TaskCancelRequest))]
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ToolInvokePayload))]
+[JsonSerializable(typeof(PluginUiFramePayload))]
 [JsonSerializable(typeof(CapabilityInvokePayload))]
 [JsonSerializable(typeof(CapabilityResultPayload))]
 [JsonSerializable(typeof(ReplEnvelope))]
@@ -100,6 +101,18 @@ internal sealed record ToolInvokeRequest(
 internal sealed record ToolInvokePayload(string Tool, JsonElement Arguments);
 
 /// <summary>
+///     One native view-family comm frame pushed by a plugin worker through the
+///     <c>ui.models</c> capability (ADR 0038 stage 3): the worker-originated mirror of the
+///     comm plane's open/message/close shapes. <c>Kind</c> is <c>open</c> (requires
+///     <c>TargetName</c> under <c>maieutics.view/</c>), <c>message</c>, or <c>close</c>.
+/// </summary>
+internal sealed record PluginUiFramePayload(
+    string Kind,
+    string CommId,
+    string? TargetName = null,
+    JsonElement? Data = null);
+
+/// <summary>
 ///     Versioned message envelope shared by every control channel bus message. Payloads are
 ///     domain-shaped JSON; binary data never rides this envelope (native binary frames carry it).
 /// </summary>
@@ -147,11 +160,16 @@ internal static class ReplMessageType
 internal static class ReplCapabilityName
 {
     public const string ToolsInvoke = "tools.invoke";
+
+    /// <summary>Plugin-owned UI models (ADR 0038 stage 3): a granted worker pushes native
+    /// view-family comm frames through the kernel into the session's comm plane.</summary>
+    public const string UiModels = "ui.models";
 }
 
 internal static class PluginCapabilityCatalog
 {
-    public static readonly IReadOnlyList<string> All = [ReplCapabilityName.ToolsInvoke];
+    public static readonly IReadOnlyList<string> All =
+        [ReplCapabilityName.ToolsInvoke, ReplCapabilityName.UiModels];
 
     public static bool Contains(string capability)
     {
@@ -166,10 +184,15 @@ internal static class ReplExtensionPointName
     public const string ToolPreInvoke = "ToolPreInvoke";
     public const string ToolPostInvoke = "ToolPostInvoke";
 
+    /// <summary>Plugin UI uplink events (ADR 0038 stage 3): the kernel invokes the
+    /// worker's registered UiEvent export with {commId, name, payload} when the
+    /// frontend sends a frame for one of the plugin's models.</summary>
+    public const string UiEvent = "UiEvent";
+
     public static bool IsKnown(string name)
     {
         return name == McpDiscover || name == McpAdjust ||
-               name == ToolPreInvoke || name == ToolPostInvoke;
+               name == ToolPreInvoke || name == ToolPostInvoke || name == UiEvent;
     }
 }
 

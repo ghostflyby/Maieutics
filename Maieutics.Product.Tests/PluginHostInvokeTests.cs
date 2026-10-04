@@ -445,7 +445,7 @@ public sealed class PluginHostInvokeTests
     /// the simulated host answers by driving <see cref="PluginHostManager.HandleHostMessage"/>
     /// directly. A fake deno executable keeps the manager's real host process from racing the
     /// simulated socket.</summary>
-    private static async Task<HostHarness> CreateHarnessAsync(CancellationToken cancellationToken)
+    internal static async Task<HostHarness> CreateHarnessAsync(CancellationToken cancellationToken)
     {
         var fakeDenoPath = CreateFakeDenoExecutable();
         var manager = new PluginHostManager(
@@ -488,7 +488,7 @@ public sealed class PluginHostInvokeTests
         return path;
     }
 
-    private sealed class HostHarness : IAsyncDisposable
+    internal sealed class HostHarness : IAsyncDisposable
     {
         internal HostHarness(FakeHostWebSocket host, PluginHostManager manager, string fakeDenoPath)
         {
@@ -521,7 +521,7 @@ public sealed class PluginHostInvokeTests
     /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and
     /// blocks on receive until disposed (the manager's receive loop then ends). Modeled on the
     /// <c>DenoReplHostDeriveTests</c> fake socket.</summary>
-    private sealed class FakeHostWebSocket : WebSocket
+    internal sealed class FakeHostWebSocket : WebSocket
     {
         private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Channel<string> sent = Channel.CreateUnbounded<string>();

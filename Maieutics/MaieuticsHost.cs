@@ -333,26 +333,6 @@ public static class MaieuticsHost
         // session factory pre-caches a REPL's policy through it before the host derives the REPL.
         builder.Services.AddSingleton<IReplPolicyRegistrar>(static services =>
             services.GetRequiredService<PluginHostManager>());
-        // Plugin UI frames (ADR 0038 stage 3) cross the Plugins→Frontend boundary here:
-        // the frame publishes into the foreground session's comm plane as a kernel-owned
-        // comm whose owner routes frontend uplink back to the plugin's UiEvent export.
-        builder.Services.AddSingleton(static services =>
-        {
-            var manager = services.GetRequiredService<PluginHostManager>();
-            var commRouter = services.GetService<FrontendCommRouter>();
-            var sessionService = services.GetService<FrontendSessionService>();
-            if (commRouter is null || sessionService is null) return manager;
-            manager.UiFrameSink = (pluginId, frame, cancellationToken) =>
-                PublishPluginUiFrameAsync(
-                    manager,
-                    commRouter,
-                    sessionService.DescribeSession().Id,
-                    sessionService,
-                    pluginId,
-                    frame,
-                    cancellationToken);
-            return manager;
-        });
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services =>
         {
@@ -386,6 +366,29 @@ public static class MaieuticsHost
             services.GetRequiredService<PluginHostManager>().CapabilityExecutor =
                 (tool, arguments, cancellationToken) =>
                     controlHost.InvokeScriptToolAsync(tool, arguments, cancellationToken);
+
+            // Plugin UI frames (ADR 0038 stage 3) cross the Plugins→Frontend boundary
+            // here: publish into the foreground session's comm plane with the plugin as
+            // the uplink owner (routed back to its UiEvent export). The router resolves
+            // lazily per frame: resolving it here would recurse back into this
+            // ReplControlHost factory (its own factory resolves the control host).
+            var pluginUiManager = services.GetRequiredService<PluginHostManager>();
+            pluginUiManager.UiFrameSink = (pluginId, frame, cancellationToken) =>
+            {
+                var pluginUiCommRouter = services.GetService<FrontendCommRouter>();
+                var pluginUiSessions = services.GetService<FrontendSessionService>();
+                if (pluginUiCommRouter is null || pluginUiSessions is null)
+                    throw new InvalidOperationException("The frontend UI plane is not available.");
+
+                return PublishPluginUiFrameAsync(
+                    pluginUiManager,
+                    pluginUiCommRouter,
+                    pluginUiSessions.DescribeSession().Id,
+                    pluginUiSessions,
+                    pluginId,
+                    frame,
+                    cancellationToken);
+            };
 
             return controlHost;
         });

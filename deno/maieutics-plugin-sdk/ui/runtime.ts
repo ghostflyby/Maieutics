@@ -22,6 +22,23 @@ export interface UiModelHandlers {
   onEvent?: (name: string, payload?: unknown) => void;
 }
 
+/**
+ * Bundled-family payload (ADR 0038 §4, stage 1b): producer-authored
+ * component code that the renderer materializes inline. The source runs in
+ * the renderer webview under the notebook CSP (`'unsafe-eval'` is allowed
+ * there; URL-based module imports are not), so delivery is source text, not
+ * a module URL.
+ */
+export interface BundledFamilySource {
+  /** Plain JS (no imports) calling the injected `registerViewFamily`. */
+  readonly esmSource: string;
+  /** Optional stylesheet scoped to the family's mount points. */
+  readonly cssSource?: string;
+}
+
+/** Upper bound for a bundled source riding an announcement. */
+export const MAX_BUNDLED_SOURCE_BYTES = 1024 * 1024;
+
 /** A registered UI model. Displayable: carries the Jupyter.display symbol. */
 export interface UiModel<State extends Record<string, unknown> = Record<string, unknown>> {
   readonly commId: string;
@@ -43,15 +60,29 @@ interface RegisteredModel {
 export class UiModelRuntime {
   readonly #broadcast: UiBroadcast;
   readonly #models = new Map<string, RegisteredModel>();
-  readonly #families = new Map<string, ViewFamilyContract>();
+  readonly #families = new Map<
+    string,
+    { contract: ViewFamilyContract; bundled?: BundledFamilySource }
+  >();
 
   constructor(broadcast: UiBroadcast) {
     this.#broadcast = broadcast;
   }
 
-  /** Register a family's wire contract (built-in families come pre-registered). */
-  registerFamily(contract: ViewFamilyContract): void {
-    this.#families.set(contract.family, contract);
+  /** Register a family's wire contract, optionally with the bundled
+   * component source every announcement of that family embeds (stage 1b). */
+  registerFamily(contract: ViewFamilyContract, bundled?: BundledFamilySource): void {
+    if (bundled !== undefined) {
+      // The ceiling covers the component source and the stylesheet together.
+      const bytes = new TextEncoder().encode(bundled.esmSource).length +
+        new TextEncoder().encode(bundled.cssSource ?? "").length;
+      if (bytes > MAX_BUNDLED_SOURCE_BYTES) {
+        throw new Error(
+          `Bundled source for '${contract.family}' is ${bytes} bytes; the ceiling is ${MAX_BUNDLED_SOURCE_BYTES}.`,
+        );
+      }
+    }
+    this.#families.set(contract.family, { contract, bundled });
   }
 
   /** True when a family contract is registered. */
@@ -65,10 +96,11 @@ export class UiModelRuntime {
     state: State,
     handlers: UiModelHandlers = {},
   ): UiModel<State> {
-    const contract = this.#families.get(family);
-    if (contract === undefined) {
+    const entry = this.#families.get(family);
+    if (entry === undefined) {
       throw new Error(`Unknown view family '${family}'.`);
     }
+    const contract = entry.contract;
     const commId = crypto.randomUUID();
     const model: RegisteredModel = {
       family: contract,
@@ -84,7 +116,7 @@ export class UiModelRuntime {
       target_name: contract.target,
       data: contract.commOpenData(model.state),
     });
-    return this.#wrap<State>(commId);
+    return this.#wrap<State>(commId, entry.bundled);
   }
 
   /** Route an incoming comm message from the frontend. */
@@ -117,7 +149,10 @@ export class UiModelRuntime {
     this.#models.delete(commId);
   }
 
-  #wrap<State extends Record<string, unknown>>(commId: string): UiModel<State> {
+  #wrap<State extends Record<string, unknown>>(
+    commId: string,
+    bundled: BundledFamilySource | undefined,
+  ): UiModel<State> {
     const requireModel = (): RegisteredModel => {
       const model = this.#models.get(commId);
       if (model === undefined) {
@@ -143,9 +178,19 @@ export class UiModelRuntime {
       },
       announce: (): Record<string, unknown> => {
         const model = requireModel();
-        return {
-          [model.family.displayMime]: model.family.announcement(commId, model.state),
-        };
+        const announcement = model.family.announcement(commId, model.state);
+        if (bundled !== undefined) {
+          // The bundled component source rides every announcement so any
+          // renderer can bootstrap the family (stage 1b).
+          return {
+            [model.family.displayMime]: {
+              ...announcement,
+              esmSource: bundled.esmSource,
+              ...(bundled.cssSource === undefined ? {} : { cssSource: bundled.cssSource }),
+            },
+          };
+        }
+        return { [model.family.displayMime]: announcement };
       },
     };
   }

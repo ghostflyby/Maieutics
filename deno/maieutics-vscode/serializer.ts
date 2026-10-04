@@ -20,6 +20,7 @@ import {
   type OutputSnapshot,
   parseNotebook,
   serializeNotebook as serializeNotebookBytes,
+  stripBundledDisplaySources,
   type TurnBinding,
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
@@ -116,14 +117,18 @@ function readCellBinding(cell: vscode.NotebookCellData): TurnBinding | undefined
   return readTurnBinding({ metadata: cell.metadata ?? {}, text: cell.value });
 }
 
-/** The structured output the controller leaves on executed cells. */
+/** The structured output the controller leaves on executed cells; bundled
+ * component sources are stripped before persistence (untrusted notebook
+ * files must not carry executable renderer code — ADR 0038 stage 1b). */
 function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undefined {
   for (const output of cell.outputs ?? []) {
     for (const item of output.items) {
       if (item.mime !== TurnOutputMime) continue;
       try {
         const snapshot = JSON.parse(new TextDecoder().decode(item.data)) as OutputSnapshot;
-        if (typeof snapshot === "object" && snapshot !== null) return snapshot;
+        if (typeof snapshot === "object" && snapshot !== null) {
+          return stripBundledDisplaySources(snapshot);
+        }
       } catch {
         // Fall through to the markdown render.
       }

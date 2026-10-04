@@ -25,7 +25,12 @@ export function activate() {
       const viewFamily = typeof record.viewFamily === "string" ? record.viewFamily : "";
       if (modelId.length === 0 || viewFamily.length === 0) return undefined;
       const initialState = isRecord(record.state) ? record.state : undefined;
-      return { family: viewFamily, modelId, initialState };
+      const esmSource = typeof record.esmSource === "string" ? record.esmSource : undefined;
+      const cssSource = typeof record.cssSource === "string" ? record.cssSource : undefined;
+      const bundled = esmSource === undefined
+        ? undefined
+        : { esmSource, ...(cssSource === undefined ? {} : { cssSource }) };
+      return { family: viewFamily, modelId, initialState, bundled };
     },
   });
 }

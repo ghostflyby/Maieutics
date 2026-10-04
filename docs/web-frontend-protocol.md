@@ -200,12 +200,16 @@ custom-UI framework) pair a **display mime** that announces the model with a
     "modelId": "…",
     "viewFamily": "maieutics/form",
     "version": "1.0",
-    "state": { … initial state; seeds the view before/instead of live comm … }
+    "state": { … initial state; seeds the view before/instead of live comm … },
+    "esmSource": "… optional bundled component source (stage 1b; ≤1 MiB) …",
+    "cssSource": "… optional stylesheet scoped to the family …"
   }
   ```
 
   The embedded `state` is the display-time snapshot: a reopened notebook
   renders it with a stale marker when the producing model is no longer live.
+  `esmSource`/`cssSource` are present only for bundled families (the
+  renderer materializes the module inline; see ADR 0038 §4).
 - Everything else about a model travels on the comm WebSocket below.
 
 Native families speak their own comm dialect alongside the ipywidgets one:

@@ -36,7 +36,7 @@ export {
   nativeTarget,
 } from "./family.ts";
 export { UiModelRuntime } from "./runtime.ts";
-export type { UiModel, UiModelHandlers } from "./runtime.ts";
+export type { BundledFamilySource, UiModel, UiModelHandlers } from "./runtime.ts";
 export {
   createForm,
   FORM_FAMILY,
@@ -112,9 +112,13 @@ export function form(
   return displayable(createForm(useUiRuntime(), def, handlers));
 }
 
-/** Register a custom view-family contract on the bound runtime. */
-export function registerFamily(contract: Parameters<UiModelRuntime["registerFamily"]>[0]): void {
-  useUiRuntime().registerFamily(contract);
+/** Register a custom view-family contract on the bound runtime, optionally
+ * with the bundled component source its announcements embed (stage 1b). */
+export function registerFamily(
+  contract: Parameters<UiModelRuntime["registerFamily"]>[0],
+  bundled?: Parameters<UiModelRuntime["registerFamily"]>[1],
+): void {
+  useUiRuntime().registerFamily(contract, bundled);
 }
 
 /** Create a model of any registered native family. */

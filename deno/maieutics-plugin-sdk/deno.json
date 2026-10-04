@@ -9,6 +9,7 @@
     "./interop": "./interop.ts",
     "./reactive": "./reactive.ts",
     "./lint": "./lint-plugin.ts",
+    "./ui": "./ui/index.ts",
     "./widgets": "./widgets/index.ts",
     "./widgets/jsx-runtime": "./widgets/jsx-runtime.ts",
     "./widgets/transform": "./widgets/transform.ts"

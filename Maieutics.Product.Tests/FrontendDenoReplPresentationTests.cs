@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
@@ -64,6 +65,41 @@ public sealed class FrontendDenoReplPresentationTests
         target.Published[0].DisplayId.Should().BeNull();
         target.Published[1].Type.Should().Be("repl.error");
         target.Published[1].Data.GetProperty("text/plain").GetString().Should().Contain("Boom: broken");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task NativeViewFamilyAnnouncementPassesThroughVerbatim()
+    {
+        // The custom-UI framework's native announcement mime (ADR 0038) must
+        // ride a display bundle untouched: the presentation sink's only
+        // mime-aware behavior is the binary-mime denylist, and this key is
+        // not a binary mime. Locking that zero-interpretation promise.
+        var target = new FakeTarget();
+        var sink = new FrontendDenoReplPresentationSink(target);
+        var announcement = JsonSerializer.SerializeToElement(
+            new Dictionary<string, object?>
+            {
+                ["modelId"] = "0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01",
+                ["viewFamily"] = "maieutics/form",
+                ["version"] = "1.0",
+                ["state"] = new Dictionary<string, object?> { ["fields"] = Array.Empty<string>() },
+            });
+        var bundle = new ReplDisplayBundle(new ReadOnlyDictionary<string, JsonElement>(
+            new Dictionary<string, JsonElement>
+            {
+                ["application/vnd.maieutics.view+json"] = announcement,
+                ["text/plain"] = JsonSerializer.SerializeToElement("form", ReplJsonContext.Default.String),
+            }));
+
+        await sink.DisplayAsync(bundle, EmptyMetadata(), TestContext.Current.CancellationToken);
+
+        target.Published.Should().HaveCount(1);
+        var data = target.Published[0].Data;
+        data.GetProperty("application/vnd.maieutics.view+json").GetProperty("viewFamily").GetString()
+            .Should().Be("maieutics/form");
+        data.GetProperty("application/vnd.maieutics.view+json").GetProperty("modelId").GetString()
+            .Should().Be("0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01");
+        data.GetProperty("text/plain").GetString().Should().Be("form");
     }
 
     [Fact(Timeout = 30_000)]

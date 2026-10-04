@@ -33,6 +33,7 @@
     "onFileSystem:maieutics",
     "onRenderer:maieutics-turn-renderer",
     "onRenderer:maieutics-widget-renderer",
+    "onRenderer:maieutics-view-renderer",
     "onView:maieutics.sessions",
     "onCommand:maieutics.switchBranch",
     "onCommand:maieutics.queueTurn",
@@ -66,6 +67,15 @@
         "entrypoint": "./media/widgetRenderer.js",
         "mimeTypes": [
           "application/vnd.jupyter.widget-view+json"
+        ],
+        "requiresMessaging": "always"
+      },
+      {
+        "id": "maieutics-view-renderer",
+        "displayName": "Maieutics View",
+        "entrypoint": "./media/viewRenderer.js",
+        "mimeTypes": [
+          "application/vnd.maieutics.view+json"
         ],
         "requiresMessaging": "always"
       }

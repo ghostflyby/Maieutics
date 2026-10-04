@@ -164,8 +164,9 @@ Deno.test("submit posts the gathered values (registered elements only)", () => {
   );
   const onClick = (submit?.props as { onClick?: () => void }).onClick;
   if (onClick === undefined) throw new Error("submit button has no handler");
-  // Without mounted DOM (refs never ran) submit carries no field values —
-  // the DOM-path is exercised by the bundled-renderer verification instead.
+  // Known gap: without mounted DOM the refs never ran, so submit carries no
+  // field values. The ref→fieldValue gathering path needs a DOM and is NOT
+  // covered by this suite — only manual F5 verification exercises it.
   onClick();
   assertEquals(posted, [{
     source: "maieutics-ui",

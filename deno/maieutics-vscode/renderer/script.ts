@@ -14,6 +14,7 @@
  */
 
 import { h, render } from "preact";
+import { materializeBundledFamily, type BundledSource } from "./bundled.ts";
 import { FALLBACK_FAMILY, viewFamily, type ViewProps } from "./registry.ts";
 
 export interface RendererScriptOptions {
@@ -25,7 +26,12 @@ export interface RendererScriptOptions {
    * returning undefined skips the output (malformed announcement). */
   readonly resolve: (
     value: unknown,
-  ) => { family: string; modelId: string; initialState?: Record<string, unknown> } | undefined;
+  ) => {
+    family: string;
+    modelId: string;
+    initialState?: Record<string, unknown>;
+    bundled?: BundledSource;
+  } | undefined;
 }
 
 /** The notebook renderer API surface this script implements. */
@@ -50,10 +56,19 @@ type VsCodeApi = { postMessage(message: unknown): void };
 
 export function createRendererScript(options: RendererScriptOptions): RendererScriptHost {
   let styled = false;
+  const injectedCss = new Set<string>();
   // Model states are shared across outputs of the same renderer webview: a
   // state frame for a nested model must reach every view rendering it.
   const models = new Map<string, Record<string, unknown>>();
   const views = new Map<string, ViewEntry>();
+
+  function injectCss(css: string): void {
+    if (injectedCss.has(css)) return;
+    injectedCss.add(css);
+    const style = document.createElement("style");
+    style.textContent = css;
+    document.head.append(style);
+  }
 
   const acquire = (globalThis as { acquireVsCodeApi?: () => VsCodeApi })
     .acquireVsCodeApi;
@@ -108,14 +123,20 @@ export function createRendererScript(options: RendererScriptOptions): RendererSc
   return {
     renderOutputItem(output, element) {
       if (!styled) {
-        const style = document.createElement("style");
-        style.textContent = options.css;
-        document.head.append(style);
+        injectCss(options.css);
         styled = true;
       }
 
       const resolved = options.resolve(output.item.json());
       if (resolved === undefined) return;
+      // A bundled family bootstrap arrives with its first announcement;
+      // failure degrades the paint to the fallback state view.
+      if (resolved.bundled !== undefined && viewFamily(resolved.family) === undefined) {
+        const materialized = materializeBundledFamily(resolved.family, resolved.bundled);
+        if (materialized.ok && resolved.bundled.cssSource !== undefined) {
+          injectCss(resolved.bundled.cssSource);
+        }
+      }
       const container = document.createElement("div");
       element.append(container);
       const key = output.id ?? resolved.modelId;

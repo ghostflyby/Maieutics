@@ -1,6 +1,6 @@
 # Custom UI Framework Design
 
-Status: Accepted for stages 0–1a (implemented 2026-10-04); later stages
+Status: Accepted for stages 0–1b (implemented 2026-10-04); later stages
 remain design-only.
 
 Date: 2026-10-04
@@ -552,14 +552,31 @@ renderer contribution for the native mime in `package.json`.
 Accept: a TSX cell renders a `maieutics/form` model live; jupyter widgets
 unchanged on the wire (fixture diff empty).
 
-**Stage 1b — bundled-family spike.** The CSP facts are already verified
-(Appendix A); the spike validates the materialization path, not
-permission: producer ESM fetched by the bridge and materialized as an
-inline module, exercised under both postures — today's default (notebook
-CSP meta absent) and the experimental CSP-on. Module-by-URL
-(`import()` of `blob:`/`data:`) is expected blocked and is not the path.
-Accept: spike report with both postures green on the bridge-delivery
-path; no product dependency beyond the report.
+**Stage 1b — bundled-family spike. — CONCLUDED 2026-10-04: both CSP
+postures green; bundled families ship on the inline-materialization path.**
+The mechanism: a producer family may carry `esmSource` (bounded at 1 MiB;
+optional `cssSource`) on its registration, and every announcement of that
+family embeds it. The view renderer materializes the module by evaluation —
+`new Function("registerViewFamily", "h", "Fragment", source)` — an injected,
+deliberately tiny API surface (family registration + preact factories); no
+URL imports (`blob:`/`data:` module sources are CSP-blocked anyway).
+Failure semantics are typed and memoized per source: a broken or
+non-registering module degrades every view of that family to the fallback
+state JSON (invariants 17/18) without re-evaluating.
+
+Verification (2026-10-04, real browser): under the default posture (no CSP
+meta) and under a meta CSP mirroring VS Code's experimental
+`notebook.experimental.enableCsp` policy (`script-src … 'unsafe-inline'
+'unsafe-eval'`), the bundled module materialized, registered its family,
+rendered the announcement's embedded state, and posted the mount envelope
+(`bundled-ok | posted=true` in both). Unit tests cover registration,
+memoization, thrown-source degradation, and preact vnode construction
+inside a bundled module.
+
+Delivery note: v1 rides the source inline in the announcement (and thus the
+persisted snapshot); the `$object` content-addressed delivery from §2 is
+the production path for larger payloads once a cell-side upload surface
+exists (today only extension-side `uploadObject` can store objects).
 
 **Stage 2 — kernel producers + first built-in consumer.** Comm ownership
 in `FrontendCommRouter` (owner-routed uplink); C# UI model host;

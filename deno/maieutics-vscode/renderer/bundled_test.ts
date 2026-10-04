@@ -4,7 +4,7 @@
 import { assertEquals } from "@std/assert";
 import type { VNode } from "preact";
 import { materializeBundledFamily, resetBundledMaterialization } from "./bundled.ts";
-import { viewFamily } from "./registry.ts";
+import { FALLBACK_FAMILY, viewFamily } from "./registry.ts";
 
 Deno.test("a bundled module registers its family through the injected API", () => {
   resetBundledMaterialization();
@@ -23,13 +23,16 @@ Deno.test("a bundled module registers its family through the injected API", () =
 Deno.test("a module that throws is a typed failure and never retried", () => {
   resetBundledMaterialization();
   const family = "test/spike-broken";
-  const source = "throw new Error('boom');";
+  // Side-effect counter proves the memoized second call never re-evaluates.
+  const counter = globalThis as { __spikeEvaluations?: number };
+  counter.__spikeEvaluations = 0;
+  const source = "globalThis.__spikeEvaluations += 1; throw new Error('boom');";
   const first = materializeBundledFamily(family, { esmSource: source });
   assertEquals(first.ok, false);
   assertEquals((first as { error: string }).error.includes("boom"), true);
-  // Memoized: the same source reports the same outcome without re-evaluating.
   const second = materializeBundledFamily(family, { esmSource: source });
-  assertEquals(second, first);
+  assertEquals(second.ok, false);
+  assertEquals(counter.__spikeEvaluations, 1);
   assertEquals(viewFamily(family), undefined);
 });
 
@@ -41,6 +44,45 @@ Deno.test("a module that does not register the announced family fails loudly", (
   assertEquals(result.ok, false);
   assertEquals(
     (result as { error: string }).error.includes("did not register family"),
+    true,
+  );
+});
+
+Deno.test("a module shape without a functional component is rejected", () => {
+  resetBundledMaterialization();
+  const result = materializeBundledFamily("test/spike-shape", {
+    esmSource: "registerViewFamily('test/spike-shape', { component: 42 });",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(
+    (result as { error: string }).error.includes("functional 'component'"),
+    true,
+  );
+  assertEquals(viewFamily("test/spike-shape"), undefined);
+});
+
+Deno.test("a module cannot override an already-registered (built-in) family", () => {
+  resetBundledMaterialization();
+  const result = materializeBundledFamily("test/spike-clobber", {
+    esmSource: `registerViewFamily(${JSON.stringify(FALLBACK_FAMILY)}, {
+      component: () => null,
+    });`,
+  });
+  assertEquals(result.ok, false);
+  assertEquals(
+    (result as { error: string }).error.includes("refuses to override"),
+    true,
+  );
+});
+
+Deno.test("an oversized source is refused before evaluation", () => {
+  resetBundledMaterialization();
+  const result = materializeBundledFamily("test/spike-huge", {
+    esmSource: "x".repeat(1024 * 1024 + 1),
+  });
+  assertEquals(result.ok, false);
+  assertEquals(
+    (result as { error: string }).error.includes("the ceiling is"),
     true,
   );
 });

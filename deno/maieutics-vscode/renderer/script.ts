@@ -111,13 +111,24 @@ export function createRendererScript(options: RendererScriptOptions): RendererSc
       post,
       hasState: live !== undefined,
     };
-    render(h(module.component, props), view.container);
-    // Defensive union: the root is always a dep regardless of what a family
-    // returns, so a family that forgets it cannot orphan its own view.
-    view.deps = new Set([
-      view.modelId,
-      ...(module.collectDeps?.(view.modelId, models) ?? []),
-    ]);
+    try {
+      render(h(module.component, props), view.container);
+    } catch (error) {
+      // A component that throws must not break the renderer loop
+      // (invariant 18): degrade this view to the fallback state view.
+      console.warn(`maieutics: view '${view.family}' render threw — ${String(error)}`);
+      const fallback = viewFamily(FALLBACK_FAMILY);
+      if (fallback !== undefined) {
+        render(h(fallback.component, props), view.container);
+      }
+      return;
+    }
+    try {
+      view.deps = module.collectDeps?.(view.modelId, models) ?? new Set([view.modelId]);
+    } catch (error) {
+      console.warn(`maieutics: view '${view.family}' collectDeps threw — ${String(error)}`);
+      view.deps = new Set([view.modelId]);
+    }
   }
 
   return {

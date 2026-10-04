@@ -70,10 +70,12 @@ export class UiModelRuntime {
   }
 
   /** Register a family's wire contract, optionally with the bundled
-   * component source every announcement of the family embeds (stage 1b). */
+   * component source every announcement of that family embeds (stage 1b). */
   registerFamily(contract: ViewFamilyContract, bundled?: BundledFamilySource): void {
     if (bundled !== undefined) {
-      const bytes = new TextEncoder().encode(bundled.esmSource).length;
+      // The ceiling covers the component source and the stylesheet together.
+      const bytes = new TextEncoder().encode(bundled.esmSource).length +
+        new TextEncoder().encode(bundled.cssSource ?? "").length;
       if (bytes > MAX_BUNDLED_SOURCE_BYTES) {
         throw new Error(
           `Bundled source for '${contract.family}' is ${bytes} bytes; the ceiling is ${MAX_BUNDLED_SOURCE_BYTES}.`,

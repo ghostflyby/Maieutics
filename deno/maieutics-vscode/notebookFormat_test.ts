@@ -3,10 +3,47 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   emptyNotebook,
+  NativeViewMime,
   NotebookFormatError,
+  type OutputSnapshot,
   parseNotebook,
   serializeNotebook,
+  stripBundledDisplaySources,
 } from "./notebookFormat.ts";
+
+Deno.test("stripBundledDisplaySources removes executable sources, keeps the frozen state", () => {
+  const output: OutputSnapshot = {
+    repl: [
+      { displayId: "d1", data: { "text/html": "<b>t</b>" } },
+      {
+        displayId: "d2",
+        data: {
+          [NativeViewMime]: {
+            modelId: "m1",
+            viewFamily: "acme/panel",
+            version: "1.0",
+            state: { title: "frozen" },
+            esmSource: "registerViewFamily('acme/panel', { component: () => null });",
+            cssSource: ".acme { color: red; }",
+          },
+        },
+      },
+    ],
+  };
+
+  const stripped = stripBundledDisplaySources(output);
+
+  const announcement = stripped.repl?.[1].data[NativeViewMime] as Record<string, unknown>;
+  assertEquals("esmSource" in announcement, false);
+  assertEquals("cssSource" in announcement, false);
+  assertEquals(announcement.state, { title: "frozen" });
+  assertEquals(announcement.viewFamily, "acme/panel");
+  // Untouched displays pass through by reference.
+  assertEquals(stripped.repl?.[0].data, { "text/html": "<b>t</b>" });
+  // Outputs without bundled sources return unchanged (same reference).
+  const plain: OutputSnapshot = { repl: [{ displayId: "d1", data: {} }] };
+  assertEquals(stripBundledDisplaySources(plain) === plain, true);
+});
 
 Deno.test("empty notebook round-trips", () => {
   const notebook = emptyNotebook();

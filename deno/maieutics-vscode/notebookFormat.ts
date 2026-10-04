@@ -131,6 +131,33 @@ export function serializeNotebook(notebook: MaieuticsNotebook): Uint8Array {
   );
 }
 
+/** The display-mime member native view-family announcements ride. */
+export const NativeViewMime = "application/vnd.maieutics.view+json";
+
+/**
+ * Strip bundled-family component sources (esmSource/cssSource) from a
+ * snapshot's REPL displays before it is persisted: a `.maieuticsnb` file is
+ * untrusted input (AGENTS.md), and bundled code must only ever reach the
+ * renderer as live output of a running session (ADR 0038 stage 1b's trust
+ * boundary). Reopened notebooks render the frozen announcement state via
+ * the fallback view; a live re-display re-materializes the family.
+ */
+export function stripBundledDisplaySources(output: OutputSnapshot): OutputSnapshot {
+  if (output.repl === undefined) return output;
+  let changed = false;
+  const repl = output.repl.map((display) => {
+    const announcement = display.data[NativeViewMime];
+    if (!isRecord(announcement)) return display;
+    if (!("esmSource" in announcement) && !("cssSource" in announcement)) return display;
+    changed = true;
+    const cleaned = { ...announcement };
+    delete cleaned.esmSource;
+    delete cleaned.cssSource;
+    return { ...display, data: { ...display.data, [NativeViewMime]: cleaned } };
+  });
+  return changed ? { ...output, repl } : output;
+}
+
 function parseCell(value: unknown): CellSnapshot {
   const record = isRecord(value) ? value : {};
   const text = typeof record.text === "string" ? record.text : "";

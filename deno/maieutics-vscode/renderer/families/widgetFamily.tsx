@@ -178,7 +178,10 @@ function control(props: ViewProps): VNode {
 export const widgetFamily: ViewFamilyModule = {
   component: WidgetView,
   collectDeps(modelId, models) {
-    const deps = new Set<string>();
+    // The root is always a dep (kernel state frames for the model itself
+    // must re-render its view); nested children add on top — the old
+    // renderer seeded `new Set([modelId])` the same way.
+    const deps = new Set<string>([modelId]);
     collectWidgetDeps(deps, modelId, models);
     return deps;
   },

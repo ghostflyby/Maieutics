@@ -4,7 +4,13 @@
 import { assertEquals } from "@std/assert";
 import type { VNode } from "preact";
 import type { ViewProps } from "../registry.ts";
-import { collectWidgetDeps, ipyModelRef, kindOf, WidgetView } from "./widgetFamily.tsx";
+import {
+  collectWidgetDeps,
+  ipyModelRef,
+  kindOf,
+  widgetFamily,
+  WidgetView,
+} from "./widgetFamily.tsx";
 
 interface TestView {
   modelId: string;
@@ -83,6 +89,19 @@ Deno.test("collectWidgetDeps walks nested children", () => {
   const deps = new Set<string>();
   collectWidgetDeps(deps, "outer", models);
   assertEquals([...deps].sort(), ["inner", "leaf"]);
+});
+
+Deno.test("the family's deps include the root model (kernel state for the model itself re-renders)", () => {
+  // Regression: a rootless deps set made every view ignore its own model's
+  // state frames — widgets hung on "Connecting…" after the mount reply.
+  const models = new Map<string, Record<string, unknown>>([
+    ["outer", { _model_name: "BoxModel", children: ["IPY_MODEL_leaf"] }],
+    ["leaf", { _model_name: "ButtonModel" }],
+  ]);
+  const deps = widgetFamily.collectDeps?.("outer", models);
+  assertEquals([...(deps ?? [])].sort(), ["leaf", "outer"]);
+  const leafDeps = widgetFamily.collectDeps?.("leaf", models);
+  assertEquals([...(leafDeps ?? [])].sort(), ["leaf"]);
 });
 
 Deno.test("a slider renders a labeled range input with the current value", () => {

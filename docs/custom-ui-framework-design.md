@@ -605,15 +605,21 @@ Accept: spike report with both postures green on the bridge-delivery
 path; no product dependency beyond the report.
 >>>>>>> origin/main
 
-**Stage 2 — kernel producers + first built-in consumer.** Comm ownership
-in `FrontendCommRouter` (owner-routed uplink); C# UI model host;
-`capabilities.ui`; consumer: plugin approval form and/or elicitation
-in-notebook. Files: `Maieutics/Frontend/{FrontendComm.cs,
-FrontendHost.cs, FrontendWireModels.cs}`,
-`Maieutics/Control/ReplControlHost.cs` (uplink routing),
-`deno/maieutics-vscode` consumer UI. Accept: approval flow completes
-inside the notebook over the comm plane; QuickPick path remains the
-fallback; suite + AOT publish green.
+**Stage 2 — kernel producers + first built-in consumer. — CORE + ELICITATION
+CONSUMER IMPLEMENTED 2026-10-04; plugin approval form deferred to stage 4's
+`GET /v1/plugins` round (it needs an approval-state event surface in
+Plugins, which rides better with the REST endpoint).** Comm ownership in
+`FrontendCommRouter` (`PublishFromKernelAsync` + owner-routed uplink:
+kernel-owned comms never travel to the child; plane recycling drops their
+owners); C# form model host (`FrontendUiModels.cs`: native dialect bytes,
+`repl.display` announcement via the session frame publisher, deterministic
+close); `capabilities.ui {version, families}`; first consumer: MCP
+elicitation presents a live `maieutics/form` alongside the `input.request`
+fallback — schema-derived fields (bounded at 16, tolerant mapping), submit
+answers accept with the values object, cancel answers decline, and either
+path closes the form deterministically. Accept met: elicitation flow
+completes inside the notebook over the comm plane; the input endpoint path
+remains the fallback; suite + AOT publish green.
 
 **Stage 3 — plugin UI lane.** `ui` service extension point (SDK +
 `deno/maieutics-plugin-host` relay + `PluginHostManager` invoke path with

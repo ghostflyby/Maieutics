@@ -27,6 +27,9 @@ namespace Maieutics.Frontend;
 /// </summary>
 internal sealed class FrontendHost : IAsyncDisposable
 {
+    /// <summary>The native view-family capability version advertised in capabilities (ADR 0038).</summary>
+    internal const int FrontendUiCapabilityVersion = 1;
+
     private static readonly HashSet<string> FrontendPrefixes = new(StringComparer.Ordinal)
     {
         "/v1/agent",
@@ -60,7 +63,11 @@ internal sealed class FrontendHost : IAsyncDisposable
         this.turnQueue = turnQueue;
         this.logger = logger;
         this.elicitationPresenter = elicitationPresenter
-            ?? new FrontendElicitationPresenter(NoFramesPublisher.Instance);
+            ?? new FrontendElicitationPresenter(
+                NoFramesPublisher.Instance,
+                new FrontendFormModelHost(
+                    commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
+                    NoFramesPublisher.Instance));
         this.objectStore = objectStore;
         this.commRouter = commRouter;
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
@@ -211,6 +218,11 @@ internal sealed class FrontendHost : IAsyncDisposable
                 : new FrontendCommCapability(
                     FrontendCommRouter.Version,
                     ReplCommLimits.MaximumMessageBytes),
+            Ui: commRouter is null
+                ? null
+                : new FrontendUiCapability(
+                    FrontendUiCapabilityVersion,
+                    [FrontendUiWire.FormFamily]),
             MultiSession: true), FrontendJsonContext.Default.FrontendCapabilities);
     }
 

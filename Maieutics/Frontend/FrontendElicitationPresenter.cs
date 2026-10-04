@@ -17,12 +17,21 @@ internal interface IFrontendSessionFramePublisher
 
 /// <summary>Shows MCP elicitation requests as <c>input.request</c> frames on the attributed
 /// session's stream and completes them through the shared input endpoint (ADR 0029 decision
-/// 3). Answers carry the terminal action plus a JSON object of field values for accept.</summary>
-internal sealed class FrontendElicitationPresenter(IFrontendSessionFramePublisher publisher)
+/// 3). Answers carry the terminal action plus a JSON object of field values for accept.
+/// When the request carries a schema, a live <c>maieutics/form</c> model rides the comm
+/// plane alongside (ADR 0038 stage 2): submitting the form answers the elicitation
+/// directly; the input.request frame remains the fallback for comm-less frontends.</summary>
+internal sealed class FrontendElicitationPresenter(
+    IFrontendSessionFramePublisher publisher,
+    FrontendFormModelHost formHost)
     : IMcpElicitationPresenter
 {
+    /// <summary>The maximum number of form fields derived from one elicitation schema.</summary>
+    private const int MaxFormFields = 16;
+
     private readonly Lock gate = new();
     private readonly Dictionary<string, TaskCompletionSource<McpElicitationAnswer>> pending = [];
+    private readonly Dictionary<string, FrontendFormModel> forms = [];
 
     public ValueTask<McpElicitationAnswer> PresentAsync(
         McpElicitationRequest request,
@@ -60,7 +69,51 @@ internal sealed class FrontendElicitationPresenter(IFrontendSessionFramePublishe
             return ValueTask.FromResult(new McpElicitationAnswer("cancel", null));
         }
 
-        return WaitAsync(requestId, completion, cancellationToken);
+        return PresentWithFormAsync(sessionId, requestId, request, completion, cancellationToken);
+    }
+
+    private async ValueTask<McpElicitationAnswer> PresentWithFormAsync(
+        AgentSessionId sessionId,
+        string requestId,
+        McpElicitationRequest request,
+        TaskCompletionSource<McpElicitationAnswer> completion,
+        CancellationToken cancellationToken)
+    {
+        var fields = DeriveFormFields(request);
+        if (fields.Count > 0)
+        {
+            var model = await formHost.TryCreateFormAsync(
+                sessionId,
+                new FrontendUiFormState(
+                    Title: request.Message,
+                    Fields: fields,
+                    SubmitLabel: "Submit",
+                    CancelLabel: "Decline"),
+                new FrontendFormHandlers(
+                    OnSubmit: (values, _) =>
+                    {
+                        var content = JsonSerializer.Serialize(
+                            (Dictionary<string, object?>)values,
+                            FrontendJsonContext.Default.DictionaryStringObject);
+                        Complete(requestId, "accept", content);
+                        return ValueTask.CompletedTask;
+                    },
+                    OnCancel: _ =>
+                    {
+                        Complete(requestId, "decline", null);
+                        return ValueTask.CompletedTask;
+                    }),
+                cancellationToken).ConfigureAwait(false);
+            if (model is not null)
+            {
+                lock (gate)
+                {
+                    forms[requestId] = model;
+                }
+            }
+        }
+
+        return await WaitAsync(requestId, completion, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<McpElicitationAnswer> WaitAsync(
@@ -78,11 +131,128 @@ internal sealed class FrontendElicitationPresenter(IFrontendSessionFramePublishe
         }
         finally
         {
+            await CloseFormAsync(requestId).ConfigureAwait(false);
             lock (gate)
             {
                 pending.Remove(requestId);
             }
         }
+    }
+
+    /// <summary>Derives bounded form fields from the elicitation schema (untrusted input):
+    /// string/number/boolean/enum properties map to the form's field types; anything the
+    /// form cannot express is skipped rather than guessed.</summary>
+    private static IReadOnlyList<FrontendUiFormField> DeriveFormFields(McpElicitationRequest request)
+    {
+        if (request.Schema is not { ValueKind: JsonValueKind.Object } schema) return [];
+        if (!schema.TryGetProperty("properties", out var properties) ||
+            properties.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        HashSet<string>? required = null;
+        if (schema.TryGetProperty("required", out var requiredList) &&
+            requiredList.ValueKind == JsonValueKind.Array)
+        {
+            required = [];
+            foreach (var entry in requiredList.EnumerateArray())
+            {
+                if (entry.ValueKind == JsonValueKind.String)
+                {
+                    required.Add(entry.GetString()!);
+                }
+            }
+        }
+
+        var fields = new List<FrontendUiFormField>();
+        foreach (var property in properties.EnumerateObject())
+        {
+            if (fields.Count >= MaxFormFields) break;
+            if (property.Value.ValueKind != JsonValueKind.Object) continue;
+            var definition = property.Value;
+            definition.TryGetProperty("type", out var typeElement);
+            var type = typeElement.ValueKind == JsonValueKind.String ? typeElement.GetString() : null;
+
+            definition.TryGetProperty("title", out var titleElement);
+            var label = titleElement.ValueKind == JsonValueKind.String ? titleElement.GetString() : null;
+
+            FrontendUiFormField? field = null;
+            if (definition.TryGetProperty("enum", out var enumElement) &&
+                enumElement.ValueKind == JsonValueKind.Array)
+            {
+                var choices = new List<FrontendUiFormChoice>();
+                foreach (var option in enumElement.EnumerateArray())
+                {
+                    var text = option.ValueKind switch
+                    {
+                        JsonValueKind.String => option.GetString(),
+                        JsonValueKind.Number => option.GetRawText(),
+                        JsonValueKind.True => "true",
+                        JsonValueKind.False => "false",
+                        _ => null,
+                    };
+                    if (text is not null) choices.Add(new FrontendUiFormChoice(text, text));
+                }
+
+                if (choices.Count > 0)
+                {
+                    field = new FrontendUiFormField(
+                        property.Name,
+                        label,
+                        "choice",
+                        choices,
+                        required?.Contains(property.Name) == true);
+                }
+            }
+            else
+            {
+                var formType = type switch
+                {
+                    "integer" or "number" => "number",
+                    "boolean" => "boolean",
+                    "string" => request.Password ? "password" : "text",
+                    _ => null,
+                };
+                if (formType is not null)
+                {
+                    field = new FrontendUiFormField(
+                        property.Name,
+                        label,
+                        formType,
+                        null,
+                        required?.Contains(property.Name) == true);
+                }
+            }
+
+            if (field is not null) fields.Add(field);
+        }
+
+        return fields;
+    }
+
+    /// <summary>Completes a pending elicitation from the form path. The form itself is
+    /// closed by <see cref="WaitAsync" />'s cleanup once the completion resumes.</summary>
+    private void Complete(string requestId, string action, string? contentJson)
+    {
+        TaskCompletionSource<McpElicitationAnswer>? completion;
+        lock (gate)
+        {
+            if (!pending.Remove(requestId, out completion)) return;
+        }
+
+        completion.TrySetResult(new McpElicitationAnswer(action, contentJson));
+    }
+
+    private ValueTask CloseFormAsync(string requestId)
+    {
+        FrontendFormModel? model;
+        lock (gate)
+        {
+            if (!forms.Remove(requestId, out model)) return ValueTask.CompletedTask;
+        }
+
+        return model.DisposeAsync();
     }
 
     /// <summary>Completes a pending elicitation from the shared input endpoint. The action

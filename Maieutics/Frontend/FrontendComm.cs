@@ -195,10 +195,22 @@ internal sealed record FrontendCommHello(
     [property: JsonPropertyName("truncated")] bool Truncated);
 
 /// <summary>
+///     Receives uplink frames for kernel-owned comms (ADR 0038 stage 2): the
+///     session's REPL is the first comm owner, not the only one — kernel-side UI
+///     models register here and their uplink never travels to the child.
+/// </summary>
+internal interface IFrontendKernelCommOwner
+{
+    /// <summary>Handles one uplink frame (message or close) for a kernel-owned comm.</summary>
+    ValueTask OnUplinkAsync(ReplCommMessage message, CancellationToken cancellationToken);
+}
+
+/// <summary>
 ///     Routes comm traffic between the REPL control host and the frontend comms plane
 ///     (ADR 0024). The downlink arrives through the host's <c>commFrontendSink</c>
 ///     delegate; the uplink is pushed into the child by the injected delegate so this
-///     namespace never references <c>Control</c> directly.
+///     namespace never references <c>Control</c> directly. Kernel-owned comms (ADR 0038
+///     stage 2) route their uplink to the registered owner instead of the child.
 /// </summary>
 internal sealed class FrontendCommRouter
 {
@@ -211,6 +223,7 @@ internal sealed class FrontendCommRouter
     private readonly Lock gate = new();
     private readonly Dictionary<string, FrontendCommStream> planes = new(StringComparer.Ordinal);
     private readonly Queue<string> planeOrder = [];
+    private readonly Dictionary<(string SessionId, string CommId), IFrontendKernelCommOwner> kernelOwners = new();
 
     public FrontendCommRouter(Func<string, ReplCommMessage, CancellationToken, ValueTask> pushToChild)
     {
@@ -228,9 +241,33 @@ internal sealed class FrontendCommRouter
         return ValueTask.CompletedTask;
     }
 
-    /// <summary>Uplink: validates the frame against the plane's registry and pushes it to
-    /// the session's REPL child. Rejections carry a stable code plus the comm id so the
-    /// endpoint can answer with a typed comm.error frame.</summary>
+    /// <summary>Downlink: a kernel-owned comm frame (ADR 0038 stage 2). An open records
+    /// <paramref name="owner"/> as the comm's uplink destination; a close releases it.</summary>
+    internal ValueTask PublishFromKernelAsync(
+        string sessionId,
+        ReplCommMessage message,
+        IFrontendKernelCommOwner? owner,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        // The owner is registered before the open is published: a frontend that
+        // learned the comm id from the live open must never win a race that
+        // misroutes its first uplink frame to the child instead of the owner.
+        lock (gate)
+        {
+            var key = (sessionId, message.CommId);
+            if (message.Kind == ReplCommKind.Open && owner is not null) kernelOwners[key] = owner;
+            if (message.Kind == ReplCommKind.Close) kernelOwners.Remove(key);
+        }
+
+        PlaneFor(sessionId).Publish(message);
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Uplink: validates the frame against the plane's registry and routes it —
+    /// to the kernel owner when the comm is kernel-owned (ADR 0038 stage 2), otherwise
+    /// into the session's REPL child. Rejections carry a stable code plus the comm id so
+    /// the endpoint can answer with a typed comm.error frame.</summary>
     internal async ValueTask PushToReplAsync(
         string sessionId,
         ReplCommMessage message,
@@ -250,6 +287,28 @@ internal sealed class FrontendCommRouter
                 message.CommId,
                 $"No open comm matches '{message.CommId}'.");
 
+        IFrontendKernelCommOwner? owner;
+        lock (gate)
+        {
+            kernelOwners.TryGetValue((sessionId, message.CommId), out owner);
+        }
+
+        if (owner is not null)
+        {
+            await owner.OnUplinkAsync(message, cancellationToken).ConfigureAwait(false);
+            if (message.Kind == ReplCommKind.Close)
+            {
+                lock (gate)
+                {
+                    kernelOwners.Remove((sessionId, message.CommId));
+                }
+
+                plane.CloseComm(message.CommId);
+            }
+
+            return;
+        }
+
         try
         {
             await pushToChild(sessionId, message, cancellationToken).ConfigureAwait(false);
@@ -268,7 +327,12 @@ internal sealed class FrontendCommRouter
     }
 
     /// <summary>Returns the session's plane, creating it and recycling the oldest planes
-    /// when sessions rotate beyond the retained window.</summary>
+    /// when sessions rotate beyond the retained window. Kernel-owned comms belong to
+    /// their session's plane, so recycling drops their owners too — the owning model is
+    /// not notified (a later uplink degrades to a typed comm_not_found); owners dispose
+    /// through their own lifecycle, and a stale model's close publish may resurrect a
+    /// fresh empty plane for the recycled session id (bounded by the retained window).
+    /// </summary>
     internal FrontendCommStream PlaneFor(string sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -282,7 +346,14 @@ internal sealed class FrontendCommRouter
             while (planeOrder.Count > RetainedSessionPlanes)
             {
                 var oldest = planeOrder.Dequeue();
-                if (!string.Equals(oldest, sessionId, StringComparison.Ordinal)) planes.Remove(oldest);
+                if (!string.Equals(oldest, sessionId, StringComparison.Ordinal))
+                {
+                    planes.Remove(oldest);
+                    foreach (var key in kernelOwners.Keys.Where(key => key.SessionId == oldest).ToArray())
+                    {
+                        kernelOwners.Remove(key);
+                    }
+                }
             }
 
             return plane;

@@ -17,12 +17,19 @@ internal sealed record FrontendCapabilities(
     [property: JsonPropertyName("session")] FrontendSessionInfo Session,
     [property: JsonPropertyName("workspaceRoot")] string? WorkspaceRoot = null,
     [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null,
+    [property: JsonPropertyName("ui")] FrontendUiCapability? Ui = null,
     [property: JsonPropertyName("multiSession")] bool? MultiSession = null);
 
 /// <summary>Advertises the comm plane (ADR 0024); null means the build serves no comms.</summary>
 internal sealed record FrontendCommCapability(
     [property: JsonPropertyName("version")] int Version,
     [property: JsonPropertyName("maxMessageBytes")] int MaxMessageBytes);
+
+/// <summary>Advertises the native view families (ADR 0038): the families whose models
+/// the build produces or relays; null when the comm plane is disabled.</summary>
+internal sealed record FrontendUiCapability(
+    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("families")] string[] Families);
 
 /// <summary>Describes the active session to a frontend.</summary>
 internal sealed record FrontendSessionInfo(
@@ -277,6 +284,12 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendCommHello))]
 [JsonSerializable(typeof(FrontendCommDescriptor[]))]
 [JsonSerializable(typeof(FrontendCommCapability))]
+[JsonSerializable(typeof(FrontendUiCapability))]
+[JsonSerializable(typeof(FrontendUiFormChoice))]
+[JsonSerializable(typeof(FrontendUiFormField))]
+[JsonSerializable(typeof(FrontendUiFormState))]
+[JsonSerializable(typeof(FrontendUiFormAnnouncement))]
+[JsonSerializable(typeof(FrontendUiUplinkPayload))]
 [JsonSerializable(typeof(FrontendTranscript))]
 [JsonSerializable(typeof(FrontendEventFrame))]
 [JsonSerializable(typeof(FrontendDiscoveryFile))]

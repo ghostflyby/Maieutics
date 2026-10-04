@@ -4,7 +4,7 @@
     {
       "label": "maieutics: build",
       "type": "shell",
-      "command": "deno task build",
+      "command": "deno task build && deno task build:media",
       "problemMatcher": [],
       "group": { "kind": "build", "isDefault": true }
     }

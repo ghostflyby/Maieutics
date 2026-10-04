@@ -17,6 +17,7 @@
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "maieutics-widgets": "./maieutics-plugin-sdk/widgets/index.ts",
     "maieutics-widgets/jsx-runtime": "./maieutics-plugin-sdk/widgets/jsx-runtime.ts",
+    "preact": "npm:preact@10.26.9",
     "esbuild-wasm": "npm:esbuild-wasm@0.25.12"
   },
   "tasks": {

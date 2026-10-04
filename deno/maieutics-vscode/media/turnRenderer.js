@@ -1,6 +1,7 @@
 // Maieutics turn timeline renderer for `application/vnd.maieutics.turn+json`.
-// Dependency-free DOM/HTML only: notebook renderer scripts run in the
-// renderer process with no bundler, so this file must stay plain JavaScript.
+// Dependency-free DOM/HTML only: this entry is hand-written (no bundler), but
+// it is an ES module — VS Code loads renderer entrypoints with a native
+// dynamic import(), so exports must be real export statements.
 //
 // The structured timeline is the DEFAULT view: a structured turn output
 // carries only the turn+json item, because a sibling text/markdown item
@@ -504,7 +505,11 @@ function viewToggleHtml(mode) {
   }${button("markdown", "Markdown")}</div>`;
 }
 
-exports.activate = function activate() {
+// ES module: VS Code loads notebook renderer entrypoints with a native
+// dynamic import(), so the entry must use real export statements (a classic
+// script assigning to a bare `exports` global throws ReferenceError there —
+// the webview provides no such global).
+export function activate() {
   return {
     renderOutputItem(output, element) {
       if (element.querySelector("style") === null) {
@@ -541,12 +546,9 @@ exports.activate = function activate() {
     },
     disposeOutputItem() {},
   };
-};
+}
 
 // Test seam: the notebook renderer contract reads only `activate`; the pure
-// view functions are exposed so the rendering stays unit-testable without a
+// view functions are exported so the rendering stays unit-testable without a
 // webview.
-exports.render = render;
-exports.renderMarkdownView = renderMarkdownView;
-exports.viewToggleHtml = viewToggleHtml;
-exports.subagentsHtml = subagentsHtml;
+export { render, renderMarkdownView, viewToggleHtml, subagentsHtml };

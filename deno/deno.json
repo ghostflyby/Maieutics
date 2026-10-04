@@ -8,7 +8,17 @@
   ],
   "fmt": {
     "lineWidth": 100,
-    "indentWidth": 2
+    "indentWidth": 2,
+    "exclude": [
+      "maieutics-vscode/media/widgetRenderer.js",
+      "maieutics-vscode/media/viewRenderer.js"
+    ]
+  },
+  "lint": {
+    "exclude": [
+      "maieutics-vscode/media/widgetRenderer.js",
+      "maieutics-vscode/media/viewRenderer.js"
+    ]
   },
   "imports": {
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",

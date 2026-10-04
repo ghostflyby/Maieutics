@@ -60,8 +60,7 @@ export function collectWidgetDeps(
 }
 
 export const WidgetView: FunctionalComponent<ViewProps> = (props) => {
-  const { modelId, state, models, post, hasState } = props;
-  if (!hasState) {
+  if (!props.hasState) {
     return (
       <div class="maieutics-widget">
         <div class="state">Connecting to the widget model…</div>
@@ -69,7 +68,7 @@ export const WidgetView: FunctionalComponent<ViewProps> = (props) => {
     );
   }
   return <div class="maieutics-widget">{control(props)}</div>;
-}
+};
 
 function control(props: ViewProps): VNode {
   const { modelId, state, models, post } = props;
@@ -139,6 +138,7 @@ function control(props: ViewProps): VNode {
     return (
       <div class="row">
         <button
+          type="button"
           onClick={() => sendUpdate({ clicks: Number(state.clicks ?? 0) + 1 })}
         >
           {String(state.description ?? state.tooltip ?? modelId)}
@@ -164,7 +164,7 @@ function control(props: ViewProps): VNode {
               state={childState}
               models={models}
               post={post}
-              hasState={true}
+              hasState
             />
           );
         })}

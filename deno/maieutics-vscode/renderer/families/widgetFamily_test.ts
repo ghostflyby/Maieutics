@@ -154,7 +154,8 @@ Deno.test("a box renders nested IPY_MODEL children recursively", () => {
   const vnode = renderView({ modelId: "parent", state: parentState, models });
   const button = find(vnode, (n) => n.type === "button");
   assertEquals(button !== undefined, true);
-  const text = find(vnode, (n) => typeof n.props?.children === "string" &&
+  const text = find(vnode, (n) =>
+    typeof n.props?.children === "string" &&
     (n.props.children as string).includes("waiting"));
   assertEquals(text !== undefined, true);
 });
@@ -174,7 +175,8 @@ Deno.test("without live state the view waits for the model", () => {
   const vnode = renderView({ modelId: "m", state: {}, hasState: false });
   const waiting = find(
     vnode,
-    (n) => typeof n.props?.children === "string" &&
+    (n) =>
+      typeof n.props?.children === "string" &&
       (n.props.children as string).includes("Connecting"),
   );
   assertEquals(waiting !== undefined, true);

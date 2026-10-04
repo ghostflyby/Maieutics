@@ -12,7 +12,7 @@
  * directly and assert vnode trees.
  */
 
-import { h, type FunctionalComponent } from "preact";
+import { type FunctionalComponent, h } from "preact";
 
 /** Props every view-family component receives. */
 export interface ViewProps {

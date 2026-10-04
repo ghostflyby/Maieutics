@@ -551,4 +551,4 @@ export function activate() {
 // Test seam: the notebook renderer contract reads only `activate`; the pure
 // view functions are exported so the rendering stays unit-testable without a
 // webview.
-export { render, renderMarkdownView, viewToggleHtml, subagentsHtml };
+export { render, renderMarkdownView, subagentsHtml, viewToggleHtml };

@@ -3,12 +3,7 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import type { VNode } from "preact";
-import {
-  FALLBACK_FAMILY,
-  registerViewFamily,
-  viewFamily,
-  type ViewProps,
-} from "./registry.ts";
+import { FALLBACK_FAMILY, registerViewFamily, viewFamily, type ViewProps } from "./registry.ts";
 
 function baseProps(overrides: Partial<ViewProps> = {}): ViewProps {
   return {
@@ -44,7 +39,7 @@ Deno.test("the fallback family renders state as JSON", () => {
   assertEquals((vnode.props as { class?: string }).class, "state");
   const text = (vnode.props as { children?: unknown }).children;
   assertEquals(typeof text, "string");
-  assertEquals((text as string).includes("\"a\": 1"), true);
+  assertEquals((text as string).includes('"a": 1'), true);
   assertEquals((text as string).includes("<x>"), true);
 });
 

@@ -5,7 +5,7 @@
  * the single-file renderer entrypoint VS Code loads.
  */
 
-import { widgetFamily, WIDGET_CSS } from "./families/widgetFamily.tsx";
+import { WIDGET_CSS, widgetFamily } from "./families/widgetFamily.tsx";
 import { registerViewFamily } from "./registry.ts";
 import { createRendererScript } from "./script.ts";
 

@@ -278,10 +278,15 @@ public static class MaieuticsHost
                     .PushCommMessageAsync(sessionId, message, cancellationToken)
                     .ConfigureAwait(false)));
         builder.Services.AddSingleton<FrontendSessionService>(CreateFrontendSessionService);
-        builder.Services.AddSingleton<FrontendElicitationPresenter>(static services =>
-            new FrontendElicitationPresenter(services.GetRequiredService<FrontendSessionService>()));
         builder.Services.AddSingleton<IFrontendSessionFramePublisher>(static services =>
             services.GetRequiredService<FrontendSessionService>());
+        builder.Services.AddSingleton<FrontendFormModelHost>(static services => new FrontendFormModelHost(
+            services.GetRequiredService<FrontendCommRouter>(),
+            services.GetRequiredService<IFrontendSessionFramePublisher>()));
+        builder.Services.AddSingleton<FrontendElicitationPresenter>(static services =>
+            new FrontendElicitationPresenter(
+                services.GetRequiredService<IFrontendSessionFramePublisher>(),
+                services.GetRequiredService<FrontendFormModelHost>()));
         // Deferred: resolving the real presenter here would close a construction cycle
         // back into MaieuticsRuntimeConfiguration (it consumes IMcpElicitationPresenter).
         builder.Services.AddSingleton<IMcpElicitationPresenter>(static services =>

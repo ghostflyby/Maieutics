@@ -272,7 +272,14 @@ idempotent.
 
 `GET /v1/agent/capabilities` advertises the feature as
 `"comm": {"version": 1, "maxMessageBytes": 16777216}`; clients that do not
-implement comms ignore it and never open the endpoint.
+implement comms ignore it and never open the endpoint. The native view
+families advertise as `"ui": {"version": 1, "families": ["maieutics/form"]}`
+(additive, same rule). Kernel features (ADR 0038 stage 2) may produce
+native announcements too — a `maieutics/form` model created by the kernel
+(for example an MCP elicitation) rides the same `repl.display` +
+comms-plane pair, and its uplink routes to the kernel owner instead of the
+REPL; the announcement shape and dialects are identical to REPL-produced
+models.
 
 ## REST endpoints (frontend → executable)
 

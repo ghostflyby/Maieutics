@@ -61,6 +61,9 @@ public sealed class PluginUiCapabilityTests
     [Fact]
     public async Task PublishUiFormRejectsPluginsWithoutAUsableEntry()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
         await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
             TestContext.Current.CancellationToken);
 

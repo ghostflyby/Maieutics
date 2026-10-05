@@ -292,6 +292,9 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IMcpElicitationPresenter>(static services =>
             new DeferredElicitationPresenter(services));
         builder.Services.AddSingleton<FrontendTurnQueue>();
+        builder.Services.AddSingleton<FrontendPluginSurfaceAdapter>();
+        builder.Services.AddSingleton<IFrontendPluginSurface>(static services =>
+            services.GetRequiredService<FrontendPluginSurfaceAdapter>());
         builder.Services.AddSingleton<FrontendHost>();
         builder.Services.AddHostedService<FrontendHostedService>();
         if (OperatingSystem.IsWindows())
@@ -846,6 +849,56 @@ public static class MaieuticsHost
             }
         }
     }
+}
+
+/// <summary>
+///     Binds the Frontend plugin-surface seam (ADR 0038 stage 4) to the plugin host
+///     manager, translating the Plugins-side snapshot into Frontend-owned records —
+///     the dependency direction stays Plugins ⅲ Frontend.
+/// </summary>
+internal sealed class FrontendPluginSurfaceAdapter(PluginHostManager manager) : IFrontendPluginSurface
+{
+    public FrontendPluginGateway? GetHttpGateway()
+    {
+        var gateway = manager.GetHttpGateway();
+        return gateway is null
+            ? null
+            : new FrontendPluginGateway(gateway.Hostname, gateway.Port, gateway.Token);
+    }
+
+    public IReadOnlyList<FrontendPluginSurfaceEntry> GetPluginSurfaces()
+    {
+        var gateway = manager.GetHttpGateway();
+        var surfaces = manager.GetPluginSurfaces(
+            gateway?.Hostname,
+            gateway?.Port ?? 0,
+            gateway?.Token);
+        return surfaces.Select(surface => new FrontendPluginSurfaceEntry(
+            surface.Id,
+            surface.Name,
+            surface.ApprovalState.ToString(),
+            surface.Form is null
+                ? null
+                : new FrontendUiFormState(
+                    surface.Form.Title,
+                    surface.Form.Fields
+                        .Select(field => new FrontendUiFormField(
+                            field.Name,
+                            field.Label,
+                            field.Type,
+                            field.Choices?.Select(choice => new FrontendUiFormChoice(choice.Value, choice.Label))
+                                .ToArray(),
+                            field.Required,
+                            field.Placeholder))
+                        .ToArray(),
+                    surface.Form.SubmitLabel,
+                    surface.Form.CancelLabel),
+            surface.Form?.Error,
+            surface.PageUrl)).ToArray();
+    }
+
+    public ValueTask PublishUiFormAsync(string pluginId, CancellationToken cancellationToken) =>
+        manager.PublishUiFormAsync(pluginId, cancellationToken);
 }
 
 /// <summary>Exposes the live workspace root to MCP servers granted the roots capability

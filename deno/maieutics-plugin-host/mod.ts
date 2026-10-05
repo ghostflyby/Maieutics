@@ -8,6 +8,7 @@
 import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
 import { ReplManager } from "./repl_manager.ts";
 import { connectBus } from "../shared/bus.ts";
+import type { HttpGatewayDescriptor } from "./http.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
 import type { HostReplReport } from "./host_repl_protocol.ts";
 

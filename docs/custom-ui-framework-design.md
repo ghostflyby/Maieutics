@@ -646,7 +646,17 @@ models drop). Files: `deno/maieutics-plugin-sdk/`,
 `Maieutics/Control/ReplControlMessages.cs`. Accept: ADR 0037 lifecycle
 tests extended to UI models; blocked plugin renders nothing.
 
-**Stage 4 — web lane wiring.** `extension.registry` carries the gateway
+**Stage 4 — web lane wiring. — KERNEL DISCOVERY + PLUGINS SURFACE IMPLEMENTED
+2026-10-04:** the host reports the gateway entrance (address, token, live mounts;
+re-reported on mount changes and reloads) inside `extension.registry`, the kernel
+stores it on the manager, and the frontend gains `GET /v1/plugins` (approval
+state, declarative form template, approved-only page URLs with the entrance
+token embedded) plus `POST /v1/plugins/{id}/form` (on-demand publication through
+the stage-3 sink; typed 404/409). The Plugins→Frontend boundary crosses through
+the `IFrontendPluginSurface` seam (composition-root adapter). Remaining stage-4
+work: the extension-side rendering of the plugins surface and `maieutics/iframe`
+embedding.
+`extension.registry` carries the gateway
 section; `GET /v1/plugins` (ADR 0037's planned REST) with page entries;
 `maieutics/iframe` family + sandboxed iframe embedding; SSR-first plugin
 page guide for authors. Embedding targets a WebviewView/WebviewPanel

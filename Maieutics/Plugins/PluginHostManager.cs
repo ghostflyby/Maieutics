@@ -182,6 +182,7 @@ internal sealed class PluginHostManager(
 
     private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
     private readonly List<PluginDescriptor> descriptors = [];
+    private PluginHttpGatewayPayload? httpGateway;
     private readonly Lock gate = new();
     private readonly Lock lifecycleGate = new();
 
@@ -536,6 +537,64 @@ internal sealed class PluginHostManager(
     /// the template a consumer (the `GET /v1/plugins` surface, stage 4) can publish on
     /// demand. Null when the plugin declares no ui entry. Approval does not gate the
     /// template itself — publishing does, through the same sink the live lane uses.</summary>
+    /// <summary>One plugin's frontend-facing entry for the plugins surface (ADR 0038
+    /// stage 4): identity, approval classification, the declarative form template, and
+    /// the gateway page mount when the plugin serves HTTP UI.</summary>
+    internal sealed record PluginSurfaceInfo(
+        string Id,
+        string Name,
+        PluginApprovalState ApprovalState,
+        PluginUiFormDefinition? Form,
+        string? PageUrl);
+
+    /// <summary>Snapshots every discovered plugin's surface entry. Gateway page URLs
+    /// are composed only for approved plugins with a live mount; blocked plugins
+    /// appear (with their state) but carry no usable links.</summary>
+    internal IReadOnlyList<PluginSurfaceInfo> GetPluginSurfaces(string? gatewayHostname, int gatewayPort, string? gatewayToken)
+    {
+        PluginDescriptor[] snapshot;
+        PluginApprovalState[] states;
+        lock (gate)
+        {
+            snapshot = [.. descriptors];
+            states = snapshot.Select(descriptor =>
+                approvalStates.GetValueOrDefault(descriptor.Id, PluginApprovalState.PendingApproval)).ToArray();
+        }
+
+        var surfaces = new List<PluginSurfaceInfo>(snapshot.Length);
+        for (var index = 0; index < snapshot.Length; index++)
+        {
+            var descriptor = snapshot[index];
+            var state = states[index];
+            string? pageUrl = null;
+            if (state == PluginApprovalState.Approved &&
+                gatewayHostname is not null && gatewayToken is not null &&
+                descriptor.UiForm?.Error is null)
+            {
+                pageUrl = $"http://{gatewayHostname}:{gatewayPort}/{gatewayToken}/plugins/{descriptor.Id}/";
+            }
+
+            surfaces.Add(new PluginSurfaceInfo(
+                descriptor.Id,
+                descriptor.Name,
+                state,
+                descriptor.UiForm,
+                pageUrl));
+        }
+
+        return surfaces;
+    }
+
+    /// <summary>The live gateway descriptor (address, entrance token, mounts), or null
+    /// when the connected host reported none. Token handling is the caller's duty.</summary>
+    internal PluginHttpGatewayPayload? GetHttpGateway()
+    {
+        lock (gate)
+        {
+            return httpGateway;
+        }
+    }
+
     internal PluginUiFormDefinition? GetUiFormTemplate(string pluginId)
     {
         lock (gate)
@@ -2927,6 +2986,14 @@ internal sealed class PluginHostManager(
     private void UpdateRegistry(ExtensionRegistryPayload? payload)
     {
         if (payload is null) return;
+
+        // ADR 0038 stage 4: the host's HTTP gateway entrance rides every registry
+        // snapshot; a frame without it clears any previous descriptor (the host
+        // restarted without the gateway).
+        lock (gate)
+        {
+            httpGateway = payload.HttpGateway;
+        }
 
         PluginRegistration[] mcpSnapshot;
         PluginRegistration[] registrySnapshot;

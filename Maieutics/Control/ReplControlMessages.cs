@@ -50,6 +50,8 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(ToolInvokeRequest))]
 [JsonSerializable(typeof(ToolInvokePayload))]
 [JsonSerializable(typeof(PluginUiFramePayload))]
+[JsonSerializable(typeof(PluginHttpGatewayPayload))]
+[JsonSerializable(typeof(PluginHttpMountPayload))]
 [JsonSerializable(typeof(CapabilityInvokePayload))]
 [JsonSerializable(typeof(CapabilityResultPayload))]
 [JsonSerializable(typeof(ReplEnvelope))]
@@ -270,7 +272,23 @@ internal sealed record PluginTriggerPayload(string PluginId, string Trigger);
 
 internal sealed record ExtensionRegistryPayload(
     IReadOnlyList<ExtensionRegistryPlugin> Plugins,
-    IReadOnlyList<PluginStatePayload>? States = null);
+    IReadOnlyList<PluginStatePayload>? States = null,
+    PluginHttpGatewayPayload? HttpGateway = null);
+
+/// <summary>The plugin HTTP gateway's entrance (ADR 0021/0038 stage 4): the host
+/// reserves the loopback address and entrance token; the token is a capability
+/// carrier — it reaches only bearer-authed frontend surfaces, never logs.</summary>
+internal sealed record PluginHttpGatewayPayload(
+    string Hostname,
+    int Port,
+    string Token,
+    IReadOnlyList<PluginHttpMountPayload> Mounts);
+
+/// <summary>One live plugin page mount on the gateway.</summary>
+internal sealed record PluginHttpMountPayload(
+    string PluginId,
+    string Specifier,
+    bool Live);
 
 internal sealed record ExtensionRegistryPlugin(
     string PluginId,

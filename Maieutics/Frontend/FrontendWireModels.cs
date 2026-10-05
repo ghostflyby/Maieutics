@@ -256,6 +256,25 @@ internal sealed record FrontendEventFrame(
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+
+/// <summary>One plugin's entry on the plugins surface (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginInfo(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("approvalState")] string ApprovalState,
+    [property: JsonPropertyName("form")] FrontendUiFormState? Form = null,
+    [property: JsonPropertyName("formError")] string? FormError = null,
+    [property: JsonPropertyName("pageUrl")] string? PageUrl = null);
+
+/// <summary>The plugins surface snapshot (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginsResponse(
+    [property: JsonPropertyName("plugins")] IReadOnlyList<FrontendPluginInfo> Plugins);
+
+/// <summary>Accepts one published plugin form (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginFormPublished(
+    [property: JsonPropertyName("pluginId")] string PluginId,
+    [property: JsonPropertyName("commId")] string CommId);
+
 [JsonSerializable(typeof(FrontendCapabilities))]
 [JsonSerializable(typeof(FrontendSessionInfo))]
 [JsonSerializable(typeof(FrontendStoredSession))]
@@ -279,6 +298,9 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendModelProfile))]
 [JsonSerializable(typeof(FrontendModelProfile[]))]
 [JsonSerializable(typeof(FrontendStatusResponse))]
+[JsonSerializable(typeof(FrontendPluginInfo))]
+[JsonSerializable(typeof(FrontendPluginsResponse))]
+[JsonSerializable(typeof(FrontendPluginFormPublished))]
 [JsonSerializable(typeof(FrontendInputAnswer))]
 [JsonSerializable(typeof(FrontendError))]
 [JsonSerializable(typeof(FrontendCommHello))]

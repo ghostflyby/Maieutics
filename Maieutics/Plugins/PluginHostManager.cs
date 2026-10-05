@@ -3079,7 +3079,21 @@ internal sealed class PluginHostManager(
     /// change.</summary>
     private void RepublishRegistry(PluginRegistration[] mcpSnapshot)
     {
-        dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+        // A restart's teardown can dispose the OLD generation's coordinator while an
+        // approval snapshot (taken against the NEW generation's descriptors) republishes
+        // through the shared field. The publish is meaningless on a disposed generation —
+        // the fresh one republishes at Start — so a disposed coordinator is a typed skip,
+        // not a crash racing out of ApproveAsync (the WatchedSetChanges family).
+        if (dynamicMcpCoordinator is not { } coordinator) return;
+        try
+        {
+            coordinator.PublishRegistry(mcpSnapshot);
+        }
+        catch (ObjectDisposedException)
+        {
+            logger.LogDebug(
+                "RepublishRegistry skipped: the plugin MCP coordinator was disposed by a concurrent generation switch.");
+        }
     }
 
     /// <summary>The synthetic registrations for manifest-declared entries (the

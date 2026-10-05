@@ -22,7 +22,8 @@ internal sealed record PluginDescriptor(
     IReadOnlyList<PluginTrigger> Triggers,
     IReadOnlyList<string> ExtensionDiagnostics,
     bool InspectionsContentReadAll,
-    string? McpServersError = null);
+    string? McpServersError = null,
+    PluginUiFormDefinition? UiForm = null);
 
 /// <summary>One declarative extension entry from the manifest's `extensions` section:
 /// a kernel-known kind plus the raw data the kind's kernel interpreter consumes.
@@ -56,9 +57,127 @@ internal static class PluginDataName
 {
     public const string Mcp = "mcp";
 
+    /// <summary>A declarative form template (ADR 0038 stage 3): interpreted into a
+    /// <see cref="PluginUiFormDefinition"/> the kernel can publish into the foreground
+    /// session's comm plane on demand — no worker runs for a data-only form.</summary>
+    public const string Ui = "ui";
+
     public static bool IsKnown(string name)
     {
-        return name == Mcp;
+        return name == Mcp || name == Ui;
+    }
+}
+
+/// <summary>One declarative form field interpreted from a `ui` data entry.</summary>
+internal sealed record PluginUiFormField(
+    string Name,
+    string? Label,
+    string Type,
+    IReadOnlyList<PluginUiFormChoice>? Choices,
+    bool? Required,
+    string? Placeholder);
+
+/// <summary>One choice option of a declarative form field.</summary>
+internal sealed record PluginUiFormChoice(string Value, string Label);
+
+/// <summary>A `ui` data entry interpreted into a publishable form template: the kernel
+/// maps declared actions onto grants the plugin already holds (capability-gated), so a
+/// data-only form never runs code (ADR 0038 stage 3).</summary>
+internal sealed record PluginUiFormDefinition(
+    string? Title,
+    IReadOnlyList<PluginUiFormField> Fields,
+    string? SubmitLabel,
+    string? CancelLabel,
+    string? SubmitTool,
+    string? Error);
+
+/// <summary>Interprets the raw `ui` data-entry JSON into a definition; a malformed
+/// entry produces a definition carrying the error (the sticky-marker pattern the
+/// `mcp` entry uses — the plugin stays loaded, the form is unusable).</summary>
+internal static class PluginUiFormInterpreter
+{
+    internal static PluginUiFormDefinition InterpretUiForm(JsonElement data)
+    {
+    try
+    {
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            return new PluginUiFormDefinition(null, [], null, null, null, "The ui data entry must be a JSON object.");
+        }
+
+        string? title = data.TryGetProperty("title", out var titleElement) &&
+            titleElement.ValueKind == JsonValueKind.String ? titleElement.GetString() : null;
+
+        var fields = new List<PluginUiFormField>();
+        if (data.TryGetProperty("fields", out var fieldsElement) && fieldsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var fieldElement in fieldsElement.EnumerateArray())
+            {
+                if (fieldElement.ValueKind != JsonValueKind.Object ||
+                    !fieldElement.TryGetProperty("name", out var nameElement) ||
+                    nameElement.ValueKind != JsonValueKind.String ||
+                    nameElement.GetString() is not { Length: > 0 } name)
+                {
+                    fields.Add(new PluginUiFormField("", null, "", null, null, null));
+                    continue;
+                }
+
+                var type = fieldElement.TryGetProperty("type", out var typeElement) &&
+                    typeElement.ValueKind == JsonValueKind.String ? typeElement.GetString() : "text";
+
+                IReadOnlyList<PluginUiFormChoice>? choices = null;
+                if (fieldElement.TryGetProperty("choices", out var choicesElement) &&
+                    choicesElement.ValueKind == JsonValueKind.Array)
+                {
+                    var parsed = new List<PluginUiFormChoice>();
+                    foreach (var choice in choicesElement.EnumerateArray())
+                    {
+                        var value = choice.ValueKind switch
+                        {
+                            JsonValueKind.String => choice.GetString(),
+                            JsonValueKind.Number => choice.GetRawText(),
+                            JsonValueKind.True => "true",
+                            JsonValueKind.False => "false",
+                            _ => null,
+                        };
+                        if (value is not null) parsed.Add(new PluginUiFormChoice(value, value));
+                    }
+
+                    choices = parsed;
+                }
+
+                fields.Add(new PluginUiFormField(
+                    name,
+                    fieldElement.TryGetProperty("label", out var labelElement) &&
+                        labelElement.ValueKind == JsonValueKind.String ? labelElement.GetString() : null,
+                    type ?? "text",
+                    choices,
+                    fieldElement.TryGetProperty("required", out var requiredElement) &&
+                        requiredElement.ValueKind == JsonValueKind.True,
+                    fieldElement.TryGetProperty("placeholder", out var placeholderElement) &&
+                        placeholderElement.ValueKind == JsonValueKind.String ? placeholderElement.GetString() : null));
+            }
+        }
+        else
+        {
+            return new PluginUiFormDefinition(title, [], null, null, null, "The ui data entry requires a fields array.");
+        }
+
+        return new PluginUiFormDefinition(
+            title,
+            fields,
+            data.TryGetProperty("submitLabel", out var submitElement) &&
+                submitElement.ValueKind == JsonValueKind.String ? submitElement.GetString() : null,
+            data.TryGetProperty("cancelLabel", out var cancelElement) &&
+                cancelElement.ValueKind == JsonValueKind.String ? cancelElement.GetString() : null,
+            data.TryGetProperty("submitTool", out var submitToolElement) &&
+                submitToolElement.ValueKind == JsonValueKind.String ? submitToolElement.GetString() : null,
+            null);
+    }
+    catch (Exception exception) when (exception is InvalidOperationException or JsonException)
+    {
+        return new PluginUiFormDefinition(null, [], null, null, null, $"Invalid ui data entry: {exception.Message}");
+    }
     }
 }
 
@@ -214,6 +333,23 @@ internal static class PluginManifest
             return false;
         }
 
+        // UI interpretation of the declared data entry (ADR 0038 stage 3): a declarative
+        // form template the kernel can publish on demand. Same sticky-marker shape as
+        // the `mcp` entry — a broken entry never fails the plugin load.
+        PluginUiFormDefinition? uiForm = null;
+        if (dataEntries.FirstOrDefault(entry => entry.Name == PluginDataName.Ui) is { } uiEntry)
+        {
+            if (uiEntry.Error is { } uiCollectionError)
+            {
+                uiForm = new PluginUiFormDefinition(null, [], null, null, null,
+                    $"The 'ui' data entry could not be collected: {uiCollectionError}");
+            }
+            else if (uiEntry.Data is { } uiData)
+            {
+                uiForm = PluginUiFormInterpreter.InterpretUiForm(uiData);
+            }
+        }
+
         // MCP interpretation of the declared data entry (ADR 0033). The 'mcp' name is
         // the only source — there is no implicit file pickup beside the manifest. A
         // broken entry does not fail the plugin load: the manifest declarations
@@ -293,7 +429,8 @@ internal static class PluginManifest
             triggers,
             declarativeDiagnostics,
             contentReadAll,
-            mcpServersError);
+            mcpServersError,
+            uiForm);
         error = string.Empty;
         return true;
     }

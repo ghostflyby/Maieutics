@@ -16,6 +16,62 @@ namespace Maieutics.Product.Tests;
 /// </summary>
 public sealed class PluginUiCapabilityTests
 {
+    [Fact]
+    public void UiDataEntryInterpretsIntoATemplateAndFingerprintCoversIt()
+    {
+        // The interpreted template rides the descriptor (and thus the ADR 0037
+        // fingerprint's generic `data` section) with zero fingerprint-code changes.
+        var directory = Path.Combine(Path.GetTempPath(), "maieutics-ui-entry-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            // Data entries take a string path: the kernel collects the referenced
+            // file as raw JSON (ADR 0033's collection shape).
+            File.WriteAllText(Path.Combine(directory, "ui-form.json"),
+                """{"title":"Approve deploy?","fields":[{"name":"note","type":"text","label":"Note","required":true},{"name":"level","type":"choice","choices":["fast","slow"]}],"submitLabel":"Go","submitTool":"deploy"}""");
+            File.WriteAllText(Path.Combine(directory, "maieutics.json"),
+                """{"entrypoints":{"ui":"ui-form.json"}}""");
+            File.WriteAllText(Path.Combine(directory, "deno.json"),
+                """{"name":"probe-ui","version":"1.0.0","exports":"./main.ts"}""");
+
+            var loaded = PluginManifest.TryLoad(directory, out var descriptor, out var loadError);
+            loaded.Should().BeTrue(loadError);
+            descriptor!.UiForm.Should().NotBeNull();
+            descriptor.UiForm!.Title.Should().Be("Approve deploy?");
+            descriptor.UiForm.Error.Should().BeNull();
+            descriptor.UiForm.Fields.Should().HaveCount(2);
+            descriptor.UiForm.Fields[0].Required.Should().BeTrue();
+            descriptor.UiForm.Fields[1].Choices.Should().BeEquivalentTo(
+                new[] { new { Value = "fast", Label = "fast" }, new { Value = "slow", Label = "slow" } });
+            descriptor.UiForm.SubmitTool.Should().Be("deploy");
+
+            // A changed ui entry changes the fingerprint's data section inputs.
+            File.WriteAllText(Path.Combine(directory, "ui-form.json"),
+                """{"title":"Changed","fields":[{"name":"note","type":"text"}]}""");
+            var reloaded = PluginManifest.TryLoad(directory, out var reloadedDescriptor, out var reloadError);
+            reloaded.Should().BeTrue(reloadError);
+            reloadedDescriptor!.UiForm!.Title.Should().Be("Changed");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PublishUiFormRejectsPluginsWithoutAUsableEntry()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
+        await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
+            TestContext.Current.CancellationToken);
+
+        var act = () => harness.Manager.PublishUiFormAsync("plugin-without-ui", TestContext.Current.CancellationToken);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*declares no ui data entry*");
+    }
+
     private sealed class FakePublisher : IFrontendSessionFramePublisher
     {
         internal bool Publishable { get; set; } = true;

@@ -88,12 +88,14 @@ export const ExtensionPoint: {
   readonly PluginEvent: symbol;
   readonly ToolPreInvoke: symbol;
   readonly ToolPostInvoke: symbol;
+  readonly UiEvent: symbol;
 } = {
   McpDiscover: Symbol.for(`${NAMESPACE}/mcp.discover`),
   McpAdjust: Symbol.for(`${NAMESPACE}/mcp.adjust`),
   PluginEvent: Symbol.for(`${NAMESPACE}/plugin.event`),
   ToolPreInvoke: Symbol.for(`${NAMESPACE}/tools.preInvoke`),
   ToolPostInvoke: Symbol.for(`${NAMESPACE}/tools.postInvoke`),
+  UiEvent: Symbol.for(`${NAMESPACE}/ui.event`),
 };
 
 export type ExtensionPointName = keyof typeof ExtensionPoint;

@@ -627,8 +627,16 @@ clearing) receives worker-pushed frames and publishes them into the foreground
 session's comm plane with a `PluginUiOwner` routing frontend uplink back to the
 plugin's `UiEvent` export through the generic host.invoke path (zero new control-bus
 message types: downlink rides `capability.invoke`, uplink rides `host.invoke`).
-Remaining stage-3 work: the SDK worker-side surface (UiEvent extension-point
-definition + model API) and the `ui` data-entry form.** `ui` service extension point (SDK +
+**SDK half shipped 2026-10-04**: `ExtensionPoint.UiEvent` + the
+`@maieutics/plugin-sdk/plugin-ui` model API (`ui.form/sync/close/deliver`).
+**Data form shipped 2026-10-04**: the catalogued `ui` data entry (string path,
+ADR 0033's collection shape) interprets into a `PluginUiFormDefinition` on the
+descriptor (fingerprint-covered by the generic `data` section — verified), and
+`PluginHostManager.PublishUiFormAsync` publishes it on demand through the same
+sink; the consumer that triggers publication (a `%plugin form` verb or the
+`GET /v1/plugins` surface) is stage 4's round.
+Remaining stage-3 work: none — the SDK worker-side surface shipped with the
+data-entry form (see below).** `ui` service extension point (SDK +
 `deno/maieutics-plugin-host` relay + `PluginHostManager` invoke path with
 `plugin_pending_approval` enforcement) and/or `ui` data-entry interpreter;
 `ui.models` capability in `PluginCapabilityCatalog`; fingerprint coverage

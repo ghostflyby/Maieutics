@@ -532,6 +532,54 @@ internal sealed class PluginHostManager(
         }
     }
 
+    /// <summary>The interpreted `ui` data-entry form of one plugin (ADR 0038 stage 3):
+    /// the template a consumer (the `GET /v1/plugins` surface, stage 4) can publish on
+    /// demand. Null when the plugin declares no ui entry. Approval does not gate the
+    /// template itself — publishing does, through the same sink the live lane uses.</summary>
+    internal PluginUiFormDefinition? GetUiFormTemplate(string pluginId)
+    {
+        lock (gate)
+        {
+            return descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)?.UiForm;
+        }
+    }
+
+    /// <summary>Publishes a plugin's declarative `ui` form into the foreground session's
+    /// comm plane (ADR 0038 stage 3, data form): the same frame path the live lane uses,
+    /// with the plugin as uplink owner. Submit actions declared as `submitTool` are the
+    /// consumer's concern — the kernel capability gate covers any tool invocation the
+    /// plugin attempts with the submitted values. Throws typed producer failures.</summary>
+    internal async ValueTask PublishUiFormAsync(
+        string pluginId,
+        CancellationToken cancellationToken)
+    {
+        var template = GetUiFormTemplate(pluginId);
+        if (template is null)
+            throw new InvalidOperationException($"Plugin '{pluginId}' declares no ui data entry.");
+        if (template.Error is { } error)
+            throw new InvalidOperationException($"Plugin '{pluginId}' ui entry is unusable: {error}");
+        if (UiFrameSink is null)
+            throw new InvalidOperationException("The kernel UI frame sink is not available.");
+
+        var commId = Guid.NewGuid().ToString("N");
+        var state = new Dictionary<string, object?>
+        {
+            ["fields"] = template.Fields,
+            ["values"] = new Dictionary<string, object?>(),
+        };
+        if (template.Title is not null) state["title"] = template.Title;
+        if (template.SubmitLabel is not null) state["submitLabel"] = template.SubmitLabel;
+        if (template.CancelLabel is not null) state["cancelLabel"] = template.CancelLabel;
+
+        var data = JsonSerializer.SerializeToElement(
+            new Dictionary<string, object?> { ["state"] = state },
+            ReplControlJsonContext.Default.DictionaryStringJsonElement);
+        await UiFrameSink(
+            pluginId,
+            new PluginUiFramePayload("open", commId, "maieutics.view/maieutics/form", data),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     internal PluginHostStatus GetStatus()
     {
         Task? startup;

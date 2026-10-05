@@ -67,6 +67,16 @@ export interface HttpMountSnapshot {
   readonly live: boolean;
 }
 
+/** What the kernel learns about the gateway (ADR 0038 stage 4): the entrance
+ * address and token (a capability carrier — control-bus and bearer-authed
+ * surfaces only, never logged) plus the live mount table. */
+export interface HttpGatewayDescriptor {
+  readonly hostname: string;
+  readonly port: number;
+  readonly token: string;
+  readonly mounts: readonly HttpMountSnapshot[];
+}
+
 const CONTRACT_NAME = http.name;
 
 const CSP_HTML = "default-src 'self'; connect-src 'none'; img-src 'self' data:";

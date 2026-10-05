@@ -290,6 +290,9 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(FrontendUiFormState))]
 [JsonSerializable(typeof(FrontendUiFormAnnouncement))]
 [JsonSerializable(typeof(FrontendUiUplinkPayload))]
+[JsonSerializable(typeof(FrontendPluginInfo))]
+[JsonSerializable(typeof(FrontendPluginsResponse))]
+[JsonSerializable(typeof(FrontendPluginFormPublished))]
 [JsonSerializable(typeof(FrontendTranscript))]
 [JsonSerializable(typeof(FrontendEventFrame))]
 [JsonSerializable(typeof(FrontendDiscoveryFile))]
@@ -297,3 +300,21 @@ internal sealed record FrontendEventFrame(
 [JsonSerializable(typeof(System.Collections.Generic.Dictionary<string, object?>))]
 [JsonSerializable(typeof(System.Collections.Generic.IReadOnlyDictionary<string, System.Text.Json.JsonElement>))]
 internal sealed partial class FrontendJsonContext : JsonSerializerContext;
+
+/// <summary>One plugin's entry on the plugins surface (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginInfo(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("approvalState")] string ApprovalState,
+    [property: JsonPropertyName("form")] FrontendUiFormState? Form = null,
+    [property: JsonPropertyName("formError")] string? FormError = null,
+    [property: JsonPropertyName("pageUrl")] string? PageUrl = null);
+
+/// <summary>The plugins surface snapshot (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginsResponse(
+    [property: JsonPropertyName("plugins")] IReadOnlyList<FrontendPluginInfo> Plugins);
+
+/// <summary>Accepts one published plugin form (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginFormPublished(
+    [property: JsonPropertyName("pluginId")] string PluginId,
+    [property: JsonPropertyName("commId")] string CommId);

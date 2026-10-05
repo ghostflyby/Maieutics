@@ -44,6 +44,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly FrontendTurnQueue turnQueue;
     private readonly ObjectStore? objectStore;
     private readonly FrontendCommRouter? commRouter;
+    private readonly IFrontendPluginSurface? pluginSurface;
     private readonly ILogger<FrontendHost> logger;
     private readonly CancellationTokenSource lifetime = new();
     private readonly byte[] expectedToken;
@@ -56,7 +57,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         ILogger<FrontendHost> logger,
         FrontendElicitationPresenter? elicitationPresenter = null,
         ObjectStore? objectStore = null,
-        FrontendCommRouter? commRouter = null)
+        FrontendCommRouter? commRouter = null,
+        IFrontendPluginSurface? pluginSurface = null)
     {
         this.options = options;
         this.service = service;
@@ -70,6 +72,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     NoFramesPublisher.Instance));
         this.objectStore = objectStore;
         this.commRouter = commRouter;
+        this.pluginSurface = pluginSurface;
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
@@ -145,6 +148,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapPost("/v1/agent/commands", HandleCommand);
         endpoints.MapPost("/v1/agent/complete", HandleComplete);
         endpoints.MapGet("/v1/status", HandleStatus);
+        endpoints.MapGet("/v1/plugins", HandlePlugins);
+        endpoints.MapPost("/v1/plugins/{pluginId}/form", HandlePublishPluginForm);
         endpoints.MapGet("/v1/objects/{objectId}", HandleObject);
     }
 
@@ -203,6 +208,67 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         token = Encoding.UTF8.GetBytes(value.Trim());
         return token.Length > 0;
+    }
+
+    /// <summary>Plugins surface (ADR 0038 stage 4): every discovered plugin with its
+    /// approval state, declarative form template, and approved gateway page URL. The
+    /// entrance token is embedded only in approved plugins' page links.</summary>
+    private IResult HandlePlugins()
+    {
+        if (pluginSurface is null)
+        {
+            return Results.Json(
+                new FrontendPluginsResponse([]),
+                FrontendJsonContext.Default.FrontendPluginsResponse);
+        }
+
+        var gateway = pluginSurface.GetHttpGateway();
+        var surfaces = pluginSurface.GetPluginSurfaces();
+        var plugins = surfaces.Select(surface => new FrontendPluginInfo(
+            surface.Id,
+            surface.Name,
+            surface.ApprovalState,
+            surface.Form is null
+                ? null
+                : new FrontendUiFormState(
+                    surface.Form.Title,
+                    surface.Form.Fields,
+                    surface.Form.SubmitLabel,
+                    surface.Form.CancelLabel),
+                surface.FormError,
+                surface.PageUrl)).ToArray();
+        return Results.Json(
+            new FrontendPluginsResponse(plugins),
+            FrontendJsonContext.Default.FrontendPluginsResponse);
+    }
+
+    /// <summary>Publishes one plugin's declarative form into the live session's comm
+    /// plane (ADR 0038 stage 4): the on-demand trigger for the data-form lane.
+    /// Approval is enforced inside the manager's sink path; failures are typed.</summary>
+    private async Task<IResult> HandlePublishPluginForm(string pluginId, CancellationToken cancellationToken)
+    {
+        if (pluginSurface is null)
+        {
+            return Results.Json(
+                new FrontendError("plugins_unavailable", "The plugin host is not available."),
+                FrontendJsonContext.Default.FrontendError,
+                statusCode: 404);
+        }
+
+        try
+        {
+            await pluginSurface.PublishUiFormAsync(pluginId, cancellationToken).ConfigureAwait(false);
+            return Results.Json(
+                new FrontendPluginFormPublished(pluginId, "*"),
+                FrontendJsonContext.Default.FrontendPluginFormPublished);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Results.Json(
+                new FrontendError("plugin_form_unavailable", exception.Message),
+                FrontendJsonContext.Default.FrontendError,
+                statusCode: 409);
+        }
     }
 
     private IResult HandleCapabilities()

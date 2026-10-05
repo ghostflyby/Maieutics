@@ -242,3 +242,37 @@ internal sealed class FrontendFormModelHost(FrontendCommRouter router, IFrontend
         CancellationToken cancellationToken) =>
         FrontendFormModel.TryCreateAsync(router, publisher, sessionId, state, handlers, cancellationToken);
 }
+
+/// <summary>Frontend-owned view of one plugin's surface entry (ADR 0038 stage 4): the
+/// composition-root adapter translates the Plugins-side snapshot into this record, so
+/// Frontend never references Plugins.</summary>
+internal sealed record FrontendPluginSurfaceEntry(
+    string Id,
+    string Name,
+    string ApprovalState,
+    FrontendUiFormState? Form,
+    string? FormError,
+    string? PageUrl);
+
+/// <summary>The gateway entrance as Frontend may consume it (ADR 0038 stage 4).</summary>
+internal sealed record FrontendPluginGateway(
+    string Hostname,
+    int Port,
+    string Token);
+
+/// <summary>
+///     Plugin-surface seam (ADR 0038 stage 4): the composition root binds this to the
+///     plugin host manager, keeping the Plugins→Frontend dependency direction intact.
+///     Publish failures are typed producer failures (InvalidOperationException).
+/// </summary>
+internal interface IFrontendPluginSurface
+{
+    /// <summary>The live gateway entrance, or null when the host reported none.</summary>
+    FrontendPluginGateway? GetHttpGateway();
+
+    /// <summary>Every discovered plugin's surface entry, approval state included.</summary>
+    IReadOnlyList<FrontendPluginSurfaceEntry> GetPluginSurfaces();
+
+    /// <summary>Publishes the plugin's declarative form into the live session's comm plane.</summary>
+    ValueTask PublishUiFormAsync(string pluginId, CancellationToken cancellationToken);
+}

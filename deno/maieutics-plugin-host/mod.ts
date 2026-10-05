@@ -8,6 +8,7 @@
 import { type PluginConfig, PluginHost, type PluginState } from "./host.ts";
 import { ReplManager } from "./repl_manager.ts";
 import { connectBus } from "../shared/bus.ts";
+import type { HttpGatewayDescriptor } from "./http.ts";
 import type { ReplEnvelope } from "../shared/protocol.ts";
 import type { HostReplReport } from "./host_repl_protocol.ts";
 
@@ -95,11 +96,23 @@ async function main(): Promise<void> {
   });
 
   const registered = await host.startAll();
-  await host.httpGateway().startRouter({
-    token: crypto.randomUUID(),
+  // ADR 0038 stage 4: the kernel learns the gateway's entrance (address +
+  // token + live mounts) so frontends can discover plugin pages. The token is
+  // a capability carrier — it rides only the authenticated control bus and is
+  // surfaced by the kernel's own bearer-authed endpoints, never logged.
+  const gatewayToken = crypto.randomUUID();
+  const gateway = host.httpGateway();
+  const gatewayAddr = await gateway.startRouter({
+    token: gatewayToken,
     onListening: (address) => {
       console.error(`[plugin-host] HTTP gateway listening on ${address.hostname}:${address.port}`);
     },
+  });
+  const gatewayDescriptor = (): HttpGatewayDescriptor => ({
+    hostname: gatewayAddr.hostname,
+    port: gatewayAddr.port,
+    token: gatewayToken,
+    mounts: gateway.snapshots(),
   });
   console.error(
     `[plugin-host] ${hostId}: ${registered.length} extension registration(s) across ` +
@@ -119,12 +132,26 @@ async function main(): Promise<void> {
   });
   busHolder.bus!.send({
     type: "extension.registry",
-    payload: registryPayload(registered, host.states()),
+    payload: {
+      ...registryPayload(registered, host.states()),
+      httpGateway: gatewayDescriptor(),
+    },
   });
   // Host → kernel REPL pid reports ride the same bus. The reporter is wired
   // here, after the hello handshake authenticated this host; ReplManager
   // refuses to derive a REPL before it is set.
   repls.setReporter((report: HostReplReport) => busHolder.bus!.send(report));
+  // ADR 0038 stage 4: mount-table changes re-report the registry (the gateway
+  // descriptor's mounts must stay live) — wired after the hello handshake.
+  gateway.onMountsChanged(() => {
+    busHolder.bus?.send({
+      type: "extension.registry",
+      payload: {
+        ...registryPayload(host.extensions, host.states()),
+        httpGateway: gatewayDescriptor(),
+      },
+    });
+  });
 
   // Kernel capability calls ride the same bus: the host relays the worker's
   // request with its derived plugin identity and completes on the correlated
@@ -212,7 +239,10 @@ async function main(): Promise<void> {
         void done.then(() => {
           busHolder.bus!.send({
             type: "extension.registry",
-            payload: registryPayload(host.extensions, host.states()),
+            payload: {
+              ...registryPayload(host.extensions, host.states()),
+              httpGateway: gatewayDescriptor(),
+            },
           });
         }).catch((error: Error) => {
           console.error(`[plugin-host] reload of '${payload.pluginId}' failed: ${error.message}`);

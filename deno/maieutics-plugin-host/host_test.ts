@@ -108,7 +108,8 @@ Deno.test("host entry imports only the host implementation and shared control mo
   const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
   for (const specifier of imports) {
     assert(
-      specifier === "./host.ts" || specifier === "./repl_manager.ts" ||
+      specifier === "./host.ts" || specifier === "./http.ts" ||
+        specifier === "./repl_manager.ts" ||
         specifier === "./host_repl_protocol.ts" ||
         specifier.startsWith("../shared/"),
       `unexpected import '${specifier}' in the plugin host entry`,

@@ -73,6 +73,7 @@ Deno.test("form publishes the native dialect open and returns a handle", async (
     fields: [{ name: "note", type: "text" }, { name: "pick", type: "choice", choices: ["a", "b"] }],
   });
 
+  // The array is module-global: this first test owns its single entry.
   assertEquals(requests.length, 1);
   assertEquals(requests[0].capability, "ui.models");
   const frame = requests[0].payload as Record<string, unknown>;
@@ -140,6 +141,25 @@ Deno.test("sync pushes the update dialect; close pushes close; closed handles re
   assertEquals(close.kind, "close");
   assertEquals(close.commId, handle.commId);
   await assertRejects(() => ui.sync(handle, "q", "again"), Error, "is closed");
+});
+
+Deno.test("double close pushes one frame; submit after close is inert", async () => {
+  const start = requests.length;
+  respond = () => ({ ok: true, result: { status: "ok" } });
+  const submitted: Record<string, unknown>[] = [];
+  const handle = await ui.form(
+    { fields: [{ name: "note", type: "text" }] },
+    { onSubmit: (values) => submitted.push(values) },
+  );
+  await ui.close(handle);
+  await ui.close(handle);
+  ui.deliver({
+    commId: handle.commId,
+    data: { method: "event", name: "submit", payload: { values: { note: "late" } } },
+  });
+
+  assertEquals(submitted, []);
+  assertEquals(requests.slice(start + 1).length, 1, "the second close pushes no frame");
 });
 
 Deno.test("unknown comm ids and malformed delivers are inert", async () => {

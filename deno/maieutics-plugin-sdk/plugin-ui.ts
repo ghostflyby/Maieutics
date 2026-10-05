@@ -9,7 +9,8 @@
  * the same comm, and the kernel routes those frames here.
  *
  * ```ts
- * import { defineExtensionPoint, ui } from "@maieutics/plugin-sdk";
+ * import { defineExtensionPoint } from "@maieutics/plugin-sdk";
+import { ui } from "@maieutics/plugin-sdk/plugin-ui";
  *
  * export const UiEvent = defineExtensionPoint("UiEvent", (event) => {
  *   ui.deliver(event); // routes {commId, data|closed} to the model's handlers
@@ -86,6 +87,7 @@ export interface UiEventMessage {
 interface ModelEntry {
   handlers: UiFormHandlers;
   values: Record<string, unknown>;
+  closed: boolean;
 }
 
 const models = new Map<string, ModelEntry>();
@@ -109,10 +111,12 @@ function deliverToModel(commId: string, message: UiEventMessage): void {
   const model = models.get(commId);
   if (model === undefined) return;
   if (message.closed) {
+    model.closed = true;
     models.delete(commId);
     model.handlers.onClosed?.();
     return;
   }
+  if (model.closed) return;
   if (message.data?.method === "update") {
     for (const [key, value] of Object.entries(message.data.state)) {
       model.values[key] = value;
@@ -150,7 +154,7 @@ export const ui: {
     for (const field of fields) {
       values[field.name] = field.type === "boolean" ? false : "";
     }
-    models.set(commId, { handlers, values });
+    models.set(commId, { handlers, values, closed: false });
     try {
       await pushFrame({
         kind: "open",
@@ -173,10 +177,11 @@ export const ui: {
     return {
       commId,
       sync: async (key, value) => {
-        if (!models.has(commId)) {
+        const model = models.get(commId);
+        if (model === undefined || model.closed) {
           throw new Error(`The UI model '${commId}' is closed.`);
         }
-        values[key] = value;
+        model.values[key] = value;
         await pushFrame({
           kind: "message",
           commId,
@@ -184,7 +189,11 @@ export const ui: {
         });
       },
       close: async () => {
-        if (!models.has(commId)) return;
+        // Idempotent: a frontend-driven close may have released the model
+        // already, and two racing close() calls push at most one frame.
+        const model = models.get(commId);
+        if (model === undefined || model.closed) return;
+        model.closed = true;
         models.delete(commId);
         await pushFrame({ kind: "close", commId });
       },

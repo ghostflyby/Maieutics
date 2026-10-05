@@ -8,11 +8,12 @@
     "./runtime": "./runtime.ts",
     "./interop": "./interop.ts",
     "./reactive": "./reactive.ts",
-    "./lint": "./lint-plugin.ts",
     "./ui": "./ui/index.ts",
+    "./lint": "./lint-plugin.ts",
     "./widgets": "./widgets/index.ts",
     "./widgets/jsx-runtime": "./widgets/jsx-runtime.ts",
-    "./widgets/transform": "./widgets/transform.ts"
+    "./widgets/transform": "./widgets/transform.ts",
+    "./plugin-ui": "./plugin-ui.ts"
   },
   "imports": {
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",

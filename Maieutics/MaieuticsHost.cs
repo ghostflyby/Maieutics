@@ -367,6 +367,28 @@ public static class MaieuticsHost
                 (tool, arguments, cancellationToken) =>
                     controlHost.InvokeScriptToolAsync(tool, arguments, cancellationToken);
 
+            // Plugin UI frames (ADR 0038 stage 3) cross the Plugins→Frontend boundary
+            // here: publish into the foreground session's comm plane with the plugin as
+            // the uplink owner (routed back to its UiEvent export). The router resolves
+            // lazily per frame: resolving it here would recurse back into this
+            // ReplControlHost factory (its own factory resolves the control host).
+            var pluginUiManager = services.GetRequiredService<PluginHostManager>();
+            pluginUiManager.UiFrameSink = (pluginId, frame, cancellationToken) =>
+            {
+                // Frontend comm and sessions are unconditionally registered when the
+                // frontend is enabled; the sink exists only in that composition.
+                var pluginUiCommRouter = services.GetRequiredService<FrontendCommRouter>();
+                var pluginUiSessions = services.GetRequiredService<FrontendSessionService>();
+                return PublishPluginUiFrameAsync(
+                    pluginUiManager,
+                    pluginUiCommRouter,
+                    pluginUiSessions.DescribeSession().Id,
+                    pluginUiSessions,
+                    pluginId,
+                    frame,
+                    cancellationToken);
+            };
+
             return controlHost;
         });
         builder.Services.AddSingleton<DenoReplModule>();
@@ -683,6 +705,144 @@ public static class MaieuticsHost
             {
                 using var stream = File.OpenRead(configurationFile.Path);
                 using var _ = JsonDocument.Parse(stream);
+            }
+        }
+    }
+
+    /// <summary>Publishes one plugin UI frame (ADR 0038 stage 3) into the foreground
+    /// session's comm plane. Open frames additionally announce the model as a display-mime
+    /// presentation on the session's run stream — the same pair kernel and REPL producers
+    /// ride — and a missing live stream rejects the frame (the opened comm is closed
+    /// again, the worker receives a typed ui_frame_rejected).</summary>
+    internal static ValueTask PublishPluginUiFrameAsync(
+        PluginHostManager manager,
+        FrontendCommRouter commRouter,
+        string sessionIdText,
+        IFrontendSessionFramePublisher framePublisher,
+        string pluginId,
+        PluginUiFramePayload frame,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(manager);
+        ArgumentNullException.ThrowIfNull(commRouter);
+        ArgumentNullException.ThrowIfNull(frame);
+        if (string.IsNullOrWhiteSpace(sessionIdText))
+            throw new InvalidOperationException("No active session to publish plugin UI into.");
+
+        var sessionId = new AgentSessionId(Guid.ParseExact(sessionIdText, "N"));
+        var kind = frame.Kind switch
+        {
+            "open" => ReplCommKind.Open,
+            "close" => ReplCommKind.Close,
+            _ => ReplCommKind.Message,
+        };
+        var owner = kind == ReplCommKind.Open
+            ? new PluginUiOwner(manager, pluginId)
+            : null;
+        return kind == ReplCommKind.Open
+            ? PublishPluginOpenAsync(commRouter, framePublisher, sessionId, frame, owner, cancellationToken)
+            : commRouter.PublishFromKernelAsync(
+                sessionId.ToString(),
+                new ReplCommMessage(kind, frame.CommId, frame.TargetName, frame.Data, null, []),
+                owner: null,
+                cancellationToken);
+    }
+
+    private static async ValueTask PublishPluginOpenAsync(
+        FrontendCommRouter commRouter,
+        IFrontendSessionFramePublisher framePublisher,
+        AgentSessionId sessionId,
+        PluginUiFramePayload frame,
+        PluginUiOwner? owner,
+        CancellationToken cancellationToken)
+    {
+        await commRouter.PublishFromKernelAsync(
+            sessionId.ToString(),
+            new ReplCommMessage(ReplCommKind.Open, frame.CommId, frame.TargetName, frame.Data, null, []),
+            owner,
+            cancellationToken).ConfigureAwait(false);
+
+        // The announcement mirrors the native dialect: the family is the target's
+        // maieutics.view/ suffix; the display-time state rides the frame's data.
+        var family = frame.TargetName is { } target && target.StartsWith("maieutics.view/", StringComparison.Ordinal)
+            ? target["maieutics.view/".Length..]
+            : frame.TargetName ?? "unknown";
+        JsonElement state = frame.Data is { ValueKind: JsonValueKind.Object } data &&
+            data.TryGetProperty("state", out var stateElement) &&
+            stateElement.ValueKind == JsonValueKind.Object
+                ? stateElement.Clone()
+                : JsonDocument.Parse("{}").RootElement.Clone();
+        var announcement = new Dictionary<string, object?>
+        {
+            ["application/vnd.maieutics.view+json"] = new Dictionary<string, object?>
+            {
+                ["modelId"] = frame.CommId,
+                ["viewFamily"] = family,
+                ["version"] = "1.0",
+                ["state"] = state,
+            },
+            ["text/plain"] = $"plugin UI: {family}",
+        };
+        if (!framePublisher.TryPublishPresentation(
+                sessionId,
+                "repl.display",
+                System.Text.Json.JsonSerializer.SerializeToElement(
+                    announcement,
+                    FrontendJsonContext.Default.DictionaryStringObject)))
+        {
+            await commRouter.PublishFromKernelAsync(
+                sessionId.ToString(),
+                new ReplCommMessage(ReplCommKind.Close, frame.CommId, null, null, null, []),
+                owner: null,
+                cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                "The session has no live run stream to announce plugin UI on.");
+        }
+    }
+
+    /// <summary>Uplink owner for a plugin's UI comms (ADR 0038 stage 3): frontend events
+    /// route to the plugin's registered UiEvent export through the generic host.invoke
+    /// path; close frames arrive as {commId, closed: true}. A plugin without a UiEvent
+    /// export (or a stopped worker) degrades silently — the worker answers typed errors
+    /// through the invoke result the owner ignores.</summary>
+    private sealed class PluginUiOwner(PluginHostManager manager, string pluginId) : IFrontendKernelCommOwner
+    {
+        public async ValueTask OnUplinkAsync(ReplCommMessage message, CancellationToken cancellationToken)
+        {
+            var exportName = manager.FindUiEventExport(pluginId);
+            if (exportName is null) return;
+            var request = new Dictionary<string, JsonElement>
+            {
+                ["commId"] = JsonDocument.Parse($"\"{message.CommId}\"").RootElement.Clone(),
+            };
+            if (message.Kind == ReplCommKind.Close)
+            {
+                request["closed"] = JsonDocument.Parse("true").RootElement.Clone();
+            }
+            else if (message.Data is { } data)
+            {
+                request["data"] = data.Clone();
+            }
+
+            try
+            {
+                await manager.InvokeExtensionPointAsync(
+                    pluginId,
+                    exportName,
+                    ReplExtensionPointName.UiEvent,
+                    System.Text.Json.JsonSerializer.SerializeToElement(
+                        request,
+                        ReplControlJsonContext.Default.DictionaryStringJsonElement),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // A stopped or failing worker must not break the comm plane; the invoke
+                // already answered typed errors on its own channel.
             }
         }
     }

@@ -12,7 +12,7 @@ internal static class FrontendUiWire
     internal const string ViewMime = "application/vnd.maieutics.view+json";
 
     /// <summary>The comm target of the <c>maieutics/form</c> family.</summary>
-    internal const string FormTarget = "maieutics.view/maieutics.form";
+    internal const string FormTarget = "maieutics.view/maieutics/form";
 
     internal const string FormFamily = "maieutics/form";
 

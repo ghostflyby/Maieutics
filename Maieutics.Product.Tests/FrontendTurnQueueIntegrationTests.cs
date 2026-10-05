@@ -782,7 +782,9 @@ public sealed class FrontendTurnQueueIntegrationTests
 
     private static string QueueSummary(JsonElement queue)
     {
-        var running = queue.TryGetProperty("running", out var state)
+        // `running` is optional on the wire: absent OR null both mean no running item.
+        var running = queue.TryGetProperty("running", out var state) &&
+            state.ValueKind == JsonValueKind.Object
             ? state.GetProperty("itemId").GetString()
             : null;
         var items = ItemIds(queue);
@@ -791,7 +793,8 @@ public sealed class FrontendTurnQueueIntegrationTests
 
     private static bool HasRunningItem(JsonElement queue, string? itemId = null)
     {
-        if (!queue.TryGetProperty("running", out var running)) return false;
+        if (!queue.TryGetProperty("running", out var running) ||
+            running.ValueKind != JsonValueKind.Object) return false;
 
         var runningItemId = running.GetProperty("itemId").GetString();
         return itemId is null || runningItemId == itemId;

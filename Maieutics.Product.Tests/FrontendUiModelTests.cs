@@ -57,7 +57,7 @@ public sealed class FrontendUiModelTests
         model.Should().NotBeNull();
         var live = router.PlaneFor(session.ToString()).SnapshotLive();
         live.Should().ContainSingle()
-            .Which.TargetName.Should().Be("maieutics.view/maieutics.form");
+            .Which.TargetName.Should().Be("maieutics.view/maieutics/form");
 
         var display = publisher.Published.Should().ContainSingle().Which;
         display.Type.Should().Be("repl.display");
@@ -293,7 +293,7 @@ public sealed class FrontendUiModelTests
         // The comm_open's replayed data carries the native state payload.
         var plane = router.PlaneFor(session.ToString());
         var open = plane.Subscribe(0).Initial.Should().ContainSingle().Which;
-        open.Message.TargetName.Should().Be("maieutics.view/maieutics.form");
+        open.Message.TargetName.Should().Be("maieutics.view/maieutics/form");
         open.Message.Data.Should().NotBeNull();
         open.Message.Data!.Value.GetProperty("state").GetProperty("title").GetString().Should().Be("T");
 

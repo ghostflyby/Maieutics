@@ -375,11 +375,10 @@ public static class MaieuticsHost
             var pluginUiManager = services.GetRequiredService<PluginHostManager>();
             pluginUiManager.UiFrameSink = (pluginId, frame, cancellationToken) =>
             {
-                var pluginUiCommRouter = services.GetService<FrontendCommRouter>();
-                var pluginUiSessions = services.GetService<FrontendSessionService>();
-                if (pluginUiCommRouter is null || pluginUiSessions is null)
-                    throw new InvalidOperationException("The frontend UI plane is not available.");
-
+                // Frontend comm and sessions are unconditionally registered when the
+                // frontend is enabled; the sink exists only in that composition.
+                var pluginUiCommRouter = services.GetRequiredService<FrontendCommRouter>();
+                var pluginUiSessions = services.GetRequiredService<FrontendSessionService>();
                 return PublishPluginUiFrameAsync(
                     pluginUiManager,
                     pluginUiCommRouter,
@@ -812,9 +811,19 @@ public static class MaieuticsHost
         {
             var exportName = manager.FindUiEventExport(pluginId);
             if (exportName is null) return;
-            var request = message.Kind == ReplCommKind.Close
-                ? new Dictionary<string, object?> { ["commId"] = message.CommId, ["closed"] = true }
-                : new Dictionary<string, object?> { ["commId"] = message.CommId, ["data"] = message.Data };
+            var request = new Dictionary<string, JsonElement>
+            {
+                ["commId"] = JsonDocument.Parse($"\"{message.CommId}\"").RootElement.Clone(),
+            };
+            if (message.Kind == ReplCommKind.Close)
+            {
+                request["closed"] = JsonDocument.Parse("true").RootElement.Clone();
+            }
+            else if (message.Data is { } data)
+            {
+                request["data"] = data.Clone();
+            }
+
             try
             {
                 await manager.InvokeExtensionPointAsync(

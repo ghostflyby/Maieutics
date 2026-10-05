@@ -33,6 +33,9 @@ public sealed class PluginUiCapabilityTests
     [Fact]
     public async Task UiModelsFrameReachesTheSinkAndAnswersOk()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
         await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
             TestContext.Current.CancellationToken);
         harness.Manager.SetCapabilityGrants("plugin-1", [ReplCapabilityName.UiModels]);
@@ -61,6 +64,9 @@ public sealed class PluginUiCapabilityTests
     [Fact]
     public async Task UiModelsWithoutGrantIsDenied()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
         await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
             TestContext.Current.CancellationToken);
         var sinkRan = false;
@@ -83,6 +89,9 @@ public sealed class PluginUiCapabilityTests
     [Fact]
     public async Task UiModelsRejectsMalformedFramesBeforeTheSink()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
         await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
             TestContext.Current.CancellationToken);
         harness.Manager.SetCapabilityGrants("plugin-1", [ReplCapabilityName.UiModels]);
@@ -107,6 +116,9 @@ public sealed class PluginUiCapabilityTests
     [Fact]
     public async Task UiModelsSurfacesTypedSinkRejections()
     {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
         await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
             TestContext.Current.CancellationToken);
         harness.Manager.SetCapabilityGrants("plugin-1", [ReplCapabilityName.UiModels]);

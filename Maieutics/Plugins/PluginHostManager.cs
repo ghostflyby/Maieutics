@@ -2677,7 +2677,9 @@ internal sealed class PluginHostManager(
                 if (frame is null ||
                     string.IsNullOrWhiteSpace(frame.CommId) ||
                     (frame.Kind != "open" && frame.Kind != "message" && frame.Kind != "close") ||
-                    (frame.Kind == "open" && string.IsNullOrWhiteSpace(frame.TargetName)))
+                    (frame.Kind == "open" &&
+                    (string.IsNullOrWhiteSpace(frame.TargetName) ||
+                     !frame.TargetName.StartsWith("maieutics.view/", StringComparison.Ordinal))))
                 {
                     await PushCapabilityErrorAsync(
                         socket,

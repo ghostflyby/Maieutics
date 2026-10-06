@@ -19,7 +19,6 @@ import type {
   CommHello,
   CommMessage,
   EventFrame,
-  PluginInfo,
   PluginsResponse,
   QueueState,
   SessionInfo,

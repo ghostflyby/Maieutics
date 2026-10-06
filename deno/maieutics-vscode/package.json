@@ -23,6 +23,7 @@
     "onCommand:maieutics.showStatus",
     "onCommand:maieutics.listSessions",
     "onCommand:maieutics.listTasks",
+    "onCommand:maieutics.listPlugins",
     "onCommand:maieutics.renameSession",
     "onCommand:maieutics.copySessionId",
     "onCommand:maieutics.pruneObjects",
@@ -101,6 +102,12 @@
         "title": "List Active Tasks",
         "category": "Maieutics",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "maieutics.listPlugins",
+        "title": "List Plugins",
+        "category": "Maieutics",
+        "icon": "$(plug)"
       },
       {
         "command": "maieutics.renameSession",

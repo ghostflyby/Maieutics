@@ -262,3 +262,38 @@ export interface CommHello {
 export type CommFrame =
   | { kind: "comm"; sequence: number; message: CommMessage }
   | { kind: "error"; code: string; commId: string };
+
+/** One declarative form field of a plugin's `ui` data entry (ADR 0038 stage 4). */
+export interface PluginFormField {
+  name: string;
+  label?: string;
+  type: string;
+  choices?: { value: string; label: string }[];
+  required?: boolean;
+  placeholder?: string;
+}
+
+/** The form template a plugin declares through its `ui` data entry. */
+export interface PluginFormTemplate {
+  title?: string;
+  fields: PluginFormField[];
+  submitLabel?: string;
+  cancelLabel?: string;
+  values?: Record<string, unknown>;
+}
+
+/** One plugin's entry on the plugins surface (ADR 0038 stage 4): identity,
+ * approval state, optional declarative form, optional approved gateway page. */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  approvalState: string;
+  form?: PluginFormTemplate | null;
+  formError?: string | null;
+  pageUrl?: string | null;
+}
+
+/** The plugins surface snapshot: `GET /v1/plugins`. */
+export interface PluginsResponse {
+  plugins: PluginInfo[];
+}

@@ -24,6 +24,7 @@ import { FrontendError, type TaskListEntry, type Transcript } from "./protocol.t
 import { sessionLabel, type SessionLike } from "./sessionGroups.ts";
 import { MaieuticsSessionsProvider, type TreeEnvironment } from "./sessionsTree.ts";
 import { shortTaskId, taskDetailText, taskPicks, TasksEmptyHint } from "./taskPicks.ts";
+import { iframeViewState, type PluginPick, pluginPicks, PluginsEmptyHint } from "./pluginPicks.ts";
 import type { AttachmentMarker } from "./attachments.ts";
 import {
   appendAttachmentMarkers,
@@ -287,6 +288,43 @@ export function activate(context: vscode.ExtensionContext): void {
       const client = await clientOf();
       const session = await client.session();
       await runTaskQuickPick(client, session.id);
+    }),
+    vscode.commands.registerCommand("maieutics.listPlugins", async () => {
+      const client = await clientOf();
+      const { plugins } = await client.plugins();
+      if (plugins.length === 0) {
+        await vscode.window.showInformationMessage(PluginsEmptyHint);
+        return;
+      }
+
+      // The pick loop: picking a form publishes it into the live session's
+      // comm plane (the view renderer claims the announcement); picking a page
+      // publishes an iframe view state the same way. Neither action exists for
+      // unapproved plugins (pluginPicks strips their actions).
+      let active: PluginPick[] = pluginPicks(plugins);
+      while (active.length > 0) {
+        const picked = await vscode.window.showQuickPick(active, {
+          placeHolder: "Maieutics plugins — pick a form to open or a page to view",
+          ignoreFocusOut: false,
+        });
+        if (picked === undefined) return;
+        if (picked.publishForm) {
+          await client.publishPluginForm(picked.pluginId);
+          await vscode.window.showInformationMessage(
+            `Plugin form '${picked.pluginId}' published to the live notebook output.`,
+          );
+          return;
+        }
+        if (picked.pageUrl !== undefined) {
+          // The gateway URL opens in a browser; in-product iframe embedding waits
+          // for the maieutics/iframe kernel producer path. pluginPicks only hands
+          // out vetted loopback gateway links, but the external open re-checks.
+          if (iframeViewState(picked.pageUrl, picked.pluginId) === undefined) return;
+          await vscode.env.openExternal(vscode.Uri.parse(picked.pageUrl));
+          return;
+        }
+        active = active.filter((candidate) => candidate.pluginId !== picked.pluginId);
+      }
     }),
     vscode.commands.registerCommand(
       "maieutics.renameSession",

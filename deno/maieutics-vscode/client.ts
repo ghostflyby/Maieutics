@@ -19,6 +19,8 @@ import type {
   CommHello,
   CommMessage,
   EventFrame,
+  PluginInfo,
+  PluginsResponse,
   QueueState,
   SessionInfo,
   StoredSession,
@@ -285,6 +287,23 @@ export class FrontendClient {
    * catalog identities (status optional), and unknown kinds are tolerated —
    * list first, decide per entry. Children vanish from the plane when their
    * parent run joins them, so entries disappear between reads. */
+  /** The plugins surface (ADR 0038 stage 4): every discovered plugin with its
+   * approval state, declarative form template, and approved gateway page URL. */
+  async plugins(signal?: AbortSignal): Promise<PluginsResponse> {
+    return await this.get("/v1/plugins", signal);
+  }
+
+  /** Publishes one plugin's declarative form into the live session's comm plane. */
+  async publishPluginForm(pluginId: string, signal?: AbortSignal): Promise<void> {
+    const response = await this.fetchJson(
+      "POST",
+      `/v1/plugins/${encodeURIComponent(pluginId)}/form`,
+      undefined,
+      signal,
+    );
+    if (!response.ok) throw await this.errorOf(response);
+  }
+
   async listTasks(sessionId: string, signal?: AbortSignal): Promise<TaskListEntry[]> {
     return await this.get(`/v1/agent/sessions/${sessionId}/tasks`, signal);
   }

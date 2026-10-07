@@ -103,6 +103,9 @@ Two design forces shaped this ADR:
      grants cover the resolved path — deny-wins, so an env change can redirect a root
      only inside already-approved read scope. The extensions JSON rides the existing
      fingerprint domain (literal patterns), so declaring roots changes the approval.
+     Grant values are evaluated as literal paths: `${...}` tokens inside a read grant
+     are inert for this gate (fail-closed) — cross-root grants must be spelled
+     literally in deno.json.
    - **Stage 2b — worker generator (shipped)**: a worker exporting the `Skills`
      extension point (`defineExtensionPoint("Skills", ...)`) is invoked by the kernel at
      the same reconcile boundaries MCP discovery uses (start, registry frames, approval

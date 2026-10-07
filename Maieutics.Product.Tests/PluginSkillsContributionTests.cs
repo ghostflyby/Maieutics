@@ -456,6 +456,23 @@ public sealed class PluginSkillsContributionTests : IDisposable
             catalog.Current.Skills.Should()
                 .Contain(skill => skill.Name == "declared")
                 .And.NotContain(skill => skill.Name == "published-two");
+
+            // An unrelated reconcile event (any registry frame) must not wipe the
+            // published part of a publish-only plugin: cleanup is keyed on descriptor
+            // presence and approval, not on pass participation.
+            manager.HandleHostMessage(SkillsPublishFrame(
+                pluginId,
+                """[{"name":"published-three","description":"after a reconcile"}]"""));
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "published-three"),
+                TestContext.Current.CancellationToken);
+            manager.HandleHostMessage(
+                SkillsRegistryFrame(pluginId, "./mod.ts"));
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Should()
+                .Contain(skill => skill.Name == "declared")
+                .And.Contain(skill => skill.Name == "published-three");
         }
         finally
         {
@@ -512,6 +529,113 @@ public sealed class PluginSkillsContributionTests : IDisposable
             reply.Should().Contain("capability_denied");
             await Task.Delay(300, TestContext.Current.CancellationToken);
             catalog.Current.Skills.Should().BeEmpty();
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task APoisonRootDegradesToADiagnosticWithoutAbortingThePass()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        // One poisoned plugin (a NUL-bearing root throws in Path.GetFullPath) enumerated
+        // ahead of a healthy one: the healthy plugin must still contribute.
+        var poisoned = CreateSkillsPluginsRoot(
+            "skills-poisoned",
+            $$"""["bad\u0000root"]""",
+            """["./"]""");
+        var healthy = CreateSkillsPluginsRoot(
+            "skills-healthy",
+            """["./skills"]""",
+            """["./"]""");
+        WriteSkill(Path.Combine(healthy, "skills"), "epsilon", "after the poison");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var poisonedManager = CreateManager(
+            poisoned, clock, catalog, CreateVariables([]), PluginApprovalSeeds.SeedLocalPlugins(poisoned));
+        var healthyManager = CreateManager(
+            healthy, clock, catalog, CreateVariables([]), PluginApprovalSeeds.SeedLocalPlugins(healthy));
+        try
+        {
+            await poisonedManager.StartAsync(TestContext.Current.CancellationToken);
+            await healthyManager.StartAsync(TestContext.Current.CancellationToken);
+
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "epsilon"),
+                TestContext.Current.CancellationToken);
+            catalog.Current.Diagnostics.Should().Contain(diagnostic =>
+                diagnostic.Contains("cannot be resolved") ||
+                diagnostic.Contains("not covered by a read grant"));
+        }
+        finally
+        {
+            await poisonedManager.DisposeAsync();
+            await healthyManager.DisposeAsync();
+            if (Directory.Exists(poisoned)) Directory.Delete(poisoned, true);
+            if (Directory.Exists(healthy)) Directory.Delete(healthy, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task OversizedPublishArrayIsCappedWithAVisibleDiagnostic()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"skills-flood-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["skills.publish"],
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
+            }
+            """);
+        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            var entries = string.Join(
+                ",",
+                Enumerable.Range(0, 300).Select(index => $"{{\"name\":\"flood-{index:D4}\",\"description\":\"flood\"}}"));
+            manager.HandleHostMessage(SkillsPublishFrame(pluginId, $"[{entries}]"));
+
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "flood-0000"),
+                TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Count(skill => skill.Name.StartsWith("flood-", StringComparison.Ordinal))
+                .Should().Be(256);
+            catalog.Current.Diagnostics.Should().Contain(diagnostic =>
+                diagnostic.Contains("exceeds") && diagnostic.Contains("256"));
         }
         finally
         {

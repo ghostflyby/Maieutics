@@ -24,7 +24,7 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
 - `Maieutics.Processes` — general process start policy (environment allowlist, future sandbox enforcement seam).
 - `Maieutics.DenoExecution` — supervised internal `deno run` children and the Deno permission broker.
 - `Maieutics.DenoRepl` — REPL sessions, eval protocol, presentation above `DenoExecution`.
-- `Maieutics.Plugins` — plugin manifest, host manager, extension points, MCP coordination.
+- `Maieutics.Plugins` — plugin manifest, host manager, extension points, MCP coordination, skill contributions.
 - `Maieutics.Control` — control channel, credentials, session registry, peer identity.
 - `Maieutics.Configuration` — configuration binding, reload, catalogs, profile lifetimes.
 - `Maieutics.Commands` — shared kernel control surface: command language, command execution, status, session management.

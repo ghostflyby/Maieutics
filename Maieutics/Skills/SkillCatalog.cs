@@ -51,6 +51,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
     private readonly Dictionary<DeclaredRoot, IReadOnlyList<SkillDescriptor>> rootResults = new();
+    private readonly Dictionary<string, IReadOnlyList<SkillDescriptor>> pluginContributions = new(StringComparer.Ordinal);
     private readonly List<Task> pumps = [];
     private readonly List<FileSystemWatcher> watchers = [];
     private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
@@ -111,6 +112,36 @@ internal sealed class SkillCatalog : IAsyncDisposable
             {
                 return rebuildCount;
             }
+        }
+    }
+
+    /// <summary>Replaces one plugin's skill contribution (ADR 0039 stages 2-3): each
+    /// plugin owns exactly one slot — declarative roots, generator output, and (stage 3)
+    /// published entries merge into it before this call. Plugin sources sit below both
+    /// filesystem sources in the merge precedence, so a same-name workspace or user skill
+    /// shadows the plugin's. Contributions refresh on plugin reconcile events (load,
+    /// reload, approval, trigger), not on their own file watchers.</summary>
+    internal void UpdatePluginContribution(string pluginId, IReadOnlyList<SkillDescriptor> descriptors)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(pluginId);
+        ArgumentNullException.ThrowIfNull(descriptors);
+        lock (gate)
+        {
+            if (disposed) return;
+            pluginContributions[pluginId] = descriptors;
+            RebuildSnapshot();
+        }
+    }
+
+    /// <summary>Clears one plugin's contribution (approval revoked, plugin removed, or
+    /// host shutdown).</summary>
+    internal void RemovePluginContribution(string pluginId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(pluginId);
+        lock (gate)
+        {
+            if (disposed || !pluginContributions.Remove(pluginId)) return;
+            RebuildSnapshot();
         }
     }
 
@@ -298,6 +329,32 @@ internal sealed class SkillCatalog : IAsyncDisposable
                 if (descriptor.Diagnostic is { } diagnostic)
                 {
                     diagnostics.Add($"[{root.Source}] {descriptor.Name}: {diagnostic}");
+                    continue;
+                }
+
+                if (merged.TryGetValue(descriptor.Name, out var winner))
+                {
+                    diagnostics.Add(
+                        $"[{descriptor.Source}] '{descriptor.Name}' is shadowed by the {winner.Source} skill of the same name.");
+                    continue;
+                }
+
+                merged.Add(descriptor.Name, descriptor);
+            }
+        }
+
+        // Plugin contributions merge after every filesystem source: a plugin skill never
+        // shadows workspace or user skills (ADR 0039 decision 1), and within a plugin
+        // contribution the caller has already ordered its own production modes. Plugins
+        // iterate in id order so shadowing between plugins is deterministic.
+        foreach (var (_, descriptors) in pluginContributions.OrderBy(
+                     static pair => pair.Key, StringComparer.Ordinal))
+        {
+            foreach (var descriptor in descriptors)
+            {
+                if (descriptor.Diagnostic is { } diagnostic)
+                {
+                    diagnostics.Add($"[plugin] {descriptor.Name}: {diagnostic}");
                     continue;
                 }
 

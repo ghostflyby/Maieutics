@@ -89,6 +89,7 @@ export const ExtensionPoint: {
   readonly ToolPreInvoke: symbol;
   readonly ToolPostInvoke: symbol;
   readonly UiEvent: symbol;
+  readonly Skills: symbol;
 } = {
   McpDiscover: Symbol.for(`${NAMESPACE}/mcp.discover`),
   McpAdjust: Symbol.for(`${NAMESPACE}/mcp.adjust`),
@@ -96,6 +97,7 @@ export const ExtensionPoint: {
   ToolPreInvoke: Symbol.for(`${NAMESPACE}/tools.preInvoke`),
   ToolPostInvoke: Symbol.for(`${NAMESPACE}/tools.postInvoke`),
   UiEvent: Symbol.for(`${NAMESPACE}/ui.event`),
+  Skills: Symbol.for(`${NAMESPACE}/skills.generate`),
 };
 
 export type ExtensionPointName = keyof typeof ExtensionPoint;
@@ -123,6 +125,24 @@ export type McpDiscovery =
 /** Why the host asked for a discovery pass. */
 export interface DiscoverContext {
   readonly reason: "registry_update" | "startup" | "config-changed";
+}
+
+/**
+ * `skills.generate` — compute the plugin's skill catalog contribution (ADR 0039
+ * stage 2). The kernel invokes the export at load, reload, approval, and trigger
+ * boundaries; the returned descriptors merge into the session skill catalog below
+ * every filesystem source. The handler sees the live workspace root, never
+ * arbitrary environment.
+ */
+export interface SkillsContext {
+  readonly workspaceRoot: string | null;
+}
+
+/** One generated skill: the catalog entry plus an inline bounded body. */
+export interface SkillGeneration {
+  readonly name: string;
+  readonly description: string;
+  readonly body?: string;
 }
 
 /**
@@ -221,6 +241,25 @@ export type McpDiscoverFunction = McpDiscoverFunctionInput & {
   readonly [ExtensionPoint.McpDiscover]: true;
 };
 
+export interface SkillsObjectInput {
+  handler(context: SkillsContext): SkillGeneration[] | Promise<SkillGeneration[]>;
+}
+
+export interface SkillsObject extends SkillsObjectInput {
+  readonly [ExtensionPoint.Skills]: true;
+}
+
+export type SkillsFunctionInput = (
+  context: SkillsContext,
+) => SkillGeneration[] | Promise<SkillGeneration[]>;
+
+export type SkillsFunction = SkillsFunctionInput & {
+  readonly [ExtensionPoint.Skills]: true;
+};
+
+export type SkillsInput = SkillsObjectInput | SkillsFunctionInput;
+export type Skills = SkillsObject | SkillsFunction;
+
 export type McpDiscoverInput =
   | McpDiscoverObjectInput
   | McpDiscoverFunctionInput;
@@ -315,16 +354,19 @@ interface ExtensionPointShape<K extends ExtensionPointName> {
     : K extends "McpAdjust" ? McpAdjustContext
     : K extends "PluginEvent" ? PluginEventContext
     : K extends "ToolPreInvoke" ? ToolInvokeContext
+    : K extends "Skills" ? SkillsContext
     : ToolPostInvokeContext;
   input: K extends "McpDiscover" ? McpDiscoverInput
     : K extends "McpAdjust" ? McpAdjustInput
     : K extends "PluginEvent" ? PluginEventInput
     : K extends "ToolPreInvoke" ? ToolPreInvokeInput
+    : K extends "Skills" ? SkillsInput
     : ToolPostInvokeInput;
   impl: K extends "McpDiscover" ? McpDiscover
     : K extends "McpAdjust" ? McpAdjust
     : K extends "PluginEvent" ? PluginEvent
     : K extends "ToolPreInvoke" ? ToolPreInvoke
+    : K extends "Skills" ? Skills
     : ToolPostInvoke;
 }
 
@@ -391,6 +433,12 @@ export const capabilities: {
     args?: Record<string, unknown>,
     options?: { timeoutMs?: number },
   ): Promise<T>;
+  skills: {
+    publish(
+      entries: SkillGeneration[],
+      options?: { timeoutMs?: number },
+    ): Promise<void>;
+  };
 } = {
   /** Invokes one script-callable kernel tool (the same registry REPL scripts
    * reach through `maieutics.tools.invoke`) and returns its structured result
@@ -402,6 +450,19 @@ export const capabilities: {
   ): Promise<T> {
     return callCapability<T>("tools.invoke", { tool: name, arguments: args ?? {} }, options);
   },
+
+  skills: {
+    /** Replaces this plugin's published skill set (ADR 0039 stage 3). The
+     * entries merge into the plugin's catalog contribution below its
+     * declarative roots and generated part; an empty array clears the
+     * published set. Requires the `skills.publish` manifest capability. */
+    publish(
+      entries: SkillGeneration[],
+      options?: { timeoutMs?: number },
+    ): Promise<void> {
+      return callCapability<void>("skills.publish", entries, options);
+    },
+  },
 };
 
 export function defineExtensionPoint<K extends ExtensionPointName>(
@@ -412,15 +473,22 @@ export function defineExtensionPoint(
   name: string,
   impl: unknown,
 ): ExtensionPointImpl<ExtensionPointName> {
-  const symbol = ExtensionPoint[name as ExtensionPointName];
-  if (symbol === undefined) {
+  // Case is not significant: the recommended spelling for newer extension
+  // points is lowercase, and canonical markers are matched accordingly.
+  const catalog = ExtensionPoint as Record<string, symbol>;
+  const canonical = Object.keys(catalog).find((key) => key.toLowerCase() === name.toLowerCase());
+  if (canonical === undefined) {
     // The kernel only scans for known markers, so this export would silently
-    // never be discovered. Say so instead of attaching a meaningless marker.
+    // never be discovered. Say so and leave it unmarked instead of attaching
+    // a meaningless marker.
     console.error(
       `[maieutics] defineExtensionPoint('${name}') is not known to this kernel ` +
         `version; the export is ignored (known: ${Object.keys(ExtensionPoint).join(", ")}).`,
     );
+    return impl as ExtensionPointImpl<ExtensionPointName>;
   }
+
+  const symbol: symbol = catalog[canonical];
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {

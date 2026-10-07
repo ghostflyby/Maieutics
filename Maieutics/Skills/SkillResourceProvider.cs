@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using Maieutics.Execution;
 
 namespace Maieutics.Skills;
@@ -47,7 +48,22 @@ internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourcePro
         }
 
         var descriptor = FindCurrent(parsed.Host);
-        if (descriptor?.BodyPath is not { } bodyPath)
+        if (descriptor is null || descriptor.Diagnostic is not null)
+        {
+            throw new ResourceException(
+                "resource_not_found",
+                $"No usable skill named '{parsed.Host}' is in the current catalog.");
+        }
+
+        // Computed sources (plugin generators) carry their body inline; filesystem
+        // sources stream fresh from disk.
+        if (descriptor.BodyText is { } inline)
+        {
+            var inlineContent = new MemoryStream(Encoding.UTF8.GetBytes(inline), writable: false);
+            return new ResourceReadResult(inlineContent, MimeType);
+        }
+
+        if (descriptor.BodyPath is not { } bodyPath)
         {
             throw new ResourceException(
                 "resource_not_found",

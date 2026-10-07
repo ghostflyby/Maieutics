@@ -118,6 +118,27 @@ public sealed class SkillCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task AWriteBurstCollapsesIntoFewRebuilds()
+    {
+        WriteSkill(workspaceRoot, "initial", "the first skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        var rebuildsBefore = catalog.RebuildCount;
+
+        for (var index = 0; index < 5; index++)
+            WriteSkill(workspaceRoot, $"burst-{index}", $"burst skill {index}");
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Count(skill => skill.Name.StartsWith("burst-", StringComparison.Ordinal)) == 5);
+
+        // The burst coalesces: well below one rebuild per written file. The generous
+        // bound keeps CI flake out while still failing if debouncing regresses to
+        // per-event rescans.
+        (catalog.RebuildCount - rebuildsBefore).Should().BeInRange(1, 3);
+        catalog.Current.Skills.Should().HaveCount(6);
+    }
+
+    [Fact]
     public async Task DisposalStopsTheWatchers()
     {
         WriteSkill(workspaceRoot, "initial", "the first skill");
@@ -187,6 +208,27 @@ public sealed class SkillPromptComposerTests
         var composed = SkillPromptComposer.Compose(null, snapshot);
 
         composed.Should().StartWith("## Skills");
+    }
+
+    [Fact]
+    public void AnOverBudgetCatalogTruncatesWithAVisibleOmissionLine()
+    {
+        var skills = Enumerable.Range(0, SkillPromptComposer.MaximumComposedEntries + 20)
+            .Select(index => new SkillDescriptor(
+                $"skill-{index:D4}",
+                "description",
+                SkillSource.Workspace,
+                $"/ws/{index:D4}"))
+            .ToArray();
+        var snapshot = new SkillCatalogSnapshot([.. skills], []);
+
+        var composed = SkillPromptComposer.Compose(null, snapshot);
+
+        composed.Should()
+            .Contain("- skill-0000: description (skill://skill-0000)")
+            .And.Contain("20 more skill(s) omitted")
+            .And.NotContain("skill-0147");
+        composed.Length.Should().BeLessThanOrEqualTo(SkillPromptComposer.MaximumComposedCharacters + 4096);
     }
 }
 
@@ -291,6 +333,52 @@ public sealed class SkillResourceProviderTests : IDisposable
 
         entries.Should().ContainSingle()
             .Which.Uri.Should().Be("skill://alpha");
+    }
+
+    [Fact]
+    public async Task BodyRelinkedOutsideTheRootAfterDiscoveryIsATypedNotFound()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var outsideDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outsideDirectory);
+        try
+        {
+            await using var catalog = CreateCatalog();
+            var provider = new SkillResourceProvider(catalog);
+            var bodyPath = Path.Combine(root, "alpha", "SKILL.md");
+            File.Delete(bodyPath);
+            File.WriteAllText(Path.Combine(outsideDirectory, "SKILL.md"), "Stolen body.\n");
+            File.CreateSymbolicLink(bodyPath, Path.Combine(outsideDirectory, "SKILL.md"));
+
+            var act = () => provider.ReadAsync(
+                "skill://alpha",
+                new ResourceReadRequest(long.MaxValue),
+                TestContext.Current.CancellationToken);
+
+            (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_not_found");
+        }
+        finally
+        {
+            Directory.Delete(outsideDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task OversizedBodyServingIsRefused()
+    {
+        await using var catalog = CreateCatalog();
+        var provider = new SkillResourceProvider(catalog);
+        File.WriteAllBytes(
+            Path.Combine(root, "alpha", "SKILL.md"),
+            new byte[16 * 1024]);
+
+        var act = () => provider.ReadAsync(
+            "skill://alpha",
+            new ResourceReadRequest(1024),
+            TestContext.Current.CancellationToken);
+
+        (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_too_large");
     }
 }
 

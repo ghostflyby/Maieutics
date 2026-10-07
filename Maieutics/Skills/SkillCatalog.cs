@@ -39,6 +39,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// rescanning, collapsing a write burst into one scan.</summary>
     internal static readonly TimeSpan RescanDebounce = TimeSpan.FromMilliseconds(400);
 
+    /// <summary>The total budget disposal waits for in-flight rescan pumps before
+    /// abandoning them (the rescan walk is synchronous and cannot be cancelled).</summary>
+    internal static readonly TimeSpan ShutdownBudget = TimeSpan.FromSeconds(5);
+
     private sealed record DeclaredRoot(SkillSource Source, string RootDirectory);
 
     private readonly ImmutableArray<DeclaredRoot> roots;
@@ -50,6 +54,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private readonly List<Task> pumps = [];
     private readonly List<FileSystemWatcher> watchers = [];
     private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
+    private int rebuildCount;
     private bool disposed;
 
     private SkillCatalog(
@@ -96,6 +101,19 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// construction (ADR 0039 decision 5).</summary>
     internal SkillCatalogSnapshot Current => current;
 
+    /// <summary>How many times the merged snapshot has been rebuilt — the observable the
+    /// debounce tests assert on (a write burst must collapse to few rebuilds).</summary>
+    internal int RebuildCount
+    {
+        get
+        {
+            lock (gate)
+            {
+                return rebuildCount;
+            }
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         Task[] pumpTasks;
@@ -105,7 +123,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
             disposed = true;
 
             // Watchers stop first so no new signals can arrive; the lifetime cancellation
-            // then unwinds the pumps and the awaited completions are observed afterwards.
+            // then unwinds the pumps, and the awaited completions are observed afterwards.
             foreach (var watcher in watchers) watcher.Dispose();
             pumpTasks = [.. pumps];
         }
@@ -113,7 +131,19 @@ internal sealed class SkillCatalog : IAsyncDisposable
         lifetime.Cancel();
         try
         {
-            await Task.WhenAll(pumpTasks).ConfigureAwait(false);
+            // A pump that already entered its (synchronous, cancellation-blind) rescan walk
+            // cannot be interrupted, so the shutdown wait carries a total budget instead of
+            // blocking host teardown on a slow or hung tree. An abandoned pump is safe: its
+            // post-walk commit exits on the disposed check.
+            var completion = Task.WhenAll(pumpTasks);
+            var bounded = await Task.WhenAny(
+                completion,
+                Task.Delay(ShutdownBudget, timeProvider)).ConfigureAwait(false);
+            if (!ReferenceEquals(bounded, completion) && !completion.IsCompleted)
+                logger.LogWarning(
+                    "Skill catalog disposal abandoned {Count} rescan pump(s) after the shutdown budget.",
+                    pumpTasks.Length);
+            await completion.ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -139,11 +169,20 @@ internal sealed class SkillCatalog : IAsyncDisposable
                     exception,
                     "The skill root '{Root}' cannot be created; the source stays disabled.",
                     root.RootDirectory);
-                rootResults[root] = [];
+                lock (gate)
+                {
+                    rootResults[root] = [];
+                }
                 continue;
             }
 
-            rootResults[root] = SkillDirectoryDiscovery.Discover(root.RootDirectory, root.Source);
+            // The initial scan runs outside the gate (pumps of earlier roots are already
+            // live); only the shared-state commit is serialized.
+            var discovered = SkillDirectoryDiscovery.Discover(root.RootDirectory, root.Source);
+            lock (gate)
+            {
+                rootResults[root] = discovered;
+            }
 
             var signals = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
             {
@@ -160,10 +199,16 @@ internal sealed class SkillCatalog : IAsyncDisposable
             watcher.Created += Signal;
             watcher.Deleted += Signal;
             watcher.Renamed += Signal;
-            watcher.Error += (_, args) => logger.LogWarning(
-                args.GetException(),
-                "The skill root watcher for '{Root}' failed; the last catalog stays active.",
-                root.RootDirectory);
+            // An internal-buffer overflow means events were LOST — re-arm one debounced
+            // rescan; the rescan reads full tree state, so one signal fully recovers.
+            watcher.Error += (_, args) =>
+            {
+                logger.LogWarning(
+                    args.GetException(),
+                    "The skill root watcher for '{Root}' failed; scheduling a recovery rescan.",
+                    root.RootDirectory);
+                signals.Writer.TryWrite(true);
+            };
             watcher.EnableRaisingEvents = true;
 
             lock (gate)
@@ -179,15 +224,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
             }
         }
 
-        RebuildSnapshot();
-
-        // Surface the initial state once; watcher-driven rebuilds log their own line.
-        if (current.Diagnostics.Length > 0)
+        // The final rebuild is serialized against pump rebuilds: a pump that fired during
+        // startup must not observe a half-populated rootResults, and this rebuild must
+        // not overwrite a newer pump-published snapshot with stale inputs.
+        lock (gate)
         {
-            logger.LogInformation(
-                "Skill catalog started with {Count} skills and {Diagnostics} diagnostics.",
-                current.Skills.Length,
-                current.Diagnostics.Length);
+            if (disposed) return;
+            RebuildSnapshot();
         }
     }
 
@@ -269,6 +312,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
             }
         }
 
+        rebuildCount++;
         var skills = merged.Values
             .OrderBy(static skill => skill.Name, StringComparer.Ordinal)
             .ToImmutableArray();
@@ -279,5 +323,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
             current.Count(SkillSource.Workspace),
             current.Count(SkillSource.User),
             diagnostics.Count);
+        if (diagnostics.Count > 0)
+        {
+            // The operator's only trace of why untrusted content did not load; debug level
+            // because rebuilds fire on every watched change.
+            logger.LogDebug(
+                "Skill catalog diagnostics: {Diagnostics}",
+                string.Join(" | ", diagnostics));
+        }
     }
 }

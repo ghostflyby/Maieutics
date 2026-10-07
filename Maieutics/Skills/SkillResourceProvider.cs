@@ -24,7 +24,7 @@ internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourcePro
 
     public IReadOnlyList<ResourceClaim> Claims => [new ResourceClaim(Scheme)];
 
-    public ValueTask<ResourceReadResult> ReadAsync(
+    public async ValueTask<ResourceReadResult> ReadAsync(
         string uri,
         ResourceReadRequest request,
         CancellationToken cancellationToken)
@@ -97,19 +97,19 @@ internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourcePro
             var buffer = new byte[64 * 1024];
             long copied = 0;
             int read;
-            while ((read = content.Read(buffer, 0, buffer.Length)) > 0)
+            while ((read = await content.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
             {
                 copied += read;
                 if (copied > Math.Min(request.MaxBytes, MaximumSkillBytes))
                     throw new ResourceException(
                         "resource_too_large",
                         $"The skill '{parsed.Host}' exceeds the read limit.");
-                bounded.Write(buffer, 0, read);
+                await bounded.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             }
         }
 
         bounded.Position = 0;
-        return ValueTask.FromResult(new ResourceReadResult(bounded, MimeType));
+        return new ResourceReadResult(bounded, MimeType);
     }
 
     public ValueTask<ImmutableArray<ResourceCatalogEntry>> ListAsync(CancellationToken cancellationToken)

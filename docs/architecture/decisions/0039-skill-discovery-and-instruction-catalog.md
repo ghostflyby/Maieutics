@@ -60,6 +60,12 @@ Two design forces shaped this ADR:
    `objects://{hash}`); bodies stream fresh from disk on every read, bounded; inert
    skills never enter the plane. The scheme joins both reserved-scheme tables
    (`ResourceRegistry.ReservedSchemeOwners`, `CustomResourceProviderOptions.ReservedSchemes`).
+   Containment closes the known reparse-point traps: a symlinked `SKILL.md` resolving
+   outside its root is rejected (final-component link resolution at discovery and again
+   at every body read), and symlinked or junctioned *directories* are not traversed at
+   all — `ResolveLinkTarget` walks only the final component (the `WorkspaceHome`
+   canonicalization trap), so ancestor links cannot be checked per-file cheaply; a skill
+   set living behind a link is declared by configuring that location as its own root.
 
 4. **Propagation is next-turn, by construction.** The catalog is appended to
    `SystemPrompt` when a run's profile lease is acquired — the same per-run composition
@@ -68,7 +74,12 @@ Two design forces shaped this ADR:
    enters configuration-reload identity because it composes after lease acquisition.
    Subagent child runs replace the system prompt wholesale (existing semantics) and
    therefore carry no catalog. The prompt carries only name, description, source group,
-   and `skill://` pointer — bodies are read on demand.
+   and `skill://` pointer — bodies are read on demand. Catalog content is untrusted file
+   content: scalar values containing control characters are rejected (the one-line-per-
+   entry framing is the structural boundary of the section), and the composed section
+   carries its own total budget (entry count and characters, truncating with a visible
+   omission line) so per-item bounds cannot be multiplied into a hostile half-megabyte
+   prompt.
 
 5. **Filesystem roots are startup-fixed; freshness is event-driven.** Stage 1 ships two
    sources: `<workspace-root>/.agents/skills` and `~/.agents/skills` (both created if
@@ -109,6 +120,10 @@ Two design forces shaped this ADR:
   bounded by the plane's read limit.
 - The config mirror of reserved schemes gains `skill`; the pre-existing omission of
   `objects` from that mirror is unchanged by this ADR (a separate hygiene fix).
+- A stage-1 limitation: a watched root deleted at runtime goes inert until process
+  restart (the OS watch is gone; recreating the directory does not re-arm it). Watcher
+  internal-buffer overflow schedules one recovery rescan, so event loss does not leave
+  the catalog permanently stale.
 - Stages 2-3 will need their own review rounds for the manifest grammar, fingerprint
   domain wording, generator contract, and SDK surface; this ADR fixes the registry,
   precedence, plane, and propagation semantics they plug into.

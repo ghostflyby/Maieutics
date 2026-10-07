@@ -70,6 +70,14 @@ internal static class SkillDirectoryDiscovery
             {
                 if (results.Count >= MaximumSkillsPerRoot) break;
 
+                // A symlinked (or junctioned) child directory would walk and watch outside
+                // the declared root — ResolveLinkTarget only resolves the final component,
+                // so a later per-file check cannot see through an ancestor link (the
+                // WorkspaceHome canonicalization trap). Linked directories are not
+                // traversed at all; a skill set living behind a link is declared by
+                // configuring that location as its own root.
+                if (IsLinkedDirectory(child)) continue;
+
                 // The skill's subdirectories are resources; only siblings continue the walk.
                 if (FindSkillFile(child) is not { } skillFile) continue;
                 AddSkill(results, rootFullName, skillFile, source, fallbackName: Path.GetFileName(child));
@@ -77,6 +85,7 @@ internal static class SkillDirectoryDiscovery
 
             foreach (var child in childDirectories)
             {
+                if (IsLinkedDirectory(child)) continue;
                 if (FindSkillFile(child) is not null) continue;
                 pending.Enqueue(child);
             }
@@ -104,6 +113,20 @@ internal static class SkillDirectoryDiscovery
         }
 
         return null;
+    }
+
+    /// <summary>Whether the directory is a reparse point (symlink or junction). Swallowing
+    /// the probe failure reads as "linked": an unprobeable entry is not walked.</summary>
+    private static bool IsLinkedDirectory(string directory)
+    {
+        try
+        {
+            return new DirectoryInfo(directory).LinkTarget is not null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
     }
 
     private static void AddSkill(

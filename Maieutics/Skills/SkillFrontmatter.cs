@@ -47,13 +47,40 @@ internal static class SkillFrontmatter
             var key = line[..separator].Trim();
             var value = line[(separator + 1)..].Trim();
             if (key.Equals("name", StringComparison.OrdinalIgnoreCase) && value.Length > 0)
+            {
+                if (!IsCleanScalar(value))
+                {
+                    error = "The 'name' value contains control characters.";
+                    return false;
+                }
+
                 parsedName = value;
+            }
             else if (key.Equals("description", StringComparison.OrdinalIgnoreCase) && value.Length > 0)
+            {
+                if (!IsCleanScalar(value))
+                {
+                    error = "The 'description' value contains control characters.";
+                    return false;
+                }
+
                 parsedDescription = value;
+            }
         }
 
         error = "The frontmatter block is not closed.";
         return false;
+    }
+
+    /// <summary>A scalar value must be one clean line: interior control characters (CR, NEL,
+    /// U+2028/2029) would let untrusted file content fake line breaks inside the system
+    /// prompt's catalog section, breaking out of the one-line-per-entry framing.</summary>
+    private static bool IsCleanScalar(string value)
+    {
+        foreach (var character in value)
+            if (character < ' ' || character == '\u007f' || character is '\u2028' or '\u2029')
+                return false;
+        return true;
     }
 
     private static bool IsFence(string line)

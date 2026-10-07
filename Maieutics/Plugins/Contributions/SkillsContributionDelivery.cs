@@ -36,15 +36,15 @@ internal sealed class SkillsContributionDelivery(
     Func<string?>? workspaceRootAccessor,
     ILogger logger) : IContributionDelivery
 {
-    /// <summary>The most roots one Skills entry may declare; the excess is one visible
-    /// inert diagnostic (per-entry bounds alone cannot cap the walk count).</summary>
-    private const int MaximumDeclaredSkillRoots = 32;
+    /// <summary>The kind's bounds come from the contract's metadata table (framework
+    /// §5) — the former private constants, now one source shared with the catalog.</summary>
+    private static int MaximumDeclaredSkillRoots =>
+        SkillsContributionKind.Instance.Metadata.MaxDeclaredEntriesPerDeclaration
+        ?? throw new InvalidOperationException("The skills metadata must declare the roots bound.");
 
-    /// <summary>The most entries one computed contribution (generator output or publish
-    /// payload) may carry — the filesystem discovery cap applied to worker-supplied
-    /// arrays so a granted worker cannot flood the catalog and every snapshot rebuild
-    /// with tens of thousands of (possibly inert) entries.</summary>
-    private const int MaximumComputedSkillEntries = 256;
+    private static int MaximumComputedSkillEntries =>
+        SkillsContributionKind.Instance.Metadata.MaxComputedEntries
+        ?? throw new InvalidOperationException("The skills metadata must declare the computed-entries bound.");
 
     private readonly PluginHostManager host = host ?? throw new ArgumentNullException(nameof(host));
     private readonly ContributionSlotTable table = table ?? throw new ArgumentNullException(nameof(table));

@@ -17,11 +17,28 @@ namespace Maieutics.Product.Tests;
 /// wrong unless the migration explicitly argued and accepted the revocation.</summary>
 public sealed class PluginDeclarationFingerprintGoldenTests
 {
+    /// <summary>The full surface WITHOUT a <c>${...}</c> data path: byte-stable across
+    /// the C 期 interpolation change (paths without tokens collect identically).</summary>
     private const string FullSurfaceFingerprint =
+        "AC0CFC0C52C14321F4691CB8CFE66CE349AD95D536947525C58F20CE268E9B4D";
+
+    /// <summary>The same surface with a literal <c>${...}</c> data path, post-C: the
+    /// expansion fails (the variable is unknown) and the data domain hashes the new
+    /// expansion-failure error text instead of the former does-not-exist text.</summary>
+    private const string LiteralVariablePathFingerprint =
+        "D202BCB06058783389C298A58CBE29F73CC42641F3F411E69D0CD9F2BFC4C208";
+
+    /// <summary>The pre-C value of the with-<c>${...}</c> surface: exactly the
+    /// fingerprint whose data domain hashed the former <c>error:</c> text ("The data
+    /// entry file '…' does not exist."). Pinned so the flip's previous side is a
+    /// provable hash, not a story (framework §5 fixture requirement).</summary>
+    private const string PreCLiteralVariablePathFingerprint =
         "16AD4F2CE7A51C83ACFC27282BEC386FD19F301DE7A0B31BFCBD52CDC3CD6DA4";
 
     private const string MinimalSurfaceFingerprint =
         "C4E3E123B8397A74FFD8999B9055F582EB694887A2D41450F9F4631B2C9844F0";
+
+    private const string LiteralVariablePath = "${env.MAIEUTICS_NO_SUCH_VAR}/mcp-unresolved.json";
 
     [Fact]
     public void RepresentativeDeclarationSurfaceHashesByteStable()
@@ -41,14 +58,12 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             descriptor.ExtensionDiagnostics.Should().Contain(diagnostic =>
                 diagnostic.Contains("unknown-extension", StringComparison.Ordinal));
             descriptor.DataEntries.Select(static entry => entry.Name).Should().BeEquivalentTo(
-                ["mcp", "notices", "broken", "unresolved"],
+                ["mcp", "notices", "broken"],
                 static options => options.WithoutStrictOrdering());
             descriptor.DataEntries.Single(static entry => entry.Name == "notices").Error
                 .Should().BeNull("an unknown data name is still collected");
             descriptor.DataEntries.Single(static entry => entry.Name == "broken").Error
                 .Should().NotBeNull();
-            descriptor.DataEntries.Single(static entry => entry.Name == "unresolved").Error
-                .Should().NotBeNull("a literal ${...} path resolves to no file today");
             descriptor.McpServersError.Should().BeNull();
             descriptor.McpServers.Should().ContainSingle();
             descriptor.Triggers.Should().HaveCount(3);
@@ -83,7 +98,6 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                   "dependencies":["jsr:@maieutics/dep@1.2.0"],
                   "capabilities":["tools.invoke","content.read"],
                   "entrypoints":{
-                    "unresolved":"${env.MAIEUTICS_NO_SUCH_VAR}/mcp-unresolved.json",
                     "worker":{"main":["./main.ts"],"side":["./side.ts"]},
                     "broken":"./no-such-file.json",
                     "notices":"./notices.json",
@@ -104,6 +118,83 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             PluginDeclarationFingerprint.Compute(
                 reformatted ?? throw new InvalidOperationException(error)).Should().Be(golden);
             golden.Should().Be(FullSurfaceFingerprint);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>The C 期 boundary (framework §5): a data path containing a literal
+    /// <c>${...}</c> token could not collect before (the literal file does not exist,
+    /// so the data domain hashed the <c>error:</c> text) and collects-or-fails through
+    /// interpolation now. The test pins both sides: the previous value is provably the
+    /// error-text hash, and the new value differs — the acknowledged, fail-closed flip
+    /// that revokes such plugins until re-approval (ADR 0037). Manifests whose paths
+    /// carry no tokens are untouched (the unchanged golden above).</summary>
+    [Fact]
+    public void ALiteralVariableDataPathFlipsAndItsPreviousValueIsTheErrorTextHash()
+    {
+        var root = CreateGoldenPluginRoot();
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(root, "maieutics.json"),
+                $$"""
+                {
+                  "isolation": "auto",
+                  "dependencies": ["jsr:@maieutics/dep@1.2.0"],
+                  "capabilities": ["tools.invoke", "content.read"],
+                  "entrypoints": {
+                    "worker": { "main": ["./main.ts"], "side": ["./side.ts"] },
+                    "mcp": "./mcp.json",
+                    "notices": "./notices.json",
+                    "broken": "./no-such-file.json",
+                    "unresolved": "{{LiteralVariablePath}}"
+                  },
+                  "extensions": {
+                    "McpDiscover": [
+                      { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } }
+                    ],
+                    "Skills": [ { "roots": ["./skills"] } ],
+                    "unknown-extension": [ { "whatever": 1 } ]
+                  },
+                  "inspections": { "contentReadAll": true },
+                  "triggers": [
+                    { "name": "nightly", "kind": "cron", "expression": "0 3 * * *", "action": "event" },
+                    { "name": "on-change", "kind": "watch", "paths": ["${var.plugins}/watched"], "depth": 2, "action": "rediscover" },
+                    { "name": "tick", "kind": "interval", "seconds": 30, "action": "event" }
+                  ]
+                }
+                """);
+
+            PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error)
+                .Should().BeTrue(error);
+            var loaded = descriptor ?? throw new InvalidOperationException(error);
+
+            // Post-C: the expansion fails (unknown variable) with the expansion error
+            // text — not the former does-not-exist text.
+            var unresolved = loaded.DataEntries.Single(static entry => entry.Name == "unresolved");
+            unresolved.Error.Should().NotBeNull().And.Contain("cannot be expanded");
+            PluginDeclarationFingerprint.Compute(loaded)
+                .Should().Be(LiteralVariablePathFingerprint, "the data domain hashes the new expansion error text");
+
+            // Pre-C reconstruction: the same surface with the former collection
+            // outcome (the literal path probed as a file). Its fingerprint must equal
+            // the pinned pre-C golden — the flip's previous side is exactly the
+            // error-text hash.
+            var preC = loaded with
+            {
+                DataEntries = [.. loaded.DataEntries.Select(entry =>
+                    entry.Name == "unresolved"
+                        ? new PluginDataEntry(entry.Name, null,
+                            $"The data entry file '{LiteralVariablePath}' does not exist.")
+                        : entry)]
+            };
+            PluginDeclarationFingerprint.Compute(preC)
+                .Should().Be(PreCLiteralVariablePathFingerprint);
+            PluginDeclarationFingerprint.Compute(loaded)
+                .Should().NotBe(PreCLiteralVariablePathFingerprint, "the flip is real, both sides pinned");
         }
         finally
         {
@@ -199,8 +290,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                 "worker": { "main": ["./main.ts"], "side": ["./side.ts"] },
                 "mcp": "./mcp.json",
                 "notices": "./notices.json",
-                "broken": "./no-such-file.json",
-                "unresolved": "${env.MAIEUTICS_NO_SUCH_VAR}/mcp-unresolved.json"
+                "broken": "./no-such-file.json"
               },
               "extensions": {
                 "McpDiscover": [

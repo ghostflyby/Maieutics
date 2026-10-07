@@ -243,7 +243,7 @@ internal static class PluginManifest
         string directory,
         [NotNullWhen(true)] out PluginDescriptor? descriptor,
         out string error,
-        Maieutics.Permissions.VariableTable? triggerVariables)
+        Maieutics.Permissions.VariableTable? variables)
     {
         descriptor = null;
         var pluginConfigPath = Path.Combine(directory, "maieutics.json");
@@ -274,7 +274,7 @@ internal static class PluginManifest
         IReadOnlyList<string> dataDiagnostics;
         try
         {
-            (workers, dataEntries, dataDiagnostics) = ReadEntrypoints(pluginManifest.Entrypoints, directory);
+            (workers, dataEntries, dataDiagnostics) = ReadEntrypoints(pluginManifest.Entrypoints, directory, variables);
         }
         catch (JsonException exception)
         {
@@ -361,7 +361,7 @@ internal static class PluginManifest
         {
             triggers = PluginTriggerReader.Read(
                 pluginManifest.Triggers,
-                triggerVariables ?? EmptyVariables());
+                variables ?? EmptyVariables());
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or Maieutics.Permissions.PermissionException)
         {
@@ -409,7 +409,7 @@ internal static class PluginManifest
         IReadOnlyList<PluginWorkerDescriptor> Workers,
         IReadOnlyList<PluginDataEntry> DataEntries,
         IReadOnlyList<string> Diagnostics)
-        ReadEntrypoints(JsonElement? entrypoints, string directory)
+        ReadEntrypoints(JsonElement? entrypoints, string directory, Maieutics.Permissions.VariableTable? variables)
     {
         var workers = new List<PluginWorkerDescriptor>();
         var dataEntries = new List<PluginDataEntry>();
@@ -451,7 +451,7 @@ internal static class PluginManifest
                     var dataContract = Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name);
                     if (dataContract is null)
                         diagnostics.Add(Contributions.ContributionKindCatalog.UnknownDataEntryDiagnostic(entry.Name));
-                    dataEntries.Add(CollectDataEntry(root, dataContract?.DataEntryName ?? entry.Name, dataPath));
+                    dataEntries.Add(CollectDataEntry(root, dataContract?.DataEntryName ?? entry.Name, dataPath, variables));
                     break;
 
                 case JsonValueKind.Array when
@@ -516,27 +516,49 @@ internal static class PluginManifest
         public string? GetVariable(string name) => null;
     }
 
-    /// <summary>Collects one string-valued data entry: resolves the path inside the
-    /// plugin root and parses the file as JSON. Any failure rides the entry as an error
-    /// marker — the plugin stays loaded, and the entry's interpreter treats a failed
-    /// collection as no data (for 'mcp', the sticky-last-good marker).</summary>
-    private static PluginDataEntry CollectDataEntry(string root, string name, string relativePath)
+    /// <summary>Collects one string-valued data entry: expands <c>${env.*}</c>/
+    /// <c>${var.*}</c> tokens through the manifest variable table (framework §5 — the
+    /// mcp.json data path joins the skills roots' interpolation parity; a path without
+    /// tokens is returned unchanged, so every existing declaration collects
+    /// identically), resolves the path inside the plugin root, and parses the file as
+    /// JSON. Any failure — an unresolvable variable, an escaping path, a missing or
+    /// invalid file — rides the entry as an error marker: the plugin stays loaded, and
+    /// the entry's interpreter treats a failed collection as no data (for 'mcp', the
+    /// sticky-last-good marker).</summary>
+    private static PluginDataEntry CollectDataEntry(
+        string root,
+        string name,
+        string relativePath,
+        Maieutics.Permissions.VariableTable? variables)
     {
+        string expandedPath;
+        try
+        {
+            expandedPath = variables is { } table ? table.Expand(relativePath) : relativePath;
+        }
+        catch (Maieutics.Permissions.PermissionException exception)
+        {
+            return new PluginDataEntry(
+                name,
+                null,
+                $"The data entry path '{relativePath}' cannot be expanded: {exception.Message}");
+        }
+
         string fullPath;
         try
         {
-            fullPath = Path.GetFullPath(Path.Combine(root, relativePath));
+            fullPath = Path.GetFullPath(Path.Combine(root, expandedPath));
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return new PluginDataEntry(name, null, $"The data entry path '{relativePath}' is not a valid path.");
+            return new PluginDataEntry(name, null, $"The data entry path '{expandedPath}' is not a valid path.");
         }
 
         if (!IsWithinRoot(fullPath, root))
-            return new PluginDataEntry(name, null, $"The data entry path '{relativePath}' resolves outside the plugin root.");
+            return new PluginDataEntry(name, null, $"The data entry path '{expandedPath}' resolves outside the plugin root.");
 
         if (!File.Exists(fullPath))
-            return new PluginDataEntry(name, null, $"The data entry file '{relativePath}' does not exist.");
+            return new PluginDataEntry(name, null, $"The data entry file '{expandedPath}' does not exist.");
 
         try
         {
@@ -545,7 +567,7 @@ internal static class PluginManifest
         }
         catch (JsonException exception)
         {
-            return new PluginDataEntry(name, null, $"Invalid JSON in '{relativePath}': {exception.Message}");
+            return new PluginDataEntry(name, null, $"Invalid JSON in '{expandedPath}': {exception.Message}");
         }
     }
 

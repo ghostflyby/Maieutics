@@ -1,5 +1,7 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 
 namespace Maieutics.Plugins.Contributions;
 
@@ -15,6 +17,19 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
     public const string ExtensionKind = "McpDiscover";
     public const string DataEntry = "mcp";
 
+    /// <summary>The extensions entry's opt-in member: when true, the transport's string
+    /// values expand through the variable table before interpretation. The member's
+    /// presence alone changes the entry's canonical JSON (extensions fingerprint
+    /// domain), so only new declarations can carry it — every existing entry (without
+    /// the member) interprets byte-identically to before (ADR 0037).</summary>
+    public const string InterpolateMember = "interpolate";
+
+    /// <summary>The extensions entry's optional lifecycle-timeout overrides: an object
+    /// whose members name the four timeouts with TimeSpan values; missing members take
+    /// the metadata defaults (= the former fixed values, byte-identical generation
+    /// keys).</summary>
+    public const string TimeoutsMember = "timeouts";
+
     public static readonly McpDiscoverContributionKind Instance = new();
 
     public override string KindName => ExtensionKind;
@@ -29,9 +44,22 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
 
     public override string? PublishCapability => null;
 
-    /// <summary>MCP discovery retries live inside the coordinator's revision engine
-    /// (never-succeeded registrations stay new there); the kernel keeps no retry set.</summary>
-    public override bool UsesKernelRetrySet => false;
+    /// <summary>The former fixed discovery timeouts (initialization, request, shutdown,
+    /// connection) as metadata defaults: default-path generation keys hash byte-for-byte
+    /// identically to the hardcoded era.</summary>
+    public override ContributionKindMetadata Metadata { get; } = new(
+        MaxDeclaredEntriesPerDeclaration: null,
+        MaxComputedEntries: null,
+        StickyPerSourceKey: true,
+        UsesKernelRetrySet: false,
+        DefaultTimeouts:
+        [
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(30),
+        ],
+        DeclarationInterpolation: true);
 
     public override bool HasDeclarativeRegistrations => true;
 
@@ -79,6 +107,219 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
             [.. descriptor.McpServers.Select(static server => (ContributionDescriptor)new McpServerContribution(server))],
             descriptor.McpServersError);
     }
+
+    /// <summary>Interprets one <c>McpDiscover</c> entry into a server definition — the
+    /// former <c>TryToMcpDefinition</c>, moved into the owning contract so the entry
+    /// grammar's configurability members are interpreted beside it. The discovery-time
+    /// branches keep their all-or-nothing failure granularity; this only interprets.
+    /// Two optional members ride the kind's own grammar (framework §5):
+    /// <c>interpolate</c> expands the transport's string values through the unified
+    /// variable table before deserialization, and <c>timeouts</c> overrides the
+    /// metadata defaults per name. Without the members — every existing entry — the
+    /// interpretation and the generation key are byte-identical to the fixed-value era
+    /// (ADR 0037: the opt-in member itself changes the canonical JSON, so only new
+    /// declarations carry it). The <c>module</c> member is never interpolated: it is
+    /// the server id slug, not a path.</summary>
+    public static bool TryToDefinition(
+        string pluginId,
+        JsonElement discovery,
+        Permissions.VariableTable? variables,
+        [NotNullWhen(true)] out McpServerDefinition? definition)
+    {
+        definition = null;
+        if (discovery.ValueKind != JsonValueKind.Object ||
+            !discovery.TryGetProperty("module", out var module) ||
+            module.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(module.GetString()) ||
+            !discovery.TryGetProperty("transport", out var transport) ||
+            transport.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (discovery.TryGetProperty(InterpolateMember, out var interpolate) &&
+            interpolate.ValueKind == JsonValueKind.True &&
+            !TryExpandTransport(transport, variables, out transport))
+            return false;
+
+        var metadata = Instance.Metadata;
+        if (metadata.DefaultTimeouts is not { Count: 4 } defaultTimeouts)
+            throw new InvalidOperationException(
+                "The MCP contribution kind metadata must carry the four default timeouts.");
+        var initialization = defaultTimeouts[0];
+        var request = defaultTimeouts[1];
+        var shutdown = defaultTimeouts[2];
+        var connection = defaultTimeouts[3];
+        if (discovery.TryGetProperty(TimeoutsMember, out var timeoutsElement) &&
+            timeoutsElement.ValueKind == JsonValueKind.Object &&
+            !TryReadTimeoutOverrides(
+                timeoutsElement,
+                initialization, request, shutdown, connection,
+                out initialization, out request, out shutdown, out connection))
+            return false;
+
+        McpTransportDefinition payload;
+        try
+        {
+            payload = transport.Deserialize(McpJsonContext.Default.McpTransportDefinition)
+                      ?? throw new JsonException("The transport payload is null.");
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        var id = $"plugin:{pluginId}::{module.GetString()}";
+        switch (payload)
+        {
+            case StdioMcpTransportDefinition stdio when !string.IsNullOrWhiteSpace(stdio.Command):
+                definition = new McpServerDefinition(
+                    id,
+                    stdio,
+                    initialization,
+                    request,
+                    shutdown,
+                    connection,
+                    true,
+                    true,
+                    McpServerDefinition.CreateGenerationKey(
+                        stdio,
+                        initialization,
+                        request,
+                        shutdown,
+                        connection,
+                        true,
+                        true));
+                return true;
+
+            case HttpMcpTransportDefinition { Endpoint.IsAbsoluteUri: true } http:
+                definition = new McpServerDefinition(
+                    id,
+                    http,
+                    initialization,
+                    request,
+                    shutdown,
+                    connection,
+                    false,
+                    false,
+                    McpServerDefinition.CreateGenerationKey(
+                        http,
+                        initialization,
+                        request,
+                        shutdown,
+                        connection,
+                        false,
+                        false));
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Expands every string value under the transport object (recursively)
+    /// through the variable table. Without a table nothing expands — the skills-roots
+    /// rule. An unresolvable variable fails the entry: the discovery branch's
+    /// all-or-nothing granularity turns that into the sticky last-good path.</summary>
+    private static bool TryExpandTransport(
+        JsonElement transport,
+        Permissions.VariableTable? variables,
+        out JsonElement expanded)
+    {
+        expanded = transport;
+        if (variables is null) return true;
+        try
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                WriteExpanded(writer, transport, variables);
+            }
+
+            expanded = JsonDocument.Parse(stream.ToArray()).RootElement.Clone();
+            return true;
+        }
+        catch (Permissions.PermissionException)
+        {
+            return false;
+        }
+    }
+
+    private static void WriteExpanded(
+        Utf8JsonWriter writer,
+        JsonElement element,
+        Permissions.VariableTable variables)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteExpanded(writer, property.Value, variables);
+                }
+
+                writer.WriteEndObject();
+                break;
+
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                    WriteExpanded(writer, item, variables);
+
+                writer.WriteEndArray();
+                break;
+
+            case JsonValueKind.String:
+                var value = element.GetString();
+                writer.WriteStringValue(value is null ? string.Empty : variables.Expand(value));
+                break;
+
+            default:
+                element.WriteTo(writer);
+                break;
+        }
+    }
+
+    /// <summary>Folds the optional <c>timeouts</c> overrides over the defaults. Names
+    /// are the four lifecycle timeouts; values are positive invariant TimeSpans; an
+    /// unknown name, a non-string value, or a non-positive span fails the entry
+    /// (strict grammar, matching the mcp.json key discipline).</summary>
+    private static bool TryReadTimeoutOverrides(
+        JsonElement timeouts,
+        TimeSpan initialization,
+        TimeSpan request,
+        TimeSpan shutdown,
+        TimeSpan connection,
+        out TimeSpan newInitialization,
+        out TimeSpan newRequest,
+        out TimeSpan newShutdown,
+        out TimeSpan newConnection)
+    {
+        newInitialization = initialization;
+        newRequest = request;
+        newShutdown = shutdown;
+        newConnection = connection;
+        foreach (var member in timeouts.EnumerateObject())
+        {
+            if (member.Value.ValueKind != JsonValueKind.String) return false;
+            var raw = member.Value.GetString();
+            if (raw is null ||
+                !TimeSpan.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture, out var value) ||
+                value <= TimeSpan.Zero)
+                return false;
+
+            switch (member.Name)
+            {
+                case "initialization": newInitialization = value; break;
+                case "request": newRequest = value; break;
+                case "shutdown": newShutdown = value; break;
+                case "connection": newConnection = value; break;
+                default: return false;
+            }
+        }
+
+        return true;
+    }
 }
 
 /// <summary>The skill contribution kind (ADR 0039 stages 2-3): manifest
@@ -106,9 +347,16 @@ internal sealed class SkillsContributionKind : ContributionKindContract
 
     public override string? PublishCapability => PublishCapabilityName;
 
-    /// <summary>A failed generator keeps its sticky part and the kernel retries the
-    /// plugin on the next registry frame (never-succeeded-stays-new).</summary>
-    public override bool UsesKernelRetrySet => true;
+    /// <summary>The former skills constants (32 roots per entry, 256 computed entries)
+    /// as metadata: the delivery reads them instead of private constants, so the kind's
+    /// bounds live in one table.</summary>
+    public override ContributionKindMetadata Metadata { get; } = new(
+        MaxDeclaredEntriesPerDeclaration: 32,
+        MaxComputedEntries: 256,
+        StickyPerSourceKey: true,
+        UsesKernelRetrySet: true,
+        DefaultTimeouts: null,
+        DeclarationInterpolation: true);
 
     /// <summary>Declarative skills ride per-plugin passes, not synthetic
     /// registrations; worker generators join through their own registrations.</summary>
@@ -139,7 +387,13 @@ internal sealed class UiContributionKind : ContributionKindContract
 
     public override string? PublishCapability => null;
 
-    public override bool UsesKernelRetrySet => false;
+    public override ContributionKindMetadata Metadata { get; } = new(
+        MaxDeclaredEntriesPerDeclaration: null,
+        MaxComputedEntries: null,
+        StickyPerSourceKey: true,
+        UsesKernelRetrySet: false,
+        DefaultTimeouts: null,
+        DeclarationInterpolation: true);
 
     public override bool HasDeclarativeRegistrations => false;
 

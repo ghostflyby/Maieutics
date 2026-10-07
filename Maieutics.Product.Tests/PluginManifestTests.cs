@@ -1,7 +1,10 @@
+using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Maieutics.Product.Tests;
 
@@ -717,6 +720,241 @@ public sealed class PluginManifestTests
 
     private static string KnownDataEntryNamesText() =>
         string.Join(", ", McpDiscoverContributionKind.DataEntry, UiContributionKind.DataEntry);
+
+    // —— C 期可配置性对等（framework §5）——
+
+    private static VariableTable TestVariables() =>
+        new(
+            new ManifestVariableSource(),
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            name => name == "MAIEUTICS_TEST_SUB" ? "config" : null);
+
+    [Fact]
+    public void ADataPathInterpolatesThroughTheVariableTable()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/interp-data", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            {
+              "capabilities": ["tools.invoke"],
+              "entrypoints": { "mcp": "${env.MAIEUTICS_TEST_SUB}/mcp.json" }
+            }
+            """);
+        Directory.CreateDirectory(Path.Combine(directory, "config"));
+        File.WriteAllText(
+            Path.Combine(directory, "config", "mcp.json"),
+            """{ "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }""");
+        var variables = new VariableTable(
+            new ManifestVariableSource(),
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            name => name == "MAIEUTICS_TEST_SUB" ? "config" : null);
+
+        PluginManifest.TryLoad(directory, variables, out var descriptor, out var error)
+            .Should().BeTrue(error);
+        var loaded = descriptor ?? throw new InvalidOperationException(error);
+        loaded.McpServers.Should().ContainSingle("the expanded path collects from inside the plugin root");
+        loaded.McpServersError.Should().BeNull();
+    }
+
+    [Fact]
+    public void AnExpandingDataPathEscapingTheRootDegradesToTheErrorMarker()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/interp-escape", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "${var.plugins}/outside.json" } }
+            """);
+
+        // The expanded path lands outside the plugin root: the containment check
+        // runs after interpolation and degrades to the sticky error marker (the
+        // coordinator's last-good path), never a load failure.
+        var variables = new VariableTable(
+            new ManifestVariableSource(),
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["plugins"] = "/maieutics/plugins" });
+        PluginManifest.TryLoad(directory, variables, out var descriptor, out var error)
+            .Should().BeTrue(error);
+        var loaded = descriptor ?? throw new InvalidOperationException(error);
+        var entry = loaded.DataEntries.Should().ContainSingle().Which;
+        entry.Error.Should().NotBeNull().And.Contain("resolves outside the plugin root");
+        loaded.McpServers.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AnUnresolvableDataPathVariableDegradesToTheErrorMarker()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/interp-unknown", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "mcp": "${env.MAIEUTICS_NO_SUCH_VAR}/mcp.json" } }
+            """);
+
+        PluginManifest.TryLoad(directory, TestVariables(), out var descriptor, out var error)
+            .Should().BeTrue(error);
+        var loaded = descriptor ?? throw new InvalidOperationException(error);
+        var entry = loaded.DataEntries.Should().ContainSingle().Which;
+        entry.Error.Should().NotBeNull().And.Contain("cannot be expanded");
+    }
+
+    [Fact]
+    public void AnEntryWithoutOptInMembersInterpretsByteIdenticallyToTheFixedValueEra()
+    {
+        var entry = JsonDocument.Parse(
+            """
+            {
+              "module": "npm:@maieutics/probe-server",
+              "transport": { "type": "stdio", "command": "deno", "args": ["serve"] }
+            }
+            """).RootElement;
+
+        McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, TestVariables(), out var definition)
+            .Should().BeTrue();
+
+        // The default path equals the former hardcoded values exactly: the metadata
+        // defaults hash byte-for-byte identically (framework §5 timeout parity).
+        var stdio = new StdioMcpTransportDefinition("deno", ["serve"], null, null);
+        var expectedKey = McpServerDefinition.CreateGenerationKey(
+            stdio,
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(30),
+            true,
+            true);
+        definition.Should().NotBeNull();
+        definition.Id.Should().Be("plugin:plugin-a::npm:@maieutics/probe-server");
+        definition.GenerationKey.Should().Be(expectedKey);
+        definition.InitializationTimeout.Should().Be(TimeSpan.FromSeconds(30));
+        definition.RequestTimeout.Should().Be(TimeSpan.FromMinutes(2));
+    }
+
+    [Fact]
+    public void AnOptInInterpolatedEntryExpandsItsTransportThroughTheVariableTable()
+    {
+        var entry = JsonDocument.Parse(
+            """
+            {
+              "module": "${env.MAIEUTICS_TEST_MODULE}",
+              "transport": { "type": "stdio", "command": "${env.MAIEUTICS_TEST_SUB}/deno" },
+              "interpolate": true
+            }
+            """).RootElement;
+        var variables = new VariableTable(
+            new ManifestVariableSource(),
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            name => name == "MAIEUTICS_TEST_SUB" ? "tools" : null);
+
+        McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, variables, out var definition)
+            .Should().BeTrue();
+
+        definition.Should().NotBeNull();
+        var stdio = definition.Transport.Should().BeOfType<StdioMcpTransportDefinition>().Which;
+        stdio.Command.Should().Be("tools/deno", "the transport's strings expand through the unified table");
+        definition.Id.Should().Be("plugin:plugin-a::${env.MAIEUTICS_TEST_MODULE}",
+            "the module slug is never interpolated");
+
+        // The expanded command enters the generation key: a different environment
+        // yields a different key and the coordinator rebuilds the generation (the
+        // rebuild itself is the existing differential behavior covered by
+        // PluginMcpCoordinatorTests).
+        var expandedKey = McpServerDefinition.CreateGenerationKey(
+            new StdioMcpTransportDefinition("tools/deno", null, null, null),
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(30),
+            true,
+            true);
+        definition.GenerationKey.Should().Be(expandedKey);
+    }
+
+    [Fact]
+    public void AnUnresolvableInterpolatedEntryFailsTheEntry()
+    {
+        var entry = JsonDocument.Parse(
+            """
+            {
+              "module": "probe",
+              "transport": { "type": "stdio", "command": "${env.MAIEUTICS_NO_SUCH_VAR}/deno" },
+              "interpolate": true
+            }
+            """).RootElement;
+
+        McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, TestVariables(), out var definition)
+            .Should().BeFalse("an unresolvable variable fails the entry and the discovery branch degrades to its sticky path");
+        definition.Should().BeNull();
+    }
+
+    [Fact]
+    public void TimeoutOverridesChangeTheGenerationKeyWhileDefaultsKeepIt()
+    {
+        var baseEntry = JsonDocument.Parse(
+            """
+            { "module": "probe", "transport": { "type": "stdio", "command": "deno" } }
+            """).RootElement;
+        var overriddenEntry = JsonDocument.Parse(
+            """
+            {
+              "module": "probe",
+              "transport": { "type": "stdio", "command": "deno" },
+              "timeouts": { "request": "00:05:00" }
+            }
+            """).RootElement;
+        var invalidEntry = JsonDocument.Parse(
+            """
+            {
+              "module": "probe",
+              "transport": { "type": "stdio", "command": "deno" },
+              "timeouts": { "unknown": "00:05:00" }
+            }
+            """).RootElement;
+
+        McpDiscoverContributionKind.TryToDefinition("p", baseEntry, null, out var baseDefinition).Should().BeTrue();
+        McpDiscoverContributionKind.TryToDefinition("p", overriddenEntry, null, out var overridden).Should().BeTrue();
+        var baseLoaded = baseDefinition ?? throw new InvalidOperationException("the base entry must interpret");
+        var overrideLoaded = overridden ?? throw new InvalidOperationException("the overridden entry must interpret");
+
+        // Same server id, different generation key: exactly the input the
+        // coordinator's generation-replacement check compares.
+        overrideLoaded.Id.Should().Be(baseLoaded.Id);
+        overrideLoaded.GenerationKey.Should().NotBe(baseLoaded.GenerationKey);
+        overrideLoaded.RequestTimeout.Should().Be(TimeSpan.FromMinutes(5));
+        overrideLoaded.InitializationTimeout.Should().Be(
+            TimeSpan.FromSeconds(30), "untouched members keep the metadata defaults");
+
+        McpDiscoverContributionKind.TryToDefinition("p", invalidEntry, null, out _)
+            .Should().BeFalse("an unknown timeout name is a strict-grammar violation");
+    }
+
+    [Fact]
+    public void TheKindMetadataTablesCarryTheParityKnobs()
+    {
+        var skills = SkillsContributionKind.Instance.Metadata;
+        skills.MaxDeclaredEntriesPerDeclaration.Should().Be(32);
+        skills.MaxComputedEntries.Should().Be(256);
+        skills.StickyPerSourceKey.Should().BeTrue();
+        skills.UsesKernelRetrySet.Should().BeTrue("never-succeeded-stays-new rides the kernel retry set");
+        skills.DefaultTimeouts.Should().BeNull();
+        skills.DeclarationInterpolation.Should().BeTrue("skills roots expand through the variable table");
+
+        var mcp = McpDiscoverContributionKind.Instance.Metadata;
+        mcp.MaxDeclaredEntriesPerDeclaration.Should().BeNull("the extensions entry count stays unbounded today");
+        mcp.MaxComputedEntries.Should().BeNull("the worker-discovery array stays unbounded today");
+        mcp.StickyPerSourceKey.Should().BeTrue();
+        mcp.UsesKernelRetrySet.Should().BeFalse("MCP retries inside its revision engine");
+        // The defaults are the former fixed values byte-for-byte.
+        mcp.DefaultTimeouts.Should().Equal(
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(30));
+        mcp.DeclarationInterpolation.Should().BeTrue("the data path joins the interpolation parity");
+    }
 
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)
     {

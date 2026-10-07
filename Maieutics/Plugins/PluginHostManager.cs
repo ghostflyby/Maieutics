@@ -3466,7 +3466,11 @@ internal sealed class PluginHostManager(
         var definitions = new List<McpServerDefinition>();
         foreach (var item in array.EnumerateArray())
         {
-            if (!TryToMcpDefinition(registration.PluginId, item, out var definition))
+            if (!Contributions.McpDiscoverContributionKind.TryToDefinition(
+                    registration.PluginId,
+                    item,
+                    manifestVariables,
+                    out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
             definitions.Add(definition);
@@ -3507,7 +3511,11 @@ internal sealed class PluginHostManager(
         foreach (var entry in entries)
         {
             if (!Contributions.McpDiscoverContributionKind.Instance.OwnsExtensionKind(entry.Kind)) continue;
-            if (!TryToMcpDefinition(registration.PluginId, entry.Data, out var definition))
+            if (!Contributions.McpDiscoverContributionKind.TryToDefinition(
+                    registration.PluginId,
+                    entry.Data,
+                    manifestVariables,
+                    out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
             definitions.Add(definition);
@@ -3555,79 +3563,6 @@ internal sealed class PluginHostManager(
             workspaceRootsSource,
             elicitationPresenter,
             adjustmentChain);
-    }
-
-    private static bool TryToMcpDefinition(
-        string pluginId,
-        JsonElement discovery,
-        [NotNullWhen(true)] out McpServerDefinition? definition)
-    {
-        definition = null;
-        if (discovery.ValueKind != JsonValueKind.Object ||
-            !discovery.TryGetProperty("module", out var module) ||
-            module.ValueKind != JsonValueKind.String ||
-            string.IsNullOrWhiteSpace(module.GetString()) ||
-            !discovery.TryGetProperty("transport", out var transport) ||
-            transport.ValueKind != JsonValueKind.Object)
-            return false;
-
-        McpTransportDefinition payload;
-        try
-        {
-            payload = transport.Deserialize(McpJsonContext.Default.McpTransportDefinition)
-                      ?? throw new JsonException("The transport payload is null.");
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-
-        var id = $"plugin:{pluginId}::{module.GetString()}";
-        switch (payload)
-        {
-            case StdioMcpTransportDefinition stdio when !string.IsNullOrWhiteSpace(stdio.Command):
-                definition = new McpServerDefinition(
-                    id,
-                    stdio,
-                    TimeSpan.FromSeconds(30),
-                    TimeSpan.FromMinutes(2),
-                    TimeSpan.FromSeconds(5),
-                    TimeSpan.FromSeconds(30),
-                    true,
-                    true,
-                    McpServerDefinition.CreateGenerationKey(
-                        stdio,
-                        TimeSpan.FromSeconds(30),
-                        TimeSpan.FromMinutes(2),
-                        TimeSpan.FromSeconds(5),
-                        TimeSpan.FromSeconds(30),
-                        true,
-                        true));
-                return true;
-
-            case HttpMcpTransportDefinition { Endpoint.IsAbsoluteUri: true } http:
-                definition = new McpServerDefinition(
-                    id,
-                    http,
-                    TimeSpan.FromSeconds(30),
-                    TimeSpan.FromMinutes(2),
-                    TimeSpan.FromSeconds(5),
-                    TimeSpan.FromSeconds(30),
-                    false,
-                    false,
-                    McpServerDefinition.CreateGenerationKey(
-                        http,
-                        TimeSpan.FromSeconds(30),
-                        TimeSpan.FromMinutes(2),
-                        TimeSpan.FromSeconds(5),
-                        TimeSpan.FromSeconds(30),
-                        false,
-                        false));
-                return true;
-
-            default:
-                return false;
-        }
     }
 
     private void FailPending(string message)

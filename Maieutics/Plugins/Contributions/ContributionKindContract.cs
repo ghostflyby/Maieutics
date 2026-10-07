@@ -44,10 +44,10 @@ internal abstract class ContributionKindContract
     /// or null when it publishes nothing (checked by the capability dispatch).</summary>
     public abstract string? PublishCapability { get; }
 
-    /// <summary>Whether the kernel keeps a per-plugin retry set for the kind
-    /// (never-succeeded-stays-new). Skills do; MCP's retry lives inside its revision
-    /// engine instead.</summary>
-    public abstract bool UsesKernelRetrySet { get; }
+    /// <summary>The kind's framework-level configurability knobs (bounds, stickiness,
+    /// retry policy, timeout defaults, interpolation behavior) — §5 of the framework
+    /// design. Every default equals the former hardcoded value.</summary>
+    public abstract ContributionKindMetadata Metadata { get; }
 
     /// <summary>Whether the kind's recorded declarations produce synthetic
     /// registrations (registry entries the kernel computes from the manifest snapshot

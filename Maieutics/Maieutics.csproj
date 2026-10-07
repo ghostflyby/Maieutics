@@ -48,7 +48,7 @@
         <PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0" />
         <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.0" />
         <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
-        <PackageReference Include="XTerm.NET" Version="2.0.1" />
+        <PackageReference Include="XTerm.NET" Version="2.0.5" />
     </ItemGroup>
 
     <ItemGroup>

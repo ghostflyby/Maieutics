@@ -188,10 +188,18 @@ internal abstract class ContributionKindContract
     public abstract bool OwnsExtensionKind(string canonicalKind);
     /// <summary>data-entry 文法路由：本种类目录化的数据名，无则 null。</summary>
     public abstract string? DataEntryName { get; }
-    /// <summary>把本种类认领的声明解释成"今日 TryLoad 为该种类产出的描述符字段"。
-    /// 失败有两条通道，粒度由种类自持、不下沉——两种粒度今日都真实存在：
-    /// - 逐条目 inert（skills）：毒根/坏条目降级随条目走
-    ///   （PluginHostManager.cs:3714-3774, 3797-3847）；
+    /// <summary>wire 注册名（ReplControlMessages 的 extension-point 目录）：本种类的导出集
+    /// diff 与计算形式 invoke 走哪个注册名（今日硬编码于 PluginHostManager.cs:3283、
+    /// :3240/:3352/:4028）。与 OwnsExtensionKind 是**两套目录**——manifest extensions
+    /// kind 名（PluginManifest.cs:47-61）与 wire 注册名（ReplControlMessages.cs:192-231）
+    /// 今日字符串恰好相同，成员分开以防误用。无计算形式则 null。</summary>
+    public abstract string? ExtensionPointName { get; }   // Skills→"Skills"；MCP→"McpDiscover"
+    /// <summary>把本种类认领的声明解释成**今日加载期（TryLoad）为该种类产出的记录面**。
+    /// 归属按今日代码为准：skills 的 extensions 条目在 TryLoad **原样透传**、不产出描述符
+    /// 字段（PluginManifest.cs:639-647），ParseDeclared(skills) 只是文法路由 + 透传记录；
+    /// 其逐条目 inert 属 per-pass 根走查（PluginHostManager.cs:3696-3775，由 :3585-3588
+    /// 每 pass 调用）——那是 PerPlugin 投递器 declared 部的语义（§3.3），不在本方法、
+    /// B 期不得搬进加载期。失败通道在加载期只有一种：
     /// - 插件级粘滞错误（mcp 数据文件）：解释失败写 PluginDescriptor.McpServersError
     ///   （PluginManifest.cs:385-393），插件保持加载、合成注册经 hasServerErrors 保留
     ///   （PluginHostManager.cs:3986-3988）、发现以 invalid_data_file 失败走粘滞
@@ -335,7 +343,9 @@ deps → isolation → caps → extensions → data → mcp → triggers → ins
 /// - 审批：PerPlugin 形状取成员翻转者 ∩ HoldFace(种类)（PluginHostManager.cs:2317-2321）；
 ///   RegistryWide 形状今日是**无条件全量快照重发布**（:2355-2360），face 过滤不适用于
 ///   它——撤销插件的清理恰恰依赖全量快照（其注册从快照消失，coordinator :333-336
-///   据此丢弃贡献；face 过滤后投子集等于抹掉其余插件的粘滞贡献）。
+///   据此丢弃贡献；face 过滤后投子集等于抹掉其余插件的粘滞贡献）。face 交集与快照
+///   都由宿主在自身 gate 内算好、以值随入参传入（face 判定直读宿主
+///   registrations/descriptors，:3295-3304——槽表/协调器不拥有该状态）。
 /// - 强制集：MarkReloadForce（gate 下、reconcile 串行内、重载帧发出前，:3403-3408）→
 ///   DrainReloadForces（epoch 前进或倒退即排；null epochs 全量排；:3416-3436）→
 ///   种类投递器按自己的形态消费（MCP=forced 重发布；Skills=单插件 pass）。
@@ -344,14 +354,29 @@ deps → isolation → caps → extensions → data → mcp → triggers → ins
 ///   MCP 不用（其 retry 在 coordinator 修订引擎内）。
 /// - 按插件单飞排空：Running/Pending flight + 排空循环 + finally re-arm
 ///   （:3446-3527 泛化为种类无关调度器；gate 永不跨 await 持有的规则不变）。</summary>
+// —— 事件入参一律是**值**：宿主调用方在自己的 gate 下组装快照与差量后传入。
+// 协调器不回读宿主 registrations/descriptors、不持任何回调——锁边界与今日逐字相同
+// （快照构建 :2355-2357/:3239-3241/:984-992；face 判定 :2316-2321 + :3295-3304 均在
+// 宿主 gate 内完成）。RegistryWide 投递所需的全量注册快照因此有唯一来源：调用方入参，
+// 实施者不存在"回调取快照 vs 调用方传快照"的分岔。
+internal sealed record ContributionFrameInput(
+    IReadOnlyList<PluginRegistration> Registrations,   // 全量注册快照（gate 下组装）
+    IReadOnlySet<string> ForcedPlugins,                // reloadEpoch 排空 ∪ 触发
+    IReadOnlyList<string> PerPluginTargets);           // PerPlugin: 导出集差量 ∪ reload ∪ 重试（去重后）
+
+internal sealed record ContributionApprovalInput(
+    IReadOnlyList<PluginRegistration> Registrations,   // 全量注册快照（RegistryWide 无条件重发布）
+    IReadOnlyDictionary<string, IReadOnlyList<string>> TransitionedPlugins);
+    // kind 名 → 该种类 face 过滤后的翻转插件（宿主 gate 内按 :2317-2321 + 种类 face 算好）
+
 internal sealed class ContributionCoordinator
 {
-    public void OnRegistryFrame(ContributionRegistryFrame frame);
-    public void OnApprovalTransition(IReadOnlySet<string> previouslyBlocked, IReadOnlySet<string> blocked);
+    public void OnRegistryFrame(in ContributionFrameInput frame);
+    public void OnApprovalTransition(in ContributionApprovalInput input);
     public void MarkReloadForce(string pluginId);
     public IReadOnlyList<string> DrainReloadForces(IReadOnlyDictionary<string, int>? epochs);
     public void OnTrigger(string pluginId);
-    public void Seed(IEnumerable<string> pluginIds);   // Start 渐进种子（:994-1010）
+    public void Seed(in ContributionFrameInput frame); // Start 种子（:984-1010：快照给 RegistryWide，种子集给 PerPlugin）
     public void Reset();                               // 宿主换代清空（:955-957）
 }
 
@@ -366,6 +391,10 @@ internal interface IContributionDelivery
 {
     ContributionKindContract Kind { get; }
     ContributionDeliveryShape Shape { get; }   // RegistryWide / PerPlugin
+    /// <summary>本种类导出集 diff 与计算形式 invoke 的 wire 注册名（今日硬编码
+    /// PluginHostManager.cs:3283/:3240/:4028；A 期先在适配器上以常量落地——A 期协调器
+    /// 先于 B 期契约存在，泛化 diff 需要可查询的路由——B 期并入契约同名成员）。</summary>
+    string? ExtensionPointName { get; }
     bool HoldsFace(string pluginId);
     /// <summary>RegistryWide 形：帧级全量投递（frame.Registrations 为全量注册快照，
     /// frame.ForcedPlugins 为强制集）。</summary>
@@ -453,11 +482,15 @@ internal sealed record ContributionKindMetadata(
 **行为保持论证**：纯状态重组——同样的 gate、同样的键、同样的组合顺序与提交复查点；
 协调器是 `SkillExportSetsLock`/`DiffSkillExportSets`/`HasSkillFaceLock`/flight/
 `skillsRetryPending` 的一对一搬移（含"未变帧 + reload/retry 追加"的并集语义与
-"gate 永不跨 await"规则）。两处必须显式钉住而非顺手"改进"：其一，槽组合序按粘滞袋
+"gate 永不跨 await"规则）。三处必须显式钉住而非顺手"改进"：其一，槽组合序按粘滞袋
 **插入序**复现（§3.3——键排序会翻转插件内同名技能胜负，SkillCatalog 首现者胜依赖它）；
 其二，投递形状在 A 期就按 §4.1 落定——MCP 全部事件保持帧级全量快照投递（含审批转换的
-无条件重发布，`:2355-2360`），skills 保持 face 过滤的 per-plugin 投递，二者不互换。
-无任何可观察语义面变化。
+无条件重发布，`:2355-2360`），skills 保持 face 过滤的 per-plugin 投递，二者不互换；
+其三，事件入参全部由宿主在 gate 下组装成值传入（§4.1）——快照构建与 face 判定
+（`HasSkillFaceLock` 直读 registrations/descriptors `:3295-3304`，槽表/协调器不拥有
+该状态）都留在宿主 gate 内，协调器不持回调；种类→wire 注册名的路由（今日 `:3283`/
+`:3240`/`:4028` 硬编码）在 A 期以适配器 `ExtensionPointName` 常量落地，B 期并入契约
+成员。无任何可观察语义面变化。
 
 **测试策略**：A 期开工前先落**指纹黄金夹具**（代表性 manifest 集的
 `PluginDeclarationFingerprint.Compute` 输出快照进测试数据）；既有套件
@@ -469,10 +502,14 @@ internal sealed record ContributionKindMetadata(
 ### B 期：文法与目录统一
 
 - `ContributionKindCatalog` 取代 `PluginExtensionKind`/`PluginDataName` 的全部消费点；
-  `ParseDeclared` 接手 TryLoad 内 per-kind 解释块中**本框架已覆盖的种类**——skills 的
-  根走查（逐条目 inert）与 mcp 的数据文件解释（`PluginLevelError` 通道，§3.2）；MCP 的
-  extensions 条目维持解析期原样透传不变（§3.2 注释）；合成注册、快照字典、发布分支改由
-  契约驱动。**ui 块不迁移**：B 期以"仅文案"的最小契约注册 ui（KindName/DataEntryName/
+  `ParseDeclared` 的归属按今日代码为准（§3.2）：TryLoad 内的 per-kind 解释块只有 ui 与
+  mcp 数据文件两个（`PluginManifest.cs:357-369, 371-395`）——mcp 数据文件解释迁入契约
+  （`PluginLevelError` 通道）；**skills 的 extensions 条目今日在 TryLoad 原样透传、不产出
+  描述符字段**（`:639-647`），其根走查从来不在 TryLoad——它在宿主协调路径逐 pass 重枚举
+  （`CollectDeclarativeSkills` `:3696-3775`，由 `:3585-3588` 每 pass 调用），B 期
+  `ParseDeclared(skills)` 只接管文法路由与透传记录，根走查原地保留在 PerPlugin 投递器的
+  declared 部（§3.3"每 pass 重枚举"语义不得搬进加载期）。MCP 的 extensions 条目维持
+  解析期原样透传不变（§3.2 注释）；合成注册、快照字典、发布分支改由契约驱动。**ui 块不迁移**：B 期以"仅文案"的最小契约注册 ui（KindName/DataEntryName/
   未知名文案），其 TryLoad 解释块、`PluginUiFormDefinition` 产物、`descriptor.UiForm`
   字段、data 域对 ui 条目内容的采集哈希（`PluginDeclarationFingerprint.cs:90-97` 遍历
   `DataEntries` 不挑名字）全部原样保留——§8 是容纳性论证，不是 B 期实施范围。
@@ -521,11 +558,16 @@ data 名文案、规范拼写记录、大小写不敏感路由）；指纹黄金
 以"新增一种贡献种类（不妨假想一种 `notices`）"走查目标框架：
 
 1. kernel：在 `Contributions/` 写一个封闭 `NoticesContributionsKind`（目录元数据 +
-   `ParseDeclared` + 视需要 `ValidateComputed`/`ValidatePublished`）并在
-   `ContributionKindCatalog` 注册一行——**1 处**；
+   `ExtensionPointName`——wire 注册名，注意与 `OwnsExtensionKind` 的 manifest kind 名是
+   两套目录、今日字符串恰好相同（§3.2）+ `ParseDeclared` + 视需要
+   `ValidateComputed`/`ValidatePublished`）并在 `ContributionKindCatalog` 注册一行——
+   **1 处**；
 2. SDK：`deno/maieutics-plugin-sdk/mod.ts` 加 `ExtensionPoint.Notices` 符号与类型化接口
    （若该种类有 worker 形式）——**2**；
-3. wire：`ReplExtensionPointName`/`ReplCapabilityName` 目录各一条常量——**3**；
+3. wire：`ReplExtensionPointName`/`ReplCapabilityName` 目录各一条常量，且带发布能力的
+   种类必须把能力名加进**显式数组** `PluginCapabilityCatalog.All`
+   （`ReplControlMessages.cs:183-184`）——能力门（`PluginHostManager.cs:2879-2887`）
+   只查该数组、不查常量，漏加即 `capability_unknown`——**3**；
 4. 消费适配器：该种类真实差异所在的消费端（如通知面板的合成视图）——**4**。
 
 §2 表中 #4（指纹）零触碰（通用 extensions/data 域覆盖），#5-#10 由槽表 + 协调器 + 契约

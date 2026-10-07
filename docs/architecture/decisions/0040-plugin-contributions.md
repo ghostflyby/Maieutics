@@ -87,7 +87,14 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
    start seed, with its registration-level differential skip staying inside the
    coordinator; and **per-plugin** — the face-filtered targeted form (skills only), where
    approval transitions reconcile exactly the plugins whose classification flipped
-   intersected with the kind's face.
+   intersected with the kind's face. All coordinator inputs are values the host assembles
+   under its own gate — full registration snapshots, forced sets, and the face-filtered
+   per-kind deltas (face checks read host-held registrations/descriptors, which neither
+   the slot table nor the coordinator owns) — so the coordinator holds no callback into
+   host state and snapshot construction stays inside today's lock boundaries. Each
+   delivery also carries the wire registration name its export-set diff and compute
+   invokes route through (today hard-coded per kind), distinct from the manifest
+   extension-kind name the grammar routes by.
 
 4. **Consumer engines stay kind adapters.** The MCP revision engine (generations, merge
    conflict abort, adjustment-chain folds, commit-on-publish) and the skill catalog
@@ -118,7 +125,9 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
 6. **Registration convergence.** After the migration, adding a contribution kind touches
    exactly four places: the kernel-side kind contract (one closed class + one catalog
    registration), the Deno SDK symbols (if the kind has a worker form), the wire catalogs
-   (`ReplExtensionPointName`/`ReplCapabilityName` constants), and the consumer adapter.
+   (`ReplExtensionPointName`/`ReplCapabilityName` constants, plus the explicit
+   `PluginCapabilityCatalog.All` array for kinds with a publish capability — the gate
+   checks the array, not the constants), and the consumer adapter.
    Fingerprint coverage is free via the generic domains; snapshot dictionaries, synthetic
    registrations, frame diffs, faces, retry sets, and publish branches are absorbed by the
    contract, the slot table, and the coordinator.

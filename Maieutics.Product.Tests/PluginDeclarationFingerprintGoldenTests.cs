@@ -14,29 +14,43 @@ namespace Maieutics.Product.Tests;
 /// kind is dropped from <c>descriptor.Extensions</c>, while an unknown data-entry name
 /// is still collected into <c>descriptor.DataEntries</c>. If any of these hashes move,
 /// every persisted plugin approval is revoked (ADR 0037 decision 5) — the change is
-/// wrong unless the migration explicitly argued and accepted the revocation.</summary>
+/// wrong unless the migration explicitly argued and accepted the revocation. One
+/// input is machine-local and projected out before hashing (see
+/// <see cref="WithStableWorkerUrls"/>): a worker's absolute EntryUrl.</summary>
 public sealed class PluginDeclarationFingerprintGoldenTests
 {
     /// <summary>The full surface WITHOUT a <c>${...}</c> data path: byte-stable across
-    /// the C 期 interpolation change (paths without tokens collect identically).</summary>
+    /// the C 期 interpolation change (paths without tokens collect identically). The
+    /// workers domain hashes the projected (root-sentinel) URLs.</summary>
     private const string FullSurfaceFingerprint =
-        "AC0CFC0C52C14321F4691CB8CFE66CE349AD95D536947525C58F20CE268E9B4D";
+        "84C670D20605B2E42D160FCEFF403F1FD98D6E1A3AB51FE0E77E097146E4EF5C";
 
     /// <summary>The same surface with a literal <c>${...}</c> data path, post-C: the
     /// expansion fails (the variable is unknown) and the data domain hashes the new
     /// expansion-failure error text instead of the former does-not-exist text.</summary>
     private const string LiteralVariablePathFingerprint =
-        "D202BCB06058783389C298A58CBE29F73CC42641F3F411E69D0CD9F2BFC4C208";
+        "C8AF92857DDB093EA2542D14FD0329E380AD5E246CD4268EF1BCB086BD19EAF3";
 
     /// <summary>The pre-C value of the with-<c>${...}</c> surface: exactly the
     /// fingerprint whose data domain hashed the former <c>error:</c> text ("The data
     /// entry file '…' does not exist."). Pinned so the flip's previous side is a
     /// provable hash, not a story (framework §5 fixture requirement).</summary>
     private const string PreCLiteralVariablePathFingerprint =
-        "16AD4F2CE7A51C83ACFC27282BEC386FD19F301DE7A0B31BFCBD52CDC3CD6DA4";
+        "293DDAFFA243CD06321ED44450AE2D483BF14FEECB6A68FF1697D5AA0159D6E2";
 
     private const string MinimalSurfaceFingerprint =
         "C4E3E123B8397A74FFD8999B9055F582EB694887A2D41450F9F4631B2C9844F0";
+
+    /// <summary>The misspelled-known-data-name surface (ADR 0040 decision 7): a
+    /// declaration like <c>"Mcp"</c> is unknown to the exact-match data grammar —
+    /// recorded verbatim and inert, hashing exactly the bytes its approval was
+    /// persisted under. The catalog must never canonicalize the recorded name: that
+    /// would flip the data-domain input (revoking the approval) and silently activate
+    /// the formerly lazy interpretation (the mcp domain would grow Id+GenerationKey).
+    /// Pinned as its own surface so this flip is detectable at the fingerprint gate —
+    /// the representative fixtures carry no misspelled sample.</summary>
+    private const string MisspelledDataNameFingerprint =
+        "D1FF32C5296473D4530F4748C0C57E38175F45CAB5F18CCCFD1C21928B536DD3";
 
     private const string LiteralVariablePath = "${env.MAIEUTICS_NO_SUCH_VAR}/mcp-unresolved.json";
 
@@ -70,7 +84,8 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             descriptor.Triggers.Single(static trigger => trigger.Kind == "watch").WatchPaths
                 .Single().Should().Contain("watched", "watch paths enter the fingerprint expanded");
 
-            PluginDeclarationFingerprint.Compute(loaded).Should().Be(FullSurfaceFingerprint);
+            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root))
+                .Should().Be(FullSurfaceFingerprint);
         }
         finally
         {
@@ -86,8 +101,8 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         {
             PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error)
                 .Should().BeTrue(error);
-            var golden = PluginDeclarationFingerprint.Compute(
-                descriptor ?? throw new InvalidOperationException(error));
+            var golden = PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(
+                descriptor ?? throw new InvalidOperationException(error), root));
 
             // Reformat: different whitespace, reordered members, re-spelled numbers —
             // canonicalization must absorb every one of them.
@@ -115,8 +130,8 @@ public sealed class PluginDeclarationFingerprintGoldenTests
 
             PluginManifest.TryLoad(root, GoldenVariables(), out var reformatted, out error)
                 .Should().BeTrue(error);
-            PluginDeclarationFingerprint.Compute(
-                reformatted ?? throw new InvalidOperationException(error)).Should().Be(golden);
+            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(
+                reformatted ?? throw new InvalidOperationException(error), root)).Should().Be(golden);
             golden.Should().Be(FullSurfaceFingerprint);
         }
         finally
@@ -176,7 +191,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             // text — not the former does-not-exist text.
             var unresolved = loaded.DataEntries.Single(static entry => entry.Name == "unresolved");
             unresolved.Error.Should().NotBeNull().And.Contain("cannot be expanded");
-            PluginDeclarationFingerprint.Compute(loaded)
+            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root))
                 .Should().Be(LiteralVariablePathFingerprint, "the data domain hashes the new expansion error text");
 
             // Pre-C reconstruction: the same surface with the former collection
@@ -191,10 +206,48 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                             $"The data entry file '{LiteralVariablePath}' does not exist.")
                         : entry)]
             };
-            PluginDeclarationFingerprint.Compute(preC)
+            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(preC, root))
                 .Should().Be(PreCLiteralVariablePathFingerprint);
-            PluginDeclarationFingerprint.Compute(loaded)
+            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root))
                 .Should().NotBe(PreCLiteralVariablePathFingerprint, "the flip is real, both sides pinned");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AMisspelledKnownDataNameStaysDeclaredAndInertByteStable()
+    {
+        var root = CreateEmptyGoldenRoot();
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(root, "deno.json"),
+                """{ "name": "@maieutics/golden-misspelled", "permissions": { "default": { "read": ["./"] } } }""");
+            File.WriteAllText(
+                Path.Combine(root, "maieutics.json"),
+                """{ "entrypoints": { "Mcp": "./mcp.json" } }""");
+            File.WriteAllText(
+                Path.Combine(root, "mcp.json"),
+                """{ "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }""");
+
+            PluginManifest.TryLoad(root, out var descriptor, out var error)
+                .Should().BeTrue(error);
+            var loaded = descriptor ?? throw new InvalidOperationException(error);
+
+            // Verbatim, collected, inert: the data domain hashes the declared spelling
+            // and the file's canonical JSON, and no mcp-domain servers appear — the
+            // declaration is unknown to the exact-match grammar, not re-spelled into it.
+            var entry = loaded.DataEntries.Should().ContainSingle().Which;
+            entry.Name.Should().Be("Mcp", "the declared spelling is recorded verbatim");
+            entry.Error.Should().BeNull("the file is collected normally");
+            loaded.McpServers.Should().BeEmpty("a misspelled known name is inert");
+            loaded.ExtensionDiagnostics.Should().Contain(static diagnostic =>
+                diagnostic.Contains("data entry 'Mcp'", StringComparison.Ordinal));
+
+            PluginDeclarationFingerprint.Compute(loaded).Should().Be(MisspelledDataNameFingerprint);
         }
         finally
         {
@@ -226,6 +279,35 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    /// <summary>Projects the one machine-local fingerprint input out of a loaded
+    /// descriptor: a worker's EntryUrl embeds the absolute plugin root (it is the URL
+    /// the kernel launches the worker through), so the fixture's root prefix is
+    /// replaced with a fixed sentinel before hashing. The absolute prefix is machine
+    /// semantics — approvals are per-machine local, so production fingerprints are
+    /// free to carry it — and no cross-machine pin can hold it; everything pinable
+    /// still hashes exactly as production computes it: the domain order, the export
+    /// names, the URL's file:/// shape beyond the prefix, and every remaining domain
+    /// byte-exact. The first pins held only on the pinning machine's temp path —
+    /// every other machine (all three CI runners) hashed different bytes, which is
+    /// what the byte-stability gate is supposed to prevent.</summary>
+    private static PluginDescriptor WithStableWorkerUrls(PluginDescriptor descriptor, string root)
+    {
+        var rootUrl = new Uri(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)))
+            .AbsoluteUri.TrimEnd('/');
+        return descriptor with
+        {
+            Workers = [.. descriptor.Workers.Select(worker => worker with
+            {
+                EntryUrl = worker.EntryUrl.StartsWith(rootUrl, StringComparison.Ordinal)
+                    ? StableRootUrl + worker.EntryUrl[rootUrl.Length..]
+                    : worker.EntryUrl
+            })]
+        };
+    }
+
+    /// <summary>The fixed root prefix that replaces the fixture's machine-local one.</summary>
+    private const string StableRootUrl = "file:///golden-root";
 
     /// <summary>The representative plugin: permissions across grant kinds, two workers,
     /// a dependency, catalogued capabilities, all three declared extension kinds (one

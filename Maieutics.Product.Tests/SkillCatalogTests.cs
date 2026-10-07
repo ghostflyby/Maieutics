@@ -167,6 +167,148 @@ public sealed class SkillCatalogTests : IDisposable
         var act = () => catalog.DisposeAsync();
         await act.Should().NotThrowAsync();
     }
+
+    /// <summary>Writes a skill into a nested directory of the workspace root (the flat
+    /// <see cref="WriteSkill"/> helper only writes top-level directories).</summary>
+    private void WriteSkillAt(string relativeDirectory, string name, string description)
+    {
+        var directory = Path.Combine(workspaceRoot, relativeDirectory);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, "SKILL.md"),
+            $"---\nname: {name}\ndescription: {description}\n---\n\nBody of {name}.\n");
+    }
+
+    [Fact]
+    public async Task EditingOneSkillBodyRescansOnlyThatSkillDirectory()
+    {
+        for (var index = 0; index < 12; index++)
+            WriteSkill(workspaceRoot, $"skill-{index:D2}", $"skill {index}");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().HaveCount(12);
+
+        var visitsBefore = catalog.DirectoryVisits;
+        File.WriteAllText(
+            Path.Combine(workspaceRoot, "skill-06", "SKILL.md"),
+            "---\nname: skill-06\ndescription: the edited body\n---\nBody.\n");
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Single(skill => skill.Name == "skill-06").Description == "the edited body");
+
+        // A full-tree walk of twelve skills costs fourteen directory visits (root file
+        // probe, root listing, one probe per skill directory); the differential path
+        // revalidates only the edited skill's directory, a handful of visits at most.
+        (catalog.DirectoryVisits - visitsBefore).Should().BeLessThan(10);
+    }
+
+    [Fact]
+    public async Task AMidTreeBoundarySkillMdPreemptsTheDeeperSkill()
+    {
+        WriteSkillAt(Path.Combine("category", "deep"), "deep-skill", "the deep skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "deep-skill");
+
+        WriteSkillAt("category", "shallow-skill", "claims the whole category");
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Any(skill => skill.Name == "shallow-skill") &&
+            snapshot.Skills.All(skill => skill.Name != "deep-skill"));
+
+        // The new boundary SKILL.md claims the category: the deeper old skill was a
+        // resource the moment the boundary appeared and must leave the catalog.
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "shallow-skill");
+    }
+
+    [Fact]
+    public async Task RemovingTheBoundarySkillMdReexposesTheDeeperSkill()
+    {
+        WriteSkillAt("category", "shallow-skill", "claims the whole category");
+        WriteSkillAt(Path.Combine("category", "deep"), "deep-skill", "the deep skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "shallow-skill");
+
+        File.Delete(Path.Combine(workspaceRoot, "category", "SKILL.md"));
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Any(skill => skill.Name == "deep-skill") &&
+            snapshot.Skills.All(skill => skill.Name != "shallow-skill"));
+
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "deep-skill");
+    }
+
+    [Fact]
+    public async Task ASkillAddedDeepInTheTreeIsDiscovered()
+    {
+        WriteSkill(workspaceRoot, "top-level", "the flat skill");
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, "category"));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "top-level");
+
+        WriteSkillAt(Path.Combine("category", "nested"), "nested-skill", "arrived deep in the tree");
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Any(skill => skill.Name == "nested-skill"));
+
+        catalog.Current.Skills.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ADeletedSkillDirectoryLeavesTheCatalog()
+    {
+        WriteSkill(workspaceRoot, "alpha", "the first skill");
+        WriteSkill(workspaceRoot, "beta", "the surviving skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().HaveCount(2);
+
+        Directory.Delete(Path.Combine(workspaceRoot, "alpha"), recursive: true);
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.All(skill => skill.Name != "alpha"));
+
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "beta");
+    }
+
+    [Fact]
+    public async Task ARenamedSkillDirectoryMovesToItsNewPath()
+    {
+        WriteSkill(workspaceRoot, "alpha", "the renamed skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+
+        Directory.Move(Path.Combine(workspaceRoot, "alpha"), Path.Combine(workspaceRoot, "beta"));
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Any(skill =>
+                skill.Name == "alpha" &&
+                skill.BodyPath == Path.Combine(workspaceRoot, "beta", "SKILL.md")));
+
+        // The catalog name travels with the frontmatter; only the body location moves.
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha")
+            .Which.BodyPath.Should().Be(Path.Combine(workspaceRoot, "beta", "SKILL.md"));
+    }
+
+    [Fact]
+    public async Task RenamingTheSkillFileAwayRemovesTheSkill()
+    {
+        WriteSkill(workspaceRoot, "alpha", "the first skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+
+        File.Move(
+            Path.Combine(workspaceRoot, "alpha", "SKILL.md"),
+            Path.Combine(workspaceRoot, "alpha", "renamed.md"));
+
+        await AwaitSkillsAsync(catalog, clock, snapshot => snapshot.Skills.IsEmpty);
+
+        catalog.Current.Skills.Should().BeEmpty();
+    }
 }
 
 public sealed class SkillPromptComposerTests

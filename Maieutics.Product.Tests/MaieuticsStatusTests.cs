@@ -137,4 +137,50 @@ public sealed class MaieuticsStatusTests
             .And.Contain("source `unknown`")
             .And.Contain("(declared baseline)");
     }
+
+    [Fact]
+    public void RenderingIncludesSkillCatalogLineWhenPresent()
+    {
+        var snapshot = new MaieuticsStatusSnapshot(
+            new MaieuticsRuntimeStatus(
+                7,
+                new MaieuticsModelProfileSelection("profile", "profile", false, []),
+                new MaieuticsConfigurationReloadInfo(
+                    9,
+                    MaieuticsConfigurationReloadOutcome.Applied,
+                    7),
+                []),
+            new WorkspaceSnapshot("/secret/workspace", 3, null),
+            new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
+            [],
+            new DenoReplListResult([]),
+            new SkillCatalogStatus(3, 2, 1, 4));
+
+        var markdown = MaieuticsStatusRenderer.Render(snapshot);
+
+        markdown.Should()
+            .Contain("- Skills: `3` (workspace `2`, user `1`, diagnostics `4`)");
+    }
+
+    [Fact]
+    public void RenderingOmitsSkillCatalogLineWhenSnapshotCarriesNone()
+    {
+        var snapshot = new MaieuticsStatusSnapshot(
+            new MaieuticsRuntimeStatus(
+                7,
+                new MaieuticsModelProfileSelection("profile", "profile", false, []),
+                new MaieuticsConfigurationReloadInfo(
+                    9,
+                    MaieuticsConfigurationReloadOutcome.Applied,
+                    7),
+                []),
+            new WorkspaceSnapshot("/secret/workspace", 3, null),
+            new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
+            [],
+            new DenoReplListResult([]));
+
+        var markdown = MaieuticsStatusRenderer.Render(snapshot);
+
+        markdown.Should().NotContain("Skills:");
+    }
 }

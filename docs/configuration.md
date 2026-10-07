@@ -328,6 +328,26 @@ workspace-root file; a nested surface needs its own entry (for example `".agents
 
 Ordinary workspace files are unaffected: they keep the containment-only workspace-root posture.
 
+## Skills
+
+Skill discovery (ADR 0039) builds a catalog from two filesystem sources and appends it to
+every run's system prompt: names and descriptions only, with the body readable on demand
+as `skill://{name}` through `read_text`. Sources merge workspace-first; a same-name skill
+from a lower source is shadowed, not an error. The root directories are created if missing
+and are fixed at startup — catalog refresh is event-driven (per-root watchers), never a
+configuration reload.
+
+| Setting                         | Default                       |
+|---------------------------------|-------------------------------|
+| `Maieutics:Skills:Enabled`      | `true`                        |
+| `Maieutics:Skills:WorkspaceRoot`| `<workspace>/.agents/skills`  |
+| `Maieutics:Skills:UserRoot`     | `~/.agents/skills`            |
+
+Overrides must be absolute paths. A skill is a directory containing a `SKILL.md` whose
+frontmatter carries `name` and `description` (restricted `key: value` lines); within a
+root the shallowest `SKILL.md` wins and deeper ones are resources. Model-initiated writes
+to these files stay behind the instruction-surface gate above.
+
 ## Agent limits
 
 | Setting                                        |    Default |

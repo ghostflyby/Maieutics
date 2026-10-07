@@ -1,6 +1,7 @@
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Persistence;
+using Maieutics.Skills;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Commands;
@@ -40,6 +41,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly string? objectsRoot;
     private readonly ILogger<MaieuticsAgentSessionManager> logger;
     private readonly AgentSubagentOptions? subagents;
+    private readonly SkillCatalog? skillCatalog;
     private readonly Lock gate = new();
     private readonly Dictionary<string, LiveSession> live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
@@ -55,7 +57,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         string? viewSessionsRoot = null,
         string? objectsRoot = null,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
-        AgentSubagentOptions? subagents = null)
+        AgentSubagentOptions? subagents = null,
+        SkillCatalog? skillCatalog = null)
     {
         this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         this.runtimeConfiguration = runtimeConfiguration;
@@ -67,6 +70,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         this.objectsRoot = objectsRoot;
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.subagents = subagents;
+        this.skillCatalog = skillCatalog;
         foreground = CreateLive(AgentSessionId.Create());
     }
 
@@ -537,7 +541,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper)
     {
         var inner = wrapper ?? profileProvider;
-        return subagents is null ? inner : new SubagentsProfileProvider(inner, subagents);
+        var composed = subagents is null ? inner : new SubagentsProfileProvider(inner, subagents);
+        // The skills decorator is outermost so both record rewrites (`with`) compose: the
+        // catalog rides every lease regardless of the per-session override path.
+        return skillCatalog is null ? composed : new SkillsProfileProvider(composed, skillCatalog);
     }
 
     /// <summary>Decorates every lease with the composition-root subagent configuration while

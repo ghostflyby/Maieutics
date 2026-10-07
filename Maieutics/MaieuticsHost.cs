@@ -158,6 +158,11 @@ public static class MaieuticsHost
             .GetSection(ResourceProviderOptions.SectionName)
             .Bind(resourceProviderOptions);
         resourceProviderOptions.Validate();
+        // Skill discovery roots are startup-fixed (ADR 0039): the catalog refreshes through
+        // its own watchers, so the roots never join configuration-reload identity.
+        var skillsOptions = new Skills.SkillsOptions();
+        builder.Configuration.GetSection(Skills.SkillsOptions.SectionName).Bind(skillsOptions);
+        skillsOptions.Validate();
         // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
         var applicationPaths = ApplicationPaths.Resolve();
         // The workspace root is the fixed home; external projects open as managed links
@@ -214,6 +219,7 @@ public static class MaieuticsHost
             new WorkspaceRootsSource(services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton(denoReplOptions);
         builder.Services.AddSingleton(terminalOptions);
+        builder.Services.AddSingleton(skillsOptions);
         builder.Services.AddSingleton<ITerminalProcessFactory, LocalTerminalProcessFactory>();
         // ADR 0018 Phase 5: every consumer acquires its effective policy per owning scope from
         // the full four-layer path (built-in baseline, Maieutics:Permissions defaults, the
@@ -234,6 +240,13 @@ public static class MaieuticsHost
         });
         builder.Services.AddSingleton<ResourceRegistry>(static services => new ResourceRegistry(
             BuildResourceProviders(services)));
+        // The skill catalog owns one watcher per declared root and disposes with the host
+        // (IAsyncDisposable singleton); the resource plane and the profile decorator share
+        // this one instance.
+        builder.Services.AddSingleton(static services => Skills.SkillCatalog.Create(
+            ComposeSkillRoots(services),
+            services.GetRequiredService<TimeProvider>(),
+            services.GetRequiredService<ILogger<Skills.SkillCatalog>>()));
         builder.Services.AddSingleton(resourceProviderOptions);
         builder.Services.AddSingleton(static services => new ResourceFunctions(
             services.GetRequiredService<ResourceRegistry>()));
@@ -518,7 +531,8 @@ public static class MaieuticsHost
                 new Execution.TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>()),
                 CreateAgentTaskResourceSource(services)
             ]),
-            new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
+            new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>()),
+            new Skills.SkillResourceProvider(services.GetRequiredService<Skills.SkillCatalog>())
         };
         if (services.GetService<IAgentObjectStore>() is { } objectStore)
             providers.Add(new AgentObjectResourceProvider(objectStore));
@@ -526,6 +540,32 @@ public static class MaieuticsHost
             providers.Add(new HttpBridgeResourceProvider(client, custom));
 
         return providers;
+    }
+
+    /// <summary>Resolves the declared skill roots (ADR 0039): the workspace root's
+    /// <c>.agents/skills</c> and the user profile's <c>~/.agents/skills</c>, each overridable
+    /// and both disabled when discovery is off. The user source is skipped when the platform
+    /// profile path is unresolvable rather than failing startup.</summary>
+    private static IEnumerable<(Skills.SkillSource Source, string RootDirectory)> ComposeSkillRoots(
+        IServiceProvider services)
+    {
+        var options = services.GetRequiredService<Skills.SkillsOptions>();
+        if (!options.Enabled) yield break;
+
+        var workspaceRoot = options.WorkspaceRoot is { Length: > 0 } workspaceConfigured
+            ? workspaceConfigured
+            : Path.Combine(services.GetRequiredService<Workspace>().RootPath, ".agents", "skills");
+        yield return (Skills.SkillSource.Workspace, workspaceRoot);
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (options.UserRoot is { Length: > 0 } userConfigured)
+        {
+            yield return (Skills.SkillSource.User, userConfigured);
+        }
+        else if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            yield return (Skills.SkillSource.User, Path.Combine(userProfile, ".agents", "skills"));
+        }
     }
 
     /// <summary>Composes the task plane's subagent source over the live session registry:
@@ -597,7 +637,8 @@ public static class MaieuticsHost
             paths.AgentViewSessionsRoot,
             paths.AgentObjectsRoot,
             services.GetService<IMaieuticsRuntimeConfiguration>(),
-            subagents);
+            subagents,
+            services.GetService<Skills.SkillCatalog>());
     }
 
     /// <summary>Reads the composition-root subagent configuration (ADR 0030). Disabled by

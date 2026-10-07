@@ -160,6 +160,7 @@ domain whose files participate in one call tree; it is not a folder mirror. See 
 | Namespace | Domain |
 |---|---|
 | `Maieutics.Execution` | Workspace root, workspace://local URI resolution, bounded read/search tools, and the virtual resource URL registry (ADR 0026) |
+| `Maieutics.Skills` | Skill discovery primitive, merged skill catalog with per-root watchers, the prompt catalog composer, and the skill:// resource plane (ADR 0039) |
 | `Maieutics.Terminal` | PTY sessions, headless VT screen, terminal input encoding, and `terminal_*` tools |
 | `Maieutics.Permissions` | Declarative permission layers, variable interpolation, effective policy, and Deno rendering |
 | `Maieutics.Processes` | General process start policy: environment allowlist and the future sandbox-enforcement seam (terminal and MCP children) |
@@ -179,9 +180,10 @@ Processes   -> Permissions
 DenoExecution -> Permissions, Control
 Terminal    -> Permissions, Processes, Agent
 DenoRepl    -> DenoExecution, Control, Agent
+Skills      -> Execution
 Plugins     -> DenoExecution, Control, Mcp
 Control     -> Plugins (host attach), DenoRepl (registry), Commands (agent sessions for the model-orchestration surface), Commands (agent sessions for the model-orchestration surface)
-Commands    -> Agent, Configuration, Execution, Mcp, Plugins
+Commands    -> Agent, Configuration, Execution, Mcp, Plugins, Skills
 Frontend    -> Agent, Commands, Configuration, DenoRepl, Persistence
 Configuration -> Agent, Execution, Mcp, Plugins, Providers, Terminal
 ```

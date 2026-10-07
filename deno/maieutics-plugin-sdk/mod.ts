@@ -476,9 +476,7 @@ export function defineExtensionPoint(
   // Case is not significant: the recommended spelling for newer extension
   // points is lowercase, and canonical markers are matched accordingly.
   const catalog = ExtensionPoint as Record<string, symbol>;
-  const canonical = Object.keys(catalog).find((key) =>
-    key.toLowerCase() === name.toLowerCase()
-  );
+  const canonical = Object.keys(catalog).find((key) => key.toLowerCase() === name.toLowerCase());
   if (canonical === undefined) {
     // The kernel only scans for known markers, so this export would silently
     // never be discovered. Say so and leave it unmarked instead of attaching

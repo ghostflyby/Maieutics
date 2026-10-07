@@ -57,6 +57,7 @@ Related: [ADR 0033](architecture/decisions/0033-plugin-scoped-mcp-data-file.md)�
 | **声明形式** | 三种：① manifest `extensions.McpDiscover` 条目（kind 大小写不敏感、记录规范拼写，`PluginManifest.cs:47-61, 644-646`）；② `mcp` 数据条目指向 JSON 文件（名字精确匹配 `PluginManifest.cs:83-86`，采集做根包含检查 `:579-606`，逐服务器超时可配置 `Mcp/McpServerFile.cs:35-41`）；③ worker 导出 `mcp.discover` 扩展点（动态发现，`PluginHostManager.cs:4022-4045`） | 三种：① manifest `extensions.Skills` 条目（`roots` 经 `${env.*}`/`${var.*}` 插值，`PluginHostManager.cs:3731-3741`；≤32 根 `:3779`；根包含或 read 授权覆盖 `:3761-3770`）；② worker 导出 `Skills` 扩展点（生成器，`:3595-3634`）；③ `skills.publish` 能力（目录门 `PluginCapabilityCatalog` + 清单授权门，`PluginHostManager.cs:2879-2899, 3137-3145`） |
 | **值形状** | `McpServerDefinition`：Id、Transport、四个超时、RootsEnabled、ElicitationEnabled、GenerationKey（`Mcp/McpServerGeneration.cs:58-67`）；GenerationKey = SHA-256 长度前缀域序（`McpServerGeneration.cs:69-131`） | `SkillDescriptor`：Name ≤64（`[a-z0-9-]`）、Description ≤1024（超长截断）、BodyText ≤64K（仅计算源；文件体另有 4MB 界）、Source、RootDirectory、Diagnostic=inert 标记（`Skills/SkillDescriptor.cs:39-68`） |
 | **键控** | 注册（PluginId, ExportName, ExtensionPoint）为贡献单元；代际按服务器 Id 复用、以 GenerationKey 判等（`PluginMcpCoordinator.cs:459-488`）；同 id 同 key 去重、同 id 异 key 中止整修订（`:428-441`） | 粘滞按 (PluginId, ExportName)（`pluginGeneratedSkills`，`PluginHostManager.cs:310-311, 3630-3633`）；插件面一个槽（`contributedSkillPlugins` `:327`）；条目在目录内按名字键控 |
+| **同键裁决与组合序** | 服务器 Id 合并：同 id 同 GenerationKey 去重、同 id 异 key 中止整修订（`PluginMcpCoordinator.cs:428-441`） | 三级：Workspace<User<Plugin（插件间 id Ordinal 序，`SkillCatalog.cs:664-688`）；插件内同名**首现者胜**、后到者记 shadowed 诊断（`SkillCatalog.cs:679-686`）——宿主组合按粘滞袋插入序迭代（`PluginHostManager.cs:3647-3651, 3898-3902`），**组合序因此是语义**（目录注释明言 "within a plugin contribution the caller has already ordered its own production modes"，`:664-667`） |
 | **失败语义** | discovery 失败/抛异常不写 candidate，前贡献保持（`PluginMcpCoordinator.cs:352-375`）；merge 冲突中止整修订、前快照保持活跃（`:436-441, 410`）；adjuster drop 只作用合成视图、原始贡献持久、下修订自动恢复（`:388-408`）；commit-on-publish：成果只在修订发布时提交（`:492-505`），被超越修订成果丢弃下修订重跑（`:410, 478-512`） | 逐导出粘滞 last-good（`:3603-3634`）；逐条目 inert 降级（毒根 `:3714-3774`、非法生成条目 `:3797-3847`）；毒根/坏条目不中止 pass；异常只降级该插件（`:3660-3668`）；提交时 gate 下复查 lifetime+审批（`:3641-3654`） |
 | **刷新触发** | 注册帧 plain 差分（`PluginMcpCoordinator.cs:96-101`）；强制集：reloadEpoch 排空（`PluginHostManager.cs:3416-3436`，标记 `:3403-3408`，调用点 `:1495-1498, 1546-1549`）与触发（`ForceRediscoverPlugin` `:3362-3368`，由 `HandlePluginTrigger` `:3334-3343` 调用）；审批转换重发布（`:2360`）；Start 种子（`:981-992`） | 四事件点：Start 逐插件渐进种子（`:994-1010`）、注册帧按 Skills 导出集 diff（`SkillExportSetsLock`/`DiffSkillExportSets` `:3278-3327`，帧前快照 `:3189`，未变帧零动作 `:3183-3188`）∪ reload 排空 ∪ 重试集（`:3250-3252`）、审批对称差 ∩ 种类面（`:2312-2321`）、触发单插件（`:3362-3368`）；按插件单飞排空（`skillsReconcileGate` + flight `:291-304, 3446-3527`） |
 | **指纹域** | 三域参与：`extensions`（kind + 条目规范 JSON，字面量形态 `PluginDeclarationFingerprint.cs:78-87`）、`data`（名 + 规范 JSON/错误 `:90-97`）、`mcp`（Id + GenerationKey `:100-107`） | `extensions` 域承载（skills 条目以字面量 `${...}` 形态入哈希，ADR 0039 stage 2a）；无专域 |
@@ -124,6 +125,9 @@ decision 7 的先例）；本设计将"新种类不得引入新指纹专域"定�
 
 新子域 `Maieutics/Plugins/Contributions/`，命名空间 `Maieutics.Plugins.Contributions`，
 程序集不变（仍是 `Maieutics` 可执行项目）。以下为接口草图（表达形状与不变量，非完整实现）。
+全部顶层类型 `internal`，与 Plugins 域现状一致（`PluginHostManager.cs:124`、
+`PluginMcpCoordinator.cs:46`、`PluginManifest.cs:9` 均为 internal）——草图内成员的
+`public` 修饰仅是 abstract 成员的可见性下限，生效 API 面随类型为 internal。
 
 ### 3.1 描述符层：非泛型抽象 + 封闭具体类（AOT 安全）
 
@@ -132,7 +136,7 @@ namespace Maieutics.Plugins.Contributions;
 
 /// <summary>一种贡献条目的框架侧视图。抽象基类只携带差分需要的最小面；
 /// 领域值形状不重新定义——封闭具体类包裹既有领域记录，消费端引擎继续拥有自己的形状。</summary>
-public abstract class ContributionDescriptor
+internal abstract class ContributionDescriptor
 {
     protected ContributionDescriptor(string identityKey, string? diagnostic)
     { IdentityKey = identityKey; Diagnostic = diagnostic; }
@@ -145,7 +149,7 @@ public abstract class ContributionDescriptor
 }
 
 /// <summary>封闭具体类之一：包裹 McpServerDefinition（Mcp/McpServerGeneration.cs:58）。</summary>
-public sealed class McpServerContribution : ContributionDescriptor
+internal sealed class McpServerContribution : ContributionDescriptor
 {
     public McpServerContribution(Mcp.McpServerDefinition definition)
         : base(definition.Id, diagnostic: null) => Definition = definition;
@@ -153,7 +157,7 @@ public sealed class McpServerContribution : ContributionDescriptor
 }
 
 /// <summary>封闭具体类之二：包裹 SkillDescriptor（Skills/SkillDescriptor.cs:39）。</summary>
-public sealed class SkillEntryContribution : ContributionDescriptor
+internal sealed class SkillEntryContribution : ContributionDescriptor
 {
     public SkillEntryContribution(Skills.SkillDescriptor skill)
         : base(skill.Name, skill.Diagnostic) => Skill = skill;
@@ -170,7 +174,7 @@ AOT 论证：框架层从不序列化 `ContributionDescriptor`；源生成 JSON 
 ```csharp
 /// <summary>一种贡献种类在 kernel 侧的全部知识。每种类一个封闭子类，
 /// 在 ContributionKindCatalog 静态注册（禁运行时改注册表）。</summary>
-public abstract class ContributionKindContract
+internal abstract class ContributionKindContract
 {
     // —— 目录元数据 ——
     public abstract string KindName { get; }                    // 规范名（如 "McpDiscover"/"Skills"）
@@ -179,36 +183,59 @@ public abstract class ContributionKindContract
     /// （PluginManifest.cs:47-61 的泛化）；未知名文案由目录枚举全部已知名自动生成
     /// （消除 PluginManifest.cs:506-509, 517-520 只列 mcp 的滞后）。</summary>
 
-    // —— 声明解析：manifest 条目 → 描述符列表，惰性诊断随条目走 ——
+    // —— 声明解析：manifest 条目 → 描述符列表，失败语义种类自持 ——
     /// <summary>extensions 文法路由：本种类认领哪些条目（按规范 kind 名）。</summary>
     public abstract bool OwnsExtensionKind(string canonicalKind);
     /// <summary>data-entry 文法路由：本种类目录化的数据名，无则 null。</summary>
     public abstract string? DataEntryName { get; }
-    /// <summary>把本种类认领的声明解释成描述符。失败不抛——逐条目 inert 诊断
-    /// （skills 毒根先例）；结构级失败仍走 manifest 严格失败（现 TryLoad 语义）。</summary>
-    public abstract IReadOnlyList<ContributionDescriptor> ParseDeclared(
+    /// <summary>把本种类认领的声明解释成"今日 TryLoad 为该种类产出的描述符字段"。
+    /// 失败有两条通道，粒度由种类自持、不下沉——两种粒度今日都真实存在：
+    /// - 逐条目 inert（skills）：毒根/坏条目降级随条目走
+    ///   （PluginHostManager.cs:3714-3774, 3797-3847）；
+    /// - 插件级粘滞错误（mcp 数据文件）：解释失败写 PluginDescriptor.McpServersError
+    ///   （PluginManifest.cs:385-393），插件保持加载、合成注册经 hasServerErrors 保留
+    ///   （PluginHostManager.cs:3986-3988）、发现以 invalid_data_file 失败走粘滞
+    ///   last-good（:4003-4004, :4066）——返回类型因此带插件级错误通道。
+    /// 另一条不变量：MCP 的 extensions 条目今日在解析期**原样透传**（entry.Clone()，
+    /// PluginManifest.cs:644-647），逐条目校验与"一条非法条目令整次发现失败"的粒度属于
+    /// 发现期的 manifest 分支（DiscoverManifestMcpAsync，PluginHostManager.cs:4071-4079），
+    /// ParseDeclared 不收编，B 期不得把它降级为逐条目 inert。</summary>
+    public abstract ContributionDeclarationResult ParseDeclared(
         ContributionDeclarationContext context);
 
     // —— 计算形式：invoke 请求构造 + 输出校验（无计算形式则 HasComputeForm=false）——
     public abstract bool HasComputeForm { get; }
     public abstract JsonElement BuildComputeRequest(in ContributionComputeContext context);
-    /// <summary>worker 输出校验：MCP = JSON 数组逐项 TryToMcpDefinition、任一非法整次失败
-    /// （PluginHostManager.cs:4033-4045）；Skills = ParseGeneratedSkills 逐条目 inert
-    /// （:3791-3858）。失败语义由种类自己声明——这是两种类真实的语义差异，不下沉。</summary>
-    public abstract ContributionValidationResult ValidateComputed(JsonElement output);
+    /// <summary>计算形式输出校验。上下文携带插件身份——MCP 校验必须以 pluginId 盖章
+    /// 服务器 Id（`plugin:{pluginId}::{module}`，PluginHostManager.cs:4150；worker 路径
+    /// :4039 与 manifest 路径 :4075 都传入）。失败语义种类自持：MCP = JSON 数组逐项
+    /// TryToMcpDefinition、任一非法整次失败（:4033-4045）；Skills = ParseGeneratedSkills
+    /// 逐条目 inert（:3791-3858）。</summary>
+    public abstract ContributionValidationResult ValidateComputed(
+        in ContributionComputeContext context,
+        JsonElement output);
 
     // —— 发布形式：capability 载荷校验（无发布形式则 HasPublishForm=false）——
     public abstract bool HasPublishForm { get; }
     public abstract string? PublishCapability { get; }   // "skills.publish"；ui 种类将来为 "ui.models"
-    public abstract ContributionValidationResult ValidatePublished(JsonElement payload);
+    public abstract ContributionValidationResult ValidatePublished(
+        in ContributionPublishContext context,
+        JsonElement payload);
 
     // —— 强制重跑与重试语义（never-succeeded-stays-new 是否启用本种类 kernel 侧重试集）——
     public abstract bool UsesKernelRetrySet { get; }     // Skills=true；MCP=false（retry 在 coordinator 内）
 }
 
+/// <summary>声明解析结果：描述符列表 + 插件级粘滞错误通道（后者承载 mcp 数据文件的
+/// McpServersError 形态；逐条目 inert 走 ContributionDescriptor.Diagnostic）。</summary>
+internal sealed record ContributionDeclarationResult(
+    IReadOnlyList<ContributionDescriptor> Descriptors,
+    string? PluginLevelError);
+
 /// <summary>封闭目录：规范名/数据名 → 契约；大小写不敏感查找；诊断文案自动生成。
-/// 取代 PluginExtensionKind 与 PluginDataName 的全部消费点。</summary>
-public static class ContributionKindCatalog
+/// 取代 PluginExtensionKind 与 PluginDataName 的全部消费点。允许"仅文案"的最小注册
+/// （B 期的未迁移 ui：只参与名字路由与未知名文案，其 TryLoad 解释块原样保留）。</summary>
+internal static class ContributionKindCatalog
 {
     public static IReadOnlyList<ContributionKindContract> Kinds { get; }
     public static ContributionKindContract? ByExtensionKind(string kind);      // OrdinalIgnoreCase
@@ -221,19 +248,37 @@ public static class ContributionKindCatalog
 
 ### 3.3 贡献槽
 
-每 `(pluginId, kind)` 一槽，三部组成，gate 下组装提交：
+每 `(pluginId, kind)` 一槽；三部分对种类**皆可选**（种类契约声明自己实现哪些部），
+gate 下组装提交：
 
 ```csharp
-/// <summary>槽状态三部。declared 每轮重算；generated 按 (导出/注册) 键粘滞 last-good；
-/// published 整体替换。组合顺序固定：declared → generated（键序）→ published
-/// （PluginHostManager.cs:3646-3651 的泛化）。</summary>
-public sealed class ContributionSlot
+/// <summary>粘滞键 = 完整注册三元组 (PluginId, ExportName, ExtensionPointName)，Ordinal。
+/// 不用 (pluginId, exportName) 二元组：其与注册键的等价性只在"每种贡献恰有一个
+/// extension point"时成立（今日 MCP 只有 McpDiscover、Skills 只有 Skills；目录共
+/// 6 个名字，ReplControlMessages.cs:194-226），将来出现第二个同贡献面即静默碰撞。</summary>
+internal readonly record struct SlotSourceKey(
+    string PluginId, string ExportName, string ExtensionPointName);
+
+/// <summary>槽状态三部，各部的存在性与语义种类自持：
+/// - declared：每轮重算——这是 **skills 语义**（声明根每 pass 重新枚举，
+///   PluginHostManager.cs:308-309, 3585-3588）；MCP **没有**这一部：其声明面
+///   （extensions 条目 + mcp 数据文件）经 ManifestExportName 合成注册进入同一个粘滞袋、
+///   受差分跳过保护（:3975-3990, :4014-4019；PluginMcpCoordinator.cs:345-347）；
+/// - generated：按 SlotSourceKey 粘滞 last-good；
+/// - published：整体替换（skills 专属；MCP 无此部）。
+/// **组合顺序是语义**：declared → generated（粘滞袋插入序）→ published。"插入序"指今日
+/// `Dictionary` 迭代序——首次成功写入序，含 RemovePluginSkillContribution 删除后重插的
+/// 再序效应（PluginHostManager.cs:3632, 3647-3651, 3683-3684）——而**不是**键排序：
+/// SkillCatalog 对插件内同名技能取首现者胜、后到者记 shadowed 诊断
+/// （SkillCatalog.cs:679-686，注释 :664-667 明言组合序由调用方负责），键排序会翻转
+/// 同名胜负、破坏 A 期行为保持。槽表实现必须逐字复现该序。</summary>
+internal sealed class ContributionSlot
 {
     public string PluginId { get; }
     public string KindName { get; }
-    public IReadOnlyList<ContributionDescriptor> Declared { get; }        // 每轮重算
-    public IReadOnlyDictionary<SlotSourceKey, IReadOnlyList<ContributionDescriptor>> Generated { get; }
-    public IReadOnlyList<ContributionDescriptor>? Published { get; }      // null = 从未发布
+    public IReadOnlyList<ContributionDescriptor>? Declared { get; }       // null = 该种类无此部
+    public IReadOnlyDictionary<SlotSourceKey, IReadOnlyList<ContributionDescriptor>>? Generated { get; }
+    public IReadOnlyList<ContributionDescriptor>? Published { get; }      // null = 该种类无此部
     public bool HoldsFace { get; }   // 持槽即有面：publish-only 插件被撤销时仍清其发布部分
 }
 
@@ -241,14 +286,14 @@ public sealed class ContributionSlot
 /// 竞争的迟到提交（PluginHostManager.cs:3636-3654 的泛化）。取代 Skills 四字典
 /// （pluginDeclarativeSkills/pluginGeneratedSkills/pluginPublishedSkills/contributedSkillPlugins）
 /// ——比较器统一为 Ordinal（行为等价，消除 §1 声明风格不一致）。</summary>
-public sealed class ContributionSlotTable { /* UpdateSlot / RemoveSlot / HoldsFace / ClearAll */ }
+internal sealed class ContributionSlotTable { /* UpdateSlot / RemoveSlot / HoldsFace / ClearAll */ }
 ```
 
-MCP 侧同一三部形状的**既存实现**是 `PluginMcpCoordinator`：它的
-`contributions`（`PluginMcpCoordinator.cs:75-76`）按注册键的粘滞袋 = generated 部分
-（注册三元组即 (pluginId, exportName) 的等价键控），其发布走自己的修订 gate（
+MCP 侧的**既存实现**只落槽三部中的 generated 一部：`PluginMcpCoordinator.contributions`
+（`PluginMcpCoordinator.cs:75-76`）是按完整注册三元组键控的粘滞袋（无 declared、无
+published 部——manifest 声明面经合成注册同入此袋），其发布走自己的修订 gate（
 `ReferenceEquals(latestRevision, revision)` 守卫 + 单引用原子交换，`:492-505`）。
-框架不搬移这个状态：MCP 消费适配器把 coordinator 注册为槽形状的实现方，槽抽象用于
+框架不搬移这个状态：MCP 消费适配器把 coordinator 注册为槽的实现方，槽抽象用于
 face 判定、清理与目录化，**不改 coordinator 的修订语义**。
 
 ### 3.4 指纹专域规则（红线落实）
@@ -267,6 +312,11 @@ deps → isolation → caps → extensions → data → mcp → triggers → ins
    （`${...}` 原样），运行期展开值只影响 GenerationKey 等派生面（ADR 0039 stage 2a；
    ADR 0037 "paths enter the fingerprint in their resolved form" 仅适用于 triggers 的
    展开监视路径与 data 域的采集内容，两者本框架均不改）。
+4. 条目的**收录不变量**钉死（两者恰是 extensions/data 两指纹域的枚举输入，收录面一变
+   即指纹漂移）：extensions 未知 kind 今日丢弃、不进 `descriptor.Extensions`
+   （`PluginManifest.cs:630-637` 的 continue）；数据条目未知名今日**仍采集**、进
+   `descriptor.DataEntries`（`:506-510`）。目录重写必须逐字保留这两条；黄金夹具必须
+   含未知 kind 与未知数据名样本（不能只靠"值相同"间接兜底）。
 
 ---
 
@@ -277,11 +327,15 @@ deps → isolation → caps → extensions → data → mcp → triggers → ins
 ```csharp
 /// <summary>kernel 侧唯一的事件差量引擎。输入是宿主既有四类事件，输出是按种类的
 /// 差量投递。保持的语义（逐项对应现状行号见 §0 红线 2）：
-/// - 注册帧：按种类导出集 diff（SkillExportSetsLock/DiffSkillExportSets 泛化；
-///   MCP 的 mcpSnapshot 过滤泛化为其导出集来源 = ReplExtensionPointName.McpDiscover）；
-///   未变帧零动作，但 reload 强制与重试集追加（PluginHostManager.cs:3250-3252 的并集语义）。
-/// - 审批：previouslyBlocked ∪ blocked 上取成员翻转者 ∩ HoldFace(种类)
-///   （PluginHostManager.cs:2317-2321 泛化）。
+/// - 注册帧：PerPlugin 形状按种类导出集 diff（SkillExportSetsLock/DiffSkillExportSets
+///   泛化；未变帧零动作，reload 强制与重试集追加，PluginHostManager.cs:3250-3252 的并集
+///   语义）；RegistryWide 形状（MCP）**每帧全量快照投递**——注册级差分跳过由
+///   coordinator 内部完成（PluginMcpCoordinator.cs:333-347），宿主侧今日就是每帧无条件
+///   发布（:3255-3269），不在宿主侧做导出集预过滤。
+/// - 审批：PerPlugin 形状取成员翻转者 ∩ HoldFace(种类)（PluginHostManager.cs:2317-2321）；
+///   RegistryWide 形状今日是**无条件全量快照重发布**（:2355-2360），face 过滤不适用于
+///   它——撤销插件的清理恰恰依赖全量快照（其注册从快照消失，coordinator :333-336
+///   据此丢弃贡献；face 过滤后投子集等于抹掉其余插件的粘滞贡献）。
 /// - 强制集：MarkReloadForce（gate 下、reconcile 串行内、重载帧发出前，:3403-3408）→
 ///   DrainReloadForces（epoch 前进或倒退即排；null epochs 全量排；:3416-3436）→
 ///   种类投递器按自己的形态消费（MCP=forced 重发布；Skills=单插件 pass）。
@@ -290,7 +344,7 @@ deps → isolation → caps → extensions → data → mcp → triggers → ins
 ///   MCP 不用（其 retry 在 coordinator 修订引擎内）。
 /// - 按插件单飞排空：Running/Pending flight + 排空循环 + finally re-arm
 ///   （:3446-3527 泛化为种类无关调度器；gate 永不跨 await 持有的规则不变）。</summary>
-public sealed class ContributionCoordinator
+internal sealed class ContributionCoordinator
 {
     public void OnRegistryFrame(ContributionRegistryFrame frame);
     public void OnApprovalTransition(IReadOnlySet<string> previouslyBlocked, IReadOnlySet<string> blocked);
@@ -301,11 +355,22 @@ public sealed class ContributionCoordinator
     public void Reset();                               // 宿主换代清空（:955-957）
 }
 
-/// <summary>种类投递端：协调器算出的差量由适配器消费。</summary>
-public interface IContributionDelivery
+/// <summary>种类投递端：协调器算出的差量由适配器消费。两种投递形状，由种类声明
+/// （两种类今日一者一形，不得互换）：
+/// - RegistryWide：整注册表替换语义——投递入参是**全量快照**。coordinator 以入参为
+///   活跃集做差分（candidateContributions 按入参过滤，PluginMcpCoordinator.cs:333-336），
+///   投递子集即等于抹掉其余插件的粘滞贡献。MCP 是此形：注册帧、审批转换、Start 种子
+///   都必须帧级全量投递（宿主今日形态 :992, :2355-2360, :3255-3269），forced 集作伴随参数。
+/// - PerPlugin：目标化单插件 pass；face 过滤与审批差量只作用于这一形（skills）。</summary>
+internal interface IContributionDelivery
 {
     ContributionKindContract Kind { get; }
+    ContributionDeliveryShape Shape { get; }   // RegistryWide / PerPlugin
     bool HoldsFace(string pluginId);
+    /// <summary>RegistryWide 形：帧级全量投递（frame.Registrations 为全量注册快照，
+    /// frame.ForcedPlugins 为强制集）。</summary>
+    void PublishFrame(ContributionFrameInput frame);
+    /// <summary>PerPlugin 形：目标化 pass。</summary>
     Task ReconcileAsync(string pluginId, ContributionReconcileInput input, CancellationToken token);
 }
 ```
@@ -314,7 +379,7 @@ public interface IContributionDelivery
 
 | | MCP 投递适配器 | Skills 投递适配器 |
 |---|---|---|
-| 差量→动作 | plain 集 + forced 集合成 `PublishRegistry(snapshot, forced)`（`PluginHostManager.cs:3375-3395` 现状调用形态不变） | 单插件 pass：声明重走 + 逐导出粘滞 invoke + 槽组合提交（`ReconcilePluginSkillsAsync` 现状逻辑迁入适配器） |
+| 投递形状与差量→动作 | RegistryWide：每帧全量快照 + forced 集 → `PublishRegistry(snapshot, forced)`（`PluginHostManager.cs:3375-3395` 现状调用形态不变；审批转换仍是无条件全量重发布 `:2355-2360`；注册级差分跳过留在 coordinator 内部） | PerPlugin：单插件 pass——声明重走 + 逐导出粘滞 invoke + 槽组合提交（`ReconcilePluginSkillsAsync` 现状逻辑迁入适配器） |
 | 保留的真实差异 | `PluginMcpCoordinator` 修订引擎、代际生命周期、merge 冲突中止、adjustment 链、commit-on-publish——**全部原地不动** | `SkillCatalog` FS watcher/目录行走/优先级合并/渐进提交——**全部原地不动** |
 | 槽实现 | coordinator 的按注册粘滞袋（§3.3） | `ContributionSlotTable` 槽表 |
 
@@ -328,7 +393,7 @@ FS watcher/目录行走是两消费端引擎的真实差异，不下沉（任务
 `ContributionKindMetadata` 成为种类元数据，两种类共享框架级旋钮：
 
 ```csharp
-public sealed record ContributionKindMetadata(
+internal sealed record ContributionKindMetadata(
     int? MaxDeclaredEntriesPerDeclaration,   // Skills: 32（根/条目，:3779）；MCP: null（现状无界）
     int? MaxComputedEntries,                 // Skills: 256（:3785）；MCP: null（现状无界）
     bool StickyPerSourceKey,                 // 两种类均 true；键 = (pluginId, 导出/注册)
@@ -339,14 +404,24 @@ public sealed record ContributionKindMetadata(
 
 **MCP 声明条目获得插值对等**（C 期）：
 
+- `extensions.McpDiscover` 条目：**显式 opt-in**——条目新增可选成员（如
+  `"interpolate": true`）后才在解释期（`TryToMcpDefinition` 入口）展开 `${env.*}`/
+  `${var.*}`。opt-in 成员本身改变条目的规范 JSON → extensions 指纹域变化 → 重批
+  （ADR 0037），因此**全部现存条目（无该成员）解释路径与今日逐字节相同，零指纹与
+  零运行期变化**。不能无 opt-in 直接展开：extensions 域哈希字面量形态，若对现存条目
+  直接展开，展开值进入 `McpServerDefinition` → GenerationKey 变化 → 存量已批插件的
+  **执行面**（启动哪个 command）随环境静默改变而无需重批，违背 ADR 0037 的生效面原则
+  （skills roots 能用字面量指纹先例，是因为其收录 deny-wins 于已批 read 授权内——
+  ADR 0039 stage 2a；MCP command 没有对应的已批范围）。
 - `mcp` 数据条目路径经 manifest 变量表展开后再走既有采集管线（`CollectDataEntry` 增加
   变量表参数；展开后仍执行 `IsWithinRoot`，逃逸即错误标记 → 粘滞 last-good 路径）。
-  指纹安全：`data` 域哈希的是**采集内容**的规范 JSON/错误（`PluginDeclarationFingerprint.cs:90-97`），
-  路径本身不入哈希，插值只改变找到哪个文件，与现状的环境依赖同性质。
-- `extensions.McpDiscover` 条目值在解释期（`TryToMcpDefinition` 入口）展开 `${env.*}`/
-  `${var.*}`：指纹走 `extensions` 域的**字面量**形态（与 skills roots 同一先例），展开值
-  进入 `McpServerDefinition` → GenerationKey 随环境变化 → 代际按 key 重接，语义正确且
-  指纹字节稳定。
+  `data` 域哈希的是**采集内容**的规范 JSON/错误（`PluginDeclarationFingerprint.cs:90-97`），
+  路径本身不入哈希——但其推论必须显式承认：**存量路径含字面 `${...}` 的声明今日必然
+  采集失败**（字面路径不存在，`data` 域哈希 `error:` 文本，`:90-97`），C 期插值后采集
+  成功、`data` 域改哈希采集内容 JSON → **指纹字节翻转 → 审批撤销直至重批**。这是
+  fail-closed 且与 ADR 0037 同向（生效内容变了就重批），但它是 C 期唯一触及存量审批的
+  变化，边界用黄金夹具钉住：夹具断言不含 `${...}` 的路径指纹逐字节不变、含 `${...}`
+  者翻转且翻转前值恰为对应 `error:` 文本的哈希。
 - **禁止**把 extensions 条目解释出的服务器并入 `descriptor.McpServers`：那会把它们带入
   `mcp` 专域哈希，改变现存含 extensions 条目插件的指纹（红线 1）。
 - **超时对等**：extensions 条目允许显式四超时覆盖，缺省取元数据默认
@@ -378,7 +453,11 @@ public sealed record ContributionKindMetadata(
 **行为保持论证**：纯状态重组——同样的 gate、同样的键、同样的组合顺序与提交复查点；
 协调器是 `SkillExportSetsLock`/`DiffSkillExportSets`/`HasSkillFaceLock`/flight/
 `skillsRetryPending` 的一对一搬移（含"未变帧 + reload/retry 追加"的并集语义与
-"gate 永不跨 await"规则）。无任何可观察语义面变化。
+"gate 永不跨 await"规则）。两处必须显式钉住而非顺手"改进"：其一，槽组合序按粘滞袋
+**插入序**复现（§3.3——键排序会翻转插件内同名技能胜负，SkillCatalog 首现者胜依赖它）；
+其二，投递形状在 A 期就按 §4.1 落定——MCP 全部事件保持帧级全量快照投递（含审批转换的
+无条件重发布，`:2355-2360`），skills 保持 face 过滤的 per-plugin 投递，二者不互换。
+无任何可观察语义面变化。
 
 **测试策略**：A 期开工前先落**指纹黄金夹具**（代表性 manifest 集的
 `PluginDeclarationFingerprint.Compute` 输出快照进测试数据）；既有套件
@@ -390,27 +469,41 @@ public sealed record ContributionKindMetadata(
 ### B 期：文法与目录统一
 
 - `ContributionKindCatalog` 取代 `PluginExtensionKind`/`PluginDataName` 的全部消费点；
-  `ParseDeclared` 委托接手 `TryLoad` 内 per-kind 解释块（`PluginManifest.cs:354-395` 形状
-  的泛化）；合成注册、快照字典、发布分支改由契约驱动。
+  `ParseDeclared` 接手 TryLoad 内 per-kind 解释块中**本框架已覆盖的种类**——skills 的
+  根走查（逐条目 inert）与 mcp 的数据文件解释（`PluginLevelError` 通道，§3.2）；MCP 的
+  extensions 条目维持解析期原样透传不变（§3.2 注释）；合成注册、快照字典、发布分支改由
+  契约驱动。**ui 块不迁移**：B 期以"仅文案"的最小契约注册 ui（KindName/DataEntryName/
+  未知名文案），其 TryLoad 解释块、`PluginUiFormDefinition` 产物、`descriptor.UiForm`
+  字段、data 域对 ui 条目内容的采集哈希（`PluginDeclarationFingerprint.cs:90-97` 遍历
+  `DataEntries` 不挑名字）全部原样保留——§8 是容纳性论证，不是 B 期实施范围。
 - 指纹输入字节不变的论证：统一文法产出的描述符字段值与现状逐字节相同——extensions 域
   哈希原始条目的规范 kind + 规范 JSON（`ReadExtensions` 的 `entry.Clone()` 原样保留，
   `PluginManifest.cs:639-647`），data 域哈希采集内容，触发器域哈希展开路径，`mcp` 域哈希
   Id+GenerationKey——契约只是**解析入口**换了归属，喂给 `PluginDescriptor` 的值相同。
   黄金夹具在 B 期全程不得移动。
-- 本期唯一**有意的可观察变化**：unknown-data-entry 诊断文案由目录生成，同列 `mcp` 与
-  `ui`（修复 §1 文案滞后；今日 `ui` 声明不会误诊断，仅文案误导）。相关文本断言
-  （若有）随文案一并更新，语义断言不动。
+- 本期**有意的可观察变化**仅限诊断文案两处，均不入任何指纹域（`descriptor.
+  ExtensionDiagnostics` 不被 `PluginDeclarationFingerprint.Compute` 触及，
+  `PluginDeclarationFingerprint.cs:54-124` 只哈希 `Extensions` 的 kind+data）：
+  其一，unknown-data-entry 文案由目录生成，同列 `mcp` 与 `ui`（修复 §1 文案滞后；
+  今日 `ui` 声明不会误诊断，仅文案误导）；其二，unknown extension kind 文案同样改为
+  目录生成——今日手写文案含大小写建议句（"case is not significant and the lowercase
+  'skills' form is recommended"，`PluginManifest.cs:632-635`），目录生成文本不逐字
+  复现该句。相关文本断言随文案一并更新，语义断言不动。
 
 **测试策略**：同 A 期套件 + `PluginManifestTests` 扩展目录驱动用例（未知 kind/未知
 data 名文案、规范拼写记录、大小写不敏感路由）；指纹黄金夹具全绿。
 
 ### C 期：可配置性对等
 
-- 元数据旋钮接线；MCP 数据条目路径插值与 extensions 条目插值 + 可选超时覆盖（§5）。
+- 元数据旋钮接线；MCP 数据条目路径插值与 extensions 条目 opt-in 插值 + 可选超时覆盖（§5）。
 - **行为保持论证**：缺省路径的解析结果与 GenerationKey 输入与今日逐字节相同（
-  `McpServerGeneration.cs:69-131` 的哈希输入在缺省值下不变）；插值只在新声明里可观察，
-  新声明本就要求重批（ADR 0037）；错误路径走既有粘滞标记形态。mcp.json stdio
-  `workingDirectory` 无包含检查（§1 缺口）**不在本期静默修补**——单列加固项。
+  `McpServerGeneration.cs:69-131` 的哈希输入在缺省值下不变）；extensions 条目插值因
+  opt-in 成员严格限于新声明（新成员 → extensions 域变化 → 重批，ADR 0037）；错误路径
+  走既有粘滞标记形态。**一类存量声明例外且必须显式承认**：数据条目路径含字面 `${...}`
+  者——今日必然采集失败（`data` 域哈希 `error:` 文本），C 期采集成功后 `data` 域改哈希
+  采集内容，指纹字节翻转 → 审批撤销直至重批（fail-closed，§5 详述边界与夹具要求）。
+  mcp.json stdio `workingDirectory` 无包含检查（§1 缺口）**不在本期静默修补**——单列
+  加固项。
 - Skills 聚合预算（§1 缺口）为**显式决策项**：在 `UpdatePluginContribution` 处加每槽
   条目预算会丢弃超额条目（可观察行为变化），单独评审、单独测试，不夹带进框架迁移。
 
@@ -460,7 +553,8 @@ published（活动模型帧）；无导出集 → 注册帧 diff 对其零动作
 
 结论：两未来种类的形状（无计算形式、无发布形式、仅声明、专域哈希、无导出集）都在
 契约的可选成员与槽的三部可空性内；**实施顺序上本设计不迁移它们**（红线 5），
-仅在契约评审时以其为反例校验表达力。
+仅在契约评审时以其为反例校验表达力。B 期对 ui 的"仅文案"最小目录注册（§6-B）是名字
+路由与诊断文案的收编，不是 ui 种类的迁移——其解释块与 `descriptor.UiForm` 原样保留。
 
 ---
 
@@ -468,19 +562,21 @@ published（活动模型帧）；无导出集 → 注册帧 diff 对其零动作
 
 | # | 风险 | 缓解 |
 |---|---|---|
-| 1 | 指纹字节漂移（重组 `PluginDescriptor` 构造、规范 JSON、域序） | A 期开工先落黄金夹具；域序冻结 + 新种类禁专域（§3.4）；B 期夹具全绿为合入门 |
+| 1 | 指纹字节漂移（重组 `PluginDescriptor` 构造、规范 JSON、域序；未知 kind 收录面翻转） | A 期开工先落黄金夹具，样本必须覆盖：未知 kind、未知数据名、含字面 `${...}` 的数据路径；域序冻结 + 收录不变量（§3.4 规则 4）+ 新种类禁专域；B 期夹具全绿为合入门 |
 | 2 | 误把 MCP 修订语义搬进共用引擎（代际/merge/commit-on-publish 是消费端真实差异） | 红线：coordinator 文件在 A/B 期不动；适配器只传 plain/forced 集（现状 `RepublishRegistry` 形态） |
 | 3 | `unknown_manifest_plugin` 瞬态窗口被统一行为放大（快照字典删条目 vs 合成注册滞后一拍，§1） | 保持窗口语义并在协调器测试中显式文档化该瞬态；禁止"顺手"重排删条目与重建顺序 |
 | 4 | mcp.json stdio `workingDirectory` 无根包含（`..` 逃逸，§1） | 非本框架范围；单列加固项；C 期新插值路径必须保持含限 deny-wins，不得复制该缺口 |
 | 5 | 动态形式超时不对称在 C 期对等时改变现存 GenerationKey | 缺省值逐字节等于今日固定值（`McpServerGeneration.cs:124-127`）；仅显式覆盖者 key 变化（新声明 → 重批） |
 | 6 | 插值把 extensions 条目服务器引入 `mcp` 专域 → 存量插件指纹撤销 | §5 明令禁止；`descriptor.McpServers` 内容维持"仅数据文件来源" |
 | 7 | Skills 插件面无聚合上限（快照重建成本不受硬界） | 显式决策项不夹带（§6 C 期）；框架层不静默加界 |
-| 8 | 诊断文案变化（B 期目录生成，同列 mcp+ui） | 枚举为唯一有意可观察变化；文本断言随文案更新，语义断言不动 |
+| 8 | 诊断文案变化（B 期目录生成：unknown-data-entry 同列 mcp+ui；unknown extension kind 文案不复现手写大小写建议句） | 枚举为仅有意的可观察变化（均不入指纹域，`descriptor.ExtensionDiagnostics` 不被 Compute 触及）；文本断言随文案更新，语义断言不动 |
 | 9 | 并发语义回归（gate 跨 await、代际 token、审批复查时点、单飞 re-arm） | 协调器为逐行搬移；镜像语义单测覆盖 pending coalesce/re-arm/复查点；`skillsReconcileGate` 永不跨 await 的注释契约随之迁移 |
 | 10 | wire 兼容破坏 | host 帧三元组、registry/reload/approval 载荷、capability 结果形状全部不变；A-C 期均不触碰 `ReplControlMessages` 的既有成员（只增） |
 | 11 | AOT：抽象基类上误用反射序列化 | 框架层不序列化 `ContributionDescriptor`；JSON 上下文保持封闭类型；收尾跑 RID publish 检查 |
 | 12 | commit-on-publish 语义被误解为缺陷而"修复"：并发 plain 发布可让 forced 重跑成果延迟一拍；`EnqueueRegistry` 只继承 forced 集不继承未提交 discovery（`PluginMcpCoordinator.cs:154-162`） | 保持现状语义（文档注释 `:40-44` 即契约）；§1 记录为已知特性，不改 |
 | 13 | 并行小缺口（`skill://` 平面对 inline BodyText 无自身尺寸复验、`SkillPromptComposer` 分组非优先级序、比较器声明不一致） | 各自单列修复项，不混入框架迁移（仓库变更纪律：不混无关格式化/重构） |
+| 14 | C 期插值触及存量审批：数据条目路径含字面 `${...}` 的声明今日必然采集失败，插值成功后 `data` 域哈希由 `error:` 文本变为采集内容 → 指纹翻转 → 审批撤销 | §5/§6-C 显式承认；黄金夹具钉边界（不含 `${...}` 者逐字节不变）；fail-closed 方向与 ADR 0037 一致 |
+| 15 | 投递形状误接：把 RegistryWide 种类（MCP）按 per-plugin 子集投递会抹掉其余插件的粘滞贡献（coordinator 以入参为活跃集过滤，`PluginMcpCoordinator.cs:333-336`） | 投递形状为契约显式成员（§4.1）；A 期论证钉住 MCP 全事件帧级全量投递（§6-A）；镜像语义单测覆盖审批转换的全量重发布与撤销插件的快照清理 |
 
 ---
 

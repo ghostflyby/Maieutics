@@ -56,14 +56,21 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
    never serializes the abstraction, source-generated JSON contexts stay closed-type, and
    consumers pattern-match to their own concrete shape — AOT-safe by construction.
 
-2. **Contribution slots.** One slot per `(pluginId, kind)` with three parts — declared
-   (recomputed every pass), generated (sticky last-good keyed by the plugin's
-   export/registration), published (wholesale replacement) — assembled and committed
-   atomically under the owning gate, with the slot-holder face check and the
-   generation-token commit decline preserved. The skills four-dictionary state becomes a
-   shared `ContributionSlotTable` (comparers unified to Ordinal — behavior-equivalent); the
-   MCP coordinator's per-registration candidate bag is the same three-part shape realized
-   behind its own revision gate and is *not* relocated.
+2. **Contribution slots.** One slot per `(pluginId, kind)` whose parts are kind-scoped:
+   declared (recomputed every pass — a skills-only semantic), generated (sticky last-good
+   keyed by the full registration triple — plugin, export, extension point — so a second
+   contributing extension point can never silently collide), and published (wholesale
+   replacement). Parts are optional per kind: skills uses all three; MCP realizes only the
+   sticky generated part — its declaration surface (extension entries plus the `mcp` data
+   file) rides the same bag through the `maieutics.json` synthetic registration under the
+   coordinator's differential skip. Slots assemble and commit atomically under the owning
+   gate, with the slot-holder face check and the generation-token commit decline preserved,
+   and the composition order is part of the contract: generated parts iterate in sticky-bag
+   insertion order (today's `Dictionary` order, removal-reinsertion included, never key
+   order), because the skill catalog's first-wins same-name adjudication depends on the
+   caller's order. The skills four-dictionary state becomes a shared
+   `ContributionSlotTable` (comparers unified to Ordinal — behavior-equivalent); the MCP
+   coordinator is *not* relocated.
 
 3. **One differential coordinator.** The kernel-side event-diff engine is written once: a
    registry frame diffs per-kind export sets; an approval snapshot takes the symmetric diff
@@ -72,7 +79,15 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
    epoch-less legacy hosts) plus triggers; kinds with a kernel-side retry set implement
    never-succeeded-stays-new; passes serialize and coalesce per plugin (single-flight
    drain with the finally re-arm; the gate is never held across an await). Per-kind
-   deliveries go through an `IContributionDelivery` adapter.
+   deliveries go through an `IContributionDelivery` adapter that declares one of two
+   shapes, never interchanged: **registry-wide** — the delivery consumes frame-level
+   full-snapshot publishes (a subset delivery would erase every other plugin's sticky
+   contributions, because the coordinator treats its input as the active set), so MCP
+   keeps unconditional full republishes for registry frames, approval transitions, and the
+   start seed, with its registration-level differential skip staying inside the
+   coordinator; and **per-plugin** — the face-filtered targeted form (skills only), where
+   approval transitions reconcile exactly the plugins whose classification flipped
+   intersected with the kind's face.
 
 4. **Consumer engines stay kind adapters.** The MCP revision engine (generations, merge
    conflict abort, adjustment-chain folds, commit-on-publish) and the skill catalog
@@ -83,13 +98,22 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
 5. **Configurability parity through kind metadata.** Bounds, stickiness, retry, default
    timeouts, and declaration interpolation become `ContributionKindMetadata`; both kinds
    share the framework knobs. MCP declaration entries gain `${env.*}`/`${var.*}`
-   interpolation (data-entry path at collection, extension entries at interpretation) and
-   optional timeout overrides whose defaults are byte-identical to today's fixed values.
-   Two standing rules protect approvals: interpolated extension entries never enter the
-   fingerprint's `mcp` domain (the `extensions` domain hashes their literal form, the
-   skills-roots precedent), and a new kind must fit the generic `extensions`/`data`
-   fingerprint domains — introducing a new dedicated domain changes the fingerprint bytes
-   for every plugin and is out of scope for this framework.
+   interpolation and optional timeout overrides, with approval protection stated per form:
+   extension-entry interpolation is **opt-in** through a new optional member — the member
+   itself changes the entry's canonical JSON, so all existing entries keep today's literal
+   interpretation with zero fingerprint or runtime change, and an opted-in entry's resolved
+   values still never enter the `mcp` fingerprint domain (the `extensions` domain hashes
+   the literal form; opt-in is required because an MCP command, unlike skill roots, has no
+   approved-scope containment that deny-wins env-driven redirection). Data-entry-path
+   interpolation is not fingerprint-neutral for affected stock declarations: a literal
+   `${...}` path fails collection today (the `data` domain hashes the `error:` text) and
+   succeeds once interpolation lands, flipping the fingerprint — a fail-closed
+   re-approval, bounded to declarations that are broken today and pinned by golden
+   fixtures. Timeout-override defaults are byte-identical to today's fixed values, so
+   existing generation keys are unaffected. One further standing rule: a new kind must fit
+   the generic `extensions`/`data` fingerprint domains — introducing a new dedicated
+   domain changes the fingerprint bytes for every plugin and is out of scope for this
+   framework.
 
 6. **Registration convergence.** After the migration, adding a contribution kind touches
    exactly four places: the kernel-side kind contract (one closed class + one catalog
@@ -101,16 +125,27 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
 
 7. **Migration in three behavior-preserving phases.** A: extract the shared engine
    (descriptors, slot table, coordinator) and rewire skills onto it, the MCP coordinator
-   file untouched. B: unify the grammar and catalog under `ContributionKindCatalog` with a
-   unified parse entry that feeds `PluginDescriptor` byte-identical values. C: wire the
-   metadata knobs and MCP interpolation/timeout parity. Fingerprint golden fixtures are
-   pinned before phase A and must not move through all phases; the existing suites
-   (`PluginMcpCoordinatorTests`, `PluginSkillsContributionTests`,
-   `PluginDeclarativeExtensionsTests`, `PluginHostInvokeTests`, and the broader plugin
-   integration tests) must stay green with unchanged semantics in every phase. The one
-   deliberate observable change is in phase B: catalog-generated unknown-data-entry
-   diagnostics list both `mcp` and `ui` (today's text names only `mcp` while `IsKnown`
-   accepts both).
+   file untouched; slot composition reproduces the sticky-bag insertion order, and the
+   delivery shapes are settled in this phase — MCP keeps frame-level full-snapshot
+   publishes for every event type, skills keeps face-filtered per-plugin passes. B: unify
+   the grammar and catalog under `ContributionKindCatalog` with a unified parse entry that
+   feeds `PluginDescriptor` byte-identical values; the ui interpretation block stays a
+   TryLoad special case (ui registers for name routing and diagnostics text only — its
+   `PluginUiFormDefinition` product, `descriptor.UiForm`, and its `data`-domain collection
+   hash are untouched), and the catalog preserves today's collection invariants (unknown
+   extension kinds are dropped from the descriptor; unknown data names are still
+   collected). C: wire the metadata knobs and MCP interpolation/timeout parity under the
+   opt-in and stock-declaration rules of decision 5. Fingerprint golden fixtures are
+   pinned before phase A — with unknown-kind, unknown-data-name, and literal-`${...}`-path
+   samples — and must not move through all phases (the `${...}` fixtures pin the phase-C
+   flip boundary); the existing suites (`PluginMcpCoordinatorTests`,
+   `PluginSkillsContributionTests`, `PluginDeclarativeExtensionsTests`,
+   `PluginHostInvokeTests`, and the broader plugin integration tests) must stay green with
+   unchanged semantics in every phase. The deliberate observable changes are diagnostics
+   text only (no fingerprint domain reads them): in phase B the catalog-generated
+   unknown-data-entry text lists both `mcp` and `ui` (today's text names only `mcp` while
+   `IsKnown` accepts both), and the unknown-extension-kind text is catalog-generated
+   without today's handwritten case-note sentence.
 
 8. **Non-goals.** UI forms and triggers are not migrated; this ADR only records that the
    contract's optional forms (no compute form, no publish form, declared-only slots,
@@ -126,9 +161,12 @@ reload-epoch deferred forcing, and publish-only survival. UI forms (ADR 0038) an
 - Existing approvals survive the whole migration byte-for-byte: the fingerprint's domain
   order and every domain's input values are frozen; relocations of parsing never change
   what is hashed. A golden-fixture test makes regression observable.
-- The configurability asymmetries close: dynamic MCP discovery can opt into timeouts, MCP
-  declarations interpolate like skills roots and triggers, and defaults reproduce today's
-  values so existing generation keys (and therefore live connections) are unaffected.
+- The configurability asymmetries close under explicit approval rules: extension-entry
+  interpolation and timeout overrides are opt-in (existing declarations keep today's
+  literal interpretation and generation keys, so live connections are unaffected), while
+  data-entry paths containing literal `${...}` — which fail collection today — gain
+  interpolation and flip their fingerprint, requiring re-approval (fail-closed, bounded to
+  declarations broken today).
 - Known gaps are recorded, not silently fixed: the transient `unknown_manifest_plugin`
   window, the missing root containment for data-file stdio `workingDirectory`, the missing
   plugin-plane aggregate budget on skill snapshots, and the coordinator's by-design

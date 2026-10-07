@@ -32,10 +32,11 @@ internal sealed class CustomResourceProviderOptions
 
     /// <summary>The reserved schemes no custom provider may claim — the same set
     /// <see cref="ResourceRegistry.ReservedSchemeOwners" /> enforces at runtime (the task
-    /// plane is built-in per ADR 0028), so a claim fails configuration instead of being
-    /// silently disabled at first resolve.</summary>
+    /// plane is built-in per ADR 0028; the skill plane is the catalog whitelist per
+    /// ADR 0039), so a claim fails configuration instead of being silently disabled at
+    /// first resolve.</summary>
     internal static readonly IReadOnlySet<string> ReservedSchemes =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "workspace", "task", "mcp", "file" };
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "workspace", "task", "mcp", "file", "skill" };
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;

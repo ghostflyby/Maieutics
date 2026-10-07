@@ -13,7 +13,8 @@ internal sealed class MaieuticsStatusProvider(
     Workspace workspace,
     PluginHostManager pluginHosts,
     IMaieuticsMcpController mcpController,
-    DenoReplRegistry replRegistry)
+    DenoReplRegistry replRegistry,
+    Skills.SkillCatalog skillCatalog)
 {
     private readonly IMaieuticsMcpController mcpController =
         mcpController ?? throw new ArgumentNullException(nameof(mcpController));
@@ -33,18 +34,33 @@ internal sealed class MaieuticsStatusProvider(
 
     internal MaieuticsStatusSnapshot Capture()
     {
+        var skills = skillCatalog.Current;
         return new MaieuticsStatusSnapshot(
             runtimeConfiguration.GetStatus(),
             workspace.Capture(),
             pluginHosts.GetStatus(),
             mcpController.GetMcpServers(),
-            replRegistry.List(session.Id));
+            replRegistry.List(session.Id),
+            new SkillCatalogStatus(
+                skills.Skills.Length,
+                skills.Count(Skills.SkillSource.Workspace),
+                skills.Count(Skills.SkillSource.User),
+                skills.Diagnostics.Length));
     }
 }
+
+/// <summary>The skill catalog line of the status snapshot (ADR 0039): active skill counts
+/// per source plus the diagnostics count from the latest merged catalog.</summary>
+internal sealed record SkillCatalogStatus(
+    int TotalSkills,
+    int WorkspaceSkills,
+    int UserSkills,
+    int Diagnostics);
 
 internal sealed record MaieuticsStatusSnapshot(
     MaieuticsRuntimeStatus Runtime,
     WorkspaceSnapshot Workspace,
     PluginHostStatus Plugins,
     IReadOnlyList<MaieuticsMcpServerInfo> McpServers,
-    DenoReplListResult Repls);
+    DenoReplListResult Repls,
+    SkillCatalogStatus? Skills = null);

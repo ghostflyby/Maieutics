@@ -129,6 +129,20 @@ internal static class MaieuticsStatusRenderer
                     .AppendLine(" tools)");
         }
 
+        if (snapshot.Skills is { } skills)
+        {
+            output.Append("- Skills: ")
+                .Append(MarkdownText.CodeSpan(skills.TotalSkills.ToString()))
+                .Append(" (workspace ")
+                .Append(MarkdownText.CodeSpan(skills.WorkspaceSkills.ToString()))
+                .Append(", user ")
+                .Append(MarkdownText.CodeSpan(skills.UserSkills.ToString()));
+            if (skills.Diagnostics > 0)
+                output.Append(", diagnostics ")
+                    .Append(MarkdownText.CodeSpan(skills.Diagnostics.ToString()));
+            output.AppendLine(")");
+        }
+
         if (snapshot.Repls.Sessions.Count == 0)
         {
             output.AppendLine("- Deno REPLs: no sessions");

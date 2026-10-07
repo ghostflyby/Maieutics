@@ -294,6 +294,116 @@ public sealed class SkillCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task ARenameAcrossTheRootBoundaryRecordsOnlyTheInsideHalf()
+    {
+        WriteSkill(workspaceRoot, "alpha", "the moved skill");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+
+        // The Windows rename-out shape: the Renamed event reports the destination
+        // outside the watched root. The out-of-root half holds no state of this root
+        // and must be dropped — walking it as a region would plant an inert phantom
+        // entry (a permanent diagnostic occupying the per-root bound) that no later
+        // event of this root can release.
+        var outside = Path.Combine(Path.GetTempPath(), $"maieutics-skill-away-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(outside, "alpha"));
+        File.WriteAllText(
+            Path.Combine(outside, "alpha", "SKILL.md"),
+            "---\nname: stowaway\ndescription: lives outside the root\n---\nBody.\n");
+        try
+        {
+            Directory.Move(Path.Combine(workspaceRoot, "alpha"), Path.Combine(outside, "moved"));
+            catalog.RecordWatchedRename(
+                Path.Combine(workspaceRoot, "alpha"),
+                Path.Combine(outside, "moved"));
+
+            await AwaitSkillsAsync(catalog, clock, snapshot => snapshot.Skills.IsEmpty);
+            catalog.Current.Diagnostics.Should().BeEmpty(
+                "an out-of-root rename half must not be walked as a region of this root");
+
+            // The rename-in shape is the mirror: only the half inside the root is
+            // recorded, and the moved-in skill is discovered through it.
+            Directory.Move(Path.Combine(outside, "moved"), Path.Combine(workspaceRoot, "beta"));
+            catalog.RecordWatchedRename(
+                Path.Combine(outside, "moved"),
+                Path.Combine(workspaceRoot, "beta"));
+
+            await AwaitSkillsAsync(catalog, clock, snapshot =>
+                snapshot.Skills.Any(skill => skill.Name == "alpha"));
+            catalog.Current.Diagnostics.Should().BeEmpty();
+            catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha")
+                .Which.BodyPath.Should().Be(Path.Combine(workspaceRoot, "beta", "SKILL.md"));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ACasedEventPathRevalidatesTheKnownSkillDirectory()
+    {
+        if (OperatingSystem.IsLinux())
+            Assert.Skip("The watched-path comparison is ordinal on Linux by design.");
+
+        WriteSkill(workspaceRoot, "alpha", "before the cased touch");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(clock, userSource: false);
+        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+
+        // A mutator touching the tree through a differently-cased spelling of the same
+        // directory (case-insensitive volume): the event must match the known key and
+        // revalidate it — not plant an out-of-root phantom beside the stale entry.
+        File.WriteAllText(
+            Path.Combine(workspaceRoot, "alpha", "SKILL.md"),
+            "---\nname: alpha\ndescription: the edited body\n---\nBody.\n");
+        catalog.RecordWatchedChange(Path.Combine(workspaceRoot, "ALPHA", "SKILL.md"));
+
+        await AwaitSkillsAsync(catalog, clock, snapshot =>
+            snapshot.Skills.Any(skill => skill.Name == "alpha" && skill.Description == "the edited body"));
+        catalog.Current.Diagnostics.Should().BeEmpty("a cased event must resolve to the known skill directory");
+        catalog.Current.Skills.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task TheInitialScanCommitsEachSkillDirectoryProgressivelyInPrecedenceOrder()
+    {
+        WriteSkill(workspaceRoot, "ws-only", "workspace contributes");
+        WriteSkill(workspaceRoot, "shared", "the workspace winner");
+        WriteSkill(userRoot, "shared", "the user's transient view");
+        WriteSkill(userRoot, "user-only", "user contributes");
+        var commits = new List<SkillCatalogSnapshot>();
+        var clock = new FakeTimeProvider();
+        await using var catalog = SkillCatalog.Create(
+            new List<(SkillSource, string)> { (SkillSource.Workspace, workspaceRoot), (SkillSource.User, userRoot) },
+            clock,
+            NullLogger<SkillCatalog>.Instance,
+            commits.Add);
+
+        // One commit per discovered skill directory: the catalog goes live skill by
+        // skill during the initial scan, not only at its end.
+        commits.Should().HaveCount(4);
+        commits[0].Skills.Should().NotBeEmpty("the first commit already publishes a live state");
+
+        // Every intermediate state is a valid merged snapshot and the active set only
+        // grows (a later lower-source same-name entry arrives shadowed, never
+        // unshadowed first): the higher-precedence root commits before the lower one,
+        // so no transient ever shows the user's "shared" as the winner.
+        for (var index = 1; index < commits.Count; index++)
+            commits[index - 1].Skills.Select(static skill => skill.Name)
+                .Should().BeSubsetOf(commits[index].Skills.Select(static skill => skill.Name));
+        foreach (var state in commits)
+            if (state.Skills.Any(skill => skill.Name == "shared"))
+                state.Skills.Single(skill => skill.Name == "shared").Source.Should().Be(SkillSource.Workspace);
+
+        commits[^1].Skills.Should().HaveCount(3);
+        catalog.Current.Skills.Should().HaveCount(3);
+        catalog.Current.Diagnostics.Should().ContainSingle(diagnostic =>
+            diagnostic.Contains("shared") && diagnostic.Contains("shadowed"));
+    }
+
+    [Fact]
     public async Task RenamingTheSkillFileAwayRemovesTheSkill()
     {
         WriteSkill(workspaceRoot, "alpha", "the first skill");

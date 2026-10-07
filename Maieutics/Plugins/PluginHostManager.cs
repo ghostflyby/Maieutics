@@ -326,6 +326,14 @@ internal sealed class PluginHostManager(
     /// no longer sees a plugin (removed, revoked, or the manager disposing) clears it.</summary>
     private readonly HashSet<string> contributedSkillPlugins = new(StringComparer.Ordinal);
 
+    /// <summary>Plugins whose last skill reconcile left at least one generator export
+    /// failed or unusable (a transient invoke failure racing a reload or a busy worker):
+    /// the next registry frame retries them — the MCP coordinator's
+    /// "never-succeeded stays new" discipline — instead of waiting for an export-set
+    /// change that may never come. Cleared by the first fully successful pass. Mutated
+    /// only under <see cref="gate"/>.</summary>
+    private readonly HashSet<string> skillsRetryPending = new(StringComparer.Ordinal);
+
     // —— Plugin declaration approval (ADR 0037) ——
 
     /// <summary>The persisted approval registry, loaded once from
@@ -358,6 +366,22 @@ internal sealed class PluginHostManager(
     private readonly List<PluginRegistration> registrations = [];
     private readonly List<PluginRegistration> hostRegistrations = [];
     private readonly List<PluginState> states = [];
+
+    /// <summary>Per-plugin count of completed host lifecycle mutations (reloads and
+    /// stops), mirrored from the last registry frame that carried
+    /// <c>reloadEpochs</c>. Reload-driven forced rediscovery defers to a frame whose
+    /// epoch proves the worker was replaced, so the forced invoke observes the
+    /// reloaded module text. Mutated only under <see cref="gate"/>.</summary>
+    private readonly Dictionary<string, int> hostReloadEpochs = new(StringComparer.Ordinal);
+
+    /// <summary>Plugins whose reload was sent but whose post-reload forced rediscovery
+    /// has not landed, with the epoch a frame must report before the force runs. Marks
+    /// are set before the reload frames ship (no completion frame can precede them) and
+    /// drained by <see cref="UpdateRegistry"/>; the host's per-plugin epoch is monotonic
+    /// per process, so an unrelated frame — another plugin's reload completing, a
+    /// mount-table change — cannot drain a mark early. Mutated only under
+    /// <see cref="gate"/>.</summary>
+    private readonly Dictionary<string, int> pendingReloadForces = new(StringComparer.Ordinal);
 
     /// <summary>Pids of the REPL processes the attached plugin host derived, keyed by pid to the
     /// session id the host reported. Used to release the pid-scoped registrations (session identity
@@ -925,6 +949,12 @@ internal sealed class PluginHostManager(
             hostRegistrations.Clear();
             registrations.Clear();
             registrations.AddRange(DeclarativeRegistrationsLock());
+            // The reload-epoch bookkeeping belongs to one host generation: a fresh
+            // process restarts its epochs at zero, and its start seed reconciles
+            // everything anyway, so no deferred force may survive the swap.
+            hostReloadEpochs.Clear();
+            pendingReloadForces.Clear();
+            skillsRetryPending.Clear();
         }
 
         // The root deno.json must exist before the host process starts: it carries the
@@ -1452,17 +1482,25 @@ internal sealed class PluginHostManager(
                     {
                         var config = BuildConfig([reloaded]);
                         replacement = config.Plugins.FirstOrDefault();
+                        // The re-read worker's module text and declarations can change
+                        // what its exports return while its registration records stay
+                        // identical, so the reloaded plugin's MCP discovery and skill
+                        // generators re-run in the forced form — but only AFTER the
+                        // reload completes. The mark defers the force to the registry
+                        // frame whose epoch proves the worker was replaced: forcing now
+                        // would invoke the outgoing worker, and the unchanged export-set
+                        // frame that follows a reload would never re-run it. The mark
+                        // precedes the snapshot pass because a blocked→active owner's
+                        // upsert reload ships from inside it.
+                        lock (gate)
+                        {
+                            MarkReloadForceLock(reloaded.Id);
+                        }
+
                         // Declarations and capability grants follow the re-read manifest
                         // (authority stays in the kernel); dependents a re-approval just
                         // unblocked join through the same snapshot pass.
                         await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
-                        // The re-read worker's module text and declarations can change
-                        // what its exports return while its registration records stay
-                        // identical, so the reloaded plugin's MCP discovery re-runs in
-                        // the forced form and its declared skill roots re-walk — the
-                        // differential snapshot pass alone only reconciles approval
-                        // transitions.
-                        ForceRediscoverPlugin(reloaded.Id);
                         if (previouslyBlocked.Contains(reloaded.Id))
                         {
                             // The owner just transitioned blocked→active and already
@@ -1501,6 +1539,15 @@ internal sealed class PluginHostManager(
             // not let this resurrect old grants.
             if (!IsApprovalBlocked(owner.Id))
             {
+                // The replacement worker's module text may change what its exports
+                // return over unchanged registration records; the mark defers the
+                // forced rediscovery to the post-reload frame (its epoch proves the
+                // worker was replaced), exactly like the ordinary reload path above.
+                lock (gate)
+                {
+                    MarkReloadForceLock(owner.Id);
+                }
+
                 foreach (var worker in owner.Workers)
                     await SendReloadAsync(owner.Id, worker.ExportName, replacement).ConfigureAwait(false);
             }
@@ -3130,12 +3177,15 @@ internal sealed class PluginHostManager(
         PluginRegistration[] mcpSnapshot;
         PluginRegistration[] registrySnapshot;
         List<string> changedSkillPlugins;
+        List<string> forcedByReload;
         lock (gate)
         {
             // The differential skill-reconcile input: the Skills exports each plugin
             // held before the rebuild. Only plugins whose export set actually changed
             // (joined, left, or re-registered differently) reconcile; an unchanged
-            // frame takes zero action and re-invokes no generator.
+            // frame takes zero action and re-invokes no generator — unless the frame
+            // completes a requested reload (the epoch mark) or retries a plugin whose
+            // last reconcile left a failed generator.
             var skillsBefore = SkillExportSetsLock();
             hostRegistrations.Clear();
             foreach (var plugin in payload.Plugins)
@@ -3191,10 +3241,33 @@ internal sealed class PluginHostManager(
                 .ToArray();
             registrySnapshot = registrations.ToArray();
             changedSkillPlugins = DiffSkillExportSets(skillsBefore, SkillExportSetsLock());
+            forcedByReload = DrainReloadForcesLock(payload.ReloadEpochs);
+            // A drained reload force schedules the plugin's skill reconcile even though
+            // its export set is unchanged (the reloaded module text may return
+            // different output); a plugin whose last reconcile left a failed generator
+            // retries on the next frame (the MCP coordinator's "never-succeeded stays
+            // new" discipline).
+            foreach (var pluginId in forcedByReload.Concat(skillsRetryPending))
+                if (!changedSkillPlugins.Contains(pluginId))
+                    changedSkillPlugins.Add(pluginId);
         }
 
         RegistryChanges.Writer.TryWrite(registrySnapshot);
-        dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+        if (forcedByReload.Count == 0)
+        {
+            dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+        }
+        else
+        {
+            // The frame the host sends after completing a requested reload carries an
+            // unchanged export set, so the plugins whose marks this frame drained re-run
+            // their MCP discovery in the forced form — the plain differential alone
+            // would keep their pre-reload contributions forever.
+            RepublishRegistry(
+                mcpSnapshot,
+                new HashSet<string>(forcedByReload, StringComparer.Ordinal));
+        }
+
         foreach (var pluginId in changedSkillPlugins)
             ReconcilePluginSkillsInBackground(pluginId);
     }
@@ -3289,15 +3362,17 @@ internal sealed class PluginHostManager(
     private void ForceRediscoverPlugin(string pluginId)
     {
         var mcpSnapshot = McpRegistrationsSnapshot();
-        if (mcpSnapshot.Length > 0) RepublishRegistry(mcpSnapshot, pluginId);
+        if (mcpSnapshot.Length > 0)
+            RepublishRegistry(mcpSnapshot, new HashSet<string>([pluginId], StringComparer.Ordinal));
         ReconcilePluginSkillsInBackground(pluginId);
     }
 
     /// <summary>Republishes the MCP subset of the merged registry snapshot (worker
     /// registrations plus manifest-declared entries) after a declarative-only manifest
-    /// change. <paramref name="forcedPluginId"/> marks one plugin whose registrations
-    /// must re-run discovery despite being unchanged (a trigger or a worker reload).</summary>
-    private void RepublishRegistry(PluginRegistration[] mcpSnapshot, string? forcedPluginId = null)
+    /// change. <paramref name="forcedPlugins"/> marks the plugins whose registrations
+    /// must re-run discovery despite being unchanged (a trigger, or the registry frame
+    /// that completes a requested worker reload).</summary>
+    private void RepublishRegistry(PluginRegistration[] mcpSnapshot, IReadOnlySet<string>? forcedPlugins = null)
     {
         // A restart's teardown can dispose the OLD generation's coordinator while an
         // approval snapshot (taken against the NEW generation's descriptors) republishes
@@ -3307,16 +3382,57 @@ internal sealed class PluginHostManager(
         if (dynamicMcpCoordinator is not { } coordinator) return;
         try
         {
-            if (forcedPluginId is null)
+            if (forcedPlugins is null || forcedPlugins.Count == 0)
                 coordinator.PublishRegistry(mcpSnapshot);
             else
-                coordinator.PublishRegistry(mcpSnapshot, new HashSet<string>([forcedPluginId], StringComparer.Ordinal));
+                coordinator.PublishRegistry(mcpSnapshot, forcedPlugins);
         }
         catch (ObjectDisposedException)
         {
             logger.LogDebug(
                 "RepublishRegistry skipped: the plugin MCP coordinator was disposed by a concurrent generation switch.");
         }
+    }
+
+    /// <summary>Defers one plugin's forced rediscovery until the host reports the
+    /// completion of a reload sent after this call (called under
+    /// <see cref="gate"/>, before the reload frames ship, inside the
+    /// <see cref="reconcile"/> serialization). A second mark before any frame raises
+    /// the requirement, so back-to-back reloads force once, after the newest
+    /// text is live.</summary>
+    private void MarkReloadForceLock(string pluginId)
+    {
+        pendingReloadForces[pluginId] = Math.Max(
+            pendingReloadForces.GetValueOrDefault(pluginId) + 1,
+            hostReloadEpochs.GetValueOrDefault(pluginId) + 1);
+    }
+
+    /// <summary>Drains the reload forces a registry frame satisfies and refreshes the
+    /// epoch baselines (called under <see cref="gate"/>). A frame reporting no epochs —
+    /// a host that predates the field — drains every mark: the next frame is the best
+    /// completion signal it can offer. An epoch that went backwards means a fresh host
+    /// process (its epochs restart at zero) whose workers are all fresh, so the mark
+    /// drains as well.</summary>
+    private List<string> DrainReloadForcesLock(IReadOnlyDictionary<string, int>? epochs)
+    {
+        if (epochs is null)
+        {
+            var legacyDrained = new List<string>(pendingReloadForces.Keys);
+            pendingReloadForces.Clear();
+            return legacyDrained;
+        }
+
+        var drained = new List<string>();
+        foreach (var (pluginId, required) in pendingReloadForces)
+        {
+            var observed = epochs.GetValueOrDefault(pluginId);
+            if (observed >= required || observed < hostReloadEpochs.GetValueOrDefault(pluginId))
+                drained.Add(pluginId);
+        }
+
+        foreach (var pluginId in drained) pendingReloadForces.Remove(pluginId);
+        foreach (var (pluginId, epoch) in epochs) hostReloadEpochs[pluginId] = epoch;
+        return drained;
     }
 
     // —— Plugin skill contributions (ADR 0039 stages 2-3) ——
@@ -3471,6 +3587,11 @@ internal sealed class PluginHostManager(
                 CollectDeclarativeSkills(
                     pluginId, descriptor.RootDirectory, descriptor.Permissions, entry.Data, contribution);
 
+            // A failed or unusable generator invoke keeps the export's sticky part, but
+            // the failure is remembered: the next registry frame retries the plugin (the
+            // export-set diff alone would never fire again), matching the MCP
+            // coordinator's "never-succeeded stays new" discipline.
+            var invokeFailed = false;
             foreach (var exportName in generatorExports)
             {
                 var outcome = await InvokeExtensionPointAsync(
@@ -3481,6 +3602,7 @@ internal sealed class PluginHostManager(
                     invokeToken).ConfigureAwait(false);
                 if (outcome.IsError)
                 {
+                    invokeFailed = true;
                     logger.LogWarning(
                         "Plugin '{PluginId}' skill generator '{Export}' failed ({Code}): {Message}; keeping its last good contribution.",
                         pluginId,
@@ -3492,6 +3614,7 @@ internal sealed class PluginHostManager(
 
                 if (ParseGeneratedSkills(outcome.Value, Skills.SkillSource.PluginGenerated) is not { Count: > 0 } parsed)
                 {
+                    invokeFailed = true;
                     logger.LogWarning(
                         "Plugin '{PluginId}' skill generator '{Export}' returned no usable descriptors; keeping its last good contribution.",
                         pluginId,
@@ -3518,6 +3641,8 @@ internal sealed class PluginHostManager(
             lock (gate)
             {
                 if (invokeToken.IsCancellationRequested || IsApprovalBlockedLock(pluginId)) return;
+                if (invokeFailed) skillsRetryPending.Add(pluginId);
+                else skillsRetryPending.Remove(pluginId);
                 pluginDeclarativeSkills[pluginId] = contribution;
                 var composed = new List<Skills.SkillDescriptor>(contribution);
                 foreach (var ((ownerId, _), part) in pluginGeneratedSkills)
@@ -3553,6 +3678,8 @@ internal sealed class PluginHostManager(
         {
             if (!contributedSkillPlugins.Contains(pluginId)) return;
             contributedSkillPlugins.Remove(pluginId);
+            // The slot is gone (blocked or removed): no retry can succeed anymore.
+            skillsRetryPending.Remove(pluginId);
             foreach (var key in pluginGeneratedSkills.Keys.Where(key => key.PluginId == pluginId).ToArray())
                 pluginGeneratedSkills.Remove(key);
             pluginDeclarativeSkills.Remove(pluginId);

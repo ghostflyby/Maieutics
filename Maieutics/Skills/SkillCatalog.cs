@@ -119,9 +119,11 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly SkillDirectoryVisitCounter directoryVisits = new();
     private readonly Dictionary<DeclaredRoot, Dictionary<string, SkillDescriptor>> rootSkills = new();
+    private readonly Dictionary<DeclaredRoot, RootWatchState> rootStates = new();
     private readonly Dictionary<string, IReadOnlyList<SkillDescriptor>> pluginContributions = new(StringComparer.Ordinal);
     private readonly List<Task> pumps = [];
     private readonly List<FileSystemWatcher> watchers = [];
+    private readonly Action<SkillCatalogSnapshot>? onProgressiveCommit;
     private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
     private int rebuildCount;
     private bool disposed;
@@ -129,7 +131,8 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private SkillCatalog(
         IEnumerable<(SkillSource Source, string RootDirectory)> roots,
         TimeProvider timeProvider,
-        ILogger<SkillCatalog> logger)
+        ILogger<SkillCatalog> logger,
+        Action<SkillCatalogSnapshot>? onProgressiveCommit)
     {
         // Deduplicate by resolved path (first declaration wins) and order by precedence so
         // the merge walks sources in the order shadows are resolved.
@@ -148,20 +151,26 @@ internal sealed class SkillCatalog : IAsyncDisposable
             .ToImmutableArray();
         this.timeProvider = timeProvider;
         this.logger = logger;
+        this.onProgressiveCommit = onProgressiveCommit;
     }
 
     /// <summary>The composition-root factory: creates the root directories, runs the initial
-    /// scan, and starts the watcher pumps. Constructors stay side-effect free.</summary>
+    /// scan, and starts the watcher pumps. Constructors stay side-effect free.
+    /// <paramref name="onProgressiveCommit" /> observes each per-directory commit of the
+    /// initial scan (test observability for the progressive go-live); it runs outside the
+    /// state gate with the just-published immutable snapshot and must not call back into
+    /// the catalog.</summary>
     public static SkillCatalog Create(
         IEnumerable<(SkillSource Source, string RootDirectory)> roots,
         TimeProvider timeProvider,
-        ILogger<SkillCatalog> logger)
+        ILogger<SkillCatalog> logger,
+        Action<SkillCatalogSnapshot>? onProgressiveCommit = null)
     {
         ArgumentNullException.ThrowIfNull(roots);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var catalog = new SkillCatalog(roots, timeProvider, logger);
+        var catalog = new SkillCatalog(roots, timeProvider, logger, onProgressiveCommit);
         catalog.Start();
         return catalog;
     }
@@ -297,11 +306,18 @@ internal sealed class SkillCatalog : IAsyncDisposable
                          root.RootDirectory, root.RootDirectory, root.Source, directoryVisits))
             {
                 if (SkillDirectoryOf(descriptor) is not { } skillDirectory) continue;
+                SkillCatalogSnapshot committed;
                 lock (gate)
                 {
                     if (disposed) return;
                     ApplyChanges(root, [(skillDirectory, descriptor)]);
+                    committed = current;
                 }
+
+                // Outside the gate with the immutable just-published snapshot, on the
+                // same thread the commits serialized in, so observers see each
+                // progressive state in commit order.
+                onProgressiveCommit?.Invoke(committed);
             }
 
             var state = new RootWatchState();
@@ -311,17 +327,15 @@ internal sealed class SkillCatalog : IAsyncDisposable
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName |
                                NotifyFilters.DirectoryName | NotifyFilters.Size
             };
-            watcher.Changed += (_, args) => state.Record(args.FullPath);
-            watcher.Created += (_, args) => state.Record(args.FullPath);
-            watcher.Deleted += (_, args) => state.Record(args.FullPath);
+            watcher.Changed += (_, args) => RecordWatchedChange(args.FullPath);
+            watcher.Created += (_, args) => RecordWatchedChange(args.FullPath);
+            watcher.Deleted += (_, args) => RecordWatchedChange(args.FullPath);
             // A rename is a deletion and a creation as far as the differential is
-            // concerned: both halves are recorded so the old region is unwound and the new
-            // one discovered.
-            watcher.Renamed += (_, args) =>
-            {
-                state.Record(args.OldFullPath);
-                state.Record(args.FullPath);
-            };
+            // concerned: both halves are recorded — each through the containment
+            // rule, so the half that lives outside every root (a rename across roots)
+            // is dropped instead of being walked as a region of this root — the old
+            // region is unwound and the new one discovered.
+            watcher.Renamed += (_, args) => RecordWatchedRename(args.OldFullPath, args.FullPath);
             // An internal-buffer overflow means events were LOST — the pending set cannot
             // know which regions changed, so one debounced full-root differential walk
             // fully recovers.
@@ -344,6 +358,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
                 }
 
                 watchers.Add(watcher);
+                rootStates[root] = state;
                 pumps.Add(RunRootPumpAsync(root, state));
             }
         }
@@ -439,13 +454,75 @@ internal sealed class SkillCatalog : IAsyncDisposable
         }
     }
 
+    /// <summary>The path comparison watched-event matching uses: case-insensitive on
+    /// platforms whose default filesystems are case-insensitive (Windows, macOS) — a
+    /// watcher event may carry a mutator's spelling rather than the disk's, and the
+    /// existence probes the differential already relies on behave the same way — and
+    /// ordinal on Linux.</summary>
+    private static StringComparison WatchedPathComparison =>
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+    /// <summary>One watched file event, routed to every root whose declared directory
+    /// contains it — the seam the watcher handlers and the tests share. A path outside
+    /// every root carries no state of any root and is dropped: walking it as a region
+    /// would plant map entries (inert, occupying the per-root bound) that no later
+    /// event of these roots can ever release.</summary>
+    internal void RecordWatchedChange(string fullPath)
+    {
+        RecordWhereContained(fullPath);
+    }
+
+    /// <summary>Both halves of a watched rename, each independently subject to the
+    /// containment rule of <see cref="RecordWatchedChange" />: the half inside a root
+    /// unwinds or discovers that root's state; the half outside every root (a rename
+    /// across roots — the shape Windows reports for a move out of the watched tree) is
+    /// not this catalog's business.</summary>
+    internal void RecordWatchedRename(string oldFullPath, string fullPath)
+    {
+        RecordWhereContained(oldFullPath);
+        RecordWhereContained(fullPath);
+    }
+
+    private void RecordWhereContained(string fullPath)
+    {
+        var normalized = Path.GetFullPath(fullPath);
+        foreach (var root in roots)
+        {
+            RootWatchState? state;
+            lock (gate)
+            {
+                if (disposed) return;
+                if (!rootStates.TryGetValue(root, out state)) continue;
+            }
+
+            if (IsWithinWatchedRoot(root.RootDirectory, normalized)) state.Record(normalized);
+        }
+    }
+
+    /// <summary>Whether the path is the root itself or strictly inside it, under the
+    /// watched-path comparison. The boundary is inclusive because the deleted-root event
+    /// (FullPath equals the root) must still clear the root's map.</summary>
+    private static bool IsWithinWatchedRoot(string rootDirectory, string fullPath)
+    {
+        if (string.Equals(fullPath, rootDirectory, WatchedPathComparison)) return true;
+        var prefix = rootDirectory.EndsWith(Path.DirectorySeparatorChar)
+            ? rootDirectory
+            : rootDirectory + Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(prefix, WatchedPathComparison);
+    }
+
     /// <summary>Turns one watched path into plan entries. A path inside a known skill
     /// directory can only change that one skill (its subtree is resources), so exactly that
     /// directory is revalidated; when its <c>SKILL.md</c> is gone the claim is released and
     /// the directory itself becomes the region to rewalk (skills below it were resources a
     /// moment ago). Any other path becomes its own region root — the path itself when it is
     /// (or was) a directory, the containing directory when it is a live file — and is
-    /// diffed against everything known under that region.</summary>
+    /// diffed against everything known under that region. Matching uses the watched-path
+    /// comparison, so an event spelled differently from the disk still finds the known
+    /// skill directory and revalidates it instead of shadowing it with a phantom
+    /// entry.</summary>
     private void BuildPathPlan(
         DeclaredRoot root,
         string fullPath,
@@ -454,8 +531,8 @@ internal sealed class SkillCatalog : IAsyncDisposable
     {
         var path = Path.GetFullPath(fullPath);
         var containing = workingKnown.FirstOrDefault(candidate =>
-            string.Equals(path, candidate, StringComparison.Ordinal) ||
-            SkillDirectoryDiscovery.IsWithinRoot(candidate, path));
+            string.Equals(path, candidate, WatchedPathComparison) ||
+            SkillDirectoryDiscovery.IsWithinRoot(candidate, path, WatchedPathComparison));
         if (containing is { } skillDirectory)
         {
             if (SkillDirectoryDiscovery.RediscoverSkillDirectory(
@@ -501,8 +578,8 @@ internal sealed class SkillCatalog : IAsyncDisposable
         List<string>? released = null;
         foreach (var known in workingKnown)
         {
-            if (!string.Equals(known, regionFullName, StringComparison.Ordinal) &&
-                !SkillDirectoryDiscovery.IsWithinRoot(regionFullName, known)) continue;
+            if (!string.Equals(known, regionFullName, WatchedPathComparison) &&
+                !SkillDirectoryDiscovery.IsWithinRoot(regionFullName, known, WatchedPathComparison)) continue;
             if (fresh.ContainsKey(known)) continue;
             (released ??= []).Add(known);
             plan.Add((known, null));

@@ -133,7 +133,7 @@ async function main(): Promise<void> {
   busHolder.bus!.send({
     type: "extension.registry",
     payload: {
-      ...registryPayload(registered, host.states()),
+      ...registryPayload(registered, host.states(), host.reloadEpochs()),
       httpGateway: gatewayDescriptor(),
     },
   });
@@ -147,7 +147,7 @@ async function main(): Promise<void> {
     busHolder.bus?.send({
       type: "extension.registry",
       payload: {
-        ...registryPayload(host.extensions, host.states()),
+        ...registryPayload(host.extensions, host.states(), host.reloadEpochs()),
         httpGateway: gatewayDescriptor(),
       },
     });
@@ -240,7 +240,7 @@ async function main(): Promise<void> {
           busHolder.bus!.send({
             type: "extension.registry",
             payload: {
-              ...registryPayload(host.extensions, host.states()),
+              ...registryPayload(host.extensions, host.states(), host.reloadEpochs()),
               httpGateway: gatewayDescriptor(),
             },
           });
@@ -331,6 +331,7 @@ function registryPayload(
     specifier: string;
   }>,
   states: readonly PluginState[],
+  reloadEpochs: ReadonlyMap<string, number>,
 ): {
   plugins: Array<
     {
@@ -341,6 +342,9 @@ function registryPayload(
     }
   >;
   states?: readonly PluginState[];
+  /** Per-plugin count of completed lifecycle mutations (reloads and stops);
+   * lets the kernel attribute a registry frame to a reload it requested. */
+  reloadEpochs: Record<string, number>;
 } {
   const byWorker = new Map<string, Map<string, { points: string[]; specifier?: string }>>();
   for (const registration of registrations) {
@@ -366,7 +370,7 @@ function registryPayload(
       });
     }
   }
-  return { plugins, states };
+  return { plugins, states, reloadEpochs: Object.fromEntries(reloadEpochs) };
 }
 
 await main();

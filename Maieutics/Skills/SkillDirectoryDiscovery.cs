@@ -273,4 +273,19 @@ internal static class SkillDirectoryDiscovery
                !relative.StartsWith("../", StringComparison.Ordinal) &&
                relative.Length > 0;
     }
+
+    /// <summary>Containment check over resolved paths under an explicit comparison, for
+    /// the catalog's differential matching on platforms whose default filesystems are
+    /// case-insensitive: <see cref="Path.GetRelativePath" /> matches the common prefix
+    /// with the platform's own case rules (ordinal on Unix), so a case-insensitive caller
+    /// gets a direct directory-boundary prefix check instead. Strictly inside — the
+    /// boundary equality is the caller's to handle.</summary>
+    internal static bool IsWithinRoot(string rootFullName, string path, StringComparison comparison)
+    {
+        if (string.Equals(rootFullName, path, comparison)) return false;
+        var prefix = rootFullName.EndsWith(Path.DirectorySeparatorChar)
+            ? rootFullName
+            : rootFullName + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, comparison) && path.Length > prefix.Length;
+    }
 }

@@ -36,9 +36,12 @@ internal sealed record PluginMcpDiscoveryResult(
 ///     contribution and stays in the published set reuses it without re-running discovery (no
 ///     worker invoke, no manifest re-read); only new registrations — or plugins the publish forced
 ///     (a trigger or a worker reload, whose exports may return different results over unchanged
-///     registration records) — run discovery again. Removed registrations simply drop their
-///     contributions, and a registration whose discovery never succeeded stays "new" so the next
-///     revision retries it.
+///     registration records) — run discovery again. A superseded-but-unapplied revision's forced
+///     set is inherited by its successor, so a concurrent plain publish cannot swallow a pending
+///     forced re-run. Removed registrations drop their contributions, and a registration whose
+///     discovery never succeeded stays "new" so the next revision retries it. Adjuster drops are
+///     view-only: the persisted contributions stay raw, so an adjuster that reverts (or re-judges)
+///     a drop restores the server on the next revision without re-running discovery.
 /// </summary>
 internal sealed class PluginMcpCoordinator(
     PluginMcpDiscovery discovery,
@@ -130,21 +133,39 @@ internal sealed class PluginMcpCoordinator(
         if (Volatile.Read(ref startState) == 0)
             throw new InvalidOperationException("The plugin MCP coordinator has not been started.");
 
+        var normalized = registrations
+            .Distinct()
+            .OrderBy(static registration => registration.PluginId, StringComparer.Ordinal)
+            .ThenBy(static registration => registration.ExportName, StringComparer.Ordinal)
+            .ToImmutableArray();
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var revision = new RegistryRevision(
-            Interlocked.Increment(ref nextRevision),
-            registrations
-                .Distinct()
-                .OrderBy(static registration => registration.PluginId, StringComparer.Ordinal)
-                .ThenBy(static registration => registration.ExportName, StringComparer.Ordinal)
-                .ToImmutableArray(),
-            forcedPlugins,
-            completion);
+        RegistryRevision revision;
         RegistryRevision? superseded;
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
             superseded = latestRevision;
+            // A superseded revision that never applied keeps its forced plugins owed:
+            // the successor inherits them, or a plain publish would differential-skip
+            // the forced registrations back to their stale contributions and silently
+            // drop the "re-run this plugin" semantics (the trigger/reload contract).
+            // A revision that did apply has no debt — its fresh results are already
+            // the contributions the successor seeds from.
+            var effectiveForced = forcedPlugins;
+            if (superseded is not null &&
+                !superseded.Completion.Task.IsCompleted &&
+                superseded.ForcedPlugins.Count > 0)
+            {
+                var inherited = new HashSet<string>(forcedPlugins, StringComparer.Ordinal);
+                inherited.UnionWith(superseded.ForcedPlugins);
+                effectiveForced = inherited;
+            }
+
+            revision = new RegistryRevision(
+                Interlocked.Increment(ref nextRevision),
+                normalized,
+                effectiveForced,
+                completion);
             latestRevision = revision;
         }
 
@@ -359,7 +380,12 @@ internal sealed class PluginMcpCoordinator(
         // The adjustment chain folds the composed view before the merge: adjusters
         // run in dependency-topological order, each seeing only its declared
         // dependencies' servers, and drops remove servers from the view that
-        // downstream adjusters and the merge see (ADR 0034).
+        // downstream adjusters and the merge see (ADR 0034). Drops are a property
+        // of the composed view, never of the discovery results: the filtered set
+        // feeds only this revision's merge and generations, while the persisted
+        // contributions stay raw — so a later revision whose adjusters no longer
+        // drop the server restores it without re-running discovery.
+        var mergeContributions = candidateContributions;
         if (adjustments is not null)
         {
             var view = candidateContributions
@@ -372,20 +398,16 @@ internal sealed class PluginMcpCoordinator(
                     .ConfigureAwait(false);
                 if (dropped.Count > 0)
                 {
-                    foreach (var key in candidateContributions.Keys.ToList())
-                    {
-                        if (candidateContributions[key].Any(definition => dropped.Contains(definition.Id)))
-                        {
-                            candidateContributions[key] = candidateContributions[key]
-                                .Where(definition => !dropped.Contains(definition.Id))
-                                .ToArray();
-                        }
-                    }
+                    mergeContributions = candidateContributions.ToDictionary(
+                        static pair => pair.Key,
+                        pair => (IReadOnlyList<McpServerDefinition>)pair.Value
+                            .Where(definition => !dropped.Contains(definition.Id))
+                            .ToArray());
                 }
             }
         }
 
-        if (!TryMergeDefinitions(candidateContributions.Values, out var definitions)) return false;
+        if (!TryMergeDefinitions(mergeContributions.Values, out var definitions)) return false;
 
         return await ReconcileGenerationsAsync(
                 revision,

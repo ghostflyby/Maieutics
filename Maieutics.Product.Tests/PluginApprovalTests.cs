@@ -6,6 +6,7 @@ using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Maieutics.Plugins.Contributions;
 
 namespace Maieutics.Product.Tests;
 
@@ -253,7 +254,7 @@ public sealed class PluginApprovalTests
             // Fail-closed: no synthetic registration, pending in status, and an
             // extension-point invoke refuses with the typed error instead of waking
             // a worker (ADR 0035 would otherwise restart it on demand).
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             manager.GetStatus().PendingApprovals.Should().Be(1);
             var approval = manager.ListPluginApprovals().Should().ContainSingle().Which;
             approval.PluginId.Should().Be(pluginId);
@@ -261,7 +262,7 @@ public sealed class PluginApprovalTests
             approval.ApprovedGrants.Should().BeNull();
 
             var invoke = await manager.InvokeExtensionPointAsync(
-                pluginId, "./main", PluginExtensionKind.McpDiscover, null, TestContext.Current.CancellationToken);
+                pluginId, "./main", McpDiscoverContributionKind.ExtensionKind, null, TestContext.Current.CancellationToken);
             invoke.IsError.Should().BeTrue();
             invoke.Code.Should().Be("plugin_pending_approval");
 
@@ -269,7 +270,7 @@ public sealed class PluginApprovalTests
             // synthetic registration appears without a host restart.
             (await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken)).Should()
                 .Contain("Approved");
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle()
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle()
                 .Which.PluginId.Should().Be(pluginId);
             manager.GetStatus().PendingApprovals.Should().Be(0);
             manager.ListPluginApprovals().Should().ContainSingle()
@@ -277,7 +278,7 @@ public sealed class PluginApprovalTests
 
             // Revocation returns the plugin to pending and withdraws the registration.
             await manager.RevokeAsync(pluginId, TestContext.Current.CancellationToken);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             manager.GetStatus().PendingApprovals.Should().Be(1);
         }
         finally
@@ -304,7 +305,7 @@ public sealed class PluginApprovalTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
             manager.GetStatus().PendingApprovals.Should().Be(0);
         }
         finally
@@ -333,7 +334,7 @@ public sealed class PluginApprovalTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
 
             // Widen the declared read grant: the fingerprint no longer matches the
             // persisted approval, so the reload revokes instead of applying it.
@@ -348,7 +349,7 @@ public sealed class PluginApprovalTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             manager.GetStatus().PendingApprovals.Should().Be(1);
             var approval = manager.ListPluginApprovals().Should().ContainSingle().Which;
             approval.State.Should().Be(PluginApprovalState.PendingApproval);
@@ -367,7 +368,7 @@ public sealed class PluginApprovalTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, reverted, deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
             manager.GetStatus().PendingApprovals.Should().Be(0);
 
             // Widening again revokes again, and this time the user re-approves the new
@@ -383,9 +384,9 @@ public sealed class PluginApprovalTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, widened, deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
         }
         finally
         {
@@ -426,7 +427,7 @@ public sealed class PluginApprovalTests
         try
         {
             await StartAsync(manager);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             var approvals = manager.ListPluginApprovals();
             approvals.Should().HaveCount(3);
             approvals.Single(approval => approval.PluginId == "dep").State
@@ -437,7 +438,7 @@ public sealed class PluginApprovalTests
             // Approving the dependency unblocks the dependent: both contribute
             // without a restart.
             await manager.ApproveAsync("dep", TestContext.Current.CancellationToken);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover)
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
                 .Should().HaveCount(2)
                 .And.OnlyContain(registration =>
                     registration.PluginId == "dep" || registration.PluginId == "consumer");
@@ -476,12 +477,12 @@ public sealed class PluginApprovalTests
             var approve = await executor.ExecuteAsync(
                 $"%plugin approve {pluginId}", null, TestContext.Current.CancellationToken);
             approve.Markdown.Should().Contain("Approved");
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
 
             var revoke = await executor.ExecuteAsync(
                 $"%plugin revoke {pluginId}", null, TestContext.Current.CancellationToken);
             revoke.Markdown.Should().Contain("Revoked");
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
 
             var unknown = () => executor.ExecuteAsync(
                 "%plugin approve missing", null, TestContext.Current.CancellationToken);

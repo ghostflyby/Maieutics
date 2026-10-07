@@ -30,61 +30,12 @@ internal sealed record PluginDescriptor(
 /// Entries are data-only — they never require or imply a worker.</summary>
 internal sealed record PluginExtensionEntry(string Kind, JsonElement Data);
 
-/// <summary>The kernel-known declarative extension kinds (the manifest counterpart of
-/// the closed extension-point catalog). Unknown kinds in a manifest are surfaced as
-/// diagnostics and ignored, so newer plugins degrade visibly on older kernels.</summary>
-internal static class PluginExtensionKind
-{
-    public const string McpDiscover = "McpDiscover";
-
-    /// <summary>The declarative skill-contribution kind (ADR 0039 stage 2): entries carry
-    /// <c>roots</c> the kernel enumerates (interpolated through the manifest variable
-    /// table); the worker form of the same name is the generator the kernel invokes. The
-    /// lowercase spelling <c>skills</c> is the recommended form; case is not
-    /// significant.</summary>
-    public const string Skills = "Skills";
-
-    public static bool IsKnown(string kind)
-    {
-        return kind.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase) ||
-               kind.Equals(Skills, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>The canonical constant for a declared kind, or null when unknown. Entries
-    /// record the canonical spelling so downstream comparisons stay exact regardless of
-    /// how the manifest spelled it.</summary>
-    public static string? Canonicalize(string kind)
-    {
-        if (kind.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase)) return McpDiscover;
-        if (kind.Equals(Skills, StringComparison.OrdinalIgnoreCase)) return Skills;
-        return null;
-    }
-}
-
 /// <summary>One data entry point declared in the manifest's `entrypoints` section with a
 /// plain string value: the kernel collects the referenced file as raw JSON instead of
-/// launching it. Interpretation belongs to the entry name's kernel interpreter
-/// (<see cref="PluginDataName"/>); a collection failure rides the entry as an error
-/// marker and never fails the plugin load.</summary>
+/// launching it. Interpretation belongs to the entry name's kernel interpreter (the
+/// contribution kind catalog's <c>ByDataEntryName</c>); a collection failure rides the
+/// entry as an error marker and never fails the plugin load.</summary>
 internal sealed record PluginDataEntry(string Name, JsonElement? Data, string? Error);
-
-/// <summary>The kernel-known data entry names. A catalogued name requires its string
-/// entrypoint value to resolve to a file the kernel can interpret; unknown names are
-/// collected but inert, with a visible diagnostic.</summary>
-internal static class PluginDataName
-{
-    public const string Mcp = "mcp";
-
-    /// <summary>A declarative form template (ADR 0038 stage 3): interpreted into a
-    /// <see cref="PluginUiFormDefinition"/> the kernel can publish into the foreground
-    /// session's comm plane on demand — no worker runs for a data-only form.</summary>
-    public const string Ui = "ui";
-
-    public static bool IsKnown(string name)
-    {
-        return name == Mcp || name == Ui;
-    }
-}
 
 /// <summary>One declarative form field interpreted from a `ui` data entry.</summary>
 internal sealed record PluginUiFormField(
@@ -353,9 +304,11 @@ internal static class PluginManifest
 
         // UI interpretation of the declared data entry (ADR 0038 stage 3): a declarative
         // form template the kernel can publish on demand. Same sticky-marker shape as
-        // the `mcp` entry — a broken entry never fails the plugin load.
+        // the `mcp` entry — a broken entry never fails the plugin load. This block stays
+        // in place (the ui kind is registered B 期 as a text-only catalog entry; its
+        // interpretation is deliberately not migrated).
         PluginUiFormDefinition? uiForm = null;
-        if (dataEntries.FirstOrDefault(entry => entry.Name == PluginDataName.Ui) is { } uiEntry)
+        if (dataEntries.FirstOrDefault(entry => entry.Name == Contributions.UiContributionKind.DataEntry) is { } uiEntry)
         {
             if (uiEntry.Error is { } uiCollectionError)
             {
@@ -368,31 +321,19 @@ internal static class PluginManifest
             }
         }
 
-        // MCP interpretation of the declared data entry (ADR 0033). The 'mcp' name is
-        // the only source — there is no implicit file pickup beside the manifest. A
-        // broken entry does not fail the plugin load: the manifest declarations
-        // (entrypoints, capabilities, extensions) stay authoritative, and the error
-        // marker keeps the plugin registered so its previous MCP contribution remains
-        // discoverable-but-failed — the sticky-last-good rule the coordinator applies.
+        // MCP interpretation of the declared data entry (ADR 0033): owned by the MCP
+        // contribution contract's ParseDeclared — the 'mcp' name is the only source,
+        // and a broken entry does not fail the plugin load (the plugin-level sticky
+        // error keeps it registered so its previous MCP contribution remains
+        // discoverable-but-failed). The extensions entries themselves pass through
+        // untouched; their per-entry validation stays in the discovery-time branch.
         IReadOnlyList<McpServerDefinition> mcpServers = [];
         string? mcpServersError = null;
-        if (dataEntries.FirstOrDefault(entry => entry.Name == PluginDataName.Mcp) is { } mcpEntry)
-        {
-            if (mcpEntry.Error is { } collectionError)
-                mcpServersError = $"The 'mcp' data entry could not be collected: {collectionError}";
-            else if (mcpEntry.Data is { } collectedData)
-            {
-                try
-                {
-                    mcpServers = McpServerFile.ReadJson(collectedData, directory, $"plugin:{id}::");
-                }
-                catch (Exception exception) when (
-                    exception is InvalidOperationException or JsonException or InvalidDataException)
-                {
-                    mcpServersError = $"Invalid mcp.json data entry: {exception.Message}";
-                }
-            }
-        }
+        var mcpDeclared = Contributions.McpDiscoverContributionKind.Instance.ParseDeclared(
+            new Contributions.ContributionDeclarationContext(id, directory, extensions, dataEntries));
+        if (mcpDeclared.Descriptors.Count > 0)
+            mcpServers = Contributions.ContributionDescriptorUnwrap.McpServers(mcpDeclared.Descriptors);
+        mcpServersError = mcpDeclared.PluginLevelError;
 
         // Inspections are the content-observation declaration (ADR 0032): a plugin that
         // declares contentReadAll receives tool results in its post-invoke hooks. Absence
@@ -456,8 +397,9 @@ internal static class PluginManifest
     /// <summary>Reads the manifest's `entrypoints` section. The top-level key is the
     /// entry KIND, never a name: `worker` holds the worker map (worker name → script
     /// array, the first script starting one worker, the rest same-worker helpers);
-    /// catalogued data names (`mcp`, <see cref="PluginDataName"/>) hold a string path to
-    /// a file the kernel collects and interprets instead of launching (ADR 0033);
+    /// catalogued data names (the contribution kind catalog's data-entry names) hold a
+    /// string path to a file the kernel collects and interprets instead of launching
+    /// (ADR 0033);
     /// unknown names holding a string are collected but inert with a visible diagnostic
     /// (forward compatibility, same rule as unknown extension kinds). Structural
     /// violations fail the manifest — including an array under an unknown name, which
@@ -503,21 +445,23 @@ internal static class PluginManifest
                         break;
                     }
 
-                    if (!PluginDataName.IsKnown(entry.Name))
-                        diagnostics.Add(
-                            $"Unknown data entry '{entry.Name}' is declared but not supported by this kernel; " +
-                            $"it is collected but inert (known names: {PluginDataName.Mcp}).");
-                    dataEntries.Add(CollectDataEntry(root, entry.Name, dataPath));
+                    // The catalog owns the data-entry grammar (case-insensitive routing
+                    // recording the canonical spelling); unknown names are collected
+                    // but inert, with the catalog-generated diagnostic.
+                    var dataContract = Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name);
+                    if (dataContract is null)
+                        diagnostics.Add(Contributions.ContributionKindCatalog.UnknownDataEntryDiagnostic(entry.Name));
+                    dataEntries.Add(CollectDataEntry(root, dataContract?.DataEntryName ?? entry.Name, dataPath));
                     break;
 
-                case JsonValueKind.Array when PluginDataName.IsKnown(entry.Name):
+                case JsonValueKind.Array when
+                    Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name) is not null:
                     throw new JsonException(
                         $"The entrypoint '{entry.Name}' is a catalogued data entry and requires a string path, not a script array.");
 
                 default:
                     throw new JsonException(
-                        $"Unknown entrypoint section '{entry.Name}'. Worker declarations live under 'worker'; " +
-                        $"catalogued data entries take a string path (known names: {PluginDataName.Mcp}).");
+                        Contributions.ContributionKindCatalog.UnknownEntrypointSectionDiagnostic(entry.Name));
             }
         }
 
@@ -627,12 +571,14 @@ internal static class PluginManifest
         {
             if (kind.Value.ValueKind != JsonValueKind.Array)
                 throw new JsonException($"The 'extensions.{kind.Name}' section must be an array of entries.");
-            if (!PluginExtensionKind.IsKnown(kind.Name))
+
+            // The catalog owns the extensions grammar (case-insensitive routing
+            // recording the canonical spelling); unknown kinds are dropped with the
+            // catalog-generated diagnostic, never honored.
+            var extensionContract = Contributions.ContributionKindCatalog.ByExtensionKind(kind.Name);
+            if (extensionContract is null)
             {
-                found.Add(
-                    $"Unknown extension kind '{kind.Name}' is declared but not supported by this kernel; " +
-                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}, {PluginExtensionKind.Skills} " +
-                    $"— case is not significant and the lowercase 'skills' form is recommended).");
+                found.Add(Contributions.ContributionKindCatalog.UnknownExtensionKindDiagnostic(kind.Name));
                 continue;
             }
 
@@ -641,9 +587,7 @@ internal static class PluginManifest
                 if (entry.ValueKind != JsonValueKind.Object)
                     throw new JsonException(
                         $"The 'extensions.{kind.Name}' entries must be objects.");
-                entries.Add(new PluginExtensionEntry(
-                    PluginExtensionKind.Canonicalize(kind.Name) ?? kind.Name,
-                    entry.Clone()));
+                entries.Add(new PluginExtensionEntry(extensionContract.KindName, entry.Clone()));
             }
         }
 

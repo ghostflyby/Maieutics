@@ -263,21 +263,17 @@ internal sealed class PluginHostManager(
     private readonly Dictionary<string, IReadOnlyList<PluginExtensionEntry>> descriptorExtensions =
         new(StringComparer.Ordinal);
 
-    /// <summary>Plugin-declared MCP data-file servers (ADR 0033): the parsed
-    /// <c>mcp.json</c> snapshot per plugin id, refreshed with the descriptor at start
-    /// and reload. Pure kernel-side data — the host process never sees it.</summary>
-    private readonly Dictionary<string, IReadOnlyList<McpServerDefinition>> descriptorMcpServers =
-        new(StringComparer.Ordinal);
+    /// <summary>Per-(kind, plugin) recorded declaration interpretations (the kind
+    /// contract's <c>ParseDeclared</c> products, re-derived from the loaded descriptor):
+    /// a non-empty result is the kind's declarative registration face, refreshed with
+    /// the descriptor at start and reload. Pure kernel-side data — the host process
+    /// never sees it.</summary>
+    private readonly Dictionary<(string KindName, string PluginId), Contributions.ContributionDeclarationResult> recordedDeclarations =
+        new(DeclarationRecordKeyComparer.Ordinal);
 
     /// <summary>Dependency-topological plugin id order from the last discovery
     /// (ADR 0034): the chain order for MCP adjusters.</summary>
     private IReadOnlyList<string> pluginOrder = [];
-
-    /// <summary>Per-plugin mcp.json load failures (ADR 0033): a plugin whose data file
-    /// cannot be parsed stays registered with its previous contribution retained by the
-    /// coordinator; discovery for it fails until the file is repaired.</summary>
-    private readonly Dictionary<string, string> descriptorMcpServerErrors =
-        new(StringComparer.Ordinal);
 
     // —— Plugin contribution coordination (plugin-contribution framework A 期) ——
 
@@ -874,8 +870,7 @@ internal sealed class PluginHostManager(
             RecomputeApprovalStatesLock(descriptors);
             capabilityGrants.Clear();
             descriptorExtensions.Clear();
-            descriptorMcpServers.Clear();
-            descriptorMcpServerErrors.Clear();
+            recordedDeclarations.Clear();
             foreach (var descriptor in descriptors)
             {
                 // Approval gate (ADR 0037): an unapproved plugin stays discovered but
@@ -940,7 +935,7 @@ internal sealed class PluginHostManager(
             seedPlugins = descriptors
                 .Where(descriptor => !IsApprovalBlockedLock(descriptor.Id) &&
                                      descriptor.Extensions.Any(
-                                         static entry => entry.Kind == PluginExtensionKind.Skills))
+                                         static entry => Contributions.SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind)))
                 .Select(static descriptor => descriptor.Id)
                 .ToArray();
         }
@@ -2202,16 +2197,16 @@ internal sealed class PluginHostManager(
     private void EnsureContributionEngine()
     {
         if (contributions is not null) return;
-        var table = new Contributions.ContributionSlotTable(PluginExtensionKind.Skills);
+        var table = new Contributions.ContributionSlotTable(Contributions.SkillsContributionKind.ExtensionKind);
         var engine = new Contributions.ContributionCoordinator(logger);
         mcpDelivery = new Contributions.McpContributionDelivery(
-            PluginExtensionKind.McpDiscover,
+            Contributions.McpDiscoverContributionKind.ExtensionKind,
             ReplExtensionPointName.McpDiscover,
             () => dynamicMcpCoordinator,
             logger);
         skillsDelivery = new Contributions.SkillsContributionDelivery(
             this,
-            PluginExtensionKind.Skills,
+            Contributions.SkillsContributionKind.ExtensionKind,
             ReplExtensionPointName.Skills,
             table,
             engine,
@@ -2313,8 +2308,7 @@ internal sealed class PluginHostManager(
         {
             capabilityGrants.Clear();
             descriptorExtensions.Clear();
-            descriptorMcpServers.Clear();
-            descriptorMcpServerErrors.Clear();
+            recordedDeclarations.Clear();
             foreach (var descriptor in descriptors)
             {
                 if (IsApprovalBlockedLock(descriptor.Id)) continue;
@@ -3008,11 +3002,14 @@ internal sealed class PluginHostManager(
                 return;
             }
 
-            if (request.Capability == ReplCapabilityName.SkillsPublish)
+            if (Contributions.ContributionKindCatalog.ByPublishCapability(request.Capability) is { } publishKind &&
+                publishKind.KindName == Contributions.SkillsContributionKind.ExtensionKind)
             {
                 // Plugin skill publication (ADR 0039 stage 3): the payload is the
                 // replacement set for the plugin's published part — the same entry shape
-                // and bounds a generator returns; an empty array clears it.
+                // and bounds a generator returns; an empty array clears it. The publish
+                // capability routes through the kind contract; a future publish-capable
+                // kind joins by declaring its own capability name.
                 if (Contributions.SkillsContributionDelivery.ParseGeneratedSkills(
                         payload, Skills.SkillSource.PluginPublished) is not { } published)
                 {
@@ -3318,7 +3315,8 @@ internal sealed class PluginHostManager(
                 registration.ExtensionPoint == ReplExtensionPointName.Skills))
             return true;
         return descriptors.FirstOrDefault(candidate => candidate.Id == pluginId) is { } descriptor &&
-               descriptor.Extensions.Any(static entry => entry.Kind == PluginExtensionKind.Skills);
+               descriptor.Extensions.Any(static entry =>
+                   Contributions.SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind));
     }
 
     /// <summary>A trigger fired on the host (ADR 0036): re-run the named plugin's MCP
@@ -3392,38 +3390,48 @@ internal sealed class PluginHostManager(
     }
 
     /// <summary>The synthetic registrations for manifest-declared entries (the
-    /// <c>McpDiscover</c> extensions section or an <c>mcp.json</c> data file, ADR 0033).
+    /// <c>McpDiscover</c> extensions section or an <c>mcp.json</c> data file, ADR 0033):
+    /// produced contract-driven — every catalogued kind that declares a declarative
+    /// registration form contributes its face check against the recorded snapshots.
     /// Called under <see cref="gate" />.</summary>
     private IEnumerable<PluginRegistration> DeclarativeRegistrationsLock()
     {
-        foreach (var pluginId in descriptorExtensions.Keys
-                     .Concat(descriptorMcpServers.Keys)
-                     .Concat(descriptorMcpServerErrors.Keys)
-                     .Distinct(StringComparer.Ordinal))
+        var candidates = descriptorExtensions.Keys
+            .Concat(recordedDeclarations.Keys.Select(static key => key.PluginId))
+            .Distinct(StringComparer.Ordinal);
+        foreach (var contract in Contributions.ContributionKindCatalog.Contracts)
         {
-            var hasExtensions = descriptorExtensions.TryGetValue(pluginId, out var entries) &&
-                                entries.Any(static entry => entry.Kind == PluginExtensionKind.McpDiscover);
-            var hasServers = descriptorMcpServers.TryGetValue(pluginId, out var servers) &&
-                             servers.Count > 0;
-            var hasServerErrors = descriptorMcpServerErrors.ContainsKey(pluginId);
-            if (hasExtensions || hasServers || hasServerErrors)
-                yield return new PluginRegistration(pluginId, ManifestExportName, ReplExtensionPointName.McpDiscover);
+            if (!contract.HasDeclarativeRegistrations) continue;
+            if (contract.ExtensionPointName is not { } extensionPoint)
+                throw new InvalidOperationException(
+                    $"The contribution kind '{contract.KindName}' declares synthetic registrations without a wire extension point.");
+            foreach (var pluginId in candidates)
+            {
+                descriptorExtensions.TryGetValue(pluginId, out var entries);
+                recordedDeclarations.TryGetValue((contract.KindName, pluginId), out var recorded);
+                if (contract.HasDeclarativeRegistrationFace(entries, recorded))
+                    yield return new PluginRegistration(pluginId, ManifestExportName, extensionPoint);
+            }
         }
     }
 
-    /// <summary>Updates one plugin's declarative snapshots (extensions and the MCP data
-    /// file, ADR 0033) on load and reload: an empty list removes the entry, so section
-    /// or file removals take effect.</summary>
+    /// <summary>Updates one plugin's declarative snapshots (the grammar's extensions
+    /// record and each kind's recorded interpretation) on load and reload: an empty
+    /// face removes the entry, so section or file removals take effect.</summary>
     private void RecordDescriptorDeclarationsLock(PluginDescriptor descriptor)
     {
         if (descriptor.Extensions.Count > 0) descriptorExtensions[descriptor.Id] = descriptor.Extensions;
         else descriptorExtensions.Remove(descriptor.Id);
 
-        if (descriptor.McpServers.Count > 0) descriptorMcpServers[descriptor.Id] = descriptor.McpServers;
-        else descriptorMcpServers.Remove(descriptor.Id);
-
-        if (descriptor.McpServersError is { } dataFileError) descriptorMcpServerErrors[descriptor.Id] = dataFileError;
-        else descriptorMcpServerErrors.Remove(descriptor.Id);
+        foreach (var contract in Contributions.ContributionKindCatalog.Contracts)
+        {
+            if (!contract.HasDeclarativeRegistrations) continue;
+            var recorded = contract.DeclarationsFromDescriptor(descriptor);
+            if (recorded.Descriptors.Count > 0 || recorded.PluginLevelError is not null)
+                recordedDeclarations[(contract.KindName, descriptor.Id)] = recorded;
+            else
+                recordedDeclarations.Remove((contract.KindName, descriptor.Id));
+        }
 
         foreach (var diagnostic in descriptor.ExtensionDiagnostics)
             logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
@@ -3471,7 +3479,10 @@ internal sealed class PluginHostManager(
     /// <c>mcp.discover</c> entries plus its <c>mcp.json</c> data file (ADR 0033) — with
     /// the same merge rules the coordinator applies across plugins: identical ids with
     /// identical generation keys deduplicate; identical ids with different keys fail the
-    /// discovery (the sticky-last-good rule then keeps the previous contribution active).</summary>
+    /// discovery (the sticky-last-good rule then keeps the previous contribution active).
+    /// The per-entry validation granularity is the discovery-time manifest branch's own
+    /// (one invalid entry fails the whole discovery); the contract's load-time
+    /// interpretation deliberately does not absorb it.</summary>
     internal PluginMcpDiscoveryResult DiscoverManifestMcpAsync(PluginRegistration registration)
     {
         IReadOnlyList<PluginExtensionEntry> entries;
@@ -3479,21 +3490,23 @@ internal sealed class PluginHostManager(
         lock (gate)
         {
             var hasEntries = descriptorExtensions.TryGetValue(registration.PluginId, out var recorded);
-            var hasServers = descriptorMcpServers.TryGetValue(registration.PluginId, out var servers);
-            var hasServerErrors = descriptorMcpServerErrors.TryGetValue(
-                registration.PluginId,
-                out var serverError);
-            if (!hasEntries && !hasServers && !hasServerErrors)
+            var hasDeclaration = recordedDeclarations.TryGetValue(
+                (Contributions.McpDiscoverContributionKind.ExtensionKind, registration.PluginId),
+                out var declaration);
+            if (!hasEntries && !hasDeclaration)
                 return PluginMcpDiscoveryResult.Failed("unknown_manifest_plugin");
-            if (hasServerErrors) return PluginMcpDiscoveryResult.Failed("invalid_data_file");
+            if (declaration is { PluginLevelError: not null })
+                return PluginMcpDiscoveryResult.Failed("invalid_data_file");
             entries = recorded ?? [];
-            fileServers = servers ?? [];
+            fileServers = declaration is null
+                ? []
+                : Contributions.ContributionDescriptorUnwrap.McpServers(declaration.Descriptors);
         }
 
         var definitions = new List<McpServerDefinition>();
         foreach (var entry in entries)
         {
-            if (entry.Kind != PluginExtensionKind.McpDiscover) continue;
+            if (!Contributions.McpDiscoverContributionKind.Instance.OwnsExtensionKind(entry.Kind)) continue;
             if (!TryToMcpDefinition(registration.PluginId, entry.Data, out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
@@ -3628,6 +3641,24 @@ internal sealed class PluginHostManager(
             completion.TrySetResult(ReplDeriveOutcome.DeriveFailed(message));
 
         pendingDerives.Clear();
+    }
+
+    /// <summary>Ordinal comparison for the recorded-declaration key (kind name, plugin
+    /// id) — the tuple's default string equality is ordinal already; this makes the
+    /// intent explicit.</summary>
+    private sealed class DeclarationRecordKeyComparer
+        : IEqualityComparer<(string KindName, string PluginId)>
+    {
+        public static readonly DeclarationRecordKeyComparer Ordinal = new();
+
+        public bool Equals((string KindName, string PluginId) left, (string KindName, string PluginId) right) =>
+            string.Equals(left.KindName, right.KindName, StringComparison.Ordinal) &&
+            string.Equals(left.PluginId, right.PluginId, StringComparison.Ordinal);
+
+        public int GetHashCode((string KindName, string PluginId) key) =>
+            HashCode.Combine(
+                key.KindName.GetHashCode(StringComparison.Ordinal),
+                key.PluginId.GetHashCode(StringComparison.Ordinal));
     }
 
     private static T? ParsePayload<T>(ReplEnvelope envelope)

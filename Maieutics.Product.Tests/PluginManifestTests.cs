@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
+using Maieutics.Plugins.Contributions;
 
 namespace Maieutics.Product.Tests;
 
@@ -605,6 +606,117 @@ public sealed class PluginManifestTests
             """);
         descriptor.McpServers.Should().BeEmpty();
     }
+
+    [Fact]
+    public void ExtensionKindRoutingIsCatalogDrivenAndRecordsCanonicalSpellings()
+    {
+        var descriptor = LoadPlugin(
+            """
+            { "name": "@maieutics/case-kinds", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            {
+              "extensions": {
+                "SKILLS": [ { "roots": ["./skills"] } ],
+                "mcpdiscover": [
+                  { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } }
+                ]
+              }
+            }
+            """);
+
+        // Any spelling routes through the kind catalog; entries record the canonical
+        // spelling every downstream comparison expects (manifest section order is kept).
+        descriptor.Extensions.Select(static entry => entry.Kind).Should().Equal(
+            SkillsContributionKind.ExtensionKind, McpDiscoverContributionKind.ExtensionKind);
+    }
+
+    [Fact]
+    public void DataEntryNamesRouteCaseInsensitivelyRecordingCanonicalSpellings()
+    {
+        var directory = CreatePluginDirectory(
+            """
+            { "name": "@maieutics/case-data", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            {
+              "capabilities": ["tools.invoke"],
+              "entrypoints": { "MCP": "./mcp.json", "UI": "./ui-form.json" }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(directory, "mcp.json"),
+            """{ "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }""");
+        File.WriteAllText(Path.Combine(directory, "ui-form.json"), """{ "fields": [] }""");
+
+        PluginManifest.TryLoad(directory, out var descriptor, out var error)
+            .Should().BeTrue(error);
+        var loaded = descriptor ?? throw new InvalidOperationException(error);
+
+        // The unified grammar case policy: any spelling routes to the catalogued
+        // interpreter and records the canonical name. Plugins whose approved
+        // fingerprint still carries a non-canonical spelling are revoked until
+        // re-approved (fail-closed, ADR 0037 — the effective interpretation changed).
+        loaded.DataEntries.Select(static entry => entry.Name).Should().Equal(
+            McpDiscoverContributionKind.DataEntry, UiContributionKind.DataEntry);
+        loaded.McpServers.Should().ContainSingle().Which.Id.Should().EndWith("::probe");
+        loaded.UiForm.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void UnknownDataEntryDiagnosticsEnumerateEveryCataloguedName()
+    {
+        var descriptor = LoadPlugin(
+            """
+            { "name": "@maieutics/unknown-data", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "entrypoints": { "notices": "./notices.json" } }
+            """);
+
+        // The catalog generates the name list, so a catalogued kind can no longer be
+        // missing from it (the former text listed only 'mcp' while 'ui' existed).
+        descriptor.ExtensionDiagnostics.Should().Contain(diagnostic =>
+            diagnostic.Contains("data entry 'notices'") &&
+            diagnostic.Contains(KnownDataEntryNamesText()));
+        KnownDataEntryNamesText().Should().Be("mcp, ui");
+    }
+
+    [Fact]
+    public void UnknownExtensionKindDiagnosticsAreCatalogGenerated()
+    {
+        var descriptor = LoadPlugin(
+            """
+            { "name": "@maieutics/unknown-kind", "permissions": { "default": { "read": ["./"] } } }
+            """,
+            """
+            { "extensions": { "FutureKind": [{ "opaque": true }] } }
+            """);
+
+        var diagnostic = descriptor.ExtensionDiagnostics.Should().ContainSingle().Which;
+        diagnostic.Should().Contain("FutureKind")
+            .And.Contain($"known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}");
+        diagnostic.Should().NotContain("recommended", "the catalog text drops the former hand-written case-advice sentence");
+    }
+
+    [Fact]
+    public void TheKindCatalogRoutesLookupsByTheirDeclaredNames()
+    {
+        ContributionKindCatalog.ByExtensionKind("skills").Should().Be(SkillsContributionKind.Instance);
+        ContributionKindCatalog.ByExtensionKind("MCPDISCOVER").Should().Be(McpDiscoverContributionKind.Instance);
+        ContributionKindCatalog.ByExtensionKind("FutureKind").Should().BeNull();
+        ContributionKindCatalog.ByDataEntryName("MCP").Should().Be(McpDiscoverContributionKind.Instance);
+        ContributionKindCatalog.ByDataEntryName("ui").Should().Be(UiContributionKind.Instance);
+        ContributionKindCatalog.ByDataEntryName("notices").Should().BeNull();
+        ContributionKindCatalog.ByPublishCapability("skills.publish").Should().Be(SkillsContributionKind.Instance);
+        ContributionKindCatalog.ByPublishCapability("ui.models").Should().BeNull(
+            "the ui kind is a text-only catalog registration in B; its publish flow is untouched");
+        ContributionKindCatalog.CanonicalExtensionKind("SKILLS").Should().Be(SkillsContributionKind.ExtensionKind);
+        ContributionKindCatalog.CanonicalDataEntryName("MCP").Should().Be(McpDiscoverContributionKind.DataEntry);
+    }
+
+    private static string KnownDataEntryNamesText() =>
+        string.Join(", ", McpDiscoverContributionKind.DataEntry, UiContributionKind.DataEntry);
 
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)
     {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
+using Maieutics.Plugins.Contributions;
 
 namespace Maieutics.Product.Tests;
 
@@ -36,7 +37,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             // domains, pinned structurally so a silent inclusion flip cannot hide
             // behind an unchanged-looking hash.
             descriptor.Extensions.Select(static entry => entry.Kind).Should().Equal(
-                PluginExtensionKind.McpDiscover, PluginExtensionKind.Skills);
+                McpDiscoverContributionKind.ExtensionKind, SkillsContributionKind.ExtensionKind);
             descriptor.ExtensionDiagnostics.Should().Contain(diagnostic =>
                 diagnostic.Contains("unknown-extension", StringComparison.Ordinal));
             descriptor.DataEntries.Select(static entry => entry.Name).Should().BeEquivalentTo(

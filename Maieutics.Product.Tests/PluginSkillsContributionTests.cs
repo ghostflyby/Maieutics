@@ -115,6 +115,10 @@ public sealed class PluginSkillsContributionTests : IDisposable
             if (predicate(catalog.Current)) return;
             await Task.Delay(20, cancellationToken);
         }
+
+        Assert.Fail(
+            $"The skill catalog did not reach the expected state within 15s " +
+            $"(currently {catalog.Current.Skills.Length} skills, {catalog.Current.Diagnostics.Length} diagnostics).");
     }
 
     [Fact(Timeout = Deadline)]
@@ -149,6 +153,53 @@ public sealed class PluginSkillsContributionTests : IDisposable
             var skill = catalog.Current.Skills.Single(skill => skill.Name == "alpha");
             skill.Source.Should().Be(SkillSource.PluginDeclared);
             skill.BodyPath.Should().Contain("skills-plain");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task LowercaseManifestKindIsAccepted()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        var root = CreateSkillsPluginsRoot(
+            "skills-lowercase",
+            """["./skills"]""",
+            """["./"]""");
+        // Rewrite the manifest with the recommended lowercase spelling of the kind.
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "extensions": { "skills": [ { "roots": ["./skills"] } ] }
+            }
+            """);
+        WriteSkill(Path.Combine(root, "skills"), "delta", "declared in lowercase");
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(
+            root,
+            clock,
+            catalog,
+            CreateVariables([]),
+            PluginApprovalSeeds.SeedLocalPlugins(root));
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            await manager.WaitUntilReadyAsync(TestContext.Current.CancellationToken);
+
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "delta"),
+                TestContext.Current.CancellationToken);
+
+            catalog.Current.Skills.Single(skill => skill.Name == "delta").Source
+                .Should().Be(SkillSource.PluginDeclared);
         }
         finally
         {
@@ -327,6 +378,149 @@ public sealed class PluginSkillsContributionTests : IDisposable
         }
     }
 
+    [Fact(Timeout = Deadline)]
+    public async Task PublishedSkillsReplaceThePluginSPublishedPartAtRuntime()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"skills-publisher-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["skills.publish"],
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } },
+              "extensions": { "skills": [ { "roots": ["./skills"] } ] }
+            }
+            """);
+        WriteSkill(Path.Combine(root, "skills"), "declared", "the declarative part");
+        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            // The declarative part is reconciled at start.
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "declared"),
+                TestContext.Current.CancellationToken);
+
+            // A granted publish adds the published part beside it.
+            manager.HandleHostMessage(SkillsPublishFrame(
+                pluginId,
+                """[{"name":"published-one","description":"pushed at runtime","body":"# Pushed\n"}]"""));
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "published-one"),
+                TestContext.Current.CancellationToken);
+            var published = catalog.Current.Skills.Single(skill => skill.Name == "published-one");
+            published.Source.Should().Be(SkillSource.PluginPublished);
+            catalog.Current.Skills.Should().Contain(skill => skill.Name == "declared");
+
+            // The next publish replaces the published set wholesale (empty clears it)
+            // while the declarative part survives.
+            manager.HandleHostMessage(
+                SkillsPublishFrame(pluginId, """[{"name":"published-two","description":"the replacement"}]"""));
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "published-two"),
+                TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Should()
+                .Contain(skill => skill.Name == "declared")
+                .And.Contain(skill => skill.Name == "published-two")
+                .And.NotContain(skill => skill.Name == "published-one");
+
+            manager.HandleHostMessage(SkillsPublishFrame(pluginId, "[]"));
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Should()
+                .Contain(skill => skill.Name == "declared")
+                .And.NotContain(skill => skill.Name == "published-two");
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task PublishWithoutTheCapabilityGrantIsDenied()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"skills-ungranted-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
+            }
+            """);
+        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(SkillsPublishFrame(
+                pluginId,
+                """[{"name":"denied","description":"never lands"}]"""));
+
+            var reply = await fakeSocket.ReadAsync(TestContext.Current.CancellationToken);
+            reply.Should().Contain("capability_denied");
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Should().BeEmpty();
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static string SkillsRegistryFrame(string pluginId, string exportName)
     {
         var payload = JsonSerializer.SerializeToElement(
@@ -339,6 +533,22 @@ public sealed class PluginSkillsContributionTests : IDisposable
             });
         var envelope = JsonSerializer.SerializeToElement(
             new ReplEnvelope(1, ReplMessageType.ExtensionRegistry, Guid.NewGuid().ToString("N"), payload),
+            ReplControlJsonContext.Default.ReplEnvelope);
+        return envelope.GetRawText();
+    }
+
+    /// <summary>One <c>capability.invoke</c> frame for skills.publish, carrying the
+    /// replacement entry array as the payload.</summary>
+    private static string SkillsPublishFrame(string pluginId, string entriesJson)
+    {
+        var payload = JsonSerializer.SerializeToElement(
+            new CapabilityInvokePayload(
+                pluginId,
+                ReplCapabilityName.SkillsPublish,
+                JsonDocument.Parse(entriesJson).RootElement.Clone()),
+            ReplControlJsonContext.Default.CapabilityInvokePayload);
+        var envelope = JsonSerializer.SerializeToElement(
+            new ReplEnvelope(1, ReplMessageType.CapabilityInvoke, Guid.NewGuid().ToString("N"), payload),
             ReplControlJsonContext.Default.ReplEnvelope);
         return envelope.GetRawText();
     }
@@ -387,6 +597,18 @@ public sealed class PluginSkillsContributionTests : IDisposable
             }
 
             throw new TimeoutException("No Skills host.invoke envelope arrived.");
+        }
+
+        public async Task<string> ReadAsync(CancellationToken cancellationToken)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (sent.Reader.TryRead(out var message)) return message;
+                await Task.Delay(20, cancellationToken);
+            }
+
+            throw new TimeoutException("No host envelope arrived.");
         }
 
         public void Reply(PluginHostManager manager, string invokeEnvelope, string resultJson)

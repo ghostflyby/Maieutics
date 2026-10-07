@@ -39,12 +39,25 @@ internal static class PluginExtensionKind
 
     /// <summary>The declarative skill-contribution kind (ADR 0039 stage 2): entries carry
     /// <c>roots</c> the kernel enumerates (interpolated through the manifest variable
-    /// table); the worker form of the same name is the generator the kernel invokes.</summary>
+    /// table); the worker form of the same name is the generator the kernel invokes. The
+    /// lowercase spelling <c>skills</c> is the recommended form; case is not
+    /// significant.</summary>
     public const string Skills = "Skills";
 
     public static bool IsKnown(string kind)
     {
-        return kind == McpDiscover || kind == Skills;
+        return kind.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase) ||
+               kind.Equals(Skills, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The canonical constant for a declared kind, or null when unknown. Entries
+    /// record the canonical spelling so downstream comparisons stay exact regardless of
+    /// how the manifest spelled it.</summary>
+    public static string? Canonicalize(string kind)
+    {
+        if (kind.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase)) return McpDiscover;
+        if (kind.Equals(Skills, StringComparison.OrdinalIgnoreCase)) return Skills;
+        return null;
     }
 }
 
@@ -618,7 +631,8 @@ internal static class PluginManifest
             {
                 found.Add(
                     $"Unknown extension kind '{kind.Name}' is declared but not supported by this kernel; " +
-                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}, {PluginExtensionKind.Skills}).");
+                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}, {PluginExtensionKind.Skills} " +
+                    $"— case is not significant and the lowercase 'skills' form is recommended).");
                 continue;
             }
 
@@ -627,7 +641,9 @@ internal static class PluginManifest
                 if (entry.ValueKind != JsonValueKind.Object)
                     throw new JsonException(
                         $"The 'extensions.{kind.Name}' entries must be objects.");
-                entries.Add(new PluginExtensionEntry(kind.Name, entry.Clone()));
+                entries.Add(new PluginExtensionEntry(
+                    PluginExtensionKind.Canonicalize(kind.Name) ?? kind.Name,
+                    entry.Clone()));
             }
         }
 

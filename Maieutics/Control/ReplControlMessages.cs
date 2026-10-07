@@ -171,12 +171,17 @@ internal static class ReplCapabilityName
     /// <summary>Plugin-owned UI models (ADR 0038 stage 3): a granted worker pushes native
     /// view-family comm frames through the kernel into the session's comm plane.</summary>
     public const string UiModels = "ui.models";
+
+    /// <summary>Plugin skill publication (ADR 0039 stage 3): a granted worker replaces its
+    /// published skill set at runtime; the entries merge into the plugin's contribution
+    /// slot below the declarative roots and the generated part.</summary>
+    public const string SkillsPublish = "skills.publish";
 }
 
 internal static class PluginCapabilityCatalog
 {
     public static readonly IReadOnlyList<string> All =
-        [ReplCapabilityName.ToolsInvoke, ReplCapabilityName.UiModels];
+        [ReplCapabilityName.ToolsInvoke, ReplCapabilityName.UiModels, ReplCapabilityName.SkillsPublish];
 
     public static bool Contains(string capability)
     {
@@ -198,14 +203,30 @@ internal static class ReplExtensionPointName
 
     /// <summary>Plugin skill-catalog generator (ADR 0039 stage 2): the kernel invokes the
     /// worker's registered Skills export at load/reload and reconciles the returned
-    /// descriptor array into the plugin's skill contribution slot.</summary>
+    /// descriptor array into the plugin's skill contribution slot. Workers report the
+    /// canonical spelling; matching is case-insensitive and the lowercase form is the
+    /// recommended authoring spelling.</summary>
     public const string Skills = "Skills";
 
     public static bool IsKnown(string name)
     {
-        return name == McpDiscover || name == McpAdjust ||
-               name == ToolPreInvoke || name == ToolPostInvoke || name == UiEvent ||
-               name == Skills;
+        return name.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(McpAdjust, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(ToolPreInvoke, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(ToolPostInvoke, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(UiEvent, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(Skills, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The canonical constant for a known name (any spelling), or null.
+    /// Registrations record the canonical spelling so downstream exact comparisons stay
+    /// correct regardless of what the reporting side spelled.</summary>
+    public static string? Canonicalize(string name)
+    {
+        foreach (var candidate in (string[]) [McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, UiEvent, Skills])
+            if (name.Equals(candidate, StringComparison.OrdinalIgnoreCase))
+                return candidate;
+        return null;
     }
 }
 

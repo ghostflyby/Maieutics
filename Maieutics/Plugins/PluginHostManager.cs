@@ -292,6 +292,18 @@ internal sealed class PluginHostManager(
     private readonly Dictionary<string, IReadOnlyList<Skills.SkillDescriptor>> pluginGeneratedSkills =
         new(StringComparer.Ordinal);
 
+    /// <summary>Last declarative contribution per plugin id, cached by each reconcile pass
+    /// so a runtime publish can compose the slot without re-walking roots on the
+    /// capability path.</summary>
+    private readonly Dictionary<string, IReadOnlyList<Skills.SkillDescriptor>> pluginDeclarativeSkills =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Published contribution per plugin id (ADR 0039 stage 3): the granted
+    /// worker's skills.publish call replaces this part wholesale (an empty array
+    /// clears it).</summary>
+    private readonly Dictionary<string, IReadOnlyList<Skills.SkillDescriptor>> pluginPublishedSkills =
+        new(StringComparer.Ordinal);
+
     /// <summary>Plugin ids currently holding a catalog contribution slot, so a pass that
     /// no longer sees a plugin (removed, revoked, or the manager disposing) clears it.</summary>
     private readonly HashSet<string> contributedSkillPlugins = new(StringComparer.Ordinal);
@@ -2862,6 +2874,49 @@ internal sealed class PluginHostManager(
                 return;
             }
 
+            if (request.Capability == ReplCapabilityName.SkillsPublish)
+            {
+                // Plugin skill publication (ADR 0039 stage 3): the payload is the
+                // replacement set for the plugin's published part — the same entry shape
+                // and bounds a generator returns; an empty array clears it.
+                if (ParseGeneratedSkills(payload, Skills.SkillSource.PluginPublished) is not { } published)
+                {
+                    await PushCapabilityErrorAsync(
+                        socket,
+                        envelope.CorrelationId,
+                        "invalid_capability_invoke",
+                        "The skills.publish payload must be an array of {name, description, body?} entries.",
+                        budget.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                var publishedCount = PublishPluginSkills(request.PluginId, published);
+                if (publishedCount is null)
+                {
+                    await PushCapabilityErrorAsync(
+                        socket,
+                        envelope.CorrelationId,
+                        "capability_unavailable",
+                        "The kernel skill catalog is not available.",
+                        budget.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                await PushCapabilityReplyAsync(
+                    socket,
+                    new ReplEnvelope(
+                        envelope.Version,
+                        ReplMessageType.CapabilityResult,
+                        envelope.CorrelationId,
+                        JsonSerializer.SerializeToElement(
+                            new CapabilityResultPayload(
+                                JsonDocument.Parse($"{{\"status\":\"ok\",\"published\":{publishedCount}}}")
+                                    .RootElement.Clone()),
+                            ReplControlJsonContext.Default.CapabilityResultPayload)),
+                    budget.Token).ConfigureAwait(false);
+                return;
+            }
+
             var executor = CapabilityExecutor;
             if (executor is null)
             {
@@ -3035,14 +3090,21 @@ internal sealed class PluginHostManager(
                     // The kernel dispatches only catalogued names; unknown names are
                     // registered inertly, and the warning makes the mismatch visible
                     // instead of leaving a plugin wondering why nothing invokes it.
-                    if (!ReplExtensionPointName.IsKnown(extensionPoint))
+                    // Known names canonicalize so any accepted spelling records the
+                    // constant every consumer compares against.
+                    var canonical = ReplExtensionPointName.Canonicalize(extensionPoint);
+                    if (canonical is null)
+                    {
                         logger.LogWarning(
                             "Plugin '{PluginId}' export '{ExportName}' registered unknown extension point '{Name}'; " +
                             "this kernel version never dispatches it.",
                             plugin.PluginId,
                             plugin.ExportName,
                             extensionPoint);
-                    hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, extensionPoint));
+                        continue;
+                    }
+
+                    hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, canonical));
                 }
             }
 
@@ -3221,9 +3283,17 @@ internal sealed class PluginHostManager(
                     pluginGeneratedSkills[pass.Id] = parsed;
                 }
 
-                contribution.AddRange(generated);
-                skillCatalog.UpdatePluginContribution(pass.Id, contribution);
-                contributedSkillPlugins.Add(pass.Id);
+                // Compose and commit under the gate so a concurrent skills.publish
+                // cannot interleave: whichever commits later reads the other's parts.
+                lock (gate)
+                {
+                    pluginDeclarativeSkills[pass.Id] = contribution;
+                    var composed = new List<Skills.SkillDescriptor>(contribution);
+                    composed.AddRange(generated);
+                    composed.AddRange(pluginPublishedSkills.GetValueOrDefault(pass.Id, []));
+                    skillCatalog.UpdatePluginContribution(pass.Id, composed);
+                    contributedSkillPlugins.Add(pass.Id);
+                }
             }
 
             foreach (var pluginId in contributedSkillPlugins.ToArray())
@@ -3231,6 +3301,8 @@ internal sealed class PluginHostManager(
                 if (activeIds.Contains(pluginId)) continue;
                 contributedSkillPlugins.Remove(pluginId);
                 pluginGeneratedSkills.Remove(pluginId);
+                pluginDeclarativeSkills.Remove(pluginId);
+                pluginPublishedSkills.Remove(pluginId);
                 skillCatalog.RemovePluginContribution(pluginId);
             }
         }
@@ -3301,10 +3373,13 @@ internal sealed class PluginHostManager(
         }
     }
 
-    /// <summary>Validates a generator's returned catalog: an array of
-    /// {name, description, body?} objects under the same bounds a filesystem skill
-    /// satisfies. Invalid entries ride as inert diagnostics; a non-array value is null.</summary>
-    private static List<Skills.SkillDescriptor>? ParseGeneratedSkills(JsonElement? value)
+    /// <summary>Validates a computed catalog (generator output or published entries): an
+    /// array of {name, description, body?} objects under the same bounds a filesystem
+    /// skill satisfies. Invalid entries ride as inert diagnostics; a non-array value is
+    /// null.</summary>
+    private static List<Skills.SkillDescriptor>? ParseGeneratedSkills(
+        JsonElement? value,
+        Skills.SkillSource source = Skills.SkillSource.PluginGenerated)
     {
         if (value is not { ValueKind: JsonValueKind.Array } array) return null;
         var results = new List<Skills.SkillDescriptor>();
@@ -3312,7 +3387,7 @@ internal sealed class PluginHostManager(
         {
             if (entry.ValueKind != JsonValueKind.Object)
             {
-                results.Add(InertSkill("generator", "entry", "The generated entry is not an object."));
+                results.Add(InertSkill(SourceLabel(source), "entry", "The generated entry is not an object."));
                 continue;
             }
 
@@ -3330,7 +3405,7 @@ internal sealed class PluginHostManager(
                 : null;
             if (string.IsNullOrWhiteSpace(name) || !Skills.SkillDescriptor.IsValidName(name))
             {
-                results.Add(InertSkill("generator", "entry", $"The generated skill name '{name}' is not a valid catalog name."));
+                results.Add(InertSkill(SourceLabel(source), "entry", $"The generated skill name '{name}' is not a valid catalog name."));
                 continue;
             }
 
@@ -3351,12 +3426,17 @@ internal sealed class PluginHostManager(
             results.Add(new Skills.SkillDescriptor(
                 name!,
                 description,
-                Skills.SkillSource.PluginGenerated,
+                source,
                 RootDirectory: "/",
                 BodyText: body));
         }
 
         return results;
+    }
+
+    private static string SourceLabel(Skills.SkillSource source)
+    {
+        return source == Skills.SkillSource.PluginPublished ? "published" : "generator";
     }
 
     /// <summary>The generator invoke request: the live workspace root (or null) — never
@@ -3367,6 +3447,29 @@ internal sealed class PluginHostManager(
         return JsonSerializer.SerializeToElement(
             new SkillsInvokePayload(workspaceRoot),
             ReplControlJsonContext.Default.SkillsInvokePayload);
+    }
+
+    /// <summary>Replaces one plugin's published skill set (ADR 0039 stage 3) and commits
+    /// the recomposed contribution slot. Composition happens under the gate so a
+    /// concurrent reconcile pass cannot interleave its commit.</summary>
+    /// <returns>The number of usable published entries, or null when this host carries no
+    /// skill catalog (the capability is unavailable).</returns>
+    private int? PublishPluginSkills(string pluginId, IReadOnlyList<Skills.SkillDescriptor> published)
+    {
+        if (skillCatalog is null) return null;
+
+        lock (gate)
+        {
+            pluginPublishedSkills[pluginId] = published;
+            var composed = new List<Skills.SkillDescriptor>(
+                pluginDeclarativeSkills.GetValueOrDefault(pluginId, []));
+            composed.AddRange(pluginGeneratedSkills.GetValueOrDefault(pluginId, []));
+            composed.AddRange(published);
+            skillCatalog.UpdatePluginContribution(pluginId, composed);
+            contributedSkillPlugins.Add(pluginId);
+        }
+
+        return published.Count(skill => skill.Diagnostic is null);
     }
 
     private static Skills.SkillDescriptor InertSkill(string pluginId, string slot, string diagnostic)

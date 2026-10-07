@@ -94,7 +94,9 @@ Two design forces shaped this ADR:
    `Plugin-generated`, `Plugin-published`) so plugin context is never presented as human
    policy. Both stage-2 modes ride the existing extension-point machinery:
    - **Stage 2a — declarative interpolated roots (shipped)**: the manifest
-     `extensions: { "Skills": [ { "roots": [...] } ] }` kind; roots expand through the
+     `extensions: { "skills": [ { "roots": [...] } ] }` kind (the lowercase spelling is
+     the recommended form; case is not significant at either name catalog, and recorded
+     registrations canonicalize); roots expand through the
      single-source manifest variable table (`${env.*}`, `${var.*}` with the ADR 0018 §4
      fixed set wired in production), resolve relative to the plugin root, and a root
      resolving outside it is admitted only when the plugin's own (fingerprinted) read
@@ -111,9 +113,13 @@ Two design forces shaped this ADR:
      keeps the last good generated contribution (the MCP discovery discipline) while
      declarative roots recompute fresh. Passes serialize on one semaphore; approval gates
      both modes before any contribution or invoke.
-   - **Stage 3 — worker publish (roadmap)**: a capability-gated `skills.publish` model
-     API pushes contributions at worker runtime into the same slot with atomic snapshot
-     semantics.
+   - **Stage 3 — worker publish (shipped)**: the catalogued `skills.publish` capability
+     (manifest-declared, deny-by-default like every capability grant) lets a granted
+     worker replace its published skill set at runtime — the same entry shape and bounds
+     the generator returns, an empty array clears the part — and the recomposed slot
+     commits atomically against concurrent reconcile passes. The published part sits
+     below the declarative roots and the generated part within the plugin's slot; SDK
+     surface `capabilities.skills.publish(...)`.
    In-corpus correction to the earlier design discussion: `SKILL.md` bodies inside a
    plugin root do **not** enter the approval fingerprint. ADR 0037 fingerprints
    declarations, never code; in-root skill files are code-like, and out-of-root reads
@@ -137,6 +143,5 @@ Two design forces shaped this ADR:
   restart (the OS watch is gone; recreating the directory does not re-arm it). Watcher
   internal-buffer overflow schedules one recovery rescan, so event loss does not leave
   the catalog permanently stale.
-- Stages 2-3 will need their own review rounds for the manifest grammar, fingerprint
-  domain wording, generator contract, and SDK surface; this ADR fixes the registry,
-  precedence, plane, and propagation semantics they plug into.
+- All three stages are implemented; the registry, precedence, plane, and propagation
+  semantics this ADR fixed held through their review rounds unchanged.

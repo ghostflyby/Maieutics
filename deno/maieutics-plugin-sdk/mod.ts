@@ -433,6 +433,12 @@ export const capabilities: {
     args?: Record<string, unknown>,
     options?: { timeoutMs?: number },
   ): Promise<T>;
+  skills: {
+    publish(
+      entries: SkillGeneration[],
+      options?: { timeoutMs?: number },
+    ): Promise<void>;
+  };
 } = {
   /** Invokes one script-callable kernel tool (the same registry REPL scripts
    * reach through `maieutics.tools.invoke`) and returns its structured result
@@ -444,6 +450,19 @@ export const capabilities: {
   ): Promise<T> {
     return callCapability<T>("tools.invoke", { tool: name, arguments: args ?? {} }, options);
   },
+
+  skills: {
+    /** Replaces this plugin's published skill set (ADR 0039 stage 3). The
+     * entries merge into the plugin's catalog contribution below its
+     * declarative roots and generated part; an empty array clears the
+     * published set. Requires the `skills.publish` manifest capability. */
+    publish(
+      entries: SkillGeneration[],
+      options?: { timeoutMs?: number },
+    ): Promise<void> {
+      return callCapability<void>("skills.publish", entries, options);
+    },
+  },
 };
 
 export function defineExtensionPoint<K extends ExtensionPointName>(
@@ -454,15 +473,24 @@ export function defineExtensionPoint(
   name: string,
   impl: unknown,
 ): ExtensionPointImpl<ExtensionPointName> {
-  const symbol = ExtensionPoint[name as ExtensionPointName];
-  if (symbol === undefined) {
+  // Case is not significant: the recommended spelling for newer extension
+  // points is lowercase, and canonical markers are matched accordingly.
+  const catalog = ExtensionPoint as Record<string, symbol>;
+  const canonical = Object.keys(catalog).find((key) =>
+    key.toLowerCase() === name.toLowerCase()
+  );
+  if (canonical === undefined) {
     // The kernel only scans for known markers, so this export would silently
-    // never be discovered. Say so instead of attaching a meaningless marker.
+    // never be discovered. Say so and leave it unmarked instead of attaching
+    // a meaningless marker.
     console.error(
       `[maieutics] defineExtensionPoint('${name}') is not known to this kernel ` +
         `version; the export is ignored (known: ${Object.keys(ExtensionPoint).join(", ")}).`,
     );
+    return impl as ExtensionPointImpl<ExtensionPointName>;
   }
+
+  const symbol: symbol = catalog[canonical];
   const kind = typeof impl === "function" ? "function" : "object";
   if (kind === "function") {
     if (typeof impl !== "function") {

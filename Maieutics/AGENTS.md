@@ -17,8 +17,9 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
 
 - `Maieutics.Execution` — workspace root and `workspace://local` read/search tools, plus the virtual resource
   URL registry (`IResourceProvider`, custom bridge providers, `mcp://` escape hatch; ADR 0026).
-- `Maieutics.Skills` — the skill discovery primitive, the merged catalog with per-root watchers, the prompt
-  catalog composer, and the `skill://` resource plane (ADR 0039).
+- `Maieutics.Skills` — the skill discovery primitive, the merged catalog with per-root watchers and
+  event-path differential rescans, the prompt catalog composer, and the `skill://` resource plane
+  (ADR 0039).
 - `Maieutics.Terminal` — PTY sessions, headless VT screen, terminal key encoding, and `terminal_*` tools.
 - `Maieutics.Permissions` — layered declarative permissions, variable interpolation, effective policy, Deno rendering.
 - `Maieutics.Processes` — general process start policy (environment allowlist, future sandbox enforcement seam).

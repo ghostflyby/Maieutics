@@ -51,7 +51,11 @@ Two design forces shaped this ADR:
    unknown keys ignored — parsed without a YAML dependency. A skill without a
    description is inert (the catalog entry *is* the description). Names are the
    `skill://` host: `^[a-z0-9][a-z0-9-]{0,63}$`. Containment is enforced lexically and
-   against the final link target, both at discovery and at every body read.
+   against the final link target, both at discovery and at every body read. The same rule
+   set is exposed as a lazy streaming walk of one region subtree (region root plus
+   declared root) that yields each skill directory the moment it is found: a region walk
+   yields exactly the descriptors a full-root walk would yield for that subtree, so a
+   rescan can difference one region without a second rule set or a whole-root rewalk.
 
 3. **`skill://` is a reserved built-in scheme.** The plane is the whitelist: only files
    discovery accepted are readable, which is exactly what lets user-profile skills
@@ -81,12 +85,25 @@ Two design forces shaped this ADR:
    omission line) so per-item bounds cannot be multiplied into a hostile half-megabyte
    prompt.
 
-5. **Filesystem roots are startup-fixed; freshness is event-driven.** Stage 1 ships two
-   sources: `<workspace-root>/.agents/skills` and `~/.agents/skills` (both created if
-   missing, both overridable via `Maieutics:Skills`, discovery disableable). Each root
-   owns a filesystem watcher whose events feed a per-root debounce pump that rescans and
-   atomically republishes the merged snapshot. Roots do not participate in configuration
-   reload; the catalog is not a model setting.
+5. **Filesystem roots are startup-fixed; freshness is event-driven and differential.**
+   Stage 1 ships two sources: `<workspace-root>/.agents/skills` and `~/.agents/skills`
+   (both created if missing, both overridable via `Maieutics:Skills`, discovery
+   disableable). Each root owns a filesystem watcher whose events feed a per-root debounce
+   pump that differences by event path, holding each root's state as a skill-directory-
+   indexed map. Across the debounce window the pump collects the event paths (both halves
+   of a rename); a path inside a known skill directory can only change that one skill (its
+   subtree is resources), so exactly that directory is revalidated — and when its
+   `SKILL.md` has vanished the claim is released and the directory itself is rewalked as a
+   region, re-exposing the deeper skills that were resources a moment ago. Any other path
+   becomes its own region root whose subtree walk (decision 2's streaming core) is diffed
+   against everything known under it, so a new mid-tree boundary `SKILL.md` preempts the
+   skills below it and removing one re-exposes them. Batches apply atomically under the
+   catalog gate; a watcher error or a pending-set overflow (events were lost, the
+   differential cannot know which regions changed) escalates to one full-root differential
+   walk. The initial scan streams: each discovered skill directory commits as one atomic
+   update-and-republish, so the catalog goes live per directory instead of waiting for the
+   whole root. Roots do not participate in configuration reload; the catalog is not a
+   model setting.
 
 6. **Plugin participation is staged as production modes on the same registry.** Each
    plugin owns one contribution slot; modes merge within the slot and the slot joins the
@@ -109,12 +126,19 @@ Two design forces shaped this ADR:
    - **Stage 2b — worker generator (shipped)**: a worker exporting the `Skills`
      extension point (`defineExtensionPoint("Skills", ...)`) is invoked by the kernel at
      the same reconcile boundaries MCP discovery uses (start, registry frames, approval
-     transitions, triggers); the request carries the live workspace root, never arbitrary
+     transitions, triggers), targeted per plugin: a registry frame diffs the before/after
+     `Skills` export sets of each plugin (an unchanged frame invokes no generator); an
+     approval snapshot reconciles only the transitioning plugins that have a skill face —
+     a held slot counts, so a revoked publish-only plugin still loses its published part;
+     a trigger reconciles exactly the triggered plugin; the start seed reconciles plugins
+     progressively. The request carries the live workspace root, never arbitrary
      environment; the returned array is validated under the same bounds a filesystem
      skill satisfies (name charset, clean one-line description, bounded inline body) and
      served through the `skill://` plane as inline content. A failed or empty invoke
      keeps the last good generated contribution (the MCP discovery discipline) while
-     declarative roots recompute fresh. Passes serialize on one semaphore; approval gates
+     declarative roots recompute fresh. Passes serialize per plugin and coalesce (same
+     plugin serial, different plugins parallel, no lock held across a generator await; a
+     commit declines a generation token cancelled by the stop path); approval gates
      both modes before any contribution or invoke.
    - **Stage 3 — worker publish (shipped)**: the catalogued `skills.publish` capability
      (manifest-declared, deny-by-default like every capability grant) lets a granted
@@ -130,6 +154,15 @@ Two design forces shaped this ADR:
    manifest variable table now reaches every manifest load (trigger paths included),
    which is the ADR 0018 §4 intent — previously production loads expanded against an
    empty source and any `${...}` token failed the plugin.
+
+   The MCP discovery coordination sync on the same plugin surface is differential in both
+   directions too: a coordinator revision carries the full registration set *and* a forced
+   re-discovery set. An unchanged registration reuses its published contribution without a
+   worker invoke or a manifest re-read; new and never-succeeded registrations run
+   discovery; removed registrations drop their contribution. Triggers and watched worker
+   reloads publish in the forced form (their exports may return different results over
+   identical registration records), while registry updates, approvals, and the start seed
+   stay plain-differential — an empty previous set makes the seed a full discovery.
 
 ## Consequences
 

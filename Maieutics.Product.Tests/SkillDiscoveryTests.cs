@@ -303,6 +303,23 @@ public sealed class SkillFrontmatterTests
     }
 
     [Fact]
+    public void CrlfAuthoredFrontmatterParsesIdentically()
+    {
+        // A Windows-authored SKILL.md (or a CRLF checkout of one) must parse the same as
+        // LF: the fence compare is length-exact, so the parser normalizes first.
+        var parsed = SkillFrontmatter.TryRead(
+            "---\r\nname: the-name\r\ndescription: The description.\r\n---\r\n\r\n# Body\r\n",
+            out var name,
+            out var description,
+            out var error);
+
+        parsed.Should().BeTrue();
+        error.Should().BeNull();
+        name.Should().Be("the-name");
+        description.Should().Be("The description.");
+    }
+
+    [Fact]
     public void ParsesWithoutAFence()
     {
         var parsed = SkillFrontmatter.TryRead("# Just a body\n", out var name, out var description, out var error);

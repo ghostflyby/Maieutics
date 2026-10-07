@@ -11,13 +11,14 @@ internal static class SkillFrontmatter
 {
     /// <summary>Reads the frontmatter block. A file with no leading fence parses as an empty
     /// block (the caller decides whether the required description is missing); a malformed
-    /// fence reports <paramref name="error"/>.</summary>
+    /// fence reports <paramref name="error"/>. Line endings normalize to LF first so a
+    /// CRLF-authored file (Windows checkouts, Windows authors) parses identically.</summary>
     internal static bool TryRead(string body, out string? name, out string? description, out string? error)
     {
         name = null;
         description = null;
         error = null;
-        var lines = body.Split('\n');
+        var lines = body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
         if (lines.Length == 0 || !IsFence(lines[0]))
             return true;
 

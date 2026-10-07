@@ -27,6 +27,11 @@ internal enum SkillSource : byte
 ///     Absolute path of the skill's <c>SKILL.md</c> for filesystem sources. Read fresh on
 ///     every <c>skill://</c> read, so a body edit is visible without a catalog rebuild.
 /// </param>
+/// <param name="BodyText">
+///     Inline body for computed sources (plugin generators): served verbatim, bounded at
+///     contribution time. Exactly one of <see cref="BodyPath"/>/<see cref="BodyText"/> is
+///     set for a usable skill.
+/// </param>
 /// <param name="Diagnostic">
 ///     Why this skill is inert (missing description, invalid name, unreadable frontmatter).
 ///     Null for a usable skill.
@@ -37,13 +42,18 @@ internal sealed record SkillDescriptor(
     SkillSource Source,
     string RootDirectory,
     string? BodyPath = null,
-    string? Diagnostic = null)
+    string? Diagnostic = null,
+    string? BodyText = null)
 {
     /// <summary>The longest catalog name accepted (<c>skill://</c> host stays short).</summary>
     internal const int MaximumNameLength = 64;
 
     /// <summary>The longest description accepted into the catalog section of the prompt.</summary>
     internal const int MaximumDescriptionLength = 1024;
+
+    /// <summary>The largest inline body a computed source (plugin generator) may
+    /// contribute; filesystem bodies carry their own discovery bound.</summary>
+    internal const int MaximumGeneratedBodyCharacters = 64 * 1024;
 
     /// <summary>Names are the <c>skill://</c> host: lowercase letters, digits, and hyphens,
     /// starting alphanumeric, so every catalog name is a valid opaque URI host.</summary>

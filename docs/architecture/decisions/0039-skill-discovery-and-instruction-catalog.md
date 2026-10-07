@@ -92,22 +92,35 @@ Two design forces shaped this ADR:
    plugin owns one contribution slot; modes merge within the slot and the slot joins the
    catalog below both filesystem sources, labeled by source (`Plugin skills`,
    `Plugin-generated`, `Plugin-published`) so plugin context is never presented as human
-   policy. All modes ride the existing extension-point grammar
-   (`extensions: { "Skills": [...] }`) and the `McpDiscover` invocation machinery:
-   - **Stage 2a — interpolated roots**: declared roots expand through the single-source
-     variable table (`${env.*}`, `${var.*}`), resolved at load; the fingerprint hashes
-     the literal patterns. A root resolving outside the plugin root is admitted only
-     when the plugin's own (fingerprinted) read grants cover it — deny-wins — so an env
-     change can redirect a root only inside already-approved read scope.
-   - **Stage 2b — generator entrypoint**: the kernel pulls a catalog from a declared TS
-     module at load/reload; output is schema-validated and bounded; a failed
-     contribution keeps the last good one (the MCP discovery discipline).
-   - **Stage 3 — worker publish**: a capability-gated `skills.publish` model API pushes
-     contributions at worker runtime into the same slot with atomic snapshot semantics.
+   policy. Both stage-2 modes ride the existing extension-point machinery:
+   - **Stage 2a — declarative interpolated roots (shipped)**: the manifest
+     `extensions: { "Skills": [ { "roots": [...] } ] }` kind; roots expand through the
+     single-source manifest variable table (`${env.*}`, `${var.*}` with the ADR 0018 §4
+     fixed set wired in production), resolve relative to the plugin root, and a root
+     resolving outside it is admitted only when the plugin's own (fingerprinted) read
+     grants cover the resolved path — deny-wins, so an env change can redirect a root
+     only inside already-approved read scope. The extensions JSON rides the existing
+     fingerprint domain (literal patterns), so declaring roots changes the approval.
+   - **Stage 2b — worker generator (shipped)**: a worker exporting the `Skills`
+     extension point (`defineExtensionPoint("Skills", ...)`) is invoked by the kernel at
+     the same reconcile boundaries MCP discovery uses (start, registry frames, approval
+     transitions, triggers); the request carries the live workspace root, never arbitrary
+     environment; the returned array is validated under the same bounds a filesystem
+     skill satisfies (name charset, clean one-line description, bounded inline body) and
+     served through the `skill://` plane as inline content. A failed or empty invoke
+     keeps the last good generated contribution (the MCP discovery discipline) while
+     declarative roots recompute fresh. Passes serialize on one semaphore; approval gates
+     both modes before any contribution or invoke.
+   - **Stage 3 — worker publish (roadmap)**: a capability-gated `skills.publish` model
+     API pushes contributions at worker runtime into the same slot with atomic snapshot
+     semantics.
    In-corpus correction to the earlier design discussion: `SKILL.md` bodies inside a
    plugin root do **not** enter the approval fingerprint. ADR 0037 fingerprints
    declarations, never code; in-root skill files are code-like, and out-of-root reads
-   are gated by the fingerprinted read grants.
+   are gated by the fingerprinted read grants. One further production wiring note: the
+   manifest variable table now reaches every manifest load (trigger paths included),
+   which is the ADR 0018 §4 intent — previously production loads expanded against an
+   empty source and any `${...}` token failed the plugin.
 
 ## Consequences
 

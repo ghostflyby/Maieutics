@@ -134,7 +134,10 @@ internal sealed class PluginHostManager(
     IMcpWorkspaceRootsSource? workspaceRootsSource = null,
     IMcpElicitationPresenter? elicitationPresenter = null,
     DenoPermissionBroker? broker = null,
-    string? pluginApprovalsPath = null)
+    string? pluginApprovalsPath = null,
+    Skills.SkillCatalog? skillCatalog = null,
+    Permissions.VariableTable? manifestVariables = null,
+    Func<string?>? workspaceRootAccessor = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
     private const int EnvelopeVersion = 1;
@@ -275,6 +278,23 @@ internal sealed class PluginHostManager(
     /// coordinator; discovery for it fails until the file is repaired.</summary>
     private readonly Dictionary<string, string> descriptorMcpServerErrors =
         new(StringComparer.Ordinal);
+
+    // —— Plugin skill contributions (ADR 0039 stages 2-3) ——
+
+    /// <summary>Serializes skill reconciles (start, registry frames, approval transitions,
+    /// triggers): worker generator invokes are asynchronous, so passes must not interleave
+    /// their catalog commits.</summary>
+    private readonly SemaphoreSlim skillsReconcile = new(1, 1);
+
+    /// <summary>Sticky last-good generator output per plugin id: a failed or malformed
+    /// Skills invoke keeps the previous generated contribution active (the MCP discovery
+    /// discipline), while declarative roots are recomputed fresh on every pass.</summary>
+    private readonly Dictionary<string, IReadOnlyList<Skills.SkillDescriptor>> pluginGeneratedSkills =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Plugin ids currently holding a catalog contribution slot, so a pass that
+    /// no longer sees a plugin (removed, revoked, or the manager disposing) clears it.</summary>
+    private readonly HashSet<string> contributedSkillPlugins = new(StringComparer.Ordinal);
 
     // —— Plugin declaration approval (ADR 0037) ——
 
@@ -910,6 +930,7 @@ internal sealed class PluginHostManager(
         }
 
         RepublishRegistry(initialSnapshot);
+        ReconcileSkillsInBackground();
     }
 
     /// <summary>Creates the plugins root on first start as an empty deno project skeleton:
@@ -1165,7 +1186,7 @@ internal sealed class PluginHostManager(
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
         var roots = new HashSet<string>(StringComparer.FromComparison(comparison));
-        if (PluginManifest.TryLoad(pluginsRoot, out _, out _))
+        if (PluginManifest.TryLoad(pluginsRoot, manifestVariables, out _, out _))
             roots.Add(NormalizeRoot(pluginsRoot));
 
         foreach (var importTarget in PluginManifest.ReadLocalImportTargets(pluginsRoot))
@@ -1173,7 +1194,7 @@ internal sealed class PluginHostManager(
             var packageDirectory = Path.GetDirectoryName(importTarget);
             if (packageDirectory is null ||
                 !Directory.Exists(packageDirectory) ||
-                !PluginManifest.TryLoad(packageDirectory, out _, out _))
+                !PluginManifest.TryLoad(packageDirectory, manifestVariables, out _, out _))
                 continue;
 
             roots.Add(NormalizeRoot(packageDirectory));
@@ -1326,7 +1347,7 @@ internal sealed class PluginHostManager(
         // and must degrade visibly, not silently.
         PluginHostConfigPlugin? replacement = null;
         var shipOwnerReload = true;
-        if (PluginManifest.TryLoad(owner.RootDirectory, out var reloaded, out var loadFailure))
+        if (PluginManifest.TryLoad(owner.RootDirectory, manifestVariables, out var reloaded, out var loadFailure))
         {
             if (!PluginImportMerger.SameMapping(owner.Imports, reloaded.Imports))
             {
@@ -1870,6 +1891,7 @@ internal sealed class PluginHostManager(
         }
 
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
+        ClearSkillContributions();
         RegistryChanges.Writer.TryComplete();
         StopPluginWatcher();
 
@@ -2025,7 +2047,7 @@ internal sealed class PluginHostManager(
     /// visibly instead of silently disappearing from the plugin set.</summary>
     private void AddScannedDescriptor(List<PluginDescriptor> result, string directory)
     {
-        if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
+        if (!PluginManifest.TryLoad(directory, manifestVariables, out var descriptor, out var error))
         {
             if (File.Exists(Path.Combine(directory, "maieutics.json")) ||
                 File.Exists(Path.Combine(directory, "mcp.json")))
@@ -2225,6 +2247,7 @@ internal sealed class PluginHostManager(
 
         RepublishRegistry(mcpSnapshot);
         UpdateAdjustmentSnapshot();
+        ReconcileSkillsInBackground();
         var allDelivered = true;
         foreach (var (pluginId, config, exports) in activations)
             foreach (var exportName in exports)
@@ -3049,6 +3072,7 @@ internal sealed class PluginHostManager(
 
         RegistryChanges.Writer.TryWrite(registrySnapshot);
         dynamicMcpCoordinator?.PublishRegistry(mcpSnapshot);
+        ReconcileSkillsInBackground();
     }
 
     /// <summary>A trigger fired on the host (ADR 0036): republish the named plugin's
@@ -3066,12 +3090,13 @@ internal sealed class PluginHostManager(
                 .ToArray();
         }
 
-        if (mcpSnapshot.Length == 0) return;
+        if (mcpSnapshot.Length == 0 && skillCatalog is null) return;
         logger.LogInformation(
             "Plugin '{PluginId}' trigger '{Trigger}' fired; republishing its MCP registrations.",
             payload.PluginId,
             payload.Trigger);
-        RepublishRegistry(mcpSnapshot);
+        if (mcpSnapshot.Length > 0) RepublishRegistry(mcpSnapshot);
+        ReconcileSkillsInBackground();
     }
 
     /// <summary>Republishes the MCP subset of the merged registry snapshot (worker
@@ -3094,6 +3119,310 @@ internal sealed class PluginHostManager(
             logger.LogDebug(
                 "RepublishRegistry skipped: the plugin MCP coordinator was disposed by a concurrent generation switch.");
         }
+    }
+
+    // —— Plugin skill contributions (ADR 0039 stages 2-3) ——
+
+    /// <summary>Fires one skill reconcile in the background with its exceptions observed;
+    /// called from the same four events that republish MCP discovery (start seed, host
+    /// registry frames, approval transitions, triggers).</summary>
+    private void ReconcileSkillsInBackground()
+    {
+        if (skillCatalog is null) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ReconcilePluginSkillsAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The manager's lifetime ended mid-reconcile: the shutdown path.
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Reconciling plugin skill contributions failed; the last contributions stay active.");
+            }
+        });
+    }
+
+    /// <summary>Recomputes every active plugin's skill contribution and commits it to the
+    /// catalog. Declarative roots enumerate fresh; worker generator output is invoked with
+    /// the approval gate and keeps its last good contribution on failure. Passes serialize
+    /// on <see cref="skillsReconcile"/> — a pass queued behind a running one recomputes
+    /// from current state, so no event is lost by the serialization.</summary>
+    private async Task ReconcilePluginSkillsAsync()
+    {
+        if (skillCatalog is null) return;
+        await skillsReconcile.WaitAsync(lifetime.Token).ConfigureAwait(false);
+        try
+        {
+            var passes = new List<(string Id, string RootDirectory, PluginPermissionGrants Grants,
+                IReadOnlyList<PluginExtensionEntry> Entries, List<string> GeneratorExports)>();
+            lock (gate)
+            {
+                foreach (var descriptor in descriptors)
+                {
+                    if (IsApprovalBlockedLock(descriptor.Id)) continue;
+                    var entries = descriptor.Extensions
+                        .Where(static entry => entry.Kind == PluginExtensionKind.Skills)
+                        .ToArray();
+                    var generatorExports = registrations
+                        .Where(registration => registration.PluginId == descriptor.Id &&
+                                               registration.ExtensionPoint == ReplExtensionPointName.Skills)
+                        .Select(static registration => registration.ExportName)
+                        .ToList();
+                    if (entries.Length == 0 && generatorExports.Count == 0) continue;
+                    passes.Add((descriptor.Id, descriptor.RootDirectory, descriptor.Permissions, entries, generatorExports));
+                }
+            }
+
+            var activeIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var pass in passes)
+            {
+                activeIds.Add(pass.Id);
+                var contribution = new List<Skills.SkillDescriptor>();
+                foreach (var entry in pass.Entries)
+                    CollectDeclarativeSkills(pass.Id, pass.RootDirectory, pass.Grants, entry.Data, contribution);
+
+                var generated = pluginGeneratedSkills.GetValueOrDefault(pass.Id, []);
+                foreach (var exportName in pass.GeneratorExports)
+                {
+                    var request = SkillsInvokeRequest();
+                    var outcome = await InvokeExtensionPointAsync(
+                        pass.Id,
+                        exportName,
+                        ReplExtensionPointName.Skills,
+                        request,
+                        lifetime.Token).ConfigureAwait(false);
+                    if (outcome.IsError)
+                    {
+                        logger.LogWarning(
+                            "Plugin '{PluginId}' skill generator '{Export}' failed ({Code}): {Message}; keeping its last good contribution.",
+                            pass.Id,
+                            exportName,
+                            outcome.Code,
+                            outcome.Message);
+                        continue;
+                    }
+
+                    if (ParseGeneratedSkills(outcome.Value) is not { Count: > 0 } parsed)
+                    {
+                        logger.LogWarning(
+                            "Plugin '{PluginId}' skill generator '{Export}' returned no usable descriptors; keeping its last good contribution.",
+                            pass.Id,
+                            exportName);
+                        continue;
+                    }
+
+                    generated = parsed;
+                    pluginGeneratedSkills[pass.Id] = parsed;
+                }
+
+                contribution.AddRange(generated);
+                skillCatalog.UpdatePluginContribution(pass.Id, contribution);
+                contributedSkillPlugins.Add(pass.Id);
+            }
+
+            foreach (var pluginId in contributedSkillPlugins.ToArray())
+            {
+                if (activeIds.Contains(pluginId)) continue;
+                contributedSkillPlugins.Remove(pluginId);
+                pluginGeneratedSkills.Remove(pluginId);
+                skillCatalog.RemovePluginContribution(pluginId);
+            }
+        }
+        finally
+        {
+            skillsReconcile.Release();
+        }
+    }
+
+    /// <summary>Interprets one declarative Skills entry: <c>roots</c> expand through the
+    /// manifest variable table, resolve against the plugin root, and must either stay
+    /// inside it or fall inside the plugin's own (fingerprinted) read grants — the rule
+    /// that makes literal-pattern fingerprinting safe (ADR 0039 stage 2a).</summary>
+    private void CollectDeclarativeSkills(
+        string pluginId,
+        string rootDirectory,
+        PluginPermissionGrants grants,
+        JsonElement data,
+        List<Skills.SkillDescriptor> results)
+    {
+        if (data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("roots", out var roots) ||
+            roots.ValueKind != JsonValueKind.Array)
+        {
+            results.Add(InertSkill(pluginId, "roots", "The Skills entry declares no 'roots' array."));
+            return;
+        }
+
+        var index = 0;
+        foreach (var root in roots.EnumerateArray())
+        {
+            var pattern = root.ValueKind == JsonValueKind.String ? root.GetString() : null;
+            if (string.IsNullOrWhiteSpace(pattern))
+            {
+                results.Add(InertSkill(pluginId, $"roots[{index}]", "The skill root is not a string."));
+                index++;
+                continue;
+            }
+
+            string expanded;
+            try
+            {
+                expanded = manifestVariables is { } variables ? variables.Expand(pattern) : pattern;
+            }
+            catch (Permissions.PermissionException exception)
+            {
+                results.Add(InertSkill(pluginId, $"roots[{index}]", exception.Message));
+                index++;
+                continue;
+            }
+
+            var resolved = Path.IsPathRooted(expanded)
+                ? Path.GetFullPath(expanded)
+                : Path.GetFullPath(Path.Combine(rootDirectory, expanded));
+            if (!Skills.SkillDirectoryDiscovery.IsWithinRoot(rootDirectory, resolved) &&
+                !IsCoveredByReadGrant(grants.Read, rootDirectory, resolved))
+            {
+                results.Add(InertSkill(
+                    pluginId,
+                    $"roots[{index}]",
+                    $"The skill root '{resolved}' resolves outside the plugin root and is not covered by a read grant."));
+                index++;
+                continue;
+            }
+
+            results.AddRange(Skills.SkillDirectoryDiscovery.Discover(resolved, Skills.SkillSource.PluginDeclared));
+            index++;
+        }
+    }
+
+    /// <summary>Validates a generator's returned catalog: an array of
+    /// {name, description, body?} objects under the same bounds a filesystem skill
+    /// satisfies. Invalid entries ride as inert diagnostics; a non-array value is null.</summary>
+    private static List<Skills.SkillDescriptor>? ParseGeneratedSkills(JsonElement? value)
+    {
+        if (value is not { ValueKind: JsonValueKind.Array } array) return null;
+        var results = new List<Skills.SkillDescriptor>();
+        foreach (var entry in array.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                results.Add(InertSkill("generator", "entry", "The generated entry is not an object."));
+                continue;
+            }
+
+            var name = entry.TryGetProperty("name", out var nameElement) &&
+                       nameElement.ValueKind == JsonValueKind.String
+                ? nameElement.GetString()
+                : null;
+            var description = entry.TryGetProperty("description", out var descriptionElement) &&
+                              descriptionElement.ValueKind == JsonValueKind.String
+                ? descriptionElement.GetString()
+                : null;
+            var body = entry.TryGetProperty("body", out var bodyElement) &&
+                       bodyElement.ValueKind == JsonValueKind.String
+                ? bodyElement.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(name) || !Skills.SkillDescriptor.IsValidName(name))
+            {
+                results.Add(InertSkill("generator", "entry", $"The generated skill name '{name}' is not a valid catalog name."));
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(description) || !Skills.SkillFrontmatter.IsCleanScalar(description))
+            {
+                results.Add(InertSkill(name!, "entry", "The generated skill has no clean one-line description."));
+                continue;
+            }
+
+            if (description!.Length > Skills.SkillDescriptor.MaximumDescriptionLength)
+                description = description[..Skills.SkillDescriptor.MaximumDescriptionLength];
+            if (body is { Length: > Skills.SkillDescriptor.MaximumGeneratedBodyCharacters })
+            {
+                results.Add(InertSkill(name!, "entry", "The generated skill body exceeds the size bound."));
+                continue;
+            }
+
+            results.Add(new Skills.SkillDescriptor(
+                name!,
+                description,
+                Skills.SkillSource.PluginGenerated,
+                RootDirectory: "/",
+                BodyText: body));
+        }
+
+        return results;
+    }
+
+    /// <summary>The generator invoke request: the live workspace root (or null) — never
+    /// arbitrary environment, per ADR 0039 stage 2b.</summary>
+    private JsonElement? SkillsInvokeRequest()
+    {
+        var workspaceRoot = workspaceRootAccessor?.Invoke();
+        return JsonSerializer.SerializeToElement(
+            new SkillsInvokePayload(workspaceRoot),
+            ReplControlJsonContext.Default.SkillsInvokePayload);
+    }
+
+    private static Skills.SkillDescriptor InertSkill(string pluginId, string slot, string diagnostic)
+    {
+        return new Skills.SkillDescriptor(
+            $"{pluginId}:{slot}",
+            string.Empty,
+            Skills.SkillSource.PluginDeclared,
+            RootDirectory: "/",
+            Diagnostic: diagnostic);
+    }
+
+    /// <summary>Kernel-side read-grant coverage for a skill root resolving outside the
+    /// plugin root: grant values normalize (file:// stripped, relative resolved against
+    /// the plugin root) and cover the root when the grant is it or an ancestor of it.</summary>
+    private static bool IsCoveredByReadGrant(PluginPermissionGrant read, string pluginRoot, string resolvedRoot)
+    {
+        if (read.AllowAll) return true;
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        foreach (var declared in read.Values)
+        {
+            var grant = declared.Trim();
+            if (grant.Length == 0) continue;
+            if (grant.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+                grant = grant["file://".Length..];
+            if (!Path.IsPathRooted(grant)) grant = Path.Combine(pluginRoot, grant);
+            string absolute;
+            try
+            {
+                absolute = Path.GetFullPath(grant).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                continue;
+            }
+
+            if (string.Equals(absolute, resolvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), comparison) ||
+                resolvedRoot.StartsWith(absolute + Path.DirectorySeparatorChar, comparison))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Clears every plugin contribution (manager disposal). The last catalog
+    /// state for the plugins outlives nothing: generated skills die with the host process
+    /// and declarative roots are re-contributed by the next generation's start.</summary>
+    private void ClearSkillContributions()
+    {
+        if (skillCatalog is null) return;
+        foreach (var pluginId in contributedSkillPlugins.ToArray())
+            skillCatalog.RemovePluginContribution(pluginId);
+        contributedSkillPlugins.Clear();
+        pluginGeneratedSkills.Clear();
     }
 
     /// <summary>The synthetic registrations for manifest-declared entries (the

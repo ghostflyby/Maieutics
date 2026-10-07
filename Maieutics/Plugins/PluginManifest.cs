@@ -37,9 +37,14 @@ internal static class PluginExtensionKind
 {
     public const string McpDiscover = "McpDiscover";
 
+    /// <summary>The declarative skill-contribution kind (ADR 0039 stage 2): entries carry
+    /// <c>roots</c> the kernel enumerates (interpolated through the manifest variable
+    /// table); the worker form of the same name is the generator the kernel invokes.</summary>
+    public const string Skills = "Skills";
+
     public static bool IsKnown(string kind)
     {
-        return kind == McpDiscover;
+        return kind == McpDiscover || kind == Skills;
     }
 }
 
@@ -613,7 +618,7 @@ internal static class PluginManifest
             {
                 found.Add(
                     $"Unknown extension kind '{kind.Name}' is declared but not supported by this kernel; " +
-                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}).");
+                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}, {PluginExtensionKind.Skills}).");
                 continue;
             }
 

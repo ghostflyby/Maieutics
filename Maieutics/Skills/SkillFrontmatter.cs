@@ -73,9 +73,10 @@ internal static class SkillFrontmatter
     }
 
     /// <summary>A scalar value must be one clean line: interior control characters (CR, NEL,
-    /// U+2028/2029) would let untrusted file content fake line breaks inside the system
-    /// prompt's catalog section, breaking out of the one-line-per-entry framing.</summary>
-    private static bool IsCleanScalar(string value)
+    /// U+2028/2029) would let untrusted content fake line breaks inside the system
+    /// prompt's catalog section, breaking out of the one-line-per-entry framing. Shared
+    /// with computed sources (plugin generators) validating their descriptors.</summary>
+    internal static bool IsCleanScalar(string value)
     {
         foreach (var character in value)
             if (character < ' ' || character == '\u007f' || character is '\u2028' or '\u2029')

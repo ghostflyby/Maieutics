@@ -344,7 +344,10 @@ public static class MaieuticsHost
             services.GetService<IMcpWorkspaceRootsSource>(),
             services.GetService<IMcpElicitationPresenter>(),
             services.GetService<DenoPermissionBroker>(),
-            pluginApprovalsPath));
+            pluginApprovalsPath,
+            services.GetService<Skills.SkillCatalog>(),
+            BuildPluginManifestVariables(services, pluginsRoot),
+            () => services.GetRequiredService<Workspace>().RootPath));
         // The host manager is the kernel-facing REPL policy registrar (ADR 0020 decision 1): the
         // session factory pre-caches a REPL's policy through it before the host derives the REPL.
         builder.Services.AddSingleton<IReplPolicyRegistrar>(static services =>
@@ -512,6 +515,24 @@ public static class MaieuticsHost
         application.Services.GetRequiredService<ReplOutputWebSocketHost>().MapEndpoint(application);
         controlHost.MapEndpoints(application);
         return application;
+    }
+
+    /// <summary>Composes the manifest variable table (ADR 0018 §4) the plugin system
+    /// expands trigger and skill-root patterns against: env from the process, var.* from
+    /// the fixed data/plugins roots plus the live workspace source. Built once for the
+    /// plugin host manager; plugins never build their own table.</summary>
+    private static Permissions.VariableTable BuildPluginManifestVariables(
+        IServiceProvider services,
+        string pluginsRoot)
+    {
+        var paths = services.GetRequiredService<ApplicationPaths>();
+        return new Permissions.VariableTable(
+            services.GetRequiredService<IPermissionVariableSource>(),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["var.dataDir"] = paths.DataRoot,
+                ["var.pluginsDir"] = pluginsRoot
+            });
     }
 
     /// <summary>Composes the resource plane in resolution order: the built-in workspace

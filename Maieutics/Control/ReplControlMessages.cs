@@ -77,8 +77,13 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(HostReplDerivePayload))]
 [JsonSerializable(typeof(HostReplDeriveFailedPayload))]
 [JsonSerializable(typeof(HostReplPermissions))]
+[JsonSerializable(typeof(SkillsInvokePayload))]
 
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
+
+/// <summary>The request the kernel sends a worker's <c>Skills</c> generator export
+/// (ADR 0039 stage 2b): the live workspace root, never arbitrary environment.</summary>
+internal sealed record SkillsInvokePayload(string? WorkspaceRoot);
 
 internal static class ReplControlJson
 {
@@ -191,10 +196,16 @@ internal static class ReplExtensionPointName
     /// frontend sends a frame for one of the plugin's models.</summary>
     public const string UiEvent = "UiEvent";
 
+    /// <summary>Plugin skill-catalog generator (ADR 0039 stage 2): the kernel invokes the
+    /// worker's registered Skills export at load/reload and reconciles the returned
+    /// descriptor array into the plugin's skill contribution slot.</summary>
+    public const string Skills = "Skills";
+
     public static bool IsKnown(string name)
     {
         return name == McpDiscover || name == McpAdjust ||
-               name == ToolPreInvoke || name == ToolPostInvoke || name == UiEvent;
+               name == ToolPreInvoke || name == ToolPostInvoke || name == UiEvent ||
+               name == Skills;
     }
 }
 

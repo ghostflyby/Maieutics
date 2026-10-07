@@ -445,13 +445,14 @@ internal static class PluginManifest
                         break;
                     }
 
-                    // The catalog owns the data-entry grammar (case-insensitive routing
-                    // recording the canonical spelling); unknown names are collected
-                    // but inert, with the catalog-generated diagnostic.
-                    var dataContract = Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name);
-                    if (dataContract is null)
+                    // The catalog owns the data-entry grammar (exact-match routing —
+                    // the declared spelling is recorded verbatim so existing
+                    // fingerprints stay byte-stable, ADR 0040 decision 7); unknown
+                    // names are collected but inert, with the catalog-generated
+                    // diagnostic.
+                    if (Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name) is null)
                         diagnostics.Add(Contributions.ContributionKindCatalog.UnknownDataEntryDiagnostic(entry.Name));
-                    dataEntries.Add(CollectDataEntry(root, dataContract?.DataEntryName ?? entry.Name, dataPath, variables));
+                    dataEntries.Add(CollectDataEntry(root, entry.Name, dataPath, variables));
                     break;
 
                 case JsonValueKind.Array when

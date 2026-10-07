@@ -27,7 +27,7 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
     /// <summary>The extensions entry's optional lifecycle-timeout overrides: an object
     /// whose members name the four timeouts with TimeSpan values; missing members take
     /// the metadata defaults (= the former fixed values, byte-identical generation
-    /// keys).</summary>
+    /// keys). The member must be an object — any other shape fails the entry.</summary>
     public const string TimeoutsMember = "timeouts";
 
     public static readonly McpDiscoverContributionKind Instance = new();
@@ -148,12 +148,17 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
         var request = defaultTimeouts[1];
         var shutdown = defaultTimeouts[2];
         var connection = defaultTimeouts[3];
+
+        // The timeouts member's strict grammar covers its shape too: a member present
+        // but not an object fails the entry exactly like an unknown name inside it —
+        // silently interpreting the entry on the default timeouts would hide the
+        // declaration's real intent.
         if (discovery.TryGetProperty(TimeoutsMember, out var timeoutsElement) &&
-            timeoutsElement.ValueKind == JsonValueKind.Object &&
-            !TryReadTimeoutOverrides(
-                timeoutsElement,
-                initialization, request, shutdown, connection,
-                out initialization, out request, out shutdown, out connection))
+            (timeoutsElement.ValueKind != JsonValueKind.Object ||
+             !TryReadTimeoutOverrides(
+                 timeoutsElement,
+                 initialization, request, shutdown, connection,
+                 out initialization, out request, out shutdown, out connection)))
             return false;
 
         McpTransportDefinition payload;
@@ -283,7 +288,8 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
     /// <summary>Folds the optional <c>timeouts</c> overrides over the defaults. Names
     /// are the four lifecycle timeouts; values are positive invariant TimeSpans; an
     /// unknown name, a non-string value, or a non-positive span fails the entry
-    /// (strict grammar, matching the mcp.json key discipline).</summary>
+    /// (strict grammar, matching the mcp.json key discipline). The member's own shape
+    /// (object vs anything else) is checked by the caller with the same strictness.</summary>
     private static bool TryReadTimeoutOverrides(
         JsonElement timeouts,
         TimeSpan initialization,

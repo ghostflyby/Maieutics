@@ -432,6 +432,44 @@ public sealed class PluginContributionCoordinatorTests
         unguarded.Should().Throw<ObjectDisposedException>();
     }
 
+    [Fact]
+    public async Task TheMcpAdapterSnapshotStateSurvivesConcurrentPublishes()
+    {
+        // Dispatch runs outside the host gate and is reachable from concurrent
+        // contexts (the host receive loop, the trigger, the approval/reload reconcile
+        // tasks), so the face-view snapshot carries its own lock: publishing frames
+        // from many threads while reading HoldsFace stays coherent — no torn state,
+        // no lost update, no exception.
+        var adapter = new McpContributionDelivery(
+            "McpDiscover",
+            "McpDiscover",
+            () => null,
+            NullLogger<McpContributionDelivery>.Instance);
+        var frame = new ContributionFrameInput(
+            [
+                new PluginRegistration("p1", "e1", "McpDiscover"),
+                new PluginRegistration("p2", "e2", "McpDiscover"),
+            ],
+            ContributionFrameInput.NoForcedPlugins,
+            []);
+
+        var readers = Enumerable.Range(0, 4).Select(channel => Task.Run(() =>
+        {
+            for (var i = 0; i < 20_000; i++)
+                _ = adapter.HoldsFace(i % 2 == 0 ? "p1" : "p3");
+        }, TestContext.Current.CancellationToken));
+        var writers = Enumerable.Range(0, 4).Select(channel => Task.Run(() =>
+        {
+            for (var i = 0; i < 5_000; i++)
+                adapter.PublishFrame(frame, guardDisposed: true);
+        }, TestContext.Current.CancellationToken));
+
+        await Task.WhenAll(readers.Concat(writers));
+        adapter.HoldsFace("p1").Should().BeTrue("the last frame's snapshot is the face view");
+        adapter.HoldsFace("p2").Should().BeTrue();
+        adapter.HoldsFace("p3").Should().BeFalse();
+    }
+
     private static SlotSourceKey Key(string pluginId, string export) =>
         new(pluginId, export, "Skills");
 

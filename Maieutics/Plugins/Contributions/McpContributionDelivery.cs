@@ -23,7 +23,13 @@ internal sealed class McpContributionDelivery(
     /// <summary>The plugin ids of the last delivered MCP snapshot — the face view of
     /// the sticky bag the coordinator derives from the same value. Not consulted by any
     /// A 期 path (approval transitions republish RegistryWide unconditionally); kept so
-    /// the delivery surface is honest for the face question.</summary>
+    /// the delivery surface is honest for the face question. Unlike the coordinator's
+    /// gate-bound state, the dispatch members run outside the host gate and are
+    /// reachable from concurrent contexts (the host receive loop, the trigger, the
+    /// approval/reload reconcile tasks), so this field carries its own lock — the only
+    /// delivery state that does.</summary>
+    private readonly Lock snapshotGate = new();
+
     private IReadOnlyList<string> lastSnapshotPlugins = [];
 
     public string KindName { get; } = kindName;
@@ -32,7 +38,10 @@ internal sealed class McpContributionDelivery(
 
     public string ExtensionPointName { get; } = extensionPointName;
 
-    public bool HoldsFace(string pluginId) => lastSnapshotPlugins.Contains(pluginId);
+    public bool HoldsFace(string pluginId)
+    {
+        lock (snapshotGate) return lastSnapshotPlugins.Contains(pluginId);
+    }
 
     public void PublishFrame(ContributionFrameInput frame, bool guardDisposed)
     {
@@ -40,10 +49,11 @@ internal sealed class McpContributionDelivery(
         var mcpSnapshot = frame.Registrations
             .Where(registration => registration.ExtensionPoint == ExtensionPointName)
             .ToArray();
-        lastSnapshotPlugins = mcpSnapshot
+        var snapshotPlugins = mcpSnapshot
             .Select(static registration => registration.PluginId)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        lock (snapshotGate) lastSnapshotPlugins = snapshotPlugins;
 
         if (frame.ForcedPlugins.Count == 0)
         {

@@ -3,11 +3,16 @@ namespace Maieutics.Plugins.Contributions;
 /// <summary>The closed kernel-side catalog of contribution kinds (plugin-contribution
 /// framework §3.2): the single source of truth for the manifest grammar's extension
 /// kinds and data-entry names, their canonical spellings, the generated unknown-name
-/// diagnostics, and the routing metadata the host's generic paths consume. Lookups are
-/// case-insensitive and record the canonical spelling — the unified case policy of the
-/// two formerly divergent grammar directories (extensions kinds were case-insensitive,
-/// data names were exact-match). Adding a kind is one closed contract class plus one
-/// entry in <see cref="Contracts"/>; nothing else in the kernel routes on kind names.
+/// diagnostics, and the routing metadata the host's generic paths consume. Each
+/// grammar keeps its historical case policy, and both record spellings exactly as the
+/// former directories did so persisted fingerprints stay byte-stable (ADR 0040
+/// decision 7): extensions kinds match case-insensitively and record the canonical
+/// spelling (the former <c>PluginExtensionKind.Canonicalize</c>), data-entry names
+/// match exactly and record the declared spelling (the former
+/// <c>PluginDataName.IsKnown</c> — canonicalizing a misspelled known name would flip
+/// its data-domain bytes and silently revoke an existing approval). Adding a kind is
+/// one closed contract class plus one entry in <see cref="Contracts"/>; nothing else
+/// in the kernel routes on kind names.
 /// </summary>
 internal static class ContributionKindCatalog
 {
@@ -29,13 +34,16 @@ internal static class ContributionKindCatalog
         return null;
     }
 
-    /// <summary>The contract interpreting the data-entry name (any spelling), or null
-    /// when unknown — unknown names are still collected, inert with a diagnostic.</summary>
+    /// <summary>The contract interpreting the data-entry name (exact spelling), or null
+    /// when unknown — unknown names are still collected, inert with a diagnostic. The
+    /// comparison is Ordinal on purpose: a case-insensitive match would both change the
+    /// data-domain fingerprint bytes of an existing misspelled declaration (approval
+    /// revoked) and activate its formerly inert interpretation (ADR 0040 decision 7).</summary>
     public static ContributionKindContract? ByDataEntryName(string name)
     {
         foreach (var contract in Contracts)
             if (contract.DataEntryName is { } owned &&
-                string.Equals(owned, name, StringComparison.OrdinalIgnoreCase))
+                string.Equals(owned, name, StringComparison.Ordinal))
             {
                 return contract;
             }
@@ -65,10 +73,16 @@ internal static class ContributionKindCatalog
     public static string? CanonicalDataEntryName(string name) =>
         ByDataEntryName(name)?.DataEntryName;
 
+    /// <summary>The extensions grammar's known kinds, for the unknown-kind diagnostics:
+    /// exactly the contracts that claim their own kind name in the extensions grammar.
+    /// The criterion is grammar participation, not a compute form — a future
+    /// declaration-only extensions kind is listed by claiming its name, while a
+    /// data-entry-only kind (which claims no extensions entry) stays off the list, its
+    /// name not being a valid extensions kind.</summary>
     public static string KnownExtensionKindsText() =>
         string.Join(
             ", ",
-            Contracts.Where(contract => contract.HasComputeForm)
+            Contracts.Where(contract => contract.OwnsExtensionKind(contract.KindName))
                 .Select(contract => contract.KindName));
 
     public static string KnownDataEntryNamesText() =>

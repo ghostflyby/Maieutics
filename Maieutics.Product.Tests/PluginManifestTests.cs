@@ -635,7 +635,7 @@ public sealed class PluginManifestTests
     }
 
     [Fact]
-    public void DataEntryNamesRouteCaseInsensitivelyRecordingCanonicalSpellings()
+    public void MisspelledDataEntryNamesStayDeclaredVerbatimAndInert()
     {
         var directory = CreatePluginDirectory(
             """
@@ -656,14 +656,20 @@ public sealed class PluginManifestTests
             .Should().BeTrue(error);
         var loaded = descriptor ?? throw new InvalidOperationException(error);
 
-        // The unified grammar case policy: any spelling routes to the catalogued
-        // interpreter and records the canonical name. Plugins whose approved
-        // fingerprint still carries a non-canonical spelling are revoked until
-        // re-approved (fail-closed, ADR 0037 — the effective interpretation changed).
-        loaded.DataEntries.Select(static entry => entry.Name).Should().Equal(
-            McpDiscoverContributionKind.DataEntry, UiContributionKind.DataEntry);
-        loaded.McpServers.Should().ContainSingle().Which.Id.Should().EndWith("::probe");
-        loaded.UiForm.Should().NotBeNull();
+        // Data-entry names route exactly and record the declared spelling verbatim
+        // (ADR 0040 decision 7: canonicalizing a misspelled known name would flip its
+        // data-domain fingerprint bytes — revoking an existing approval — while
+        // silently activating its formerly inert interpretation). A misspelled known
+        // name is unknown to the grammar: collected but inert, with the catalog
+        // diagnostic, and it interprets nothing.
+        loaded.DataEntries.Select(static entry => entry.Name).Should().Equal("MCP", "UI");
+        loaded.McpServers.Should().BeEmpty();
+        loaded.UiForm.Should().BeNull();
+        loaded.ExtensionDiagnostics.Should().Contain(static diagnostic =>
+            diagnostic.Contains("data entry 'MCP'", StringComparison.Ordinal) &&
+            diagnostic.Contains(KnownDataEntryNamesText()));
+        loaded.ExtensionDiagnostics.Should().Contain(static diagnostic =>
+            diagnostic.Contains("data entry 'UI'", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -700,6 +706,13 @@ public sealed class PluginManifestTests
         diagnostic.Should().Contain("FutureKind")
             .And.Contain($"known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}");
         diagnostic.Should().NotContain("recommended", "the catalog text drops the former hand-written case-advice sentence");
+
+        // The known-kinds list is the extensions grammar's participation set, ending
+        // exactly at it: data-entry-only kinds (whose names are not extensions kinds)
+        // never join, while any newly catalogued extensions kind joins by claiming its
+        // name — with or without a compute form.
+        diagnostic.Should().EndWith(
+            $"(known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}).");
     }
 
     [Fact]
@@ -708,14 +721,20 @@ public sealed class PluginManifestTests
         ContributionKindCatalog.ByExtensionKind("skills").Should().Be(SkillsContributionKind.Instance);
         ContributionKindCatalog.ByExtensionKind("MCPDISCOVER").Should().Be(McpDiscoverContributionKind.Instance);
         ContributionKindCatalog.ByExtensionKind("FutureKind").Should().BeNull();
-        ContributionKindCatalog.ByDataEntryName("MCP").Should().Be(McpDiscoverContributionKind.Instance);
+
+        // Data-entry names are exact-match (the extensions kinds' case-insensitivity
+        // is not shared): a misspelled known name is unknown, keeping its recorded
+        // spelling — and its fingerprint bytes — exactly as declared.
+        ContributionKindCatalog.ByDataEntryName("MCP").Should().BeNull();
+        ContributionKindCatalog.ByDataEntryName("mcp").Should().Be(McpDiscoverContributionKind.Instance);
         ContributionKindCatalog.ByDataEntryName("ui").Should().Be(UiContributionKind.Instance);
         ContributionKindCatalog.ByDataEntryName("notices").Should().BeNull();
         ContributionKindCatalog.ByPublishCapability("skills.publish").Should().Be(SkillsContributionKind.Instance);
         ContributionKindCatalog.ByPublishCapability("ui.models").Should().BeNull(
             "the ui kind is a text-only catalog registration in B; its publish flow is untouched");
         ContributionKindCatalog.CanonicalExtensionKind("SKILLS").Should().Be(SkillsContributionKind.ExtensionKind);
-        ContributionKindCatalog.CanonicalDataEntryName("MCP").Should().Be(McpDiscoverContributionKind.DataEntry);
+        ContributionKindCatalog.CanonicalDataEntryName("MCP").Should().BeNull();
+        ContributionKindCatalog.CanonicalDataEntryName("mcp").Should().Be(McpDiscoverContributionKind.DataEntry);
     }
 
     private static string KnownDataEntryNamesText() =>
@@ -929,6 +948,35 @@ public sealed class PluginManifestTests
 
         McpDiscoverContributionKind.TryToDefinition("p", invalidEntry, null, out _)
             .Should().BeFalse("an unknown timeout name is a strict-grammar violation");
+    }
+
+    [Fact]
+    public void ANonObjectTimeoutsMemberFailsTheEntryLikeItsInnerViolations()
+    {
+        var stringEntry = JsonDocument.Parse(
+            """
+            {
+              "module": "probe",
+              "transport": { "type": "stdio", "command": "deno" },
+              "timeouts": "00:05:00"
+            }
+            """).RootElement;
+        var arrayEntry = JsonDocument.Parse(
+            """
+            {
+              "module": "probe",
+              "transport": { "type": "stdio", "command": "deno" },
+              "timeouts": [{ "request": "00:05:00" }]
+            }
+            """).RootElement;
+
+        // The member's strict grammar covers its own shape: a present-but-non-object
+        // member fails the entry instead of silently interpreting it on the default
+        // timeouts (which would hide the declaration's real intent).
+        McpDiscoverContributionKind.TryToDefinition("p", stringEntry, null, out _)
+            .Should().BeFalse("a string timeouts member is a strict-grammar violation");
+        McpDiscoverContributionKind.TryToDefinition("p", arrayEntry, null, out _)
+            .Should().BeFalse("an array timeouts member is a strict-grammar violation");
     }
 
     [Fact]

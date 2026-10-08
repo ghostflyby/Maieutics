@@ -690,6 +690,26 @@ export class PluginHost {
     return result;
   }
 
+  // Per-plugin count of completed lifecycle mutations (reloads and stops),
+  // incremented once per completion BEFORE the registry frame that completion
+  // emits goes out (mod.ts sends the frame from the resolved promise). The
+  // kernel uses it to tell the post-reload registry frame from an unrelated
+  // one: a watched reload's exports may return different results over
+  // identical registration records, so the kernel defers its forced
+  // rediscovery until a frame reports the epoch it observed when the reload
+  // was sent. Monotonic within one host process; a fresh host process starts
+  // from zero again (a regression reads as "host restarted").
+  #reloadEpochs = new Map<string, number>();
+
+  /** Snapshot of the per-plugin lifecycle completion epochs for registry frames. */
+  reloadEpochs(): ReadonlyMap<string, number> {
+    return new Map(this.#reloadEpochs);
+  }
+
+  #recordReloadEpoch(pluginId: string): void {
+    this.#reloadEpochs.set(pluginId, (this.#reloadEpochs.get(pluginId) ?? 0) + 1);
+  }
+
   /** Cascade-disables one worker and every transitive dependent, then restarts topologically.
    * When a replacement {@link PluginConfig} is supplied (permission/config change), the worker's
    * plugin configuration is updated first so the rebuilt workers carry the new grants. */
@@ -784,6 +804,7 @@ export class PluginHost {
     if (this.#disposed) return;
     this.#refreshExtensions(this.#collectExtensions());
     this.#installTriggers();
+    this.#recordReloadEpoch(pluginId);
   }
 
   /** The live worker list of one plugin, from the same registry reloads and stops
@@ -830,6 +851,7 @@ export class PluginHost {
     if (!remains) this.#plugins.delete(pluginId);
     this.#refreshExtensions(this.#collectExtensions());
     this.#installTriggers();
+    this.#recordReloadEpoch(pluginId);
   }
 
   /** Collects the current registry snapshot from every worker's extension points. */

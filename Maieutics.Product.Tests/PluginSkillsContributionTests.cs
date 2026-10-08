@@ -334,7 +334,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
             // The host reports the worker's Skills export; the kernel reconciles and
             // invokes the generator through the same socket.
-            manager.HandleHostMessage(SkillsRegistryFrame(pluginId, "./mod.ts"));
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
 
             var invokeEnvelope = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
             fakeSocket.Reply(
@@ -362,8 +362,11 @@ public sealed class PluginSkillsContributionTests : IDisposable
             using var reader = new StreamReader(result.Content);
             (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Contain("# Generated");
 
-            // A later failing invoke keeps the last good contribution (sticky).
-            manager.HandleHostMessage(SkillsRegistryFrame(pluginId, "./mod.ts"));
+            // A later failing invoke keeps the last good contribution (sticky). An
+            // unchanged registry frame no longer re-invokes the generator (the
+            // differential reconcile), so the re-run rides a trigger — the event whose
+            // semantics are exactly "re-run this plugin".
+            manager.HandleHostMessage(PluginTriggerFrame(pluginId));
             var secondInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
             fakeSocket.ReplyError(manager, secondInvoke, "generator_broken", "the worker failed");
             await Task.Delay(300, TestContext.Current.CancellationToken);
@@ -468,7 +471,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "published-three"),
                 TestContext.Current.CancellationToken);
             manager.HandleHostMessage(
-                SkillsRegistryFrame(pluginId, "./mod.ts"));
+                SkillsRegistryFrame((pluginId, "./mod.ts")));
             await Task.Delay(500, TestContext.Current.CancellationToken);
             catalog.Current.Skills.Should()
                 .Contain(skill => skill.Name == "declared")
@@ -645,20 +648,662 @@ public sealed class PluginSkillsContributionTests : IDisposable
         }
     }
 
-    private static string SkillsRegistryFrame(string pluginId, string exportName)
+    [Fact(Timeout = Deadline)]
+    public async Task AnUnchangedRegistryFrameInvokesNoGenerator()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"skills-diff-zero-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
+            }
+            """);
+        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                invoke,
+                """{"value":[{"name":"gen-skill","description":"computed by the worker","body":"# Generated\n"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
+                TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(1);
+
+            // The differential reconcile: a registry frame whose Skills export set is
+            // identical to the previous frame's takes zero action — the generator is
+            // not re-invoked and the contribution stays as committed.
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(
+                1, "an unchanged Skills export set must not re-invoke the generator");
+            catalog.Current.Skills.Should().Contain(skill => skill.Name == "gen-skill");
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task AWatchedReloadDefersTheForcedRediscoveryUntilTheReloadEpochFrame()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = CreateGeneratorPluginsRoot();
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                invoke,
+                """{"value":[{"name":"gen-skill","description":"before the reload","body":"# Old\n"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
+                TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(1);
+
+            // A watched source edit reloads the owner's worker. The forced rediscovery
+            // must not run against the outgoing worker: it defers to the registry frame
+            // whose reload epoch proves the replacement worker is live — the unchanged
+            // export-set frame alone would never re-run the generator.
+            var applied = manager.ReloadApplied;
+            File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n// edited\n");
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, TestContext.Current.CancellationToken);
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(
+                1, "the force must not invoke the generator before the reload completed");
+
+            // A frame carrying epochs but no bump for the plugin (another plugin's
+            // reload completing, a mount-table change) must not drain the mark.
+            manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
+                new Dictionary<string, int>(), (pluginId, "./mod.ts")));
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(
+                1, "a frame without the plugin's reload epoch must not drain the deferred force");
+
+            // The post-reload frame reports the plugin's epoch: the forced re-invoke
+            // runs against the reloaded worker and its new output replaces the old.
+            manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
+                new Dictionary<string, int> { [pluginId] = 1 }, (pluginId, "./mod.ts")));
+            var reloadInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                reloadInvoke,
+                """{"value":[{"name":"gen-skill","description":"after the reload","body":"# New\n"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill =>
+                    skill.Name == "gen-skill" && skill.Description == "after the reload"),
+                TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(2);
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task AnInapplicableReloadStillForcesRediscoveryAfterCompletion()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = CreateGeneratorPluginsRoot();
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                invoke,
+                """{"value":[{"name":"gen-skill","description":"before the isolation reload"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
+                TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(1);
+
+            // A manifest edit that demands process isolation cannot be applied by an
+            // in-process reload, but the owner still restarts with its previous config
+            // so new module text is picked up — and that replacement worker's output
+            // must be fetched, exactly like the ordinary reload path.
+            var applied = manager.ReloadApplied;
+            File.WriteAllText(
+                Path.Combine(root, "maieutics.json"),
+                """
+                {
+                  "isolation": "process",
+                  "entrypoints": { "worker": { "main": ["./mod.ts"] } }
+                }
+                """);
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, TestContext.Current.CancellationToken);
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(1);
+
+            manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
+                new Dictionary<string, int> { [pluginId] = 1 }, (pluginId, "./mod.ts")));
+            var reloadInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                reloadInvoke,
+                """{"value":[{"name":"gen-skill","description":"after the isolation reload"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill =>
+                    skill.Name == "gen-skill" && skill.Description == "after the isolation reload"),
+                TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(2);
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task AFailedGeneratorInvokeIsRetriedByTheNextRegistryFrame()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = CreateGeneratorPluginsRoot();
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.ReplyError(manager, invoke, "generator_busy", "a transient failure");
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Should().BeEmpty();
+            fakeSocket.TotalSkillInvokes.Should().Be(1);
+
+            // The next registry frame retries the failed plugin even though its Skills
+            // export set is unchanged — the MCP coordinator's "never-succeeded stays
+            // new" discipline — instead of keeping the empty contribution until an
+            // export-set change that may never come.
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            var retry = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                retry,
+                """{"value":[{"name":"gen-skill","description":"recovered on retry"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
+                TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(2);
+
+            // A fully successful pass clears the retry flag: a further unchanged frame
+            // invokes nothing.
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+            fakeSocket.TotalSkillInvokes.Should().Be(
+                2, "a recovered generator must not be retried by unchanged frames");
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task ApprovingABlockedPluginAtRuntimeBringsItsGeneratorSkillsBack()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = CreateGeneratorPluginsRoot();
+        // A nonexistent approvals path loads as a fresh writable store: the plugin
+        // starts blocked and only the runtime approval can activate it.
+        var approvals = Path.Combine(Path.GetTempPath(), $"mc-approvals-blocked-{Guid.NewGuid():N}.json");
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            catalog.Current.Skills.Should().BeEmpty("an unapproved plugin contributes nothing");
+
+            // The runtime approval activates the plugin: the host upserts the worker and
+            // its post-activation registry frame joins the Skills export, whose
+            // generator invoke then contributes.
+            await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken);
+            manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
+            var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            fakeSocket.Reply(
+                manager,
+                invoke,
+                """{"value":[{"name":"gen-skill","description":"after the approval"}]}""");
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
+                TestContext.Current.CancellationToken);
+
+            catalog.Current.Skills.Single(skill => skill.Name == "gen-skill").Source
+                .Should().Be(SkillSource.PluginGenerated);
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (File.Exists(approvals)) File.Delete(approvals);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task RevokingAPublishOnlyPluginRemovesItsPublishedPart()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"skills-pubonly-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        // No entrypoints and no declared skills: the plugin's only skill face is the
+        // contribution slot its runtime publish holds.
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["skills.publish"]
+            }
+            """);
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(SkillsPublishFrame(
+                pluginId,
+                """[{"name":"published-one","description":"pushed by a faceless plugin"}]"""));
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "published-one"),
+                TestContext.Current.CancellationToken);
+
+            // Revocation must clear the published part even though the plugin holds no
+            // generator or declared face: the held contribution slot alone is a skill
+            // face for the approval transition.
+            await manager.RevokeAsync(pluginId, TestContext.Current.CancellationToken);
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.All(skill => skill.Name != "published-one"),
+                TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task ATriggerReinvokesOnlyTheTriggeredPluginGenerator()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = CreateTwoGeneratorPluginsRoot();
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(
+                SkillsRegistryFrame(("alpha", "./mod.ts"), ("beta", "./mod.ts")));
+
+            // Answer both plugins' first invokes; the two reconciles run in parallel,
+            // so the arrival order is not deterministic.
+            var answered = new HashSet<string>(StringComparer.Ordinal);
+            while (answered.Count < 2)
+            {
+                var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+                var owner = PluginIdOf(invoke);
+                answered.Add(owner);
+                fakeSocket.Reply(
+                    manager,
+                    invoke,
+                    $$"""{"value":[{"name":"{{owner}}-skill","description":"computed by {{owner}}"}]}""");
+            }
+
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "alpha-skill") &&
+                            snapshot.Skills.Any(skill => skill.Name == "beta-skill"),
+                TestContext.Current.CancellationToken);
+
+            // A trigger re-runs exactly the triggered plugin's generator; the sibling's
+            // contribution is untouched and its generator is never invoked.
+            manager.HandleHostMessage(PluginTriggerFrame("alpha"));
+            var triggerInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+            PluginIdOf(triggerInvoke).Should().Be("alpha");
+            fakeSocket.Reply(manager, triggerInvoke, """{"value":[]}""");
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+
+            fakeSocket.SkillInvokesBy("alpha").Should().Be(2);
+            fakeSocket.SkillInvokesBy("beta").Should().Be(
+                1, "a trigger must not re-invoke another plugin's generator");
+            catalog.Current.Skills.Should()
+                .Contain(skill => skill.Name == "alpha-skill")
+                .And.Contain(skill => skill.Name == "beta-skill");
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = Deadline)]
+    public async Task RevokingAPluginRemovesOnlyItsContribution()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket harness.");
+
+        var root = CreateTwoGeneratorPluginsRoot();
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var clock = new FakeTimeProvider();
+        await using var catalog = CreateCatalog(workspaceRoot);
+        var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
+        var fakeSocket = new FakeHostWebSocket();
+        try
+        {
+            await manager.StartAsync(TestContext.Current.CancellationToken);
+            var attached = manager.HostConnectionAttached;
+            var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            _ = attach;
+
+            manager.HandleHostMessage(
+                SkillsRegistryFrame(("alpha", "./mod.ts"), ("beta", "./mod.ts")));
+            var answered = new HashSet<string>(StringComparer.Ordinal);
+            while (answered.Count < 2)
+            {
+                var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
+                var owner = PluginIdOf(invoke);
+                answered.Add(owner);
+                fakeSocket.Reply(
+                    manager,
+                    invoke,
+                    $$"""{"value":[{"name":"{{owner}}-skill","description":"computed by {{owner}}"}]}""");
+            }
+
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "alpha-skill") &&
+                            snapshot.Skills.Any(skill => skill.Name == "beta-skill"),
+                TestContext.Current.CancellationToken);
+
+            // The approval transition touches only the transitioning plugin: beta's
+            // contribution slot is removed, alpha's stays, and neither alpha's nor
+            // beta's generator is invoked again.
+            await manager.RevokeAsync("beta", TestContext.Current.CancellationToken);
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.All(skill => skill.Name != "beta-skill"),
+                TestContext.Current.CancellationToken);
+
+            catalog.Current.Skills.Should().Contain(skill => skill.Name == "alpha-skill");
+            fakeSocket.SkillInvokesBy("alpha").Should().Be(
+                1, "an approval transition must not re-invoke an unrelated plugin's generator");
+            fakeSocket.SkillInvokesBy("beta").Should().Be(1);
+        }
+        finally
+        {
+            fakeSocket.Dispose();
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    /// <summary>A plugins root whose single project plugin exports a Skills generator
+    /// (the plugins-root descriptor's workers are the kernel's invoke targets).</summary>
+    private static string CreateGeneratorPluginsRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"skills-gen-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "entrypoints": { "worker": { "main": ["./mod.ts"] } }
+            }
+            """);
+        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+        return root;
+    }
+
+    /// <summary>A plugins root whose project imports two worker plugins (<c>alpha</c>,
+    /// <c>beta</c>), each exporting a Skills generator; the import target's directory
+    /// names are the kernel plugin ids (import targets resolve to entry files).</summary>
+    private static string CreateTwoGeneratorPluginsRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"skills-two-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/plugins",
+              "version": "0.1.0",
+              "imports": {
+                "alpha": "./plugins/alpha/mod.ts",
+                "beta": "./plugins/beta/mod.ts"
+              }
+            }
+            """);
+        foreach (var plugin in (string[])["alpha", "beta"])
+        {
+            var directory = Path.Combine(root, "plugins", plugin);
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(
+                Path.Combine(directory, "deno.json"),
+                $$"""
+                {
+                  "name": "@maieutics/{{plugin}}",
+                  "permissions": { "default": { "read": ["./"] } }
+                }
+                """);
+            File.WriteAllText(
+                Path.Combine(directory, "maieutics.json"),
+                """
+                {
+                  "entrypoints": { "worker": { "main": ["./mod.ts"] } }
+                }
+                """);
+            File.WriteAllText(Path.Combine(directory, "mod.ts"), "export const Skills = {};\n");
+        }
+
+        return root;
+    }
+
+    private static string SkillsRegistryFrame(params (string PluginId, string ExportName)[] workers)
     {
         var payload = JsonSerializer.SerializeToElement(
             new
             {
-                plugins = new[]
-                {
-                    new { pluginId, exportName, extensionPoints = new[] { ReplExtensionPointName.Skills } }
-                }
+                plugins = workers
+                    .Select(worker => new
+                    {
+                        pluginId = worker.PluginId,
+                        exportName = worker.ExportName,
+                        extensionPoints = new[] { ReplExtensionPointName.Skills }
+                    })
+                    .ToArray()
             });
         var envelope = JsonSerializer.SerializeToElement(
             new ReplEnvelope(1, ReplMessageType.ExtensionRegistry, Guid.NewGuid().ToString("N"), payload),
             ReplControlJsonContext.Default.ReplEnvelope);
         return envelope.GetRawText();
+    }
+
+    /// <summary>One <c>extension.registry</c> frame carrying per-plugin reload epochs —
+    /// the shape the host sends after completing a requested reload (each completed
+    /// reload or stop of a plugin bumps its epoch in the reporting frame).</summary>
+    private static string SkillsRegistryFrameWithEpochs(
+        IReadOnlyDictionary<string, int> reloadEpochs,
+        params (string PluginId, string ExportName)[] workers)
+    {
+        var payload = JsonSerializer.SerializeToElement(
+            new
+            {
+                plugins = workers
+                    .Select(worker => new
+                    {
+                        pluginId = worker.PluginId,
+                        exportName = worker.ExportName,
+                        extensionPoints = new[] { ReplExtensionPointName.Skills }
+                    })
+                    .ToArray(),
+                reloadEpochs
+            });
+        var envelope = JsonSerializer.SerializeToElement(
+            new ReplEnvelope(1, ReplMessageType.ExtensionRegistry, Guid.NewGuid().ToString("N"), payload),
+            ReplControlJsonContext.Default.ReplEnvelope);
+        return envelope.GetRawText();
+    }
+
+    /// <summary>One <c>plugin.trigger</c> frame for the named plugin.</summary>
+    private static string PluginTriggerFrame(string pluginId)
+    {
+        var payload = JsonSerializer.SerializeToElement(
+            new PluginTriggerPayload(pluginId, "watch"),
+            ReplControlJsonContext.Default.PluginTriggerPayload);
+        var envelope = JsonSerializer.SerializeToElement(
+            new ReplEnvelope(1, ReplMessageType.PluginTrigger, Guid.NewGuid().ToString("N"), payload),
+            ReplControlJsonContext.Default.ReplEnvelope);
+        return envelope.GetRawText();
+    }
+
+    /// <summary>The owning plugin id of one outbound Skills host.invoke envelope.</summary>
+    private static string PluginIdOf(string invokeEnvelope)
+    {
+        using var document = JsonDocument.Parse(invokeEnvelope);
+        return document.RootElement.GetProperty("payload").GetProperty("pluginId").GetString()
+               ?? string.Empty;
     }
 
     /// <summary>One <c>capability.invoke</c> frame for skills.publish, carrying the
@@ -695,12 +1340,18 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
     /// <summary>In-memory host socket: captures kernel envelopes, answers Skills invokes
     /// with canned results (the PluginHostInvokeTests fake-socket shape, trimmed to what
-    /// these tests need).</summary>
+    /// these tests need), and counts outbound Skills host.invoke envelopes per plugin so
+    /// the differential tests can assert that unchanged events invoke no generator.</summary>
     private sealed class FakeHostWebSocket : WebSocket
     {
         private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Channel<string> sent = Channel.CreateUnbounded<string>();
+        private readonly Dictionary<string, int> skillInvokes = new(StringComparer.Ordinal);
         private WebSocketState state = WebSocketState.Open;
+
+        internal int TotalSkillInvokes => skillInvokes.Values.Sum(static count => count);
+
+        internal int SkillInvokesBy(string pluginId) => skillInvokes.GetValueOrDefault(pluginId, 0);
 
         public override WebSocketState State => state;
 
@@ -797,7 +1448,29 @@ public sealed class PluginSkillsContributionTests : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (messageType != WebSocketMessageType.Text || !endOfMessage)
                 throw new InvalidOperationException("The test socket only accepts complete text messages.");
-            return sent.Writer.WriteAsync(System.Text.Encoding.UTF8.GetString(buffer.Span), cancellationToken);
+            var message = System.Text.Encoding.UTF8.GetString(buffer.Span);
+            CountSkillInvoke(message);
+            return sent.Writer.WriteAsync(message, cancellationToken);
+        }
+
+        /// <summary>Counts one Skills host.invoke envelope per owning plugin; the send
+        /// path is serialized through the kernel's outbound queue, so no lock is
+        /// needed.</summary>
+        private void CountSkillInvoke(string message)
+        {
+            if (!message.Contains("\"host.invoke\"", StringComparison.Ordinal) ||
+                !message.Contains("\"Skills\"", StringComparison.Ordinal))
+                return;
+            try
+            {
+                var pluginId = PluginIdOf(message);
+                if (pluginId.Length == 0) return;
+                skillInvokes[pluginId] = skillInvokes.GetValueOrDefault(pluginId, 0) + 1;
+            }
+            catch (JsonException)
+            {
+                // Not a parsable invoke envelope; nothing to count.
+            }
         }
 
         public override void Abort() => Dispose();

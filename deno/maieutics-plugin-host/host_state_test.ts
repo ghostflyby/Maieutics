@@ -212,3 +212,38 @@ export const discover = defineExtensionPoint("McpDiscover", { handler: () => [] 
     host.dispose();
   }
 });
+
+Deno.test("each completed reload and stop bumps the plugin's reload epoch", async () => {
+  const root = Deno.makeTempDirSync();
+  const epoch = writePlugin(root, "epoch", DEFINER_SOURCE);
+  const other = writePlugin(
+    root,
+    "other",
+    `${sdkImport()}
+export const discover = defineExtensionPoint("McpDiscover", { handler: () => [] });
+`,
+  );
+  const host = makeHost([epoch, other]);
+  try {
+    await host.startAll();
+
+    // The epoch is per-plugin and starts unseen: startup itself is not a lifecycle
+    // mutation the kernel asked to be told apart.
+    assertEquals(host.reloadEpochs().get("epoch"), undefined);
+
+    await host.reload("epoch", "./main");
+    assertEquals(host.reloadEpochs().get("epoch"), 1);
+    // Another plugin's lifecycle does not move it.
+    await host.reload("other", "./main");
+    assertEquals(host.reloadEpochs().get("epoch"), 1);
+    assertEquals(host.reloadEpochs().get("other"), 1);
+
+    await host.reload("epoch", "./main");
+    assertEquals(host.reloadEpochs().get("epoch"), 2);
+
+    await host.stop("epoch", "./main");
+    assertEquals(host.reloadEpochs().get("epoch"), 3, "a completed stop bumps the epoch too");
+  } finally {
+    host.dispose();
+  }
+});

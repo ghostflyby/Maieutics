@@ -30,61 +30,12 @@ internal sealed record PluginDescriptor(
 /// Entries are data-only — they never require or imply a worker.</summary>
 internal sealed record PluginExtensionEntry(string Kind, JsonElement Data);
 
-/// <summary>The kernel-known declarative extension kinds (the manifest counterpart of
-/// the closed extension-point catalog). Unknown kinds in a manifest are surfaced as
-/// diagnostics and ignored, so newer plugins degrade visibly on older kernels.</summary>
-internal static class PluginExtensionKind
-{
-    public const string McpDiscover = "McpDiscover";
-
-    /// <summary>The declarative skill-contribution kind (ADR 0039 stage 2): entries carry
-    /// <c>roots</c> the kernel enumerates (interpolated through the manifest variable
-    /// table); the worker form of the same name is the generator the kernel invokes. The
-    /// lowercase spelling <c>skills</c> is the recommended form; case is not
-    /// significant.</summary>
-    public const string Skills = "Skills";
-
-    public static bool IsKnown(string kind)
-    {
-        return kind.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase) ||
-               kind.Equals(Skills, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>The canonical constant for a declared kind, or null when unknown. Entries
-    /// record the canonical spelling so downstream comparisons stay exact regardless of
-    /// how the manifest spelled it.</summary>
-    public static string? Canonicalize(string kind)
-    {
-        if (kind.Equals(McpDiscover, StringComparison.OrdinalIgnoreCase)) return McpDiscover;
-        if (kind.Equals(Skills, StringComparison.OrdinalIgnoreCase)) return Skills;
-        return null;
-    }
-}
-
 /// <summary>One data entry point declared in the manifest's `entrypoints` section with a
 /// plain string value: the kernel collects the referenced file as raw JSON instead of
-/// launching it. Interpretation belongs to the entry name's kernel interpreter
-/// (<see cref="PluginDataName"/>); a collection failure rides the entry as an error
-/// marker and never fails the plugin load.</summary>
+/// launching it. Interpretation belongs to the entry name's kernel interpreter (the
+/// contribution kind catalog's <c>ByDataEntryName</c>); a collection failure rides the
+/// entry as an error marker and never fails the plugin load.</summary>
 internal sealed record PluginDataEntry(string Name, JsonElement? Data, string? Error);
-
-/// <summary>The kernel-known data entry names. A catalogued name requires its string
-/// entrypoint value to resolve to a file the kernel can interpret; unknown names are
-/// collected but inert, with a visible diagnostic.</summary>
-internal static class PluginDataName
-{
-    public const string Mcp = "mcp";
-
-    /// <summary>A declarative form template (ADR 0038 stage 3): interpreted into a
-    /// <see cref="PluginUiFormDefinition"/> the kernel can publish into the foreground
-    /// session's comm plane on demand — no worker runs for a data-only form.</summary>
-    public const string Ui = "ui";
-
-    public static bool IsKnown(string name)
-    {
-        return name == Mcp || name == Ui;
-    }
-}
 
 /// <summary>One declarative form field interpreted from a `ui` data entry.</summary>
 internal sealed record PluginUiFormField(
@@ -292,7 +243,7 @@ internal static class PluginManifest
         string directory,
         [NotNullWhen(true)] out PluginDescriptor? descriptor,
         out string error,
-        Maieutics.Permissions.VariableTable? triggerVariables)
+        Maieutics.Permissions.VariableTable? variables)
     {
         descriptor = null;
         var pluginConfigPath = Path.Combine(directory, "maieutics.json");
@@ -323,7 +274,7 @@ internal static class PluginManifest
         IReadOnlyList<string> dataDiagnostics;
         try
         {
-            (workers, dataEntries, dataDiagnostics) = ReadEntrypoints(pluginManifest.Entrypoints, directory);
+            (workers, dataEntries, dataDiagnostics) = ReadEntrypoints(pluginManifest.Entrypoints, directory, variables);
         }
         catch (JsonException exception)
         {
@@ -353,9 +304,11 @@ internal static class PluginManifest
 
         // UI interpretation of the declared data entry (ADR 0038 stage 3): a declarative
         // form template the kernel can publish on demand. Same sticky-marker shape as
-        // the `mcp` entry — a broken entry never fails the plugin load.
+        // the `mcp` entry — a broken entry never fails the plugin load. This block stays
+        // in place (the ui kind is registered B 期 as a text-only catalog entry; its
+        // interpretation is deliberately not migrated).
         PluginUiFormDefinition? uiForm = null;
-        if (dataEntries.FirstOrDefault(entry => entry.Name == PluginDataName.Ui) is { } uiEntry)
+        if (dataEntries.FirstOrDefault(entry => entry.Name == Contributions.UiContributionKind.DataEntry) is { } uiEntry)
         {
             if (uiEntry.Error is { } uiCollectionError)
             {
@@ -368,31 +321,19 @@ internal static class PluginManifest
             }
         }
 
-        // MCP interpretation of the declared data entry (ADR 0033). The 'mcp' name is
-        // the only source — there is no implicit file pickup beside the manifest. A
-        // broken entry does not fail the plugin load: the manifest declarations
-        // (entrypoints, capabilities, extensions) stay authoritative, and the error
-        // marker keeps the plugin registered so its previous MCP contribution remains
-        // discoverable-but-failed — the sticky-last-good rule the coordinator applies.
+        // MCP interpretation of the declared data entry (ADR 0033): owned by the MCP
+        // contribution contract's ParseDeclared — the 'mcp' name is the only source,
+        // and a broken entry does not fail the plugin load (the plugin-level sticky
+        // error keeps it registered so its previous MCP contribution remains
+        // discoverable-but-failed). The extensions entries themselves pass through
+        // untouched; their per-entry validation stays in the discovery-time branch.
         IReadOnlyList<McpServerDefinition> mcpServers = [];
         string? mcpServersError = null;
-        if (dataEntries.FirstOrDefault(entry => entry.Name == PluginDataName.Mcp) is { } mcpEntry)
-        {
-            if (mcpEntry.Error is { } collectionError)
-                mcpServersError = $"The 'mcp' data entry could not be collected: {collectionError}";
-            else if (mcpEntry.Data is { } collectedData)
-            {
-                try
-                {
-                    mcpServers = McpServerFile.ReadJson(collectedData, directory, $"plugin:{id}::");
-                }
-                catch (Exception exception) when (
-                    exception is InvalidOperationException or JsonException or InvalidDataException)
-                {
-                    mcpServersError = $"Invalid mcp.json data entry: {exception.Message}";
-                }
-            }
-        }
+        var mcpDeclared = Contributions.McpDiscoverContributionKind.Instance.ParseDeclared(
+            new Contributions.ContributionDeclarationContext(id, directory, extensions, dataEntries));
+        if (mcpDeclared.Descriptors.Count > 0)
+            mcpServers = Contributions.ContributionDescriptorUnwrap.McpServers(mcpDeclared.Descriptors);
+        mcpServersError = mcpDeclared.PluginLevelError;
 
         // Inspections are the content-observation declaration (ADR 0032): a plugin that
         // declares contentReadAll receives tool results in its post-invoke hooks. Absence
@@ -420,7 +361,7 @@ internal static class PluginManifest
         {
             triggers = PluginTriggerReader.Read(
                 pluginManifest.Triggers,
-                triggerVariables ?? EmptyVariables());
+                variables ?? EmptyVariables());
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or Maieutics.Permissions.PermissionException)
         {
@@ -456,8 +397,9 @@ internal static class PluginManifest
     /// <summary>Reads the manifest's `entrypoints` section. The top-level key is the
     /// entry KIND, never a name: `worker` holds the worker map (worker name → script
     /// array, the first script starting one worker, the rest same-worker helpers);
-    /// catalogued data names (`mcp`, <see cref="PluginDataName"/>) hold a string path to
-    /// a file the kernel collects and interprets instead of launching (ADR 0033);
+    /// catalogued data names (the contribution kind catalog's data-entry names) hold a
+    /// string path to a file the kernel collects and interprets instead of launching
+    /// (ADR 0033);
     /// unknown names holding a string are collected but inert with a visible diagnostic
     /// (forward compatibility, same rule as unknown extension kinds). Structural
     /// violations fail the manifest — including an array under an unknown name, which
@@ -467,7 +409,7 @@ internal static class PluginManifest
         IReadOnlyList<PluginWorkerDescriptor> Workers,
         IReadOnlyList<PluginDataEntry> DataEntries,
         IReadOnlyList<string> Diagnostics)
-        ReadEntrypoints(JsonElement? entrypoints, string directory)
+        ReadEntrypoints(JsonElement? entrypoints, string directory, Maieutics.Permissions.VariableTable? variables)
     {
         var workers = new List<PluginWorkerDescriptor>();
         var dataEntries = new List<PluginDataEntry>();
@@ -503,21 +445,24 @@ internal static class PluginManifest
                         break;
                     }
 
-                    if (!PluginDataName.IsKnown(entry.Name))
-                        diagnostics.Add(
-                            $"Unknown data entry '{entry.Name}' is declared but not supported by this kernel; " +
-                            $"it is collected but inert (known names: {PluginDataName.Mcp}).");
-                    dataEntries.Add(CollectDataEntry(root, entry.Name, dataPath));
+                    // The catalog owns the data-entry grammar (exact-match routing —
+                    // the declared spelling is recorded verbatim so existing
+                    // fingerprints stay byte-stable, ADR 0040 decision 7); unknown
+                    // names are collected but inert, with the catalog-generated
+                    // diagnostic.
+                    if (Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name) is null)
+                        diagnostics.Add(Contributions.ContributionKindCatalog.UnknownDataEntryDiagnostic(entry.Name));
+                    dataEntries.Add(CollectDataEntry(root, entry.Name, dataPath, variables));
                     break;
 
-                case JsonValueKind.Array when PluginDataName.IsKnown(entry.Name):
+                case JsonValueKind.Array when
+                    Contributions.ContributionKindCatalog.ByDataEntryName(entry.Name) is not null:
                     throw new JsonException(
                         $"The entrypoint '{entry.Name}' is a catalogued data entry and requires a string path, not a script array.");
 
                 default:
                     throw new JsonException(
-                        $"Unknown entrypoint section '{entry.Name}'. Worker declarations live under 'worker'; " +
-                        $"catalogued data entries take a string path (known names: {PluginDataName.Mcp}).");
+                        Contributions.ContributionKindCatalog.UnknownEntrypointSectionDiagnostic(entry.Name));
             }
         }
 
@@ -572,27 +517,49 @@ internal static class PluginManifest
         public string? GetVariable(string name) => null;
     }
 
-    /// <summary>Collects one string-valued data entry: resolves the path inside the
-    /// plugin root and parses the file as JSON. Any failure rides the entry as an error
-    /// marker — the plugin stays loaded, and the entry's interpreter treats a failed
-    /// collection as no data (for 'mcp', the sticky-last-good marker).</summary>
-    private static PluginDataEntry CollectDataEntry(string root, string name, string relativePath)
+    /// <summary>Collects one string-valued data entry: expands <c>${env.*}</c>/
+    /// <c>${var.*}</c> tokens through the manifest variable table (framework §5 — the
+    /// mcp.json data path joins the skills roots' interpolation parity; a path without
+    /// tokens is returned unchanged, so every existing declaration collects
+    /// identically), resolves the path inside the plugin root, and parses the file as
+    /// JSON. Any failure — an unresolvable variable, an escaping path, a missing or
+    /// invalid file — rides the entry as an error marker: the plugin stays loaded, and
+    /// the entry's interpreter treats a failed collection as no data (for 'mcp', the
+    /// sticky-last-good marker).</summary>
+    private static PluginDataEntry CollectDataEntry(
+        string root,
+        string name,
+        string relativePath,
+        Maieutics.Permissions.VariableTable? variables)
     {
+        string expandedPath;
+        try
+        {
+            expandedPath = variables is { } table ? table.Expand(relativePath) : relativePath;
+        }
+        catch (Maieutics.Permissions.PermissionException exception)
+        {
+            return new PluginDataEntry(
+                name,
+                null,
+                $"The data entry path '{relativePath}' cannot be expanded: {exception.Message}");
+        }
+
         string fullPath;
         try
         {
-            fullPath = Path.GetFullPath(Path.Combine(root, relativePath));
+            fullPath = Path.GetFullPath(Path.Combine(root, expandedPath));
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return new PluginDataEntry(name, null, $"The data entry path '{relativePath}' is not a valid path.");
+            return new PluginDataEntry(name, null, $"The data entry path '{expandedPath}' is not a valid path.");
         }
 
         if (!IsWithinRoot(fullPath, root))
-            return new PluginDataEntry(name, null, $"The data entry path '{relativePath}' resolves outside the plugin root.");
+            return new PluginDataEntry(name, null, $"The data entry path '{expandedPath}' resolves outside the plugin root.");
 
         if (!File.Exists(fullPath))
-            return new PluginDataEntry(name, null, $"The data entry file '{relativePath}' does not exist.");
+            return new PluginDataEntry(name, null, $"The data entry file '{expandedPath}' does not exist.");
 
         try
         {
@@ -601,7 +568,7 @@ internal static class PluginManifest
         }
         catch (JsonException exception)
         {
-            return new PluginDataEntry(name, null, $"Invalid JSON in '{relativePath}': {exception.Message}");
+            return new PluginDataEntry(name, null, $"Invalid JSON in '{expandedPath}': {exception.Message}");
         }
     }
 
@@ -627,12 +594,14 @@ internal static class PluginManifest
         {
             if (kind.Value.ValueKind != JsonValueKind.Array)
                 throw new JsonException($"The 'extensions.{kind.Name}' section must be an array of entries.");
-            if (!PluginExtensionKind.IsKnown(kind.Name))
+
+            // The catalog owns the extensions grammar (case-insensitive routing
+            // recording the canonical spelling); unknown kinds are dropped with the
+            // catalog-generated diagnostic, never honored.
+            var extensionContract = Contributions.ContributionKindCatalog.ByExtensionKind(kind.Name);
+            if (extensionContract is null)
             {
-                found.Add(
-                    $"Unknown extension kind '{kind.Name}' is declared but not supported by this kernel; " +
-                    $"it is ignored (known kinds: {PluginExtensionKind.McpDiscover}, {PluginExtensionKind.Skills} " +
-                    $"— case is not significant and the lowercase 'skills' form is recommended).");
+                found.Add(Contributions.ContributionKindCatalog.UnknownExtensionKindDiagnostic(kind.Name));
                 continue;
             }
 
@@ -641,9 +610,7 @@ internal static class PluginManifest
                 if (entry.ValueKind != JsonValueKind.Object)
                     throw new JsonException(
                         $"The 'extensions.{kind.Name}' entries must be objects.");
-                entries.Add(new PluginExtensionEntry(
-                    PluginExtensionKind.Canonicalize(kind.Name) ?? kind.Name,
-                    entry.Clone()));
+                entries.Add(new PluginExtensionEntry(extensionContract.KindName, entry.Clone()));
             }
         }
 

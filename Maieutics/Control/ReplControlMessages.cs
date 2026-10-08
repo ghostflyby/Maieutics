@@ -296,7 +296,10 @@ internal sealed record HostInvokeResultPayload(JsonElement? Value = null);
 /// <summary>Host-to-kernel typed failure for an extension point call.</summary>
 internal sealed record HostInvokeErrorPayload(string Code, string Message);
 
-/// <summary>Host-to-kernel registry snapshot of scanned extension points per worker.</summary>
+/// <summary>Host-to-kernel registry snapshot of scanned extension points per worker. The
+/// optional <c>ReloadEpochs</c> map counts each plugin's completed lifecycle mutations
+/// (reloads and stops) in the reporting host process, letting the kernel attribute a frame
+/// to a reload it requested; a host that predates the field omits it.</summary>
 /// <summary>A trigger fired on the host (ADR 0036): the kernel republishes the named
 /// plugin's MCP registration subset — discovery re-runs and the coordinator recomposes.
 /// No worker wake: the rediscover action is pure runtime.</summary>
@@ -305,7 +308,8 @@ internal sealed record PluginTriggerPayload(string PluginId, string Trigger);
 internal sealed record ExtensionRegistryPayload(
     IReadOnlyList<ExtensionRegistryPlugin> Plugins,
     IReadOnlyList<PluginStatePayload>? States = null,
-    PluginHttpGatewayPayload? HttpGateway = null);
+    PluginHttpGatewayPayload? HttpGateway = null,
+    IReadOnlyDictionary<string, int>? ReloadEpochs = null);
 
 /// <summary>The plugin HTTP gateway's entrance (ADR 0021/0038 stage 4): the host
 /// reserves the loopback address and entrance token; the token is a capability

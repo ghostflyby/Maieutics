@@ -267,6 +267,78 @@ public sealed class SkillDiscoveryTests : IDisposable
             .Which.Diagnostic.Should().Contain("control characters");
     }
 
+    [Fact]
+    public void StreamingEnumerationIsLazyAndStopsAtTheFirstYield()
+    {
+        WriteSkill("alpha", ValidFrontmatter);
+        WriteSkill("beta", ValidFrontmatter);
+        WriteSkill("gamma", ValidFrontmatter);
+        WriteSkill("delta", ValidFrontmatter);
+        var visits = new SkillDirectoryVisitCounter();
+
+        var first = SkillDirectoryDiscovery.EnumerateSubtree(root, root, SkillSource.Workspace, visits)
+            .Take(1)
+            .Single();
+
+        first.Name.Should().Be("my-skill");
+        // Root file probe + root directory listing + one child probe; the three untouched
+        // siblings never appear. A buffered implementation (or a full rescan) would cost
+        // six visits for this tree.
+        visits.Count.Should().Be(3);
+    }
+
+    [Fact]
+    public void SubtreeEnumerationWalksOnlyTheRegionAgainstTheDeclaredRoot()
+    {
+        WriteSkill("alpha", ValidFrontmatter);
+        WriteSkill(Path.Combine("region", "inner"), """
+            ---
+            name: inner-skill
+            description: Claims the inner directory.
+            ---
+            Body.
+            """);
+        WriteSkill(Path.Combine("region", "deeper", "leaf"), """
+            ---
+            name: leaf-skill
+            description: The deepest skill.
+            ---
+            Body.
+            """);
+        var visits = new SkillDirectoryVisitCounter();
+
+        var skills = SkillDirectoryDiscovery.EnumerateSubtree(
+                Path.Combine(root, "region"), root, SkillSource.Workspace, visits)
+            .ToArray();
+
+        // The region's own boundary rules hold inside the subtree (inner claims its
+        // directory, deeper has no SKILL.md so the walk descends to leaf), alpha outside
+        // the region is never touched, and containment is judged against the declared
+        // root, not the region.
+        skills.Should().HaveCount(2)
+            .And.Contain(skill => skill.Name == "inner-skill")
+            .And.Contain(skill => skill.Name == "leaf-skill");
+        skills.Should().OnlyContain(skill => skill.RootDirectory == Path.GetFullPath(root));
+        visits.Count.Should().Be(6);
+    }
+
+    [Fact]
+    public void RediscoverSkillDirectoryTracksTheLiveSkillFile()
+    {
+        WriteSkill("alpha", ValidFrontmatter);
+        var rootFullName = Path.GetFullPath(root);
+
+        var fresh = SkillDirectoryDiscovery.RediscoverSkillDirectory(
+            Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace);
+        fresh.Should().Match<SkillDescriptor>(skill => skill.Name == "my-skill");
+
+        File.Delete(Path.Combine(rootFullName, "alpha", "SKILL.md"));
+
+        SkillDirectoryDiscovery.RediscoverSkillDirectory(
+                Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace)
+            .Should().BeNull();
+    }
+
     private static void WriteSkillTo(string directory, string name, string description)
     {
         var skillDirectory = Path.Combine(directory, name);

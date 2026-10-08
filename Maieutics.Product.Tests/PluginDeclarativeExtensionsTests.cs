@@ -6,6 +6,7 @@ using Maieutics.Mcp;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Maieutics.Plugins.Contributions;
 
 namespace Maieutics.Product.Tests;
 
@@ -40,7 +41,7 @@ public sealed class PluginDeclarativeExtensionsTests
 
             // The synthetic registration exists without any worker ever spawning:
             // the manifest snapshot is the discovery source.
-            var registrations = manager.GetRegistrations(PluginExtensionKind.McpDiscover);
+            var registrations = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind);
             var registration = registrations.Should().ContainSingle().Which;
             registration.PluginId.Should().Be(pluginName);
             registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
@@ -78,11 +79,11 @@ public sealed class PluginDeclarativeExtensionsTests
 
             // The known kind is registered; the unknown kind produced a diagnostic
             // and no registration of its own.
-            var registrations = manager.GetRegistrations(PluginExtensionKind.McpDiscover);
+            var registrations = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind);
             registrations.Should().ContainSingle().Which.PluginId.Should().Be(pluginName);
             manager.GetRegistrations("FutureKind").Should().BeEmpty();
             var discovery = manager.DiscoverManifestMcpAsync(
-                new PluginRegistration(pluginName, PluginHostManager.ManifestExportName, PluginExtensionKind.McpDiscover));
+                new PluginRegistration(pluginName, PluginHostManager.ManifestExportName, McpDiscoverContributionKind.ExtensionKind));
             discovery.IsSuccess.Should().BeTrue();
         }
         finally
@@ -110,7 +111,7 @@ public sealed class PluginDeclarativeExtensionsTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().ContainSingle();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
 
             // Remove the section from the manifest and apply the reload: the synthetic
             // registration and the contribution must both disappear.
@@ -125,9 +126,9 @@ public sealed class PluginDeclarativeExtensionsTests
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
 
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             var discovery = manager.DiscoverManifestMcpAsync(
-                new PluginRegistration(pluginId, PluginHostManager.ManifestExportName, PluginExtensionKind.McpDiscover));
+                new PluginRegistration(pluginId, PluginHostManager.ManifestExportName, McpDiscoverContributionKind.ExtensionKind));
             discovery.IsSuccess.Should().BeFalse(discovery.Failure);
         }
         finally
@@ -170,7 +171,7 @@ public sealed class PluginDeclarativeExtensionsTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
 
             // Add the section and apply the reload (a workerless plugin never
             // triggers a host registry resend, so the manager republishes itself).
@@ -193,10 +194,10 @@ public sealed class PluginDeclarativeExtensionsTests
             // The added extensions section changed the declaration surface, so the
             // approval gate holds the contribution until the user approves it (ADR 0037);
             // approval then activates it without a restart.
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             await manager.ApproveAsync(Path.GetFileName(root), deadline.Token);
 
-            var registrations = manager.GetRegistrations(PluginExtensionKind.McpDiscover);
+            var registrations = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind);
             var registration = registrations.Should().ContainSingle().Which;
             registration.PluginId.Should().Be(Path.GetFileName(root));
             var discovery = manager.DiscoverManifestMcpAsync(registration);
@@ -233,7 +234,7 @@ public sealed class PluginDeclarativeExtensionsTests
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
 
-            var registration = manager.GetRegistrations(PluginExtensionKind.McpDiscover)
+            var registration = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
                 .Should().ContainSingle().Which;
             registration.PluginId.Should().Be(pluginId);
             registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
@@ -273,7 +274,7 @@ public sealed class PluginDeclarativeExtensionsTests
             var registration = new PluginRegistration(
                 pluginId,
                 PluginHostManager.ManifestExportName,
-                PluginExtensionKind.McpDiscover);
+                McpDiscoverContributionKind.ExtensionKind);
             var original = manager.DiscoverManifestMcpAsync(registration);
             original.IsSuccess.Should().BeTrue(original.Failure);
 
@@ -293,7 +294,7 @@ public sealed class PluginDeclarativeExtensionsTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             await manager.ApproveAsync(pluginId, deadline.Token);
 
             var reloaded = manager.DiscoverManifestMcpAsync(registration);
@@ -330,7 +331,7 @@ public sealed class PluginDeclarativeExtensionsTests
             var registration = new PluginRegistration(
                 pluginId,
                 PluginHostManager.ManifestExportName,
-                PluginExtensionKind.McpDiscover);
+                McpDiscoverContributionKind.ExtensionKind);
             var original = manager.DiscoverManifestMcpAsync(registration);
             original.IsSuccess.Should().BeTrue(original.Failure);
 
@@ -344,7 +345,7 @@ public sealed class PluginDeclarativeExtensionsTests
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
 
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover).Should().BeEmpty();
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
             manager.ListPluginApprovals().Should().ContainSingle()
                 .Which.State.Should().Be(PluginApprovalState.PendingApproval);
 
@@ -360,7 +361,7 @@ public sealed class PluginDeclarativeExtensionsTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, repaired, deadline.Token);
-            manager.GetRegistrations(PluginExtensionKind.McpDiscover)
+            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
                 .Should().ContainSingle().Which.PluginId.Should().Be(pluginId);
             var recovered = manager.DiscoverManifestMcpAsync(registration);
             recovered.IsSuccess.Should().BeTrue(recovered.Failure);
@@ -480,6 +481,128 @@ public sealed class PluginDeclarativeExtensionsTests
             """);
         // Deliberately no mod.ts and no entrypoints: the plugin is data-only.
         return root;
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task OneInvalidManifestEntryFailsTheWholeManifestDiscovery()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        // The discovery-time granularity decision (framework §3.2): a manifest's
+        // extensions entries validate per discovery pass with all-or-nothing failure —
+        // one invalid entry fails the whole manifest discovery (never a per-entry
+        // inert degradation, which is the skills grammar's shape, not MCP's).
+        var root = Path.Combine(Path.GetTempPath(), $"declarative-invalid-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/declarative-invalid",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["tools.invoke"],
+              "extensions": {
+                "McpDiscover": [
+                  { "module": "npm:@maieutics/probe-server", "transport": { "type": "stdio", "command": "deno" } },
+                  { "module": "npm:@maieutics/broken-server", "transport": { "type": "nonsense" } }
+                ]
+              }
+            }
+            """);
+        var pluginName = Path.GetFileName(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
+
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+
+            var registration = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
+                .Should().ContainSingle().Which;
+            var discovery = manager.DiscoverManifestMcpAsync(registration);
+            discovery.IsSuccess.Should().BeFalse();
+            discovery.Failure.Should().Be("invalid_server_definition");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AManifestEntryConflictingWithTheDataFileFailsTheDiscovery()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        // Same server id with a different generation key across the two declarative
+        // sources (extensions entry vs mcp.json data file) fails the whole discovery —
+        // the merge rules mirror the coordinator's cross-plugin rules.
+        var root = Path.Combine(Path.GetTempPath(), $"declarative-conflict-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            """
+            {
+              "name": "@maieutics/declarative-conflict",
+              "version": "0.1.0",
+              "permissions": { "default": { "read": ["./"] } }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "maieutics.json"),
+            """
+            {
+              "capabilities": ["tools.invoke"],
+              "entrypoints": { "mcp": "./mcp.json" },
+              "extensions": {
+                "McpDiscover": [
+                  { "module": "probe", "transport": { "type": "http", "url": "http://127.0.0.1:9/mcp" } }
+                ]
+              }
+            }
+            """);
+        File.WriteAllText(
+            Path.Combine(root, "mcp.json"),
+            """
+            { "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }
+            """);
+        var pluginName = Path.GetFileName(root);
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
+
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+
+            var registration = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
+                .Should().ContainSingle().Which;
+            var discovery = manager.DiscoverManifestMcpAsync(registration);
+            discovery.IsSuccess.Should().BeFalse();
+            discovery.Failure.Should().Be("conflicting_server_definition");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 
     private static string CreateFakeDenoExecutable()

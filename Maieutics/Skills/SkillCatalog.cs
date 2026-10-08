@@ -26,12 +26,16 @@ internal sealed record SkillCatalogSnapshot(
 /// <summary>
 ///     The kernel's merged skill catalog (ADR 0039 stage 1). Owns one filesystem watcher per
 ///     declared root; each root's events feed a per-root signal channel drained by one pump
-///     loop that debounces, rescans its root, and republishes the merged snapshot. Sources
-///     merge by precedence (workspace outranks user); a same-name skill from a lower source
-///     is shadowed with a diagnostic. Discovery failures are diagnostics, never load
-///     failures. Roots are fixed at start (the same lifetime semantics as the workspace
-///     home) and the snapshot is recomputed on watched changes, so consumers that read
-///     <see cref="Current" /> per run see changes at their next run boundary.
+///     loop that debounces, collects the event paths, and applies a differential update: a
+///     path inside a known skill directory revalidates exactly that directory, every other
+///     path rewalks only its own subtree and is diffed against the known skill directories
+///     under that region. The initial scan streams the same walk and commits per discovered
+///     skill directory, so the catalog goes live progressively. Sources merge by precedence
+///     (workspace outranks user); a same-name skill from a lower source is shadowed with a
+///     diagnostic. Discovery failures are diagnostics, never load failures. Roots are fixed
+///     at start (the same lifetime semantics as the workspace home) and the snapshot is
+///     recomputed on watched changes, so consumers that read <see cref="Current" /> per run
+///     see changes at their next run boundary.
 /// </summary>
 internal sealed class SkillCatalog : IAsyncDisposable
 {
@@ -43,17 +47,83 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// abandoning them (the rescan walk is synchronous and cannot be cancelled).</summary>
     internal static readonly TimeSpan ShutdownBudget = TimeSpan.FromSeconds(5);
 
+    /// <summary>The most event paths one debounce window accumulates before the batch gives
+    /// up on differencing and escalates to one full-root differential walk.</summary>
+    private const int MaximumPendingEventPaths = 4096;
+
     private sealed record DeclaredRoot(SkillSource Source, string RootDirectory);
+
+    /// <summary>One root's watcher feed: the capacity-one rescan signal plus the set of
+    /// event paths accumulated between signals. Paths are never dropped silently — a set
+    /// that overflows escalates to one full-root differential rebuild, so a region is never
+    /// lost to backpressure.</summary>
+    private sealed class RootWatchState
+    {
+        private readonly Lock gate = new();
+        private readonly HashSet<string> pendingPaths = new(StringComparer.Ordinal);
+        private bool fullRescanPending;
+
+        internal Channel<bool> Signals { get; } = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
+
+        /// <summary>Records one watched path (already both halves of a rename at the call
+        /// site) and arms the pump. Recording is what carries information; the signal is
+        /// only a doorbell and may coalesce freely.</summary>
+        internal void Record(string fullPath)
+        {
+            lock (gate)
+            {
+                if (pendingPaths.Count >= MaximumPendingEventPaths)
+                    fullRescanPending = true;
+                else
+                    pendingPaths.Add(fullPath);
+            }
+
+            Signals.Writer.TryWrite(true);
+        }
+
+        /// <summary>Escalates to one full-root differential rebuild (watcher error
+        /// recovery, or an overflowed pending set) and arms the pump.</summary>
+        internal void RecordFullRescan()
+        {
+            lock (gate)
+            {
+                fullRescanPending = true;
+            }
+
+            Signals.Writer.TryWrite(true);
+        }
+
+        /// <summary>Takes the accumulated batch: deterministically ordered paths and
+        /// whether the batch must fall back to a full-root diff. Clears the state so the
+        /// next window starts empty; paths recorded after the take arm the next batch.</summary>
+        internal (string[] Paths, bool FullRescan) TakeBatch()
+        {
+            lock (gate)
+            {
+                string[] paths = [.. pendingPaths.OrderBy(static path => path, StringComparer.Ordinal)];
+                var fullRescan = fullRescanPending;
+                pendingPaths.Clear();
+                fullRescanPending = false;
+                return (paths, fullRescan);
+            }
+        }
+    }
 
     private readonly ImmutableArray<DeclaredRoot> roots;
     private readonly TimeProvider timeProvider;
     private readonly ILogger<SkillCatalog> logger;
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
-    private readonly Dictionary<DeclaredRoot, IReadOnlyList<SkillDescriptor>> rootResults = new();
+    private readonly SkillDirectoryVisitCounter directoryVisits = new();
+    private readonly Dictionary<DeclaredRoot, Dictionary<string, SkillDescriptor>> rootSkills = new();
+    private readonly Dictionary<DeclaredRoot, RootWatchState> rootStates = new();
     private readonly Dictionary<string, IReadOnlyList<SkillDescriptor>> pluginContributions = new(StringComparer.Ordinal);
     private readonly List<Task> pumps = [];
     private readonly List<FileSystemWatcher> watchers = [];
+    private readonly Action<SkillCatalogSnapshot>? onProgressiveCommit;
     private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
     private int rebuildCount;
     private bool disposed;
@@ -61,7 +131,8 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private SkillCatalog(
         IEnumerable<(SkillSource Source, string RootDirectory)> roots,
         TimeProvider timeProvider,
-        ILogger<SkillCatalog> logger)
+        ILogger<SkillCatalog> logger,
+        Action<SkillCatalogSnapshot>? onProgressiveCommit)
     {
         // Deduplicate by resolved path (first declaration wins) and order by precedence so
         // the merge walks sources in the order shadows are resolved.
@@ -80,20 +151,26 @@ internal sealed class SkillCatalog : IAsyncDisposable
             .ToImmutableArray();
         this.timeProvider = timeProvider;
         this.logger = logger;
+        this.onProgressiveCommit = onProgressiveCommit;
     }
 
     /// <summary>The composition-root factory: creates the root directories, runs the initial
-    /// scan, and starts the watcher pumps. Constructors stay side-effect free.</summary>
+    /// scan, and starts the watcher pumps. Constructors stay side-effect free.
+    /// <paramref name="onProgressiveCommit" /> observes each per-directory commit of the
+    /// initial scan (test observability for the progressive go-live); it runs outside the
+    /// state gate with the just-published immutable snapshot and must not call back into
+    /// the catalog.</summary>
     public static SkillCatalog Create(
         IEnumerable<(SkillSource Source, string RootDirectory)> roots,
         TimeProvider timeProvider,
-        ILogger<SkillCatalog> logger)
+        ILogger<SkillCatalog> logger,
+        Action<SkillCatalogSnapshot>? onProgressiveCommit = null)
     {
         ArgumentNullException.ThrowIfNull(roots);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
-        var catalog = new SkillCatalog(roots, timeProvider, logger);
+        var catalog = new SkillCatalog(roots, timeProvider, logger, onProgressiveCommit);
         catalog.Start();
         return catalog;
     }
@@ -114,6 +191,11 @@ internal sealed class SkillCatalog : IAsyncDisposable
             }
         }
     }
+
+    /// <summary>How many directories this catalog's discovery walks have enumerated — the
+    /// observable the differential tests assert on (a change inside one known skill
+    /// directory must touch a handful of directories, not the tree).</summary>
+    internal long DirectoryVisits => directoryVisits.Count;
 
     /// <summary>Replaces one plugin's skill contribution (ADR 0039 stages 2-3): each
     /// plugin owns exactly one slot — declarative roots, generator output, and (stage 3)
@@ -202,43 +284,68 @@ internal sealed class SkillCatalog : IAsyncDisposable
                     root.RootDirectory);
                 lock (gate)
                 {
-                    rootResults[root] = [];
+                    rootSkills[root] = NewSkillMap();
                 }
                 continue;
             }
 
-            // The initial scan runs outside the gate (pumps of earlier roots are already
-            // live); only the shared-state commit is serialized.
-            var discovered = SkillDirectoryDiscovery.Discover(root.RootDirectory, root.Source);
+            // Register the (empty) per-root map before scanning so every snapshot rebuild —
+            // a pump of an earlier root, or the progressive commits below — observes one
+            // consistent root set.
             lock (gate)
             {
-                rootResults[root] = discovered;
+                if (disposed) return;
+                rootSkills[root] = NewSkillMap();
             }
 
-            var signals = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+            // The initial scan streams the walk and commits each discovered skill directory
+            // as one atomic update-plus-rebuild, so the catalog goes live skill by skill.
+            // The walk itself runs outside the gate (pumps of earlier roots are already
+            // live); only the per-directory commit is serialized.
+            foreach (var descriptor in SkillDirectoryDiscovery.EnumerateSubtree(
+                         root.RootDirectory, root.RootDirectory, root.Source, directoryVisits))
             {
-                FullMode = BoundedChannelFullMode.DropOldest
-            });
+                if (SkillDirectoryOf(descriptor) is not { } skillDirectory) continue;
+                SkillCatalogSnapshot committed;
+                lock (gate)
+                {
+                    if (disposed) return;
+                    ApplyChanges(root, [(skillDirectory, descriptor)]);
+                    committed = current;
+                }
+
+                // Outside the gate with the immutable just-published snapshot, on the
+                // same thread the commits serialized in, so observers see each
+                // progressive state in commit order.
+                onProgressiveCommit?.Invoke(committed);
+            }
+
+            var state = new RootWatchState();
             var watcher = new FileSystemWatcher(root.RootDirectory)
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName |
                                NotifyFilters.DirectoryName | NotifyFilters.Size
             };
-            void Signal(object? sender, FileSystemEventArgs args) => signals.Writer.TryWrite(true);
-            watcher.Changed += Signal;
-            watcher.Created += Signal;
-            watcher.Deleted += Signal;
-            watcher.Renamed += Signal;
-            // An internal-buffer overflow means events were LOST — re-arm one debounced
-            // rescan; the rescan reads full tree state, so one signal fully recovers.
+            watcher.Changed += (_, args) => RecordWatchedChange(args.FullPath);
+            watcher.Created += (_, args) => RecordWatchedChange(args.FullPath);
+            watcher.Deleted += (_, args) => RecordWatchedChange(args.FullPath);
+            // A rename is a deletion and a creation as far as the differential is
+            // concerned: both halves are recorded — each through the containment
+            // rule, so the half that lives outside every root (a rename across roots)
+            // is dropped instead of being walked as a region of this root — the old
+            // region is unwound and the new one discovered.
+            watcher.Renamed += (_, args) => RecordWatchedRename(args.OldFullPath, args.FullPath);
+            // An internal-buffer overflow means events were LOST — the pending set cannot
+            // know which regions changed, so one debounced full-root differential walk
+            // fully recovers.
             watcher.Error += (_, args) =>
             {
                 logger.LogWarning(
                     args.GetException(),
                     "The skill root watcher for '{Root}' failed; scheduling a recovery rescan.",
                     root.RootDirectory);
-                signals.Writer.TryWrite(true);
+                state.RecordFullRescan();
             };
             watcher.EnableRaisingEvents = true;
 
@@ -251,12 +358,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
                 }
 
                 watchers.Add(watcher);
-                pumps.Add(RunRootPumpAsync(root, signals));
+                rootStates[root] = state;
+                pumps.Add(RunRootPumpAsync(root, state));
             }
         }
 
         // The final rebuild is serialized against pump rebuilds: a pump that fired during
-        // startup must not observe a half-populated rootResults, and this rebuild must
+        // startup must not observe a half-committed root map, and this rebuild must
         // not overwrite a newer pump-published snapshot with stale inputs.
         lock (gate)
         {
@@ -265,30 +373,59 @@ internal sealed class SkillCatalog : IAsyncDisposable
         }
     }
 
-    private async Task RunRootPumpAsync(DeclaredRoot root, Channel<bool> signals)
+    private static Dictionary<string, SkillDescriptor> NewSkillMap() =>
+        new(StringComparer.Ordinal);
+
+    private async Task RunRootPumpAsync(DeclaredRoot root, RootWatchState state)
     {
         try
         {
-            await foreach (var signal in signals.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            await foreach (var signal in state.Signals.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
             {
                 _ = signal;
                 try
                 {
                     // Drain everything already pending, then let the tree settle so one
-                    // write burst costs at most one scan (events landing during the settle
-                    // window re-arm the loop). The rescan itself runs outside the gate; only
-                    // the result store and snapshot rebuild are serialized.
-                    while (signals.Reader.TryRead(out _))
+                    // write burst costs at most one differential pass (events landing
+                    // during the settle window join this batch; later ones re-arm the
+                    // loop). The differential walk runs outside the gate — it is
+                    // synchronous IO — and only the per-batch map mutation plus snapshot
+                    // rebuild are serialized, so one batch becomes visible atomically.
+                    while (state.Signals.Reader.TryRead(out _))
                     {
                     }
 
                     await Task.Delay(RescanDebounce, timeProvider, lifetime.Token).ConfigureAwait(false);
-                    var discovered = SkillDirectoryDiscovery.Discover(root.RootDirectory, root.Source);
+                    var (paths, fullRescan) = state.TakeBatch();
+                    if (paths.Length == 0 && !fullRescan) continue;
+
+                    // The working set of believed-present skill directories evolves with
+                    // the batch, so a path recorded after another already claimed or
+                    // released its region is diffed against the batch's own intermediate
+                    // state, never a stale snapshot of it.
+                    Dictionary<string, SkillDescriptor> known;
                     lock (gate)
                     {
                         if (disposed) return;
-                        rootResults[root] = discovered;
-                        RebuildSnapshot();
+                        known = rootSkills[root];
+                    }
+
+                    var workingKnown = new HashSet<string>(known.Keys, StringComparer.Ordinal);
+                    var plan = new List<(string SkillDirectory, SkillDescriptor? Descriptor)>();
+                    if (fullRescan)
+                    {
+                        BuildRegionPlan(root, root.RootDirectory, workingKnown, plan);
+                    }
+                    else
+                    {
+                        foreach (var path in paths)
+                            BuildPathPlan(root, path, workingKnown, plan);
+                    }
+
+                    lock (gate)
+                    {
+                        if (disposed) return;
+                        ApplyChanges(root, plan);
                     }
                 }
                 catch (OperationCanceledException)
@@ -297,12 +434,12 @@ internal sealed class SkillCatalog : IAsyncDisposable
                 }
                 catch (Exception exception)
                 {
-                    // A rescan failure (unreadable directory, transient IO) must not kill
-                    // the pump: the previous snapshot stays active and the next watched
-                    // change retries.
+                    // A differential pass failure (unreadable directory, transient IO) must
+                    // not kill the pump: the previous snapshot stays active and the next
+                    // watched change retries.
                     logger.LogDebug(
                         exception,
-                        "Rescanning the skill root '{Root}' failed; the last catalog stays active.",
+                        "Diffing a watched change in the skill root '{Root}' failed; the last catalog stays active.",
                         root.RootDirectory);
                 }
             }
@@ -317,14 +454,195 @@ internal sealed class SkillCatalog : IAsyncDisposable
         }
     }
 
+    /// <summary>The path comparison watched-event matching uses: case-insensitive on
+    /// platforms whose default filesystems are case-insensitive (Windows, macOS) — a
+    /// watcher event may carry a mutator's spelling rather than the disk's, and the
+    /// existence probes the differential already relies on behave the same way — and
+    /// ordinal on Linux.</summary>
+    private static StringComparison WatchedPathComparison =>
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+    /// <summary>One watched file event, routed to every root whose declared directory
+    /// contains it — the seam the watcher handlers and the tests share. A path outside
+    /// every root carries no state of any root and is dropped: walking it as a region
+    /// would plant map entries (inert, occupying the per-root bound) that no later
+    /// event of these roots can ever release.</summary>
+    internal void RecordWatchedChange(string fullPath)
+    {
+        RecordWhereContained(fullPath);
+    }
+
+    /// <summary>Both halves of a watched rename, each independently subject to the
+    /// containment rule of <see cref="RecordWatchedChange" />: the half inside a root
+    /// unwinds or discovers that root's state; the half outside every root (a rename
+    /// across roots — the shape Windows reports for a move out of the watched tree) is
+    /// not this catalog's business.</summary>
+    internal void RecordWatchedRename(string oldFullPath, string fullPath)
+    {
+        RecordWhereContained(oldFullPath);
+        RecordWhereContained(fullPath);
+    }
+
+    private void RecordWhereContained(string fullPath)
+    {
+        var normalized = Path.GetFullPath(fullPath);
+        foreach (var root in roots)
+        {
+            RootWatchState? state;
+            lock (gate)
+            {
+                if (disposed) return;
+                if (!rootStates.TryGetValue(root, out state)) continue;
+            }
+
+            if (IsWithinWatchedRoot(root.RootDirectory, normalized)) state.Record(normalized);
+        }
+    }
+
+    /// <summary>Whether the path is the root itself or strictly inside it, under the
+    /// watched-path comparison. The boundary is inclusive because the deleted-root event
+    /// (FullPath equals the root) must still clear the root's map.</summary>
+    private static bool IsWithinWatchedRoot(string rootDirectory, string fullPath)
+    {
+        if (string.Equals(fullPath, rootDirectory, WatchedPathComparison)) return true;
+        var prefix = rootDirectory.EndsWith(Path.DirectorySeparatorChar)
+            ? rootDirectory
+            : rootDirectory + Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(prefix, WatchedPathComparison);
+    }
+
+    /// <summary>Turns one watched path into plan entries. A path inside a known skill
+    /// directory can only change that one skill (its subtree is resources), so exactly that
+    /// directory is revalidated; when its <c>SKILL.md</c> is gone the claim is released and
+    /// the directory itself becomes the region to rewalk (skills below it were resources a
+    /// moment ago). Any other path becomes its own region root — the path itself when it is
+    /// (or was) a directory, the containing directory when it is a live file — and is
+    /// diffed against everything known under that region. Matching uses the watched-path
+    /// comparison, so an event spelled differently from the disk still finds the known
+    /// skill directory and revalidates it instead of shadowing it with a phantom
+    /// entry.</summary>
+    private void BuildPathPlan(
+        DeclaredRoot root,
+        string fullPath,
+        HashSet<string> workingKnown,
+        List<(string SkillDirectory, SkillDescriptor? Descriptor)> plan)
+    {
+        var path = Path.GetFullPath(fullPath);
+        var containing = workingKnown.FirstOrDefault(candidate =>
+            string.Equals(path, candidate, WatchedPathComparison) ||
+            SkillDirectoryDiscovery.IsWithinRoot(candidate, path, WatchedPathComparison));
+        if (containing is { } skillDirectory)
+        {
+            if (SkillDirectoryDiscovery.RediscoverSkillDirectory(
+                    skillDirectory, root.RootDirectory, root.Source, directoryVisits) is { } fresh)
+            {
+                plan.Add((skillDirectory, fresh));
+                return;
+            }
+
+            BuildRegionPlan(root, skillDirectory, workingKnown, plan);
+            return;
+        }
+
+        // A deleted path is treated as its own region: walking a missing region yields an
+        // empty set, which removes exactly the known skills under it and touches nothing
+        // else — correct for a deleted directory, a no-op for a deleted uninteresting file.
+        var region = Directory.Exists(path)
+            ? path
+            : File.Exists(path)
+                ? Path.GetDirectoryName(path)
+                : path;
+        BuildRegionPlan(root, region ?? root.RootDirectory, workingKnown, plan);
+    }
+
+    /// <summary>Differential rebuild of one region: walks only the region's subtree, then
+    /// adds, removes, and replaces the root's skill directories under the region. A new
+    /// boundary <c>SKILL.md</c> above existing skills preempts them (the walk never
+    /// descends into a claimed directory, so the deeper old skills leave the map); removing
+    /// one re-exposes the skills below it.</summary>
+    private void BuildRegionPlan(
+        DeclaredRoot root,
+        string regionRoot,
+        HashSet<string> workingKnown,
+        List<(string SkillDirectory, SkillDescriptor? Descriptor)> plan)
+    {
+        var regionFullName = Path.GetFullPath(regionRoot);
+        var fresh = new Dictionary<string, SkillDescriptor>(StringComparer.Ordinal);
+        foreach (var descriptor in SkillDirectoryDiscovery.EnumerateSubtree(
+                     regionFullName, root.RootDirectory, root.Source, directoryVisits))
+            if (SkillDirectoryOf(descriptor) is { } skillDirectory)
+                fresh[skillDirectory] = descriptor;
+
+        List<string>? released = null;
+        foreach (var known in workingKnown)
+        {
+            if (!string.Equals(known, regionFullName, WatchedPathComparison) &&
+                !SkillDirectoryDiscovery.IsWithinRoot(regionFullName, known, WatchedPathComparison)) continue;
+            if (fresh.ContainsKey(known)) continue;
+            (released ??= []).Add(known);
+            plan.Add((known, null));
+        }
+
+        foreach (var (skillDirectory, descriptor) in fresh)
+        {
+            plan.Add((skillDirectory, descriptor));
+            workingKnown.Add(skillDirectory);
+        }
+
+        if (released is not null)
+            foreach (var skillDirectory in released)
+                workingKnown.Remove(skillDirectory);
+    }
+
+    /// <summary>Applies one batch of per-directory changes (null descriptor = the skill is
+    /// gone) to the root's map and rebuilds the merged snapshot. Gate held by the caller:
+    /// one batch is atomic — consumers never observe a half-applied diff. Additions honor
+    /// the per-root skill bound; replacements and removals always apply.</summary>
+    private void ApplyChanges(DeclaredRoot root, IReadOnlyList<(string SkillDirectory, SkillDescriptor? Descriptor)> changes)
+    {
+        if (!rootSkills.TryGetValue(root, out var known)) return;
+        foreach (var (skillDirectory, descriptor) in changes)
+        {
+            if (descriptor is null)
+            {
+                known.Remove(skillDirectory);
+                continue;
+            }
+
+            if (known.TryGetValue(skillDirectory, out var existing) && existing == descriptor) continue;
+            if (!known.ContainsKey(skillDirectory) &&
+                known.Count >= SkillDirectoryDiscovery.MaximumSkillsPerRoot) continue;
+            known[skillDirectory] = descriptor;
+        }
+
+        RebuildSnapshot();
+    }
+
+    /// <summary>The skill directory a filesystem descriptor was discovered in — the per-root
+    /// map's key. Normalized the same way for initial, revalidation, and region walks so
+    /// the three index one tree identically.</summary>
+    private static string? SkillDirectoryOf(SkillDescriptor descriptor)
+    {
+        if (descriptor.BodyPath is not { } bodyPath) return null;
+        var directory = Path.GetDirectoryName(bodyPath);
+        return directory is null ? null : Path.GetFullPath(directory);
+    }
+
     private void RebuildSnapshot()
     {
         var merged = new Dictionary<string, SkillDescriptor>(StringComparer.Ordinal);
         var diagnostics = ImmutableArray.CreateBuilder<string>();
         foreach (var root in roots)
         {
-            if (!rootResults.TryGetValue(root, out var descriptors)) continue;
-            foreach (var descriptor in descriptors)
+            if (!rootSkills.TryGetValue(root, out var known)) continue;
+
+            // Deterministic in-root order: the same-name winner is the first entry in
+            // ordinal skill-directory order (equivalent to the former ordinal body-path
+            // order), independent of map insertion or filesystem enumeration order.
+            foreach (var (_, descriptor) in known.OrderBy(
+                         static entry => entry.Key, StringComparer.Ordinal))
             {
                 if (descriptor.Diagnostic is { } diagnostic)
                 {

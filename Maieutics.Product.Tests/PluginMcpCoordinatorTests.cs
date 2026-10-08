@@ -34,6 +34,10 @@ public sealed class PluginMcpCoordinatorTests
             generationFactory.CreateAsync,
             NullLogger<PluginHostManager>.Instance);
         coordinator.Start();
+        // The differential coordinator reuses an unchanged registration's contribution,
+        // so every step below that simulates CHANGED discovery output re-runs through
+        // the forced publish (the trigger form); plain publishes assert the diff itself.
+        var forced = new HashSet<string>(["plugin"], StringComparer.Ordinal);
 
         (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeTrue();
         generationFactory.Generations.Should().ContainSingle();
@@ -46,13 +50,13 @@ public sealed class PluginMcpCoordinatorTests
         var replacementDefinition = CreateDefinition("two");
         generationFactory.FailGenerationKey = replacementDefinition.GenerationKey;
         currentDiscovery = PluginMcpDiscoveryResult.Success([replacementDefinition]);
-        (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeFalse();
+        (await coordinator.PublishRegistryAsync([Registration], forced).WaitAsync(deadline.Token)).Should().BeFalse();
         generationFactory.Generations.Should().ContainSingle("a failed candidate must not replace the active snapshot");
         var leaseAfterFailure = coordinator.AcquireLeases().Should().ContainSingle().Which;
         await leaseAfterFailure.DisposeAsync();
 
         generationFactory.FailGenerationKey = null;
-        (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        (await coordinator.PublishRegistryAsync([Registration], forced).WaitAsync(deadline.Token)).Should().BeTrue();
         generationFactory.Generations.Should().HaveCount(2);
         originalGeneration.TryAcquire().Should().BeNull("the replaced generation must be retired immediately");
         var originalRetirement = originalGeneration.Retire();
@@ -63,7 +67,7 @@ public sealed class PluginMcpCoordinatorTests
         var replacementGeneration = generationFactory.Generations[1];
         var replacementLease = coordinator.AcquireLeases().Should().ContainSingle().Which;
         currentDiscovery = PluginMcpDiscoveryResult.Failed("temporary_failure");
-        (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        (await coordinator.PublishRegistryAsync([Registration], forced).WaitAsync(deadline.Token)).Should().BeTrue();
         generationFactory.Generations.Should().HaveCount(2);
         var retainedLease = replacementGeneration.TryAcquire()
                             ?? throw new InvalidOperationException("The last-known-good generation was not retained.");
@@ -75,6 +79,86 @@ public sealed class PluginMcpCoordinatorTests
         replacementRetirement.IsCompleted.Should().BeFalse("the replacement run lease is still active");
         await replacementLease.DisposeAsync();
         await replacementRetirement.WaitAsync(deadline.Token);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task UnchangedRegistrationSetRunsNoDiscovery()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var generationFactory = new TestGenerationFactory();
+        var discoveryCalls = 0;
+        await using var coordinator = new PluginMcpCoordinator(
+            (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Interlocked.Increment(ref discoveryCalls);
+                return Task.FromResult(PluginMcpDiscoveryResult.Success([CreateDefinition("one")]));
+            },
+            generationFactory.CreateAsync,
+            NullLogger<PluginHostManager>.Instance);
+        coordinator.Start();
+
+        (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        discoveryCalls.Should().Be(1);
+        var lease = coordinator.AcquireLeases().Should().ContainSingle().Which;
+
+        // Republishing the identical registration set is the common frame (host
+        // heartbeats, approval snapshots): the diff keeps the contribution and runs
+        // no discovery at all.
+        (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        discoveryCalls.Should().Be(1, "an unchanged registration reuses its contribution without re-running discovery");
+        var retained = coordinator.AcquireLeases();
+        retained.Should().ContainSingle();
+        foreach (var acquired in retained) await acquired.DisposeAsync();
+        await lease.DisposeAsync();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task RegistrationSetDiffRunsDiscoveryOnlyForNewRegistrations()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var generationFactory = new TestGenerationFactory();
+        var alpha = new PluginRegistration("alpha", "main", ReplExtensionPointName.McpDiscover);
+        var beta = new PluginRegistration("beta", "main", ReplExtensionPointName.McpDiscover);
+        var discovered = new List<PluginRegistration>();
+        await using var coordinator = new PluginMcpCoordinator(
+            (registration, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                discovered.Add(registration);
+                return Task.FromResult(
+                    PluginMcpDiscoveryResult.Success(
+                        [CreateDefinition(registration.PluginId, registration.PluginId)]));
+            },
+            generationFactory.CreateAsync,
+            NullLogger<PluginHostManager>.Instance);
+        coordinator.Start();
+
+        (await coordinator.PublishRegistryAsync([alpha]).WaitAsync(deadline.Token)).Should().BeTrue();
+        discovered.Should().ContainSingle().Which.PluginId.Should().Be("alpha");
+        var alphaLease = coordinator.AcquireLeases().Should().ContainSingle().Which;
+
+        // Adding a registration discovers only the addition; alpha keeps its
+        // contribution (and its generation) untouched.
+        discovered.Clear();
+        (await coordinator.PublishRegistryAsync([alpha, beta]).WaitAsync(deadline.Token)).Should().BeTrue();
+        discovered.Should().ContainSingle().Which.PluginId.Should().Be("beta");
+        var both = coordinator.AcquireLeases();
+        both.Should().HaveCount(2);
+        foreach (var acquired in both) await acquired.DisposeAsync();
+
+        // Removing a registration drops its contribution without re-running anyone's
+        // discovery; alpha's generation retires and beta's survives.
+        discovered.Clear();
+        (await coordinator.PublishRegistryAsync([beta]).WaitAsync(deadline.Token)).Should().BeTrue();
+        discovered.Should().BeEmpty("a removed registration drops its contribution without re-running discovery");
+        var remaining = coordinator.AcquireLeases();
+        remaining.Should().ContainSingle().Which.ServerId.Should().Be("plugin:beta::server");
+        foreach (var lease in remaining) await lease.DisposeAsync();
+
+        await alphaLease.DisposeAsync();
     }
 
     [Fact(Timeout = 30_000)]
@@ -127,6 +211,62 @@ public sealed class PluginMcpCoordinatorTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task APlainPublishSupersedingAForcedRevisionInheritsItsForcedSet()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var generationFactory = new TestGenerationFactory();
+        var currentDiscovery = PluginMcpDiscoveryResult.Success([CreateDefinition("one")]);
+        var discoveryCalls = 0;
+        var blockNext = false;
+        var discoveryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDiscovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var coordinator = new PluginMcpCoordinator(
+            async (_, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Interlocked.Increment(ref discoveryCalls);
+                if (blockNext)
+                {
+                    blockNext = false;
+                    discoveryStarted.TrySetResult();
+                    await releaseDiscovery.Task.WaitAsync(cancellationToken);
+                }
+
+                return currentDiscovery;
+            },
+            generationFactory.CreateAsync,
+            NullLogger<PluginHostManager>.Instance);
+        coordinator.Start();
+        var forced = new HashSet<string>(["plugin"], StringComparer.Ordinal);
+
+        // The contribution publishes once, so the plain successor has a contribution it
+        // could differential-skip back to.
+        (await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        discoveryCalls.Should().Be(1);
+
+        // A forced revision (the trigger/reload form) starts its discovery and is
+        // superseded by a plain publish before it can apply. The successor must inherit
+        // the forced set: skipping would silently drop the "re-run this plugin"
+        // semantics and keep the pre-trigger contribution forever.
+        blockNext = true;
+        var forcedRefresh = coordinator.PublishRegistryAsync([Registration], forced);
+        await discoveryStarted.Task.WaitAsync(deadline.Token);
+        var plainRefresh = coordinator.PublishRegistryAsync([Registration]);
+
+        currentDiscovery = PluginMcpDiscoveryResult.Success([CreateDefinition("two")]);
+        releaseDiscovery.TrySetResult();
+        (await forcedRefresh.WaitAsync(deadline.Token)).Should().BeFalse("the superseded revision cannot publish");
+        (await plainRefresh.WaitAsync(deadline.Token)).Should().BeTrue();
+
+        // The inherited force re-ran discovery (the aborted attempt plus the successor's
+        // fresh run) and the new result is live instead of the reused stale contribution.
+        discoveryCalls.Should().Be(3);
+        generationFactory.Generations.Should().HaveCount(2);
+        generationFactory.Definitions[^1].GenerationKey.Should().Be(CreateDefinition("two").GenerationKey);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task ConcurrentDisposalCancelsAndObservesActiveDiscovery()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -156,9 +296,14 @@ public sealed class PluginMcpCoordinatorTests
 
     private static McpServerDefinition CreateDefinition(string command)
     {
+        return CreateDefinition("plugin", command);
+    }
+
+    private static McpServerDefinition CreateDefinition(string pluginId, string command)
+    {
         var transport = new StdioMcpTransportDefinition(command, [], null, null);
         return new McpServerDefinition(
-            "plugin:plugin::server",
+            $"plugin:{pluginId}::server",
             transport,
             TimeSpan.FromSeconds(5),
             TimeSpan.FromSeconds(5),
@@ -220,10 +365,12 @@ public sealed class PluginMcpCoordinatorTests
         // dependency, or the chain scope filters the server out entirely.
         var currentDiscovery = PluginMcpDiscoveryResult.Success(
             [CreateDefinition("one") with { Id = "plugin:provider::server" }]);
+        var discoveryRuns = 0;
         await using var coordinator = new PluginMcpCoordinator(
             (_, cancellationToken) =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                Interlocked.Increment(ref discoveryRuns);
                 return Task.FromResult(currentDiscovery);
             },
             generationFactory.CreateAsync,
@@ -273,6 +420,17 @@ public sealed class PluginMcpCoordinatorTests
         drop = true;
         (await coordinator.PublishRegistryAsync([providerRegistration]).WaitAsync(deadline.Token)).Should().BeTrue();
         coordinator.AcquireLeases().Should().BeEmpty();
+
+        // Reverting the drop restores the server on the next (plain, unchanged-set)
+        // revision: the persisted contribution stayed raw — drops are a property of
+        // the composed view, never of the discovery results — so the fold recomposes
+        // the server without re-running discovery.
+        var runsAfterDrop = Volatile.Read(ref discoveryRuns);
+        drop = false;
+        (await coordinator.PublishRegistryAsync([providerRegistration]).WaitAsync(deadline.Token)).Should().BeTrue();
+        Volatile.Read(ref discoveryRuns).Should().Be(runsAfterDrop, "a reverted drop restores without re-running discovery");
+        var restored = coordinator.AcquireLeases().Should().ContainSingle().Which;
+        await restored.DisposeAsync();
     }
 
     private static JsonElement ParseAdjustmentJson(string value)

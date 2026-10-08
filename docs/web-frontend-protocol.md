@@ -164,24 +164,25 @@ not silently.
 
 A frontend lets the user select a skill (its catalog comes from
 `GET /v1/skills` below) and references it inside the turn text with a
-**marker**:
+**standard markdown link over the custom protocol**:
 
 ```
-[[maieutics:skill name="<name>"]]
+[<display text>](skill://<name>)
 ```
 
 `<name>` is the catalog name (`[a-z0-9][a-z0-9-]{0,63}` — the same charset
-the `skill://` host uses). The grammar is strict, and both sides must agree
-exactly: only the exact canonical form is a marker — an uppercase letter,
-stray whitespace, an invalid name character, or a missing field is ordinary
-text and stays literal, so a hand-written look-alike degrades instead of
-injecting a skill body. A **backslash directly before the opening brackets**
-(`\[[maieutics:skill …`) suppresses recognition and the escape is consumed:
-that is the *mention* form, how a frontend encodes marker-shaped text that
-is NOT a user selection. Frontends that track selections in an editor-side
-model use the mention form for marker-shaped text the user did not select.
+the `skill://` host uses) and is the reference identity; the link text is
+display metadata. The grammar is strict, and both sides must agree exactly:
+only the exact form is a reference — an uppercase letter, a path or query on
+the URL, a title, or stray whitespace is ordinary text and stays literal, so
+a hand-written look-alike degrades instead of injecting a skill body. A
+**backslash directly before the opening bracket** (`\[text](skill://name)`)
+suppresses recognition and the escape is consumed: that is the *mention*
+form, how a frontend encodes link-shaped text that is NOT a user selection.
+Frontends that track selections in an editor-side model use the mention form
+for link-shaped text the user did not select.
 
-At submission the server parses markers out of the text (after attachment
+At submission the server parses references out of the text (after attachment
 markers) and expands each distinct name once, in order of first appearance:
 the body is read fresh through the same `skill://` plane the model reads,
 bounded per marker, and appended as framed text parts after the turn's text

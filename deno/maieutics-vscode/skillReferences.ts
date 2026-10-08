@@ -1,31 +1,45 @@
 /**
- * The input-boundary reference model for skill markers (ADR 0039 selection
+ * The input-boundary reference model for skill references (ADR 0039 selection
  * loop, frontend half). Intent lives here, not in the text: a reference exists
- * only from the moment a completion (or a whole-marker paste) mints it, and
- * the model tracks that range through subsequent edits. At submission the
- * model encodes the turn text: tracked markers pass through verbatim, every
- * other marker-shaped occurrence gets the mention escape (`\` before the
- * opening brackets), which the kernel consumes as "literal text, not a
+ * only from the moment a completion (or a whole-link paste) mints it, and the
+ * model tracks that range through subsequent edits. At submission the model
+ * encodes the turn text: tracked references pass through verbatim, every
+ * other link-shaped occurrence gets the mention escape (`\` before the
+ * opening bracket), which the kernel consumes as "literal text, not a
  * selection". Kept free of the `vscode` module so it is unit-testable under
  * Deno; the grammar must agree exactly with the kernel's
  * `FrontendSkillMarkers`.
+ *
+ * The wire form is a standard markdown link over the custom protocol:
+ * `[display text](skill://name)` — the URL host is the catalog name (the
+ * `skill://` host charset), the link text is display metadata.
  */
 
-export const SkillMarkerPattern = /\[\[maieutics:skill name="([a-z0-9][a-z0-9-]{0,63})"\]\]/;
-const SkillMarkerGlobal = new RegExp(SkillMarkerPattern.source, "g");
-const SkillMarkerWhole = new RegExp(`^${SkillMarkerPattern.source}$`);
+export const SkillReferencePattern = /\[([^\]\n]*)\]\((skill:\/\/[a-z0-9][a-z0-9-]{0,63})\)/;
+const SkillReferenceGlobal = new RegExp(SkillReferencePattern.source, "g");
+const SkillReferenceWhole = new RegExp(`^${SkillReferencePattern.source}$`);
 
-/** Builds the canonical marker; rejects names the catalog could never carry
- * (the same charset the `skill://` host enforces). */
-export function buildSkillMarker(name: string): string {
+/** Builds the canonical reference; rejects names the catalog could never
+ * carry (the same charset the `skill://` host enforces). */
+export function buildSkillReference(name: string, display?: string): string {
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) {
     throw new Error(`"${name}" is not a valid skill catalog name.`);
   }
-  return `[[maieutics:skill name="${name}"]]`;
+  return `[${display ?? name}](skill://${name})`;
+}
+
+/** The catalog name of one reference's URL host. */
+export function skillNameOf(referenceText: string): string {
+  const match = SkillReferenceWhole.exec(referenceText);
+  if (match === null) {
+    throw new Error(`"${referenceText}" is not a skill reference.`);
+  }
+  return match[2].slice("skill://".length);
 }
 
 interface Tracked {
-  name: string;
+  /** The exact reference bytes the mint committed; validation is byte-exact. */
+  readonly bytes: string;
   start: number;
   end: number;
 }
@@ -34,14 +48,14 @@ export class SkillReferenceModel {
   #tracked: Tracked[] = [];
 
   /** Mints a reference when one document change inserted exactly one whole
-   * marker (a completion insert, or a paste of a complete marker — a paste of
-   * a reference is a reference). Keystroke-by-keystroke typing never matches,
-   * so hand-typed marker-shaped text stays literal by construction. */
+   * link (a completion insert, or a paste of a complete reference — a paste
+   * of a reference is a reference). Keystroke-by-keystroke typing never
+   * matches, so hand-typed link-shaped text stays literal by construction. */
   mintIfInsertion(offset: number, insertedText: string): void {
-    const match = SkillMarkerWhole.exec(insertedText);
+    const match = SkillReferenceWhole.exec(insertedText);
     if (match === null) return;
     this.#tracked.push({
-      name: match[1],
+      bytes: match[0],
       start: offset,
       end: offset + insertedText.length,
     });
@@ -57,16 +71,16 @@ export class SkillReferenceModel {
       if (tracked.end <= offset) return tracked;
       if (tracked.start >= changeEnd) {
         return {
-          name: tracked.name,
+          bytes: tracked.bytes,
           start: tracked.start + delta,
           end: tracked.end + delta,
         };
       }
 
       // The change overlaps the reference: clamp around the edit and let
-      // validate decide whether the bytes still are this name's marker.
+      // validate decide whether the bytes still are this reference.
       return {
-        name: tracked.name,
+        bytes: tracked.bytes,
         start: Math.min(tracked.start, offset),
         end: Math.max(offset, tracked.end + delta),
       };
@@ -74,20 +88,20 @@ export class SkillReferenceModel {
   }
 
   /** Drops tracked references whose byte range no longer parses as exactly
-   * that name's marker — the designed degrade of a broken reference. */
+   * the minted link — the designed degrade of a broken reference. */
   validate(text: string): void {
     this.#tracked = this.#tracked.filter((tracked) =>
-      text.slice(tracked.start, tracked.end) === buildSkillMarker(tracked.name)
+      text.slice(tracked.start, tracked.end) === tracked.bytes
     );
   }
 
-  /** Reopen form-default: every well-formed marker already in the document
+  /** Reopen form-default: every well-formed link already in the document
    * becomes tracked (intent cannot survive plain-text serialization, so the
    * form is the best available default across sessions). */
   seedFromText(text: string): void {
-    for (const match of text.matchAll(SkillMarkerGlobal)) {
+    for (const match of text.matchAll(SkillReferenceGlobal)) {
       this.#tracked.push({
-        name: match[1],
+        bytes: match[0],
         start: match.index,
         end: match.index + match[0].length,
       });
@@ -99,12 +113,12 @@ export class SkillReferenceModel {
     return this.#tracked;
   }
 
-  /** Wire encoding: tracked markers pass through; every untracked
-   * marker-shaped occurrence gets the mention escape. Pure over the text —
+  /** Wire encoding: tracked references pass through; every untracked
+   * link-shaped occurrence gets the mention escape. Pure over the text —
    * the document never changes, so repeated submissions do not accumulate
    * escapes. */
   encodeForSubmit(text: string): string {
-    const matches = [...text.matchAll(SkillMarkerGlobal)];
+    const matches = [...text.matchAll(SkillReferenceGlobal)];
     if (matches.length === 0) return text;
 
     let output = "";
@@ -140,7 +154,7 @@ export function referenceModelFor(key: string, documentText?: string): SkillRefe
 }
 
 /** Submits with the boundary model's encoding: tracked selections pass as
- * markers, everything else marker-shaped rides as a mention. */
+ * references, everything else link-shaped rides as a mention. */
 export function encodeSkillSubmission(key: string, text: string): string {
   const model = models.get(key);
   return model === undefined ? text : model.encodeForSubmit(text);

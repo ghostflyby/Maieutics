@@ -1,18 +1,20 @@
 /**
  * The `vscode` shell of the skill selection loop (ADR 0039): `$`-triggered
- * completion over the live catalog mints markers into the cell document, the
- * document's change stream feeds the input-boundary reference model, and the
- * model's ranges render as chip-style decorations. The raw marker text is the
- * truth — decorations are a visual projection, never the source of intent.
+ * completion over the live catalog mints references into the cell document,
+ * the document's change stream feeds the input-boundary reference model, and
+ * the model's ranges render as chip-style decorations. The raw reference text
+ * is the truth — decorations are a visual projection, never the source of
+ * intent.
  */
 
 import * as vscode from "vscode";
 import { NotebookType } from "./serializer.ts";
 import {
-  buildSkillMarker,
+  buildSkillReference,
   encodeSkillSubmission as encodeSkillSubmission0,
   forgetSkillReferences,
   referenceModelFor,
+  SkillReferencePattern,
 } from "./skillReferences.ts";
 import { type SkillInfo, SkillsCatalog } from "./skillsCatalog.ts";
 
@@ -25,8 +27,10 @@ const CellSelector: vscode.DocumentSelector = {
  * follow, nothing else — anything not matching stays untouched text. */
 const SkillTriggerPattern = /\$[a-z0-9][a-z0-9-]*/;
 
-/** A change whose inserted text is exactly one whole marker is a mint. */
-const SkillMarkerWholeInsert = /^\[\[maieutics:skill name="([a-z0-9][a-z0-9-]{0,63})"\]\]$/;
+/** A change whose inserted text is exactly one whole reference is a mint. */
+const SkillReferenceWholeInsert = new RegExp(
+  `^${SkillReferencePattern.source}$`,
+);
 
 export function registerSkillInteraction(
   clientOf: () => Promise<{
@@ -87,9 +91,11 @@ export function registerSkillInteraction(
               vscode.CompletionItemKind.Reference,
             );
             if (wordRange) item.range = wordRange;
-            // The insert is the mint: the marker text lands in the document,
-            // and the change stream below registers it with the model.
-            item.insertText = buildSkillMarker(skill.name);
+            // The insert is the mint: the reference lands in the document as
+            // a markdown link over skill://, and the change stream below
+            // registers it with the model. The display text keeps the `$`
+            // affordance visible in the cell.
+            item.insertText = buildSkillReference(skill.name, `$${skill.name}`);
             item.detail = skill.description;
             item.sortText = `0${skill.name}`;
             return item;
@@ -105,7 +111,7 @@ export function registerSkillInteraction(
     const model = referenceModelFor(key, text);
     for (const change of event.contentChanges) {
       const offset = event.document.offsetAt(change.range.start);
-      if (SkillMarkerWholeInsert.test(change.text)) {
+      if (SkillReferenceWholeInsert.test(change.text)) {
         model.applyChange(offset, change.rangeLength, change.text.length);
         model.mintIfInsertion(offset, change.text);
       } else {
@@ -117,7 +123,7 @@ export function registerSkillInteraction(
   });
 
   const opens = vscode.workspace.onDidOpenTextDocument((document) => {
-    // Reopen form-default: markers already in the document are references
+    // Reopen form-default: references already in the document are references
     // (intent cannot survive plain-text serialization; the form is the best
     // available default across sessions).
     referenceModelFor(document.uri.toString(), document.getText());
@@ -132,8 +138,8 @@ export function registerSkillInteraction(
 }
 
 /** The controller's submit hook: encodes the cell text through the boundary
- * model before the wire (tracked selections stay markers; untracked
- * marker-shaped text rides as a mention). */
+ * model before the wire (tracked selections stay references; untracked
+ * link-shaped text rides as a mention). */
 export function encodeSkillSubmission(documentUri: string, text: string): string {
   return encodeSkillSubmission0(documentUri, text);
 }

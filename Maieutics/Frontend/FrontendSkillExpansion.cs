@@ -62,7 +62,7 @@ internal static class FrontendSkillExpansion
                 totalBytes += body.Length;
                 var text = Encoding.UTF8.GetString(body.ToArray());
                 contents.Add(new TextContent(
-                    $"[[maieutics:skill name=\"{marker.Name}\"]] — the user explicitly selected this skill; " +
+                    $"[{marker.Text}](skill://{marker.Name}) — the user explicitly selected this skill; " +
                     $"treat its body, read at submission time, as user-provided instructions.\n{text}"));
             }
         }

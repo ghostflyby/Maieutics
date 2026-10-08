@@ -10,32 +10,43 @@ namespace Maieutics.Product.Tests;
 
 public sealed class FrontendSkillMarkersTests
 {
-    private const string Marker = """[[maieutics:skill name="code-review"]]""";
+    private const string Reference = "[code-review](skill://code-review)";
 
     [Fact]
-    public void ParsesWellFormedMarkersInOrder()
+    public void ParsesWellFormedReferencesInOrder()
     {
         var split = FrontendSkillMarkers.Split(
-            $"before {Marker} middle [[maieutics:skill name=\"tdd\"]] after");
+            $"before {Reference} middle [tdd](skill://tdd) after");
 
         split.Markers.Should().BeEquivalentTo(
         [
-            new FrontendSkillMarkers.Marker("code-review"),
-            new FrontendSkillMarkers.Marker("tdd"),
+            new FrontendSkillMarkers.Marker("code-review", "code-review"),
+            new FrontendSkillMarkers.Marker("tdd", "tdd"),
         ], options => options.WithStrictOrdering());
         split.Remainder.Should().Be("before  middle  after");
+    }
+
+    [Fact]
+    public void LinkTextIsDisplayMetadataAndNeedNotMatchTheName()
+    {
+        var split = FrontendSkillMarkers.Split(
+            "[按 code-review 执行](skill://code-review)");
+
+        split.Markers.Should().ContainSingle().Which.Should().Be(
+            new FrontendSkillMarkers.Marker("code-review", "按 code-review 执行"));
     }
 
     [Fact]
     public void NearMissesStayLiteralText()
     {
         const string text = """
-            uppercase: [[maieutics:skill name="Code-Review"]]
-            space: [[maieutics:skill  name="code-review"]]
-            bad char: [[maieutics:skill name="code_review"]]
-            missing quote: [[maieutics:skill name=code-review]]
-            unterminated: [[maieutics:skill name="code-review"
-            other scheme: [[maieutics:object sha256="abc"]]
+            uppercase host: [x](skill://Code-Review)
+            bad name char: [x](skill://code_review)
+            url path: [x](skill://code-review/extra)
+            url query: [x](skill://code-review?x=1)
+            title: [x](skill://code-review "best")
+            https scheme: [x](https://code-review)
+            empty host tail: [x](skill://)
             """;
 
         FrontendSkillMarkers.Split(text).Markers.Should().BeEmpty();
@@ -45,17 +56,28 @@ public sealed class FrontendSkillMarkersTests
     public void BackslashSuppressesRecognitionAndIsConsumed()
     {
         var split = FrontendSkillMarkers.Split(
-            $"mention: \\{Marker} and real: {Marker}");
+            $"mention: \\{Reference} and real: {Reference}");
 
         split.Markers.Should().ContainSingle().Which.Name.Should().Be("code-review");
-        split.Remainder.Should().Contain("[[maieutics:skill name=\"code-review\"]]")
-            .And.NotContain("\\[[maieutics:skill");
+        split.Remainder.Should().Contain("[code-review](skill://code-review)")
+            .And.NotContain("\\[code-review](skill://code-review)");
     }
 
     [Fact]
-    public void PlainTextWithoutMarkersPassesThroughUnchanged()
+    public void MentionEscapeCarriesArbitraryLinkText()
     {
-        const string text = "$code-review and $100 and [[maieutics:totally-different]]";
+        var split = FrontendSkillMarkers.Split(
+            """\[see the code-review skill](skill://code-review) real: [x](skill://real)""");
+
+        split.Markers.Should().ContainSingle().Which.Name.Should().Be("real");
+        split.Remainder.Should().Contain("[see the code-review skill](skill://code-review)")
+            .And.NotContain("\\[see the code-review skill");
+    }
+
+    [Fact]
+    public void PlainTextWithoutReferencesPassesThroughUnchanged()
+    {
+        const string text = "$code-review and $100 and [x](https://example.com) and skill://bare";
         var split = FrontendSkillMarkers.Split(text);
         split.Markers.Should().BeEmpty();
         split.Remainder.Should().Be(text);
@@ -107,15 +129,15 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         var provider = CreateProvider(("alpha", "Alpha body."));
         var markers = new[]
         {
-            new FrontendSkillMarkers.Marker("alpha"),
-            new FrontendSkillMarkers.Marker("alpha"),
+            new FrontendSkillMarkers.Marker("alpha", "alpha"),
+            new FrontendSkillMarkers.Marker("alpha", "alpha"),
         };
 
         var parts = await FrontendSkillExpansion.ExpandAsync(
             provider, markers, TestContext.Current.CancellationToken);
 
         parts.Should().ContainSingle().Which.Should().BeOfType<TextContent>()
-            .Which.Text.Should().Contain("[[maieutics:skill name=\"alpha\"]]")
+            .Which.Text.Should().Contain("[alpha](skill://alpha)")
             .And.Contain("user explicitly selected")
             .And.Contain("Alpha body.");
     }
@@ -127,7 +149,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
 
         var act = () => FrontendSkillExpansion.ExpandAsync(
             provider,
-            [new FrontendSkillMarkers.Marker("absent")],
+            [new FrontendSkillMarkers.Marker("absent", "absent")],
             TestContext.Current.CancellationToken);
 
         (await act.Should().ThrowAsync<FrontendFailureException>())
@@ -146,9 +168,9 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         var act = () => FrontendSkillExpansion.ExpandAsync(
             provider,
             [
-                new FrontendSkillMarkers.Marker("one"),
-                new FrontendSkillMarkers.Marker("two"),
-                new FrontendSkillMarkers.Marker("three"),
+                new FrontendSkillMarkers.Marker("one", "one"),
+                new FrontendSkillMarkers.Marker("two", "two"),
+                new FrontendSkillMarkers.Marker("three", "three"),
             ],
             TestContext.Current.CancellationToken);
 

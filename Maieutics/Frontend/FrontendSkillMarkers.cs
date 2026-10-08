@@ -3,41 +3,47 @@ using System.Text.RegularExpressions;
 namespace Maieutics.Frontend;
 
 /// <summary>
-///     The server-side half of the skill-reference marker grammar
-///     (<c>docs/web-frontend-protocol.md</c>, "Skill references"). A frontend turns a user's
-///     skill selection into a strict canonical marker inside the turn text; the turn build
-///     path splits the submitted text into the remaining text plus the ordered references,
-///     whose bodies the kernel expands at build time. Only the exact canonical form is a
-///     marker — an uppercase letter, stray whitespace, an invalid name character, or a
-///     missing field stays ordinary text, so a hand-written look-alike degrades instead of
-///     injecting a skill body. A backslash directly before the opening brackets suppresses
-///     recognition and is consumed: that is the mention form, how a frontend encodes
-///     marker-shaped text that is NOT a user selection.
+///     The server-side half of the skill-reference grammar
+///     (<c>docs/web-frontend-protocol.md</c>, "Skill references"): a **standard markdown
+///     link over the custom <c>skill://</c> protocol** — <c>[text](skill://name)</c>. The
+///     reference identity is the URL host (the catalog name); the link text is display
+///     metadata the frontend chooses. The turn build path splits the submitted text into
+///     the remaining text plus the ordered references, whose bodies the kernel expands at
+///     build time. Only the exact form is a reference — an invalid name character, a path
+///     or query on the URL, a title, or stray whitespace stays ordinary text, so a
+///     hand-written look-alike degrades instead of injecting a skill body. A backslash
+///     directly before the opening bracket suppresses recognition and is consumed: that is
+///     the mention form, how a frontend encodes link-shaped text that is NOT a user
+///     selection.
 /// </summary>
 internal static class FrontendSkillMarkers
 {
-    /// <summary>One parsed marker: the skill name exactly as written (the grammar admits
-    /// only the catalog name charset, so there is nothing to unescape).</summary>
-    internal sealed record Marker(string Name);
+    /// <summary>One parsed reference: the skill name from the URL host and the link text
+    /// exactly as written (the text admits everything but `]` and newlines).</summary>
+    internal sealed record Marker(string Name, string Text);
 
-    /// <summary>The text with every well-formed marker removed (suppressed mentions keep
-    /// their marker text minus the escape), and the markers in order of appearance.</summary>
+    /// <summary>The text with every well-formed reference removed (suppressed mentions
+    /// keep their link text minus the escape), and the references in order of
+    /// appearance.</summary>
     internal sealed record SplitResult(string Remainder, IReadOnlyList<Marker> Markers);
 
+    private const string HostCharset = @"[a-z0-9][a-z0-9-]{0,63}";
+
     // Both sides (kernel and the extension's skillReferences module) must agree exactly.
-    // The name is the skill:// host charset, so a marker is at the same time a valid
-    // read pointer; control characters and quotes cannot appear inside the form.
     private static readonly Regex MarkerPattern = new(
-        """(?<!\\)\[\[maieutics:skill name="(?<name>[a-z0-9][a-z0-9-]{0,63})"\]\]""",
+        $"""(?<!\\)\[(?<text>[^\]\n]*)\]\((?<url>skill://{HostCharset})\)""",
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(1));
 
-    private const string EscapePrefix = @"\[[maieutics:skill";
+    private static readonly Regex MentionEscapePattern = new(
+        $"""\\(\[[^\]\n]*\]\(skill://{HostCharset}\))""",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(1));
 
-    /// <summary>Splits submitted turn text into its remaining text and ordered markers.
+    /// <summary>Splits submitted turn text into its remaining text and ordered references.
     /// Backslash-suppressed occurrences stay in the remainder with the escape consumed;
-    /// duplicate names keep every occurrence in the remainder-free ordering but are
-    /// expanded once by the consumer (bodies are content-identical per name).</summary>
+    /// duplicate names keep every occurrence in the ordering but are expanded once by the
+    /// consumer (bodies are content-identical per name).</summary>
     internal static SplitResult Split(string text)
     {
         var matches = MarkerPattern.Matches(text);
@@ -50,20 +56,23 @@ internal static class FrontendSkillMarkers
         {
             remainder.Append(text, position, match.Index - position);
             position = match.Index + match.Length;
-            markers.Add(new Marker(match.Groups["name"].Value));
+            markers.Add(new Marker(
+                match.Groups["url"].Value["skill://".Length..],
+                match.Groups["text"].Value));
         }
 
         remainder.Append(text, position, text.Length - position);
         return new SplitResult(Unescape(remainder.ToString()), markers);
     }
 
-    /// <summary>Consumes the mention escape everywhere: a backslash directly before the
-    /// opening brackets marked the occurrence as literal text, and the escape has done its
-    /// job once recognition is settled. Runs only over the non-marker remainder.</summary>
+    /// <summary>Consumes the mention escape everywhere a full link-shaped occurrence
+    /// carries it: the backslash marked the occurrence as literal text, and the escape has
+    /// done its job once recognition is settled. Runs only over the non-reference
+    /// remainder, so it never touches a real reference.</summary>
     private static string Unescape(string text)
     {
-        return text.Contains(EscapePrefix, StringComparison.Ordinal)
-            ? text.Replace(EscapePrefix, "[[maieutics:skill", StringComparison.Ordinal)
+        return MentionEscapePattern.IsMatch(text)
+            ? MentionEscapePattern.Replace(text, "$1")
             : text;
     }
 }

@@ -13,6 +13,7 @@ import * as vscode from "vscode";
 import { platform } from "node:os";
 import { FrontendClient } from "./client.ts";
 import { registerCommandCompletion } from "./completion.ts";
+import { registerSkillInteraction } from "./skillInteraction.ts";
 import { connect, type Connection } from "./connection.ts";
 import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
@@ -175,6 +176,21 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     registerCommandCompletion(
       () => clientOf(),
+      (message) => output?.appendLine(message),
+    ),
+  );
+
+  // The skill selection loop: `$` completion mints markers, the change
+  // stream feeds the input-boundary reference model, submissions encode
+  // through it (ADR 0039 selection design).
+  context.subscriptions.push(
+    registerSkillInteraction(
+      async () => {
+        const client = await clientOf();
+        return {
+          listSkills: (signal?: AbortSignal) => client.listSkills(signal),
+        };
+      },
       (message) => output?.appendLine(message),
     ),
   );

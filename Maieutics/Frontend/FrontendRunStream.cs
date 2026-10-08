@@ -725,6 +725,8 @@ internal static class FrontendErrors
     internal const string InputTooLarge = "agent_input_too_large";
     internal const string QueueFull = "queue_full";
     internal const string ItemRunning = "item_running";
+    internal const string SkillUnknown = "skill_unknown";
+    internal const string SkillBudgetExceeded = "skill_budget_exceeded";
 
     internal static string MapAgentException(AgentException exception)
     {

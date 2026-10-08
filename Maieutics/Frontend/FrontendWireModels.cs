@@ -252,11 +252,26 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("schema")] JsonElement? Schema = null,
     [property: JsonPropertyName("serverId")] string? ServerId = null);
 
+/// <summary>One active skill of the catalog, as served by <c>GET /v1/skills</c> for
+/// frontend completion and pickers (ADR 0039): name doubles as the <c>skill://</c> host
+/// and the skill-reference marker's name field.</summary>
+internal sealed record FrontendSkillInfo(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("source")] string Source);
+
+/// <summary>The <c>GET /v1/skills</c> answer: active skills plus the diagnostics count of
+/// the latest merged catalog (details stay kernel-side logs/status).</summary>
+internal sealed record FrontendSkillList(
+    [property: JsonPropertyName("skills")] FrontendSkillInfo[] Skills,
+    [property: JsonPropertyName("diagnostics")] int Diagnostics);
+
 /// <summary>Source-generated JSON binding for the frontend wire (NativeAOT path).</summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(FrontendCapabilities))]
+[JsonSerializable(typeof(FrontendSkillList))]
 [JsonSerializable(typeof(FrontendSessionInfo))]
 [JsonSerializable(typeof(FrontendStoredSession))]
 [JsonSerializable(typeof(FrontendSessionInfo[]))]

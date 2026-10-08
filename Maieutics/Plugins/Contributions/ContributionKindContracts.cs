@@ -135,10 +135,14 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
             transport.ValueKind != JsonValueKind.Object)
             return false;
 
-        if (discovery.TryGetProperty(InterpolateMember, out var interpolate) &&
-            interpolate.ValueKind == JsonValueKind.True &&
-            !TryExpandTransport(transport, variables, out transport))
-            return false;
+        if (discovery.TryGetProperty(InterpolateMember, out var interpolate))
+        {
+            // Strict grammar: the member present but not the JSON boolean true fails
+            // the entry instead of silently interpreting it without expansion —
+            // the same rule the timeouts member applies to its own shape.
+            if (interpolate.ValueKind != JsonValueKind.True) return false;
+            if (!TryExpandTransport(transport, variables, out transport)) return false;
+        }
 
         var metadata = Instance.Metadata;
         if (metadata.DefaultTimeouts is not { Count: 4 } defaultTimeouts)
@@ -309,7 +313,10 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
         {
             if (member.Value.ValueKind != JsonValueKind.String) return false;
             var raw = member.Value.GetString();
+            // A colon-bearing duration form is required: invariant "30" would parse
+            // as thirty days, so a bare number is rejected as a declaration mistake.
             if (raw is null ||
+                !raw.Contains(':', StringComparison.Ordinal) ||
                 !TimeSpan.TryParse(raw, System.Globalization.CultureInfo.InvariantCulture, out var value) ||
                 value <= TimeSpan.Zero)
                 return false;

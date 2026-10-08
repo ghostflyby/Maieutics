@@ -461,7 +461,10 @@ internal sealed record ContributionKindMetadata(
 框架级共享旋钮（两种类同源）：`MaxComputedEntries`、粘滞开关、重试集开关、默认超时表、
 插值开关。声明侧（manifest）不加新顶层节；可配置性经由种类自己的文法形状表达
 （skills 的 `roots` 数组、mcp 条目的可选 `timeouts` 成员），由契约的
-`ParseDeclared`/`ValidateComputed` 解释。
+`ParseDeclared`/`ValidateComputed` 解释。两个形状约束：`timeouts` 成员存在但非
+JSON object、其值名未知的条目一律失败（严格文法）；成员值必须为含冒号的时长形式
+（如 `"00:02:00"`）——不变量文化下裸数字 `"30"` 会被解析为三十天，故按声明错误拒绝。
+`interpolate` 成员必须恰为 JSON 布尔 `true`，其他值按声明错误失败而非静默跳过插值。
 
 ---
 
@@ -619,6 +622,8 @@ published（活动模型帧）；无导出集 → 注册帧 diff 对其零动作
 | 13 | 并行小缺口（`skill://` 平面对 inline BodyText 无自身尺寸复验、`SkillPromptComposer` 分组非优先级序、比较器声明不一致） | 各自单列修复项，不混入框架迁移（仓库变更纪律：不混无关格式化/重构） |
 | 14 | C 期插值触及存量审批：数据条目路径含字面 `${...}` 的声明今日必然采集失败，插值成功后 `data` 域哈希由 `error:` 文本变为采集内容 → 指纹翻转 → 审批撤销 | §5/§6-C 显式承认；黄金夹具钉边界（不含 `${...}` 者逐字节不变）；fail-closed 方向与 ADR 0037 一致 |
 | 15 | 投递形状误接：把 RegistryWide 种类（MCP）按 per-plugin 子集投递会抹掉其余插件的粘滞贡献（coordinator 以入参为活跃集过滤，`PluginMcpCoordinator.cs:333-336`） | 投递形状为契约显式成员（§4.1）；A 期论证钉住 MCP 全事件帧级全量投递（§6-A）；镜像语义单测覆盖审批转换的全量重发布与撤销插件的快照清理 |
+| 16 | 帧差分收窄：未变注册帧零动作后，声明式技能根（含 read-grant 覆盖的插件根外目录，无 watcher）只在协调事件（种子/审批/强制/重试）重枚举；main 曾每帧全量重走 | 有意收窄（帧本就不因这些编辑而发，目录文档已注明"贡献随插件协调事件刷新"）；外部编辑的收敛路径为下一次协调事件或 `plugin.trigger` |
+| 17 | 生成器输出锚定活工作区根：工作区切换后，若其后无导出集变化/reload/审批/触发事件，`SkillsContext.workspaceRoot` 派生的输出滞留旧值（main 每帧重调可自愈） | 收敛路径同风险 16；需要即时性的消费者在切换后发一次触发；已在协调器文档注明 |
 
 ---
 

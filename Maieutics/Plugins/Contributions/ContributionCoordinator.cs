@@ -160,9 +160,12 @@ internal sealed class ContributionCoordinator
     }
 
     /// <summary>Defers one plugin's forced rediscovery until a registry frame proves
-    /// the reload completed (called under the host gate, before the reload frames ship,
-    /// inside the reconcile serialization). A second mark before any frame raises the
-    /// requirement, so back-to-back reloads force once, after the newest text is live.</summary>
+    /// the reload completed (called under the host gate, before the reload frames ship;
+    /// the watched-reload site runs inside the reconcile serialization, the approval
+    /// upsert site does not — the mark is a plain field write and ordering between the
+    /// two sites follows host-frame arrival, not the reconcile lock). A second mark
+    /// before any frame raises the requirement, so back-to-back reloads force once,
+    /// after the newest text is live.</summary>
     public void MarkReloadForce(string pluginId)
     {
         pendingReloadForces[pluginId] = Math.Max(

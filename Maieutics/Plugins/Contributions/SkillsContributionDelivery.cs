@@ -131,6 +131,11 @@ internal sealed class SkillsContributionDelivery(
                 // slot itself is removed.
                 lock (host.Gate)
                 {
+                    // The token recheck keeps a straggler pass from writing a dead
+                    // generation's sticky part into a cleared slot bag: the stop path
+                    // cancels the lifetime before it clears, so a pass that already
+                    // received its invokes must not commit them afterwards.
+                    if (input.InvokeToken.IsCancellationRequested) return;
                     table.SetGenerated(
                         pluginId,
                         new SlotSourceKey(pluginId, exportName, ExtensionPointName),

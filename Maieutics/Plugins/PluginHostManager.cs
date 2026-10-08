@@ -1190,9 +1190,18 @@ internal sealed class PluginHostManager(
         return !current.SetEquals(scannedRoots);
     }
 
+    /// <summary>Import-target directories outside the plugins root, warned about once per
+    /// manager lifetime. They are excluded from the plugin-set difference — the loaded
+    /// descriptor set is root-contained by definition, so counting them would make the
+    /// difference permanently true and escalate every watched change (pure content edits
+    /// included) into a generation restart that re-detects itself.</summary>
+    private readonly HashSet<string> warnedOutOfRootImportTargets = new(StringComparer.Ordinal);
+
     /// <summary>Scans the local plugin set without touching the Deno toolchain: the root
     /// project plus every local file-import target whose directory carries a loadable
-    /// maieutics.json. Roots are normalized full paths.</summary>
+    /// maieutics.json. Roots are normalized full paths; targets resolving outside the
+    /// plugins root are skipped with a one-time warning — the watcher cannot see them and
+    /// the loaded set never contains them, so they are inert for set management.</summary>
     private HashSet<string> ScanLocalPluginRoots()
     {
         var comparison = OperatingSystem.IsWindows()
@@ -1210,10 +1219,32 @@ internal sealed class PluginHostManager(
                 !PluginManifest.TryLoad(packageDirectory, manifestVariables, out _, out _))
                 continue;
 
-            roots.Add(NormalizeRoot(packageDirectory));
+            var normalized = NormalizeRoot(packageDirectory);
+            if (!IsWithin(normalized, pluginsRoot, comparison))
+            {
+                WarnOutOfRootImportTargetOnce(normalized);
+                continue;
+            }
+
+            roots.Add(normalized);
         }
 
         return roots;
+    }
+
+    private void WarnOutOfRootImportTargetOnce(string normalizedDirectory)
+    {
+        lock (gate)
+        {
+            if (!warnedOutOfRootImportTargets.Add(normalizedDirectory)) return;
+        }
+
+        logger.LogWarning(
+            "The local import target '{Directory}' resolves outside the plugins root '{PluginsRoot}'; " +
+            "it is excluded from the plugin set (its changes cannot trigger reloads or restarts). " +
+            "Move the dependency at/under the plugins root to manage it as a plugin.",
+            normalizedDirectory,
+            pluginsRoot);
     }
 
     private static string NormalizeRoot(string directory)

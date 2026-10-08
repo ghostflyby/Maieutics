@@ -94,6 +94,69 @@ public sealed class PluginDeclarativeExtensionsTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task AnOutOfRootImportTargetDoesNotEscalateContentEditsToRestarts()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        // A dependency plugin directory OUTSIDE the plugins root, reachable through a
+        // relative file import: loadable, so the set scan used to count it — but the
+        // loaded descriptor set is root-contained, so the difference was permanently
+        // true and every watched change (this test's pure content edit included)
+        // escalated to a generation restart that re-detected itself.
+        var outside = Path.Combine(Path.GetTempPath(), $"mc-import-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(
+            Path.Combine(outside, "deno.json"),
+            """
+            {
+              "name": "@dep/shared",
+              "version": "0.1.0"
+            }
+            """);
+        File.WriteAllText(Path.Combine(outside, "maieutics.json"), "{}");
+
+        var root = Path.Combine(Path.GetTempPath(), $"mc-import-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var outsideReference = Path.GetRelativePath(root, Path.Combine(outside, "mod.ts"));
+        File.WriteAllText(
+            Path.Combine(root, "deno.json"),
+            $$"""
+            {
+              "name": "@maieutics/import-root",
+              "version": "0.1.0",
+              "imports": { "@dep/shared": "{{outsideReference.Replace("\\", "\\\\")}}" }
+            }
+            """);
+        File.WriteAllText(Path.Combine(root, "maieutics.json"), "{}");
+
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
+
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+
+            // A pure content edit inside the root must take the in-process reload path:
+            // reaching the reload-applied signal proves no set-mismatch restart fired.
+            var applied = CaptureReloadApplied(manager);
+            File.WriteAllText(Path.Combine(root, "maieutics.json"), "{}\n");
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(outside)) Directory.Delete(outside, true);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task DeclarativeSectionRemovalTakesEffectOnReload()
     {
         if (OperatingSystem.IsWindows())

@@ -1045,16 +1045,19 @@ internal sealed class McpServerGeneration
             }
         }
 
-        /// <summary>Fetches the prompt catalog. A server without the prompts capability
-        /// (or refusing the listing) contributes an empty catalog instead of failing the
-        /// refresh or the connection — the resource-catalog tolerance on the third
-        /// consumer face (ADR 0041 decision 1); a cancellation still propagates.</summary>
+        /// <summary>Fetches the prompt catalog. A server without the prompts capability,
+        /// refusing the listing, or answering a malformed payload contributes an empty
+        /// catalog instead of failing the refresh or the connection — the
+        /// resource-catalog tolerance on the third consumer face (ADR 0041 decision 1);
+        /// a cancellation still propagates.</summary>
         private async Task<McpPromptCatalog> RefreshPromptCatalogAsync(CancellationToken cancellationToken)
         {
             var prompts = ImmutableArray.CreateBuilder<McpPromptDescriptor>();
             try
             {
-                var listed = await Client.ListPromptsAsync(cancellationToken: cancellationToken)
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(definition.RequestTimeout);
+                var listed = await Client.ListPromptsAsync(cancellationToken: timeout.Token)
                     .ConfigureAwait(false);
                 foreach (var prompt in listed.OrderBy(static value => value.Name, StringComparer.Ordinal))
                 {
@@ -1076,10 +1079,13 @@ internal sealed class McpServerGeneration
             {
                 throw;
             }
-            catch (McpException exception)
+            catch (Exception exception)
             {
+                // McpException = unsupported/refused; anything else (a malformed payload
+                // surfacing as JsonException, a listing timeout) is the same tolerance:
+                // the catalog stays empty, the connection lives.
                 logger.LogDebug(
-                    "MCP server {ServerId} does not expose prompts ({FailureType}); its prompt catalog stays empty.",
+                    "MCP server {ServerId} does not expose usable prompts ({FailureType}); its prompt catalog stays empty.",
                     definition.Id,
                     exception.GetType().Name);
             }

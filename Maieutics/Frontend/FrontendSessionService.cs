@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
@@ -540,7 +541,9 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             foreach (var part in skillParts)
             {
                 contents.Add(part);
-                budgetRemaining -= part is TextContent skillText ? skillText.Text.Length : 0;
+                budgetRemaining -= part is TextContent skillText
+                    ? Encoding.UTF8.GetByteCount(skillText.Text)
+                    : 0;
             }
         }
         else if (skillSplit.Markers.Count > 0)

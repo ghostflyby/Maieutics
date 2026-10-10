@@ -35,7 +35,7 @@ internal static class FrontendPromptMarkers
     internal sealed record SplitResult(string Remainder, IReadOnlyList<Marker> Markers);
 
     private const string PromptName = @"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}";
-    private const string ServerId = @"[^/?#\[\]()\\\s]+";
+    private const string ServerId = @"[^/?#\[\]()\\\s%]+";
     // The query alphabet is the RFC 3986 unreserved set plus pct-escapes; keys are the
     // stricter encoder output (no sub-delims, so '=' cannot smuggle into a key), values
     // admit the sub-delims the encoder was told to keep — but never the parens that
@@ -87,17 +87,18 @@ internal static class FrontendPromptMarkers
     {
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal);
         var duplicate = false;
-        if (query is not null)
-        {
-            foreach (var pair in query.Split('&'))
+            if (query is not null)
             {
-                var match = PairPattern.Match(pair);
-                var key = Uri.UnescapeDataString(match.Groups["key"].Value);
-                var value = Uri.UnescapeDataString(match.Groups["value"].Value);
-                if (arguments.ContainsKey(key)) duplicate = true;
-                else arguments.Add(key, value);
+                foreach (var pair in query.Split('&'))
+                {
+                    if (pair.Length == 0) continue; // trailing separator: not a pair
+                    var match = PairPattern.Match(pair);
+                    var key = Uri.UnescapeDataString(match.Groups["key"].Value);
+                    var value = Uri.UnescapeDataString(match.Groups["value"].Value);
+                    if (arguments.ContainsKey(key)) duplicate = true;
+                    else arguments.Add(key, value);
+                }
             }
-        }
 
         return new Marker(serverId, name, text, arguments, duplicate);
     }

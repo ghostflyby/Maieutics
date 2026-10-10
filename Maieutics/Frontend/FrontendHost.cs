@@ -1357,6 +1357,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                 => StatusCodes.Status409Conflict,
             FrontendErrors.NotFound => StatusCodes.Status404NotFound,
             FrontendErrors.SkillUnknown => StatusCodes.Status404NotFound,
+            FrontendErrors.McpPromptUnknown => StatusCodes.Status404NotFound,
+            FrontendErrors.McpPromptUnavailable => StatusCodes.Status409Conflict,
             FrontendErrors.SkillBudgetExceeded => StatusCodes.Status413PayloadTooLarge,
             _ => StatusCodes.Status400BadRequest
         };

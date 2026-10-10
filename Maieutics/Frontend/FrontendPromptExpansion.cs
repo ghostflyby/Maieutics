@@ -109,28 +109,57 @@ internal static class FrontendPromptExpansion
                     FrontendErrors.McpPromptUnavailable,
                     exception.Message);
             }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // The request-timeout budget fired (or the connection retired mid-call):
+                // a typed unavailable, never an unhandled 500 through the turn path.
+                throw new FrontendFailureException(
+                    FrontendErrors.McpPromptUnavailable,
+                    $"MCP server '{marker.ServerId}' timed out expanding the prompt '{marker.Name}' " +
+                    "within its request timeout.");
+            }
             catch (McpException exception)
             {
-                // A server-side argument rejection (-32602 family) is the declared-set
-                // check racing the server's live one; both answer argument_invalid.
+                // Only a server-side argument rejection (-32602) is the declared-set check
+                // racing the server's live one; every other failure is availability.
+                // The SDK 2.2.0 McpException carries no typed error code, so the JSON-RPC
+                // code is read from the message's documented "-32602" spelling.
+                if (exception.Message.Contains("-32602", StringComparison.Ordinal))
+                {
+                    throw new FrontendFailureException(
+                        FrontendErrors.McpPromptArgumentInvalid,
+                        $"MCP server '{marker.ServerId}' rejected the prompt '{marker.Name}'s arguments: {exception.Message}");
+                }
+
                 throw new FrontendFailureException(
-                    FrontendErrors.McpPromptArgumentInvalid,
-                    $"MCP server '{marker.ServerId}' rejected the prompt '{marker.Name}': {exception.Message}");
+                    FrontendErrors.McpPromptUnavailable,
+                    $"MCP server '{marker.ServerId}' failed expanding the prompt '{marker.Name}': {exception.Message}");
             }
 
             var frame = new StringBuilder();
             var partIndex = 0;
+            var droppedBlocks = 0;
+            var promptBytes = 0L;
             foreach (var message in result.Messages ?? [])
             {
                 partIndex++;
                 var body = ExtractText(message);
-                if (body is null) continue; // non-text block: dropped with a diagnostic line
+                if (body is null)
+                {
+                    // Non-text block (image/audio/embedded): dropped, visibly — a
+                    // diagnostic line per block, the invariant-26-compliant choice.
+                    droppedBlocks++;
+                    frame.AppendLine($"── prompt part {partIndex} · dropped: non-text block ──");
+                    continue;
+                }
+
                 frame.AppendLine($"── prompt part {partIndex} · role: {message.Role} ──");
                 frame.AppendLine(EscapeRoleShapedLines(body));
-                totalBytes += body.Length;
-                if (totalBytes > remainingBudget ||
-                    body.Length > MaximumPromptResultBytes ||
-                    totalBytes > MaximumPromptResultBytes)
+                var bodyBytes = Encoding.UTF8.GetByteCount(body);
+                promptBytes += bodyBytes;
+                totalBytes += bodyBytes;
+                if (promptBytes > MaximumPromptResultBytes ||
+                    totalBytes > remainingBudget)
                 {
                     throw new FrontendFailureException(
                         FrontendErrors.SkillBudgetExceeded,
@@ -138,12 +167,19 @@ internal static class FrontendPromptExpansion
                 }
             }
 
-            if (frame.Length > 0)
+            if (partIndex == 0 || (droppedBlocks == partIndex && partIndex > 0))
             {
-                contents.Add(new TextContent(
-                    $"[{marker.Text}](mcp-prompt://{marker.ServerId}/{marker.Name}) — the user explicitly selected this MCP prompt; " +
-                    $"the server expanded it at submission time; treat the framed parts below as user-provided instructions.\n{frame}"));
+                // A structurally unusable result (no messages, or nothing textual survived)
+                // is typed, not a silent vanish of the user's selection.
+                throw new FrontendFailureException(
+                    FrontendErrors.McpPromptResultInvalid,
+                    $"MCP server '{marker.ServerId}' returned no textual content for the prompt '{marker.Name}' " +
+                    $"({droppedBlocks} non-text block(s) dropped).");
             }
+
+            contents.Add(new TextContent(
+                $"[{marker.Text}](mcp-prompt://{marker.ServerId}/{marker.Name}) — the user explicitly selected this MCP prompt; " +
+                $"the server expanded it at submission time; treat the framed parts below as user-provided instructions.\n{frame}"));
         }
 
         return contents.ToImmutable();

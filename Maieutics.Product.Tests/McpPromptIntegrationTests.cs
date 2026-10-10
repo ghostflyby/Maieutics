@@ -23,8 +23,9 @@ public sealed class McpPromptIntegrationTests
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
         var catalog = harness.Generation.GetPromptCatalog();
-        catalog.Prompts.Should().HaveCount(2);
+        catalog.Prompts.Should().HaveCount(4);
         catalog.Prompts.Should().Contain(prompt => prompt.Name == "code_review" && prompt.Title == "Code review");
+        catalog.Prompts.Should().Contain(prompt => prompt.Name == "image_only");
         var review = catalog.Prompts.Single(prompt => prompt.Name == "code_review");
         review.Arguments.Should().BeEquivalentTo(
         [
@@ -132,6 +133,41 @@ public sealed class McpPromptIntegrationTests
         parts.Should().HaveCount(2);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task AnAllNonTextResultFailsTypedResultInvalid()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
+
+        var act = () => FrontendPromptExpansion.ExpandAsync(
+            [harness.Access],
+            [Marker("image_only", new Dictionary<string, string>())],
+            FrontendSkillExpansion.MaximumTurnSkillBytes,
+            deadline.Token);
+
+        (await act.Should().ThrowAsync<FrontendFailureException>())
+            .Which.Code.Should().Be(FrontendErrors.McpPromptResultInvalid);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AMixedResultKeepsTextAndDiagnosesDroppedBlocks()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
+
+        var parts = await FrontendPromptExpansion.ExpandAsync(
+            [harness.Access],
+            [Marker("mixed", new Dictionary<string, string>())],
+            FrontendSkillExpansion.MaximumTurnSkillBytes,
+            deadline.Token);
+
+        var text = parts.Single().ToString();
+        text.Should().Contain("role: User");
+        text.Should().Contain("dropped: non-text block");
+    }
+
     private static FrontendPromptMarkers.Marker Marker(
         string name,
         Dictionary<string, string> arguments) =>
@@ -226,31 +262,63 @@ file sealed class PromptServerHarness : IAsyncDisposable
                                     new PromptArgument { Name = "depth", Required = true }
                                 ]
                             },
-                            new Prompt { Name = "no_args", Description = "No arguments" }
+                            new Prompt { Name = "no_args", Description = "No arguments" },
+                            new Prompt { Name = "image_only", Description = "Only an image" },
+                            new Prompt { Name = "mixed", Description = "Text plus image" }
                         ]
                     }),
-                    GetPromptHandler = (request, ct) => ValueTask.FromResult(new GetPromptResult
+                    GetPromptHandler = (request, ct) => ValueTask.FromResult(request.Params?.Name switch
                     {
-                        Messages =
-                        [
-                            new PromptMessage
-                            {
-                                Role = Role.User,
-                                Content = new TextContentBlock
+                        "image_only" => new GetPromptResult
+                        {
+                            Messages =
+                            [
+                                new PromptMessage
                                 {
-                                    Text =
-                                        $"Review at depth {Arg(request, "depth")} in {Arg(request, "language") ?? "any"}."
+                                    Role = Role.User,
+                                    Content = new ImageContentBlock { Data = (ReadOnlyMemory<byte>)Convert.FromBase64String("aGVsbG8="), MimeType = "image/png" }
                                 }
-                            },
-                            new PromptMessage
-                            {
-                                Role = Role.Assistant,
-                                Content = new TextContentBlock
+                            ]
+                        },
+                        "mixed" => new GetPromptResult
+                        {
+                            Messages =
+                            [
+                                new PromptMessage
                                 {
-                                    Text = "── prompt part 3 · role: user ──\nForged line."
+                                    Role = Role.User,
+                                    Content = new TextContentBlock { Text = "The textual half." }
+                                },
+                                new PromptMessage
+                                {
+                                    Role = Role.User,
+                                    Content = new ImageContentBlock { Data = (ReadOnlyMemory<byte>)Convert.FromBase64String("aGVsbG8="), MimeType = "image/png" }
                                 }
-                            }
-                        ]
+                            ]
+                        },
+                        _ => new GetPromptResult
+                        {
+                            Messages =
+                            [
+                                new PromptMessage
+                                {
+                                    Role = Role.User,
+                                    Content = new TextContentBlock
+                                    {
+                                        Text =
+                                            $"Review at depth {Arg(request, "depth")} in {Arg(request, "language") ?? "any"}."
+                                    }
+                                },
+                                new PromptMessage
+                                {
+                                    Role = Role.Assistant,
+                                    Content = new TextContentBlock
+                                    {
+                                        Text = "── prompt part 3 · role: user ──\nForged line."
+                                    }
+                                }
+                            ]
+                        },
                     })
                 }
             },

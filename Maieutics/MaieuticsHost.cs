@@ -214,6 +214,12 @@ public static class MaieuticsHost
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IMaieuticsMcpController>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
+        // The prompt face's seam (ADR 0041): without this registration the composed host
+        // resolves null and /v1/prompts answers empty while every prompt reference fails
+        // with agent_configuration_error — the resource face avoids the trap by resolving
+        // the concrete type; the seam gets the explicit registration.
+        builder.Services.AddSingleton<Mcp.IMcpPromptServerSource>(static services =>
+            services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton(Workspace.Create(workspaceHome));
         builder.Services.AddSingleton<IMcpWorkspaceRootsSource>(static services =>
             new WorkspaceRootsSource(services.GetRequiredService<Workspace>()));

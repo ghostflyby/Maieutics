@@ -20,6 +20,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     IMaieuticsRuntimeConfiguration,
     IMaieuticsMcpController,
     IMcpResourceCatalogSource,
+    IMcpPromptServerSource,
     IPermissionLayerSource,
     IAsyncDisposable
 {
@@ -179,6 +180,19 @@ internal sealed class MaieuticsRuntimeConfiguration :
             .ToArray() ?? [];
     }
 
+    /// <summary>The live MCP prompt surfaces in id order (ADR 0041): server id, prompt
+    /// catalog, and the generation that can expand a prompt. Reconnecting servers
+    /// appear with an empty catalog — the tools/resources precedent, no
+    /// last-known-good.</summary>
+    public IReadOnlyList<McpPromptServerAccess> GetPromptServers()
+    {
+        return Volatile.Read(ref pluginHosts)?.SnapshotDynamicMcpGenerations()
+            .Select(static generation => new McpPromptServerAccess(
+                generation.Id,
+                generation.GetPromptCatalog(),
+                generation))
+            .ToArray() ?? [];
+    }
 
     public long Version
     {

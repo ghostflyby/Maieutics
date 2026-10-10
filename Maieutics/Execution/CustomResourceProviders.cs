@@ -36,7 +36,15 @@ internal sealed class CustomResourceProviderOptions
     /// ADR 0039), so a claim fails configuration instead of being silently disabled at
     /// first resolve.</summary>
     internal static readonly IReadOnlySet<string> ReservedSchemes =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "workspace", "task", "mcp", "file", "skill" };
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "workspace",
+            "task",
+            "mcp",
+            "file",
+            "skill",
+            "mcp-prompt",
+        };
 
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;

@@ -198,6 +198,50 @@ body budget (8 MiB across all references, 4 MiB per marker) exceeded
 |---|---|---|
 | GET | `/v1/skills` | The live skill catalog: `{skills: [{name, description, source}], diagnostics}` — active skills only; catalog freshness is the frontend's cache policy |
 
+## Prompt references (user-selected MCP prompts inside turn text)
+
+A frontend lets the user select an MCP server prompt (the catalog comes
+from `GET /v1/prompts` above) and references it inside the turn text
+with a markdown link over the dedicated scheme (ADR 0041):
+
+```
+[<display text>](mcp-prompt://<serverId>/<name>?<arguments>)
+```
+
+The `serverId` segment is an **opaque token** — deliberately not a valid
+generic URI authority — and the operative invariant is that a prompt
+reference never enters a generic URI parser: the kernel's regex IS the
+parser (literal `mcp-prompt://` prefix; the name split is from the
+right). Prompt names fit `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$` (the MCP
+spec's own example is snake_case); servers or prompts whose id segments
+cannot carry the grammar list with `referencable: false`. Only the exact
+form is a reference; a backslash directly before the opening bracket
+suppresses recognition and is consumed (the mention form). Arguments
+travel as URL query: keys and values percent-encoded with the RFC 3986
+unreserved set literal (encoders must escape `!'()*` explicitly —
+`encodeURIComponent` leaves them raw); duplicate keys, missing required
+arguments, and arguments the server did not declare all fail typed.
+
+At submission the server expands each distinct `(serverId, name,
+canonicalized query)` once, in first-appearance order, **after** skill
+parts (fixed order, position in the cell does not reorder the shared
+budget): the kernel resolves the server's generation, validates
+arguments against the declared set, calls `prompts/get` under the
+server's request timeout, and injects the result as framed user-side
+content with kernel-forged role headers (role-shaped body text is
+escaped — template content cannot forge framing). Text blocks are kept;
+image, audio, and embedded-resource blocks drop with diagnostics. Typed
+submission failures: unknown server or prompt `404 mcp_prompt_unknown`;
+reconnecting server or timeout `409 mcp_prompt_unavailable` (the message
+names the reason); argument problems `400 mcp_prompt_argument_invalid`
+(listing each missing argument's name and description); a structurally
+unusable result `400 mcp_prompt_result_invalid`; the shared
+reference-content budget exceeded (8 MiB across skill bodies and prompt
+expansions; 4 MiB per prompt) `413 skill_budget_exceeded`. A host with
+no MCP servers answers `409 agent_configuration_error`. Generic markdown
+renderers may mishandle the opaque href — an accepted limitation; the
+reference's arbiter is the kernel grammar, not the renderer.
+
 ## Input requests (REPL stdin and MCP elicitation)
 
 A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
@@ -325,6 +369,7 @@ models.
 |---|---|---|
 | GET | `/v1/agent/capabilities` | Protocol version, server version, workspace root, feature flags |
 | GET | `/v1/skills` | Live skill catalog for completion and pickers: `{skills: [{name, description, source}], diagnostics}` |
+| GET | `/v1/prompts` | Live MCP prompt catalog: `{prompts: [{serverId, state, name, title?, description?, arguments: [{name, description?, required}], referencable}]}` — every live server generation |
 | GET | `/v1/agent/session` | The foreground session (compatibility alias; id, turn count, persistence state, title) |
 | POST | `/v1/agent/sessions` | Start a new session and make it active |
 | GET | `/v1/agent/sessions` | List stored sessions with display metadata (persistence disabled → empty) |

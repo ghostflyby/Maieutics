@@ -318,6 +318,45 @@ internal sealed class McpServerGeneration
         }
     }
 
+    /// <summary>The server's prompt catalog snapshot; empty while reconnecting or when
+    /// the server does not implement the prompts capability (ADR 0041) — the
+    /// tools/resources precedent: no last-known-good is retained across a connection
+    /// loss.</summary>
+    internal McpPromptCatalog GetPromptCatalog()
+    {
+        lock (gate)
+        {
+            return current is { Client.Completion.IsCompleted: false } connection
+                ? connection.GetPromptCatalog()
+                : McpPromptCatalog.Empty;
+        }
+    }
+
+    /// <summary>Gets one prompt from the live connection under the request timeout
+    /// (ADR 0041 decision 3), the ReadResourceAsync shape on the third consumer face.
+    /// Throws <see cref="ResourceException"/> (<c>resource_provider_unavailable</c>-style,
+    /// code <c>mcp_prompt_unavailable</c>) while no connection is active; transport and
+    /// server-side failures surface as <see cref="McpException"/> for the caller's typed
+    /// mapping.</summary>
+    internal async Task<GetPromptResult> GetPromptAsync(
+        string name,
+        IReadOnlyDictionary<string, string> arguments,
+        CancellationToken cancellationToken)
+    {
+        McpConnectionGeneration connection;
+        lock (gate)
+        {
+            if (current is not { Client.Completion.IsCompleted: false } live)
+                throw new ResourceException(
+                    "mcp_prompt_unavailable",
+                    $"MCP server '{definition.Id}' is reconnecting; its prompts are temporarily unavailable.");
+
+            connection = live;
+        }
+
+        return await connection.GetPromptAsync(name, arguments, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>Reads one resource through the live connection under the request
     /// timeout. Throws <see cref="ResourceException"/> with
     /// <c>resource_provider_unavailable</c> while no connection is active; transport
@@ -626,6 +665,13 @@ internal sealed class McpServerGeneration
                     {
                         refreshSignals.Writer.TryWrite(0);
                         return ValueTask.CompletedTask;
+                    }),
+                new KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>(
+                    NotificationMethods.PromptListChangedNotification,
+                    (_, _) =>
+                    {
+                        refreshSignals.Writer.TryWrite(0);
+                        return ValueTask.CompletedTask;
                     })
             ]
         };
@@ -830,6 +876,7 @@ internal sealed class McpServerGeneration
         private ImmutableArray<MaieuticsMcpToolInfo> toolInfo = [];
         private ImmutableArray<AIFunction> tools = [];
         private McpResourceCatalog resourceCatalog = McpResourceCatalog.Empty;
+        private McpPromptCatalog promptCatalog = McpPromptCatalog.Empty;
 
         internal McpClient Client { get; } = client;
 
@@ -859,7 +906,8 @@ internal sealed class McpServerGeneration
                             Notifications = new SubscriptionsListenNotifications
                             {
                                 ToolsListChanged = true,
-                                ResourcesListChanged = true
+                                ResourcesListChanged = true,
+                                PromptsListChanged = true
                             }
                         },
                         McpJsonUtilities.GetTypeInfo<SubscriptionsListenRequestParams>(McpJsonUtilities.DefaultOptions))
@@ -909,6 +957,34 @@ internal sealed class McpServerGeneration
             }
         }
 
+        internal McpPromptCatalog GetPromptCatalog()
+        {
+            lock (gate)
+            {
+                return promptCatalog;
+            }
+        }
+
+        /// <summary>Gets one prompt from the live connection under the request timeout
+        /// (ADR 0041 decision 3). Throws <see cref="McpException"/> for transport and
+        /// server-side failures (including argument rejection), which the caller maps
+        /// to typed frontend failures.</summary>
+        internal async Task<GetPromptResult> GetPromptAsync(
+            string name,
+            IReadOnlyDictionary<string, string> arguments,
+            CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(definition.RequestTimeout);
+            return await Client.GetPromptAsync(
+                name,
+                arguments.ToDictionary(
+                    static pair => pair.Key,
+                    static pair => (object?)pair.Value,
+                    StringComparer.Ordinal),
+                cancellationToken: timeout.Token).ConfigureAwait(false);
+        }
+
         internal ValueTask<bool> WaitForRefreshAsync(CancellationToken cancellationToken)
         {
             return refreshSignals.Reader.WaitToReadAsync(cancellationToken);
@@ -956,6 +1032,7 @@ internal sealed class McpServerGeneration
             }
 
             var catalog = await RefreshResourceCatalogAsync(cancellationToken).ConfigureAwait(false);
+            var prompts = await RefreshPromptCatalogAsync(cancellationToken).ConfigureAwait(false);
 
             lock (gate)
             {
@@ -964,7 +1041,50 @@ internal sealed class McpServerGeneration
                 tools = exposed.ToImmutable();
                 toolInfo = info.ToImmutable();
                 resourceCatalog = catalog;
+                promptCatalog = prompts;
             }
+        }
+
+        /// <summary>Fetches the prompt catalog. A server without the prompts capability
+        /// (or refusing the listing) contributes an empty catalog instead of failing the
+        /// refresh or the connection — the resource-catalog tolerance on the third
+        /// consumer face (ADR 0041 decision 1); a cancellation still propagates.</summary>
+        private async Task<McpPromptCatalog> RefreshPromptCatalogAsync(CancellationToken cancellationToken)
+        {
+            var prompts = ImmutableArray.CreateBuilder<McpPromptDescriptor>();
+            try
+            {
+                var listed = await Client.ListPromptsAsync(cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var prompt in listed.OrderBy(static value => value.Name, StringComparer.Ordinal))
+                {
+                    var arguments = ImmutableArray.CreateBuilder<McpPromptArgumentDescriptor>();
+                    foreach (var argument in prompt.ProtocolPrompt.Arguments ?? [])
+                        arguments.Add(new McpPromptArgumentDescriptor(
+                            argument.Name,
+                            argument.Description,
+                            argument.Required == true));
+
+                    prompts.Add(new McpPromptDescriptor(
+                        prompt.Name,
+                        prompt.Title,
+                        prompt.Description,
+                        arguments.ToImmutable()));
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (McpException exception)
+            {
+                logger.LogDebug(
+                    "MCP server {ServerId} does not expose prompts ({FailureType}); its prompt catalog stays empty.",
+                    definition.Id,
+                    exception.GetType().Name);
+            }
+
+            return new McpPromptCatalog(prompts.ToImmutable());
         }
 
         /// <summary>Fetches the resource catalog. A server without the resources

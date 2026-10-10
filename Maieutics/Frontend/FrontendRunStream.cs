@@ -727,6 +727,10 @@ internal static class FrontendErrors
     internal const string ItemRunning = "item_running";
     internal const string SkillUnknown = "skill_unknown";
     internal const string SkillBudgetExceeded = "skill_budget_exceeded";
+    internal const string McpPromptUnknown = "mcp_prompt_unknown";
+    internal const string McpPromptUnavailable = "mcp_prompt_unavailable";
+    internal const string McpPromptArgumentInvalid = "mcp_prompt_argument_invalid";
+    internal const string McpPromptResultInvalid = "mcp_prompt_result_invalid";
 
     internal static string MapAgentException(AgentException exception)
     {

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Agent;
+using Maieutics.Mcp;
 using System.Buffers.Binary;
 using Maieutics.Commands;
 using Maieutics.DenoRepl;
@@ -46,6 +47,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly FrontendCommRouter? commRouter;
     private readonly IFrontendPluginSurface? pluginSurface;
     private readonly Skills.SkillCatalog? skillCatalog;
+    private readonly Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor;
     private readonly ILogger<FrontendHost> logger;
     private readonly CancellationTokenSource lifetime = new();
     private readonly byte[] expectedToken;
@@ -60,7 +62,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         ObjectStore? objectStore = null,
         FrontendCommRouter? commRouter = null,
         IFrontendPluginSurface? pluginSurface = null,
-        Skills.SkillCatalog? skillCatalog = null)
+        Skills.SkillCatalog? skillCatalog = null,
+        Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor = null)
     {
         this.options = options;
         this.service = service;
@@ -76,6 +79,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         this.commRouter = commRouter;
         this.pluginSurface = pluginSurface;
         this.skillCatalog = skillCatalog;
+        this.promptServersAccessor = promptServersAccessor;
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
@@ -129,6 +133,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         application.Use(AuthorizeThenNextAsync);
         endpoints.MapGet("/v1/agent/capabilities", HandleCapabilities);
         endpoints.MapGet("/v1/skills", HandleSkills);
+        endpoints.MapGet("/v1/prompts", HandlePrompts);
         endpoints.MapGet("/v1/agent/session", HandleSession);
         endpoints.MapPost("/v1/agent/sessions", HandleNewSession);
         endpoints.MapGet("/v1/agent/sessions", HandleListSessions);
@@ -291,6 +296,38 @@ internal sealed class FrontendHost : IAsyncDisposable
         return Results.Json(
             new FrontendSkillList(skills, snapshot.Diagnostics.Length),
             FrontendJsonContext.Default.FrontendSkillList);
+    }
+
+    /// <summary>Serves the live MCP prompt catalog for frontend completion and pickers
+    /// (ADR 0041): every prompt of every live server generation, with the server's
+    /// connection state and the referencability marking (both segments' charset). A
+    /// host without MCP servers answers an empty list.</summary>
+    private IResult HandlePrompts()
+    {
+        var prompts = (promptServersAccessor?.Invoke() ?? [])
+            .SelectMany(static server => server.Catalog.Prompts.Select(prompt => (server, prompt)))
+            .Select(static entry =>
+            {
+                var (server, prompt) = entry;
+                return new FrontendPromptInfo(
+                    server.Id,
+                    server.Generation.GetInfo().State.ToString(),
+                    prompt.Name,
+                    prompt.Title,
+                    prompt.Description,
+                    prompt.Arguments
+                        .Select(static argument => new FrontendPromptArgument(
+                            argument.Name,
+                            argument.Description,
+                            argument.Required))
+                        .ToArray(),
+                    Mcp.McpPromptReferenceGrammar.IsValidServerIdSegment(server.Id) &&
+                    Mcp.McpPromptReferenceGrammar.IsValidPromptName(prompt.Name));
+            })
+            .ToArray();
+        return Results.Json(
+            new FrontendPromptList(prompts),
+            FrontendJsonContext.Default.FrontendPromptList);
     }
 
     private IResult HandleCapabilities()

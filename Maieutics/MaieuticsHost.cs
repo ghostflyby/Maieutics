@@ -625,7 +625,8 @@ public static class MaieuticsHost
             services.GetRequiredService<MaieuticsStatusProvider>(),
             workspace is null ? null : () => workspace.RootPath,
             services.GetRequiredService<Frontend.SubagentEventBuffer>(),
-            services.GetService<Skills.SkillCatalog>());
+            services.GetService<Skills.SkillCatalog>(),
+            () => services.GetService<Mcp.IMcpPromptServerSource>()?.GetPromptServers() ?? []);
     }
 
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)

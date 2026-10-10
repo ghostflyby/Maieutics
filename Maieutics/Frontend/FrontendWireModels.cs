@@ -266,12 +266,35 @@ internal sealed record FrontendSkillList(
     [property: JsonPropertyName("skills")] FrontendSkillInfo[] Skills,
     [property: JsonPropertyName("diagnostics")] int Diagnostics);
 
+/// <summary>One MCP prompt of one live server, as served by <c>GET /v1/prompts</c>
+/// (ADR 0041): the reference grammar's referencability marking covers both identity
+/// segments; <c>referencable: false</c> prompts list but cannot be selected.</summary>
+internal sealed record FrontendPromptInfo(
+    [property: JsonPropertyName("serverId")] string ServerId,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("title")] string? Title,
+    [property: JsonPropertyName("description")] string? Description,
+    [property: JsonPropertyName("arguments")] FrontendPromptArgument[] Arguments,
+    [property: JsonPropertyName("referencable")] bool Referencable);
+
+/// <summary>One declared prompt argument (name, description, required).</summary>
+internal sealed record FrontendPromptArgument(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("description")] string? Description,
+    [property: JsonPropertyName("required")] bool Required);
+
+/// <summary>The <c>GET /v1/prompts</c> answer: prompts of every live server generation.</summary>
+internal sealed record FrontendPromptList(
+    [property: JsonPropertyName("prompts")] FrontendPromptInfo[] Prompts);
+
 /// <summary>Source-generated JSON binding for the frontend wire (NativeAOT path).</summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(FrontendCapabilities))]
 [JsonSerializable(typeof(FrontendSkillList))]
+[JsonSerializable(typeof(FrontendPromptList))]
 [JsonSerializable(typeof(FrontendSessionInfo))]
 [JsonSerializable(typeof(FrontendStoredSession))]
 [JsonSerializable(typeof(FrontendSessionInfo[]))]

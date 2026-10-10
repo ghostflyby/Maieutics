@@ -125,6 +125,7 @@ internal sealed class ResourceRegistry
             ["task"] = ResourceProviderClass.BuiltIn,
             ["objects"] = ResourceProviderClass.BuiltIn,
             ["skill"] = ResourceProviderClass.BuiltIn,
+            ["mcp-prompt"] = null,
             ["mcp"] = ResourceProviderClass.Mcp,
             ["file"] = null
         };

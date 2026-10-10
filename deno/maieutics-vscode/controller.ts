@@ -78,6 +78,7 @@ import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
 import { coerceField, planElicitation } from "./elicitation.ts";
 import { childRunsOfParent, resolveFrameOwner } from "./runRouting.ts";
+import { encodeSkillSubmission } from "./skillInteraction.ts";
 
 const PaintIntervalMs = 60;
 /** Bridges the protocol onto one notebook's outputs. Notebook execution
@@ -578,7 +579,11 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   }
 
   private async executeCellAsync(cell: vscode.NotebookCell, sessionId: string): Promise<void> {
-    const text = cell.document.getText();
+    // The boundary model encodes the text: tracked skill selections ride as
+    // markers, untracked marker-shaped text rides as a mention (ADR 0039
+    // selection design). A cell without a model (never opened for edit since
+    // extension activation) passes through byte-for-byte.
+    const text = encodeSkillSubmission(cell.document.uri.toString(), cell.document.getText());
     const execution = this.controller.createNotebookCellExecution(cell);
     // The failure path only starts the execution when it has not started yet:
     // a second start() can leave the matching end() ignored (spinner forever).

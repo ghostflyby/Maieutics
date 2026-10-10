@@ -45,6 +45,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly ObjectStore? objectStore;
     private readonly FrontendCommRouter? commRouter;
     private readonly IFrontendPluginSurface? pluginSurface;
+    private readonly Skills.SkillCatalog? skillCatalog;
     private readonly ILogger<FrontendHost> logger;
     private readonly CancellationTokenSource lifetime = new();
     private readonly byte[] expectedToken;
@@ -58,7 +59,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendElicitationPresenter? elicitationPresenter = null,
         ObjectStore? objectStore = null,
         FrontendCommRouter? commRouter = null,
-        IFrontendPluginSurface? pluginSurface = null)
+        IFrontendPluginSurface? pluginSurface = null,
+        Skills.SkillCatalog? skillCatalog = null)
     {
         this.options = options;
         this.service = service;
@@ -73,6 +75,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         this.objectStore = objectStore;
         this.commRouter = commRouter;
         this.pluginSurface = pluginSurface;
+        this.skillCatalog = skillCatalog;
         expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
@@ -125,6 +128,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         });
         application.Use(AuthorizeThenNextAsync);
         endpoints.MapGet("/v1/agent/capabilities", HandleCapabilities);
+        endpoints.MapGet("/v1/skills", HandleSkills);
         endpoints.MapGet("/v1/agent/session", HandleSession);
         endpoints.MapPost("/v1/agent/sessions", HandleNewSession);
         endpoints.MapGet("/v1/agent/sessions", HandleListSessions);
@@ -269,6 +273,24 @@ internal sealed class FrontendHost : IAsyncDisposable
                 FrontendJsonContext.Default.FrontendError,
                 statusCode: 409);
         }
+    }
+
+    /// <summary>Serves the live skill catalog for frontend completion and pickers: active
+    /// skills only (name, description, source), mirroring what the prompt section carries.
+    /// A null catalog (no skills host) answers an empty list rather than an error, so a
+    /// frontend built for skills degrades to "no skills offered" on hosts without them.</summary>
+    private IResult HandleSkills()
+    {
+        var snapshot = skillCatalog?.Current ?? Skills.SkillCatalogSnapshot.Empty;
+        var skills = snapshot.Skills
+            .Select(static skill => new FrontendSkillInfo(
+                skill.Name,
+                skill.Description,
+                skill.Source.ToString()))
+            .ToArray();
+        return Results.Json(
+            new FrontendSkillList(skills, snapshot.Diagnostics.Length),
+            FrontendJsonContext.Default.FrontendSkillList);
     }
 
     private IResult HandleCapabilities()
@@ -1297,6 +1319,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                 or FrontendErrors.QueueFull or FrontendErrors.ItemRunning
                 => StatusCodes.Status409Conflict,
             FrontendErrors.NotFound => StatusCodes.Status404NotFound,
+            FrontendErrors.SkillUnknown => StatusCodes.Status404NotFound,
+            FrontendErrors.SkillBudgetExceeded => StatusCodes.Status413PayloadTooLarge,
             _ => StatusCodes.Status400BadRequest
         };
         context.Response.ContentType = "application/json";

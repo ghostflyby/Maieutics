@@ -13,6 +13,7 @@
  */
 
 import { decodeCommEnvelope, encodeCommEnvelope } from "../shared/comm_codec.ts";
+import type { SkillInfo } from "./skillsCatalog.ts";
 import type {
   Capabilities,
   CommFrame,
@@ -481,6 +482,34 @@ export class FrontendClient {
     if (!response.ok) throw await this.errorOf(response);
     const body = await response.json() as { matches?: string[] };
     return Array.isArray(body.matches) ? body.matches : [];
+  }
+
+  /**
+   * The kernel's live skill catalog for `$` completion and skill pickers; a
+   * host without skills answers an empty list.
+   */
+  async listSkills(
+    signal?: AbortSignal,
+  ): Promise<{ skills: SkillInfo[]; diagnostics: number }> {
+    const response = await this.fetchJson("GET", "/v1/skills", undefined, signal);
+    if (!response.ok) throw await this.errorOf(response);
+    const body = await response.json() as { skills?: unknown; diagnostics?: unknown };
+    const skills = Array.isArray(body.skills) ? body.skills : [];
+    return {
+      skills: skills.flatMap((skill) => {
+        const candidate = skill as { name?: unknown; description?: unknown; source?: unknown };
+        return typeof candidate.name === "string" &&
+            typeof candidate.description === "string" &&
+            typeof candidate.source === "string"
+          ? [{
+            name: candidate.name,
+            description: candidate.description,
+            source: candidate.source,
+          }]
+          : [];
+      }),
+      diagnostics: typeof body.diagnostics === "number" ? body.diagnostics : 0,
+    };
   }
 
   /**

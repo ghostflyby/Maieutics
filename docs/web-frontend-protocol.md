@@ -160,6 +160,44 @@ turn commits, and unreferenced objects are pruned by `%session gc` after the
 grace period — a marker whose object was pruned fails typed (`not_found`),
 not silently.
 
+## Skill references (user-selected skills inside turn text)
+
+A frontend lets the user select a skill (its catalog comes from
+`GET /v1/skills` below) and references it inside the turn text with a
+**standard markdown link over the custom protocol**:
+
+```
+[<display text>](skill://<name>)
+```
+
+`<name>` is the catalog name (`[a-z0-9][a-z0-9-]{0,63}` — the same charset
+the `skill://` host uses) and is the reference identity; the link text is
+display metadata. The grammar is strict, and both sides must agree exactly:
+only the exact form is a reference — an uppercase letter, a path or query on
+the URL, a title, or stray whitespace is ordinary text and stays literal, so
+a hand-written look-alike degrades instead of injecting a skill body. A
+**backslash directly before the opening bracket** (`\[text](skill://name)`)
+suppresses recognition and the escape is consumed: that is the *mention*
+form, how a frontend encodes link-shaped text that is NOT a user selection.
+Frontends that track selections in an editor-side model use the mention form
+for link-shaped text the user did not select.
+
+At submission the server parses references out of the text (after attachment
+markers) and expands each distinct name once, in order of first appearance:
+the body is read fresh through the same `skill://` plane the model reads,
+bounded per marker, and appended as framed text parts after the turn's text
+and attachment parts — framed as user-selected instructions, so the model
+receives the selected body as a guarantee, not a pointer it may choose not
+to follow. Typed submission failures: a name not in the current catalog
+`404 skill_unknown` (pruned, renamed, inert, or disabled); the per-turn
+body budget (8 MiB across all references, 4 MiB per marker) exceeded
+`413 skill_budget_exceeded`. A host without a skill catalog answers
+`409 agent_configuration_error`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/skills` | The live skill catalog: `{skills: [{name, description, source}], diagnostics}` — active skills only; catalog freshness is the frontend's cache policy |
+
 ## Input requests (REPL stdin and MCP elicitation)
 
 A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
@@ -286,6 +324,7 @@ models.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/v1/agent/capabilities` | Protocol version, server version, workspace root, feature flags |
+| GET | `/v1/skills` | Live skill catalog for completion and pickers: `{skills: [{name, description, source}], diagnostics}` |
 | GET | `/v1/agent/session` | The foreground session (compatibility alias; id, turn count, persistence state, title) |
 | POST | `/v1/agent/sessions` | Start a new session and make it active |
 | GET | `/v1/agent/sessions` | List stored sessions with display metadata (persistence disabled → empty) |

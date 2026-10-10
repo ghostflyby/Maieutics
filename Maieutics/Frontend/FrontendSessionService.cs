@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Configuration;
+using Maieutics.Skills;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -37,6 +38,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Func<string?>? workspaceRootAccessor;
     private readonly SubagentEventBuffer? subagentEvents;
+    private readonly Skills.SkillCatalog? skillCatalog;
     private readonly ILogger logger;
     private readonly ConcurrentDictionary<string, SessionRunHub> hubs = new(StringComparer.Ordinal);
 
@@ -48,7 +50,8 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
         MaieuticsStatusProvider? statusProvider = null,
         Func<string?>? workspaceRootAccessor = null,
-        SubagentEventBuffer? subagentEvents = null)
+        SubagentEventBuffer? subagentEvents = null,
+        Skills.SkillCatalog? skillCatalog = null)
     {
         this.sessionManager = sessionManager;
         this.commandExecutor = commandExecutor;
@@ -58,6 +61,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         this.statusProvider = statusProvider;
         this.workspaceRootAccessor = workspaceRootAccessor;
         this.subagentEvents = subagentEvents;
+        this.skillCatalog = skillCatalog;
     }
 
     /// <summary>Executes a Maieutics command cell and returns its markdown answer plus
@@ -390,7 +394,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
         var session = ResolveSession(sessionId);
         ValidateTurnConfiguration();
-        var turn = BuildTurn(text);
+        var turn = await BuildTurnAsync(text, cancellationToken).ConfigureAwait(false);
         IAgentRun run;
         try
         {
@@ -482,16 +486,21 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     }
 
     /// <summary>Composes the turn from submitted text: attachment markers are parsed out and
-    /// become blob reference data parts (the store supplies the authoritative size), and the
-    /// remaining text stays the text part. A marker whose object was pruned or never ingested
-    /// fails the submission typed before a run starts.</summary>
-    private AgentTurn BuildTurn(string text)
+    /// become blob reference data parts (the store supplies the authoritative size), skill
+    /// reference markers are parsed from the attachment-free remainder and their bodies are
+    /// read fresh through the skill:// plane into framed text parts, and the remaining text
+    /// stays the text part. A marker whose object was pruned or never ingested, or a skill
+    /// reference whose name is not in the catalog, fails the submission typed before a run
+    /// starts.</summary>
+    private async Task<AgentTurn> BuildTurnAsync(string text, CancellationToken cancellationToken)
     {
-        var split = FrontendAttachmentMarkers.Split(text);
-        if (split.Markers.Count == 0) return AgentTurn.FromText(text);
+        var attachmentSplit = FrontendAttachmentMarkers.Split(text);
+        var skillSplit = FrontendSkillMarkers.Split(attachmentSplit.Remainder);
+        if (attachmentSplit.Markers.Count == 0 && skillSplit.Markers.Count == 0)
+            return AgentTurn.FromText(text);
 
         var described = new Dictionary<string, AgentObjectDescriptor>(StringComparer.Ordinal);
-        foreach (var marker in split.Markers)
+        foreach (var marker in attachmentSplit.Markers)
         {
             if (described.ContainsKey(marker.Sha256)) continue;
             if (sessionManager.DescribeObject(marker.Sha256) is not { } descriptor)
@@ -501,15 +510,30 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             described.Add(marker.Sha256, descriptor);
         }
 
-        var contents = ImmutableArray.CreateBuilder<AIContent>(split.Markers.Count + 1);
-        if (split.Remainder.Trim().Length > 0) contents.Add(new TextContent(split.Remainder));
-        foreach (var marker in split.Markers)
+        var contents = ImmutableArray.CreateBuilder<AIContent>();
+        if (skillSplit.Remainder.Trim().Length > 0) contents.Add(new TextContent(skillSplit.Remainder));
+        foreach (var marker in attachmentSplit.Markers)
         {
             contents.Add(AgentBlobContent.Create(new AgentObjectDescriptor(
                 marker.Sha256,
                 described[marker.Sha256].Size,
                 marker.MediaType,
                 marker.Name)));
+        }
+
+        if (skillCatalog is { } catalog)
+        {
+            var skillParts = await FrontendSkillExpansion.ExpandAsync(
+                new Skills.SkillResourceProvider(catalog),
+                skillSplit.Markers,
+                cancellationToken).ConfigureAwait(false);
+            foreach (var part in skillParts) contents.Add(part);
+        }
+        else if (skillSplit.Markers.Count > 0)
+        {
+            throw new FrontendFailureException(
+                FrontendErrors.ConfigurationError,
+                "The skill catalog is not available in this host; skill references are unavailable.");
         }
 
         return new AgentTurn(contents.ToImmutable());

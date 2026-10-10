@@ -184,7 +184,7 @@ Skills      -> Execution
 Plugins     -> DenoExecution, Control, Mcp, Skills
 Control     -> Plugins (host attach), DenoRepl (registry), Commands (agent sessions for the model-orchestration surface), Commands (agent sessions for the model-orchestration surface)
 Commands    -> Agent, Configuration, Execution, Mcp, Plugins, Skills
-Frontend    -> Agent, Commands, Configuration, DenoRepl, Persistence
+Frontend    -> Agent, Commands, Configuration, DenoRepl, Persistence, Skills
 Configuration -> Agent, Execution, Mcp, Plugins, Providers, Terminal
 ```
 

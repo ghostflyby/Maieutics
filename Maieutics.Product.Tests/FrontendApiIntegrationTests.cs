@@ -1824,7 +1824,12 @@ public sealed class FrontendApiIntegrationTests
             var code = cause is Maieutics.Agent.AgentException agentException
                 ? Maieutics.Frontend.FrontendErrors.MapAgentException(agentException)
                 : "agent_error";
-            return $"{outcome}, code={code}, cause={cause.GetType().Name}: {cause.Message}";
+            // A provider failure's interesting detail is its inner exception (the actual
+            // HTTP/SSE/socket failure); without it the verdict names only the wrapper.
+            var inner = cause.InnerException is { } wrapped
+                ? $" inner={wrapped.GetType().Name}: {wrapped.Message}"
+                : string.Empty;
+            return $"{outcome}, code={code}, cause={cause.GetType().Name}: {cause.Message}{inner}";
         }
 
         public async ValueTask DisposeAsync()
@@ -1941,6 +1946,8 @@ public sealed class FrontendApiIntegrationTests
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Task serveLoop;
+        private readonly Lock gate = new();
+        private readonly List<Task> connections = [];
 
         public HangingOpenAiServer()
         {
@@ -1970,8 +1977,17 @@ public sealed class FrontendApiIntegrationTests
             await cancellation.CancelAsync();
             listener.Stop();
             release.TrySetResult();
+            Task[] connectionTasks;
+            lock (gate)
+            {
+                connectionTasks = [.. connections];
+            }
+
             try
             {
+                // Every client task observes the cancellation (parked, answering, or
+                // holding the connection open for the client), so this settles promptly.
+                await Task.WhenAll(connectionTasks).ConfigureAwait(false);
                 // The accept loop settles once the listener stops; without observing
                 // it, a late ObjectDisposedException on the disposed CTS escapes.
                 await serveLoop.ConfigureAwait(false);
@@ -1993,7 +2009,11 @@ public sealed class FrontendApiIntegrationTests
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     var client = await listener.AcceptTcpClientAsync(cancellationToken);
-                    _ = ServeClientAsync(client, cancellationToken);
+                    Task connection = ServeClientAsync(client, cancellationToken);
+                    lock (gate)
+                    {
+                        connections.Add(connection);
+                    }
                 }
             }
             catch (Exception exception) when
@@ -2006,36 +2026,38 @@ public sealed class FrontendApiIntegrationTests
         {
             try
             {
-                await using var stream = client.GetStream();
+                var stream = client.GetStream();
                 Interlocked.Increment(ref connectionsOpened);
-                _ = DrainAsync(stream, cancellationToken);
+                // The request must be read in full before parking: the release can land
+                // while the client is still sending, and answering-and-closing a
+                // partially-sent request resets the connection under the client's
+                // response read — Windows discards the buffered response bytes on the
+                // reset, surfacing as an agent_provider_error flake on slow runners.
+                await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref parkedCount);
-                await release.Task;
+                await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 var body = Encoding.UTF8.GetBytes(
                     "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\ndata: [DONE]\n\n");
                 var headers = Encoding.ASCII.GetBytes(
                     $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken);
-                await stream.WriteAsync(body, cancellationToken);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException)
-            {
-            }
-        }
-
-        private async Task DrainAsync(NetworkStream stream, CancellationToken cancellationToken)
-        {
-            var buffer = new byte[4096];
-            try
-            {
-                while (await stream.ReadAsync(buffer, cancellationToken) > 0)
+                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                // Hold the connection open (keep-alive, like a real HTTP server) instead
+                // of disposing it right after the response: the close races the client's
+                // response read. The drain ends at the client's EOF or server disposal.
+                var buffer = new byte[4096];
+                while (await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) > 0)
                 {
                 }
             }
             catch (Exception exception) when
-                (exception is OperationCanceledException or IOException or ObjectDisposedException)
+                (exception is OperationCanceledException or EndOfStreamException or SocketException
+                or IOException or ObjectDisposedException or InvalidDataException or JsonException)
             {
+            }
+            finally
+            {
+                client.Dispose();
             }
         }
     }

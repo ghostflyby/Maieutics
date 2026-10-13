@@ -22,10 +22,10 @@ public sealed class AgentObjectViewTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(agentRoot))
-        {
-            Directory.Delete(agentRoot, recursive: true);
-        }
+        // The transcript store's SQLite handle can linger briefly past its dispose on
+        // Windows (WAL teardown, external scanners); retry on a time budget so a
+        // teardown lock never masks the test result.
+        TempDirectoryCleanup.DeleteWithRetry(agentRoot);
     }
 
     [Fact]

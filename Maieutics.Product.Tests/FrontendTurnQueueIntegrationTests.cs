@@ -23,6 +23,11 @@ public sealed class FrontendTurnQueueIntegrationTests
 
     private readonly ITestOutputHelper output;
 
+    /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
+    /// whether the run under test ever reached the provider gate. Null until a test that
+    /// needs the diagnostic sets it; one class instance serves exactly one test.</summary>
+    private GatedOpenAiServer? provider;
+
     public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
@@ -385,6 +390,8 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
         var provider = new GatedOpenAiServer();
+        // Exposed to the shared wait helpers for their timeout diagnostics.
+        this.provider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         Trace("harness booted");
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -603,15 +610,24 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(45));
         var polls = 0;
-        while (true)
+        try
         {
-            var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
-            polls++;
-            if (predicate(queue)) return queue;
+            while (true)
+            {
+                var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
+                polls++;
+                if (predicate(queue)) return queue;
 
-            if (polls % 10 == 0)
-                Trace($"queue poll #{polls}: {QueueSummary(queue)}");
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+                if (polls % 10 == 0)
+                    Trace($"queue poll #{polls}: {QueueSummary(queue)}");
+                await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                $"the queue state never matched after {polls} polls; provider parked={provider?.ParkedRequests.ToString() ?? "n/a"}",
+                exception);
         }
     }
 
@@ -774,9 +790,13 @@ public sealed class FrontendTurnQueueIntegrationTests
         catch (OperationCanceledException exception)
         {
             // The budgets above are sized for slow CI runners; a timeout here means the
-            // frames genuinely never came — name what the socket actually delivered.
+            // frames genuinely never came — name what the socket actually delivered and
+            // whether the run ever reached the provider gate (parked=0 means the
+            // submission itself stalled before issuing the provider request).
             throw new InvalidOperationException(
-                $"no matching queue.updated frame; frames seen: [{string.Join("; ", seen)}]", exception);
+                $"no matching queue.updated frame; provider parked={provider?.ParkedRequests.ToString() ?? "n/a"}; "
+                + $"frames seen: [{string.Join("; ", seen)}]",
+                exception);
         }
     }
 

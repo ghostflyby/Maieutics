@@ -136,15 +136,41 @@ async function testIdeExecutorAsync(): Promise<void> {
     "contents.value is a non-empty string",
   );
 
-  const problems = await executeIdeMethod("maieutics/problems", {}) as {
-    documents: { uri: string }[];
-    analyzedDocuments: number;
-  };
+  // The TS server publishes diagnostics asynchronously after answering
+  // hovers — on a cold CI runner that lag is seconds — so poll the problems
+  // answer until the planted error shows up (bounded), then assert on its
+  // content: the file must arrive with at least one real diagnostic.
+  let problems:
+    | { documents: { uri: string; diagnostics: unknown[] }[]; analyzedDocuments: number }
+    | undefined;
+  let waitedForProblemsMs = 0;
+  while (waitedForProblemsMs < HoverTimeoutMs) {
+    const attempt = await executeIdeMethod("maieutics/problems", {}) as {
+      documents: { uri: string; diagnostics: unknown[] }[];
+      analyzedDocuments: number;
+    };
+    const entry = attempt.documents.find((candidate) => candidate.uri === sampleUri.toString());
+    if (entry !== undefined && entry.diagnostics.length > 0) {
+      problems = attempt;
+      break;
+    }
+    await delay(HoverPollIntervalMs);
+    waitedForProblemsMs += HoverPollIntervalMs;
+  }
+  if (problems === undefined) {
+    throw new Error(
+      `maieutics/problems never carried ${sampleUri.toString()} with diagnostics within ${HoverTimeoutMs}ms.\n` +
+        `current problems: ${describeProblems()}`,
+    );
+  }
   assert(
     problems.documents.some((entry) => entry.uri === sampleUri.toString()),
-    `problems documents contain ${sampleUri.toString()} (got ${
-      problems.documents.map((entry) => entry.uri).join(", ") || "none"
-    })`,
+    `problems documents contain ${sampleUri.toString()}`,
+  );
+  assert(
+    (problems.documents.find((entry) => entry.uri === sampleUri.toString())?.diagnostics.length ??
+      0) >= 1,
+    "the planted type error arrives as a real diagnostic",
   );
   assert(
     problems.analyzedDocuments >= 1,

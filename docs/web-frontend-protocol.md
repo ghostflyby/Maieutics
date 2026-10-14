@@ -263,6 +263,49 @@ elicitation, or send `{"value":"", "action":"decline"|"cancel"}` to refuse. If t
 arrives, the request is cancelled server-side and any late answer is `404`.
 Dismissing the input box should post an empty value.
 
+## IDE requests (Problems and language services, ADR 0042)
+
+A frontend that can answer IDE requests — the extension host is the only
+process holding `vscode.*` — announces that on the **events upgrade request**:
+`GET /v1/agent/sessions/{sid}/events?…&ide=1`. The announcement is per
+socket and lapses when the connection closes; a kernel without a live
+announcing socket never offers the `ide_*` tools to a run.
+
+The kernel then asks questions by publishing an `ide.request` payload as an
+`application/json` **`tool.progress` content** on the requesting run's event
+stream — sequenced and replayable with the run's own events, so a reconnecting
+frontend receives the request again:
+
+```json
+{"type": "tool.progress", "runId": "…", "sequence": 7, "callId": "…",
+ "content": {"kind": "json", "value": {"ideRequest": {
+   "requestId": "ide-…", "method": "textDocument/hover",
+   "params": {"uri": "file:///…", "position": {"line": 41, "character": 6}}}}}}
+```
+
+The frontend answers:
+
+```
+POST /v1/agent/ide/{requestId}
+  body: {"value": <any JSON>}   or   {"error": {"code": "…", "message": "…"}}
+  → 200 {} | 400 | 404
+```
+
+Exactly one of `value` or `error` must be present. The kernel's tool call
+awaits the answer under its own timeout; a request that is no longer pending —
+already answered, timed out, or cancelled with the run — is a typed `404`
+that the frontend **absorbs silently**: replayed requests re-answer and land
+here, and that is not an error surface. The params travel kernel-translated:
+URIs are physical `file://` addresses and positions LSP 0-based
+`{line, character}`; results may use the same shapes and the kernel maps URIs
+back to the workspace domain and re-checks containment. The `method` values
+come from a fixed read catalog (`textDocument/hover`, `…/definition`,
+`…/references`, `…/documentSymbol`, `workspace/symbol`,
+`maieutics/problems`, and the rest of ADR 0042 decision 3); the kernel never
+sends outside it and there is no arbitrary-command passthrough. Write-group
+language operations return data only and are applied kernel-side through the
+gated edit path (later stage).
+
 ## Comm channels (interactive widgets and view families)
 
 Interactive widgets (ADR 0024) and native view families (ADR 0038, the
@@ -382,6 +425,7 @@ models.
 | POST | `/v1/agent/sessions/{sid}/turns` | Submit one Agent turn → `202 {runId}` |
 | GET | `/v1/agent/sessions/{sid}/transcript` | Authoritative history snapshot |
 | POST | `/v1/agent/runs/{runId}/cancel` | Cooperative cancel; waits for termination. A runId matching a live subagent child run of the session cancels that child |
+| POST | `/v1/agent/ide/{requestId}` | Answer an `ide.request` payload (ADR 0042) → `200 {}` (`400` invalid body, `404` no pending request) |
 | POST | `/v1/agent/commands` | Execute a `%`-command cell → `{markdown}` |
 | POST | `/v1/agent/complete` | Command completion for the current cell text |
 | GET | `/v1/model/profiles` | Selectable model profiles (id, provider, model, selected) |
@@ -489,7 +533,10 @@ group them without loading transcripts (schema v4 of the transcript store):
 WebSocket. The endpoint carries server→frontend frames only; the client sends
 nothing except the close. Because the browser-standard WebSocket API cannot set
 headers, this endpoint additionally accepts the bearer token as a `token` query
-parameter; every other endpoint requires the `Authorization` header. Frames are
+parameter; every other endpoint requires the `Authorization` header. The
+optional `ide=<version>` query parameter is the frontend's IDE-capability
+announcement (ADR 0042): per socket, lapsing with the connection, and gating
+whether the kernel publishes `ide.request` payloads to this session. Frames are
 JSON text:
 
 ```json

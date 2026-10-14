@@ -48,6 +48,8 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly IFrontendPluginSurface? pluginSurface;
     private readonly Skills.SkillCatalog? skillCatalog;
     private readonly Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor;
+    private readonly IdeRequestRegistry? ideRequests;
+    private readonly FrontendIdeSockets? ideSockets;
     private readonly ILogger<FrontendHost> logger;
     private readonly CancellationTokenSource lifetime = new();
     private readonly byte[] expectedToken;
@@ -63,12 +65,16 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendCommRouter? commRouter = null,
         IFrontendPluginSurface? pluginSurface = null,
         Skills.SkillCatalog? skillCatalog = null,
-        Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor = null)
+        Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor = null,
+        IdeRequestRegistry? ideRequests = null,
+        FrontendIdeSockets? ideSockets = null)
     {
         this.options = options;
         this.service = service;
         this.turnQueue = turnQueue;
         this.logger = logger;
+        this.ideRequests = ideRequests;
+        this.ideSockets = ideSockets;
         this.elicitationPresenter = elicitationPresenter
             ?? new FrontendElicitationPresenter(
                 NoFramesPublisher.Instance,
@@ -153,6 +159,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         endpoints.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms);
         endpoints.MapPost("/v1/agent/runs/{runId}/cancel", HandleCancel);
         endpoints.MapPost("/v1/agent/inputs/{requestId}", HandleInput);
+        endpoints.MapPost("/v1/agent/ide/{requestId}", HandleIdeAnswer);
         endpoints.MapGet("/v1/model/profiles", HandleModelProfiles);
         endpoints.MapPost("/v1/agent/commands", HandleCommand);
         endpoints.MapPost("/v1/agent/complete", HandleComplete);
@@ -688,6 +695,76 @@ internal sealed class FrontendHost : IAsyncDisposable
             FrontendJsonContext.Default.DictionaryStringObject).ConfigureAwait(false);
     }
 
+    /// <summary>Delivers an IDE request answer announced by an <c>ide.request</c> payload
+    /// (ADR 0042 decision 1): the body carries exactly one of the request's value or its
+    /// typed error. A request that is no longer pending — already answered, abandoned by a
+    /// timed-out or cancelled tool call, replayed by a reconnecting frontend, or unknown —
+    /// is a typed 404 that the answering frontend absorbs silently.</summary>
+    private async Task HandleIdeAnswer(HttpContext context, string requestId)
+    {
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendIdeAnswer)
+            .ConfigureAwait(false);
+        if (request is null) return;
+
+        if (ideRequests is null)
+        {
+            await WriteErrorAsync(
+                context,
+                FrontendErrors.NotFound,
+                "The IDE request surface is not available in this host.");
+            return;
+        }
+
+        if (request.Value is not null && request.Error is not null)
+        {
+            await WriteErrorAsync(
+                context,
+                FrontendErrors.InvalidRequest,
+                "The IDE answer must carry exactly one of 'value' or 'error'.");
+            return;
+        }
+
+        IdeRequestAnswer answer;
+        if (request.Error is { } error)
+        {
+            if (string.IsNullOrWhiteSpace(error.Code) || string.IsNullOrWhiteSpace(error.Message))
+            {
+                await WriteErrorAsync(
+                    context,
+                    FrontendErrors.InvalidRequest,
+                    "The IDE answer error must carry a code and a message.");
+                return;
+            }
+
+            answer = IdeRequestAnswer.FromError(error.Code, error.Message);
+        }
+        else if (request.Value is { } value)
+        {
+            answer = IdeRequestAnswer.FromValue(value);
+        }
+        else
+        {
+            await WriteErrorAsync(
+                context,
+                FrontendErrors.InvalidRequest,
+                "The IDE answer must carry exactly one of 'value' or 'error'.");
+            return;
+        }
+
+        if (!ideRequests.TryComplete(requestId, answer))
+        {
+            await WriteErrorAsync(
+                context,
+                FrontendErrors.NotFound,
+                $"No pending ide request matches '{requestId}'.");
+            return;
+        }
+
+        await context.Response.WriteAsJsonAsync(
+            new Dictionary<string, object?>(),
+            FrontendJsonContext.Default.DictionaryStringObject).ConfigureAwait(false);
+    }
+
     private async Task HandleCommand(HttpContext context)
     {
         var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendCommandRequest)
@@ -784,6 +861,14 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
+        // The IDE capability announcement rides the upgrade request (ADR 0042 decision 2):
+        // the events stream is half-duplex, so a query parameter beside `token` is the only
+        // per-socket channel; it is per socket and cleared on disconnect.
+        var ideAnnounced =
+            context.Request.Query.TryGetValue("ide", out var rawIde) &&
+            int.TryParse(rawIde, out var ideVersion) &&
+            ideVersion == FrontendIdeSockets.Version;
+
         var singleRunId = context.Request.Query.TryGetValue("runId", out var rawRun)
             ? rawRun.ToString()
             : null;
@@ -806,11 +891,13 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        if (ideAnnounced) ideSockets?.Announce(sessionId);
         logger.LogDebug(
-            "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}).",
+            "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}, ide {IdeAnnounced}).",
             sessionId,
             context.Request.Path,
-            since);
+            since,
+            ideAnnounced);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
             lifetime.Token);
@@ -909,6 +996,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
+            if (ideAnnounced) ideSockets?.Withdraw(sessionId);
             await peer.CancelAsync().ConfigureAwait(false);
             await drain.ConfigureAwait(false);
             logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);

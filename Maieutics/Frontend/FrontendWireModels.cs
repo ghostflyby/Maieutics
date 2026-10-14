@@ -174,6 +174,17 @@ internal sealed record FrontendInputAnswer(
     [property: JsonPropertyName("value")] string Value,
     [property: JsonPropertyName("action")] string? Action = null);
 
+/// <summary>An IDE request answer body (frontend to server, ADR 0042 decision 1):
+/// exactly one of the request's <c>value</c> or its typed <c>error</c>.</summary>
+internal sealed record FrontendIdeAnswer(
+    [property: JsonPropertyName("value")] JsonElement? Value = null,
+    [property: JsonPropertyName("error")] FrontendIdeError? Error = null);
+
+/// <summary>The typed error side of an IDE request answer.</summary>
+internal sealed record FrontendIdeError(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("message")] string Message);
+
 /// <summary>A typed protocol error body.</summary>
 internal sealed record FrontendError(
     [property: JsonPropertyName("code")] string Code,
@@ -318,6 +329,8 @@ internal sealed record FrontendPromptList(
 [JsonSerializable(typeof(FrontendModelProfile[]))]
 [JsonSerializable(typeof(FrontendStatusResponse))]
 [JsonSerializable(typeof(FrontendInputAnswer))]
+[JsonSerializable(typeof(FrontendIdeAnswer))]
+[JsonSerializable(typeof(FrontendIdeError))]
 [JsonSerializable(typeof(FrontendError))]
 [JsonSerializable(typeof(FrontendCommHello))]
 [JsonSerializable(typeof(FrontendCommDescriptor[]))]

@@ -54,6 +54,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     private readonly List<Task> retiredGenerations = [];
     private readonly TerminalFunctions terminalFunctions;
+    private readonly IdeToolFamily? ideTools;
     private readonly TimeProvider timeProvider;
     private long completedReloadAttempt;
     private long completedReloadRequest;
@@ -81,7 +82,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
-        PermissionOverrideRegistry? permissionOverrides = null)
+        PermissionOverrideRegistry? permissionOverrides = null,
+        IdeToolFamily? ideTools = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -93,6 +95,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
+        this.ideTools = ideTools;
 
         var candidate = CreateCandidate();
 
@@ -104,11 +107,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     internal long ReloadAttempt => Interlocked.Read(ref reloadAttempt);
 
-    /// <summary>Every built-in tool name plus the capability-gated terminal tool names. MCP and plugin tools
-    /// must never collide with these, even though terminal tools are only visible when the endpoint hosts
-    /// the Shell capability: the run still assembles them from the same namespace.</summary>
+    /// <summary>Every built-in tool name plus the capability-gated terminal tool names and
+    /// the connection-gated IDE tool names (ADR 0042 decision 9). MCP and plugin tools must
+    /// never collide with these even while the gated families are hidden from a run.</summary>
     internal HashSet<string> ReservedToolNames => [.. builtInTools.Select(static function => function.Name),
-        .. terminalFunctions.Functions.Select(static function => function.Name)];
+        .. terminalFunctions.Functions.Select(static function => function.Name),
+        .. ideTools?.Tools.Select(static function => function.Name) ?? []];
 
     internal long CompletedReloadAttempt => Interlocked.Read(ref completedReloadAttempt);
 
@@ -344,6 +348,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
         tools.AddRange(builtInTools);
         if (selection.HostedCapabilities.Contains(TerminalShellCapability, StringComparer.OrdinalIgnoreCase))
             tools.AddRange(terminalFunctions.Functions);
+        // The IDE family rides live connection state, not a profile capability (ADR 0042
+        // decision 9): present when any frontend socket announced ide, absent otherwise —
+        // a headless host never offers the family, and per-session liveness is re-checked
+        // at invocation.
+        if (ideTools is { } family && family.Gate.HasIdeFrontend)
+            tools.AddRange(family.Tools);
         // Global exposed-name uniqueness across the whole MCP union (ADR 0034):
         // adjustment chains can rename tools into collisions that no single server
         // sees, so the union point is the only place the guard can live. The later

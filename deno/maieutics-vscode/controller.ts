@@ -77,6 +77,15 @@ import {
 import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
 import { coerceField, planElicitation } from "./elicitation.ts";
+import {
+  collectProblems,
+  extractIdeRequest,
+  ideCommandArgs,
+  ideMethodCommands,
+  type IdeRequestPayload,
+  isIdeMethodSupported,
+  normalizeHoverContents,
+} from "./ide.ts";
 import { childRunsOfParent, resolveFrameOwner } from "./runRouting.ts";
 import { encodeSkillSubmission } from "./skillInteraction.ts";
 
@@ -912,6 +921,61 @@ class NotebookStream {
   }
 }
 
+/** Executes one catalog IDE method against the VS Code language services
+ * (ADR 0042 stage A). Params arrive kernel-translated — physical `file://` URIs,
+ * LSP 0-based positions — and results return verbatim except hover contents,
+ * which normalize to MarkupContent, and Problems, which filter to the
+ * workspace. Only the fixed table dispatches; arbitrary command names never
+ * reach executeCommand. */
+async function executeIdeMethod(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  if (method === "maieutics/problems") {
+    const wanted = typeof params.uri === "string" ? vscode.Uri.parse(params.uri) : undefined;
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const entries = wanted === undefined
+      ? vscode.languages.getDiagnostics() as [
+        uri: { fsPath?: string; toString(): string },
+        diagnostics: unknown,
+      ][]
+      : [[wanted, vscode.languages.getDiagnostics(wanted)] as [
+        uri: { fsPath?: string; toString(): string },
+        diagnostics: unknown,
+      ]];
+    return collectProblems(entries, wanted?.toString(), roots);
+  }
+
+  const command = ideMethodCommands[method];
+  const args = ideCommandArgs(method, params).map(materializeIdeArg);
+  const result = await vscode.commands.executeCommand(command, ...args);
+  if (
+    method === "textDocument/hover" && typeof result === "object" && result !== null &&
+    "contents" in result
+  ) {
+    const hover = result as { contents: unknown; range?: unknown };
+    return { contents: normalizeHoverContents(hover.contents), range: hover.range };
+  }
+
+  return result;
+}
+
+/** Converts URI strings and URI-bearing hierarchy items into the vscode objects
+ * the built-in provider commands accept; everything else passes through. */
+function materializeIdeArg(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.startsWith("file:") ? vscode.Uri.parse(value) : value;
+  }
+  if (Array.isArray(value)) return value.map(materializeIdeArg);
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    if (typeof record.uri === "string") {
+      return { ...record, uri: vscode.Uri.parse(record.uri) };
+    }
+  }
+  return value;
+}
+
 /** Folds frames for one run and paints the cell output with throttling. */
 class RunExecution {
   private readonly view: TurnView;
@@ -1074,6 +1138,15 @@ class RunExecution {
       void this.answerInputRequest(frame);
       return;
     }
+    // An `ide.request` payload rides tool.progress (ADR 0042 stage A): answer it
+    // and never paint the raw JSON progress item into the cell.
+    if (frame.type === "tool.progress") {
+      const request = extractIdeRequest(frame);
+      if (request !== undefined) {
+        void this.answerIdeRequest(request);
+        return;
+      }
+    }
     if (!this.view.apply(frame)) return;
     if (this.view.isTerminal) {
       if (this.paintTimer !== null) {
@@ -1095,8 +1168,41 @@ class RunExecution {
    * settles the PARENT run and ends its cell execution. */
   applyChild(frame: EventFrame): void {
     if (this.settled) return;
+    // A child run may have been narrowed onto the ide tools; its requests
+    // answer exactly like a parent's (and paint nothing).
+    if (frame.type === "tool.progress") {
+      const request = extractIdeRequest(frame);
+      if (request !== undefined) {
+        void this.answerIdeRequest(request);
+        return;
+      }
+    }
     if (!this.view.applySubagent(frame)) return;
     this.paint();
+  }
+
+  /** Answers one `ide.request` payload (ADR 0042 stage A): dispatches through
+   * the fixed read catalog, posts `{value}` or a typed `{error}`, and absorbs
+   * the 404 a replayed or already-settled request draws — replay noise is not
+   * an error surface. */
+  private async answerIdeRequest(request: IdeRequestPayload): Promise<void> {
+    let answer: { value?: unknown; error?: { code: string; message: string } };
+    try {
+      if (!isIdeMethodSupported(request.method)) {
+        answer = {
+          error: {
+            code: "ide_method_unsupported",
+            message: `The method '${request.method}' is not in the IDE read catalog.`,
+          },
+        };
+      } else {
+        answer = { value: await executeIdeMethod(request.method, request.params) };
+      }
+    } catch (error) {
+      answer = { error: { code: "ide_provider_error", message: String(error) } };
+    }
+
+    await this.client.submitIdeAnswer(request.requestId, answer).catch(() => {});
   }
 
   fail(code: string, message: string): void {

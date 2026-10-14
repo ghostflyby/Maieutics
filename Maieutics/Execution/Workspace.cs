@@ -228,6 +228,86 @@ internal sealed partial record WorkspaceSnapshot(
         return builder.ToString();
     }
 
+    /// <summary>Maps a physical filesystem path back to its logical workspace URI
+    /// (ADR 0042 decision 4): descendants of the root map to plain logical paths and
+    /// descendants of a registered link's canonical target map through
+    /// <c>projects/&lt;name&gt;</c> (longest target wins for nested links); everything
+    /// else — files outside the workspace, foreign links — returns false so callers drop
+    /// the entry with a count instead of leaking out-of-workspace locations.</summary>
+    internal bool TryMapPhysicalToWorkspaceUri(string physicalPath, out string? workspaceUri)
+    {
+        workspaceUri = null;
+        if (string.IsNullOrWhiteSpace(physicalPath)) return false;
+
+        string candidate;
+        try
+        {
+            candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(physicalPath));
+        }
+        catch (Exception exception) when
+            (exception is ArgumentException or NotSupportedException or PathTooLongException
+                or System.Security.SecurityException)
+        {
+            return false;
+        }
+
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var root = Path.TrimEndingDirectorySeparator(RootPath);
+
+        IReadOnlyList<string> segments;
+        if (candidate.Equals(root, comparison))
+        {
+            segments = [];
+        }
+        else if (IsUnder(candidate, root, comparison))
+        {
+            segments = SplitRelative(candidate[(root.Length + 1)..]);
+        }
+        else
+        {
+            string? matchedName = null;
+            string? matchedRest = null;
+            var matchedLength = -1;
+            if (Links is not null)
+            {
+                foreach (var (name, target) in Links.TargetsByName)
+                {
+                    var trimmedTarget = Path.TrimEndingDirectorySeparator(target);
+                    string rest;
+                    if (candidate.Equals(trimmedTarget, comparison)) rest = string.Empty;
+                    else if (IsUnder(candidate, trimmedTarget, comparison)) rest = candidate[(trimmedTarget.Length + 1)..];
+                    else continue;
+                    if (trimmedTarget.Length <= matchedLength) continue;
+                    matchedName = name;
+                    matchedRest = rest;
+                    matchedLength = trimmedTarget.Length;
+                }
+            }
+
+            if (matchedName is null) return false;
+            var linkSegments = new List<string> { WorkspaceHome.ProjectsDirectoryName, matchedName };
+            linkSegments.AddRange(SplitRelative(matchedRest!));
+            segments = linkSegments;
+        }
+
+        workspaceUri = ToWorkspaceUri(segments);
+        return true;
+    }
+
+    private static bool IsUnder(string candidate, string prefix, StringComparison comparison)
+    {
+        return candidate.Length > prefix.Length + 1 &&
+               candidate[prefix.Length] is '/' or '\\' &&
+               candidate.StartsWith(prefix, comparison);
+    }
+
+    private static string[] SplitRelative(string relative)
+    {
+        return relative.Length == 0
+            ? []
+            : relative.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+    }
+
     /// <summary>The logical, decoded, forward-slash path used in diff headers: unlike the
     /// percent-escaped wire URI it is the plain path past the workspace root.</summary>
     internal static string ToDisplayPath(IReadOnlyList<string> segments)

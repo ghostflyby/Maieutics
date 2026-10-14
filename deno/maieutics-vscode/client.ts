@@ -29,6 +29,7 @@ import type {
   Transcript,
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
+import { IdeCapabilityVersion } from "./ide.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
  * import surface with the client's queue API). */
@@ -459,6 +460,24 @@ export class FrontendClient {
     await response.body?.cancel();
   }
 
+  /** Answers an `ide.request` payload (ADR 0042 decision 1). Returns false when
+   * the kernel no longer holds the request pending — answered, timed out,
+   * cancelled, or replayed by this very reconnect — which callers absorb
+   * silently; replay must never become an error surface. */
+  async submitIdeAnswer(
+    requestId: string,
+    answer: { value?: unknown; error?: { code: string; message: string } },
+  ): Promise<boolean> {
+    const response = await this.fetchJson("POST", `/v1/agent/ide/${requestId}`, answer);
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return false;
+    }
+    if (!response.ok) throw await this.errorOf(response);
+    await response.body?.cancel();
+    return true;
+  }
+
   async cancelRun(runId: string, signal?: AbortSignal): Promise<void> {
     const response = await this.fetchJson(
       "POST",
@@ -691,9 +710,12 @@ export class FrontendClient {
     messages: AsyncGenerator<EventFrame>;
   } {
     // The standard WebSocket API cannot set headers, so the events endpoint accepts the
-    // bearer token as a query parameter (loopback-only internal API).
+    // bearer token as a query parameter (loopback-only internal API). The `ide` parameter
+    // is the per-socket IDE capability announcement (ADR 0042 decision 2): it makes this
+    // socket a recipient of ide.request payloads and lapses with the connection.
     const url = `${this.baseUrl}/v1/agent/sessions/${sessionId}/events` +
-      `?sinceSequence=${sinceSequence}&token=${encodeURIComponent(this.token)}`;
+      `?sinceSequence=${sinceSequence}&token=${encodeURIComponent(this.token)}` +
+      `&ide=${IdeCapabilityVersion}`;
     const socket = new WebSocket(url.replace("http://", "ws://"));
 
     // Frames can arrive in the same network turn as the handshake response, so every

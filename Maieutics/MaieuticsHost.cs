@@ -306,6 +306,21 @@ public static class MaieuticsHost
             new FrontendElicitationPresenter(
                 services.GetRequiredService<IFrontendSessionFramePublisher>(),
                 services.GetRequiredService<FrontendFormModelHost>()));
+        // The IDE capability bridge (ADR 0042 stage A): per-socket announcements back the
+        // profile gate, and the registry correlates ide.request payloads with their
+        // /v1/agent/ide answers. Registered unconditionally so a host without a frontend
+        // simply never sees an announcing socket (the family stays out of every profile).
+        builder.Services.AddSingleton<FrontendIdeSockets>();
+        builder.Services.AddSingleton<IIdeFrontendGate>(static services =>
+            services.GetRequiredService<FrontendIdeSockets>());
+        builder.Services.AddSingleton<IdeRequestRegistry>();
+        builder.Services.AddSingleton<IdeFunctions>(static services => new IdeFunctions(
+            services.GetRequiredService<Workspace>(),
+            services.GetRequiredService<IdeRequestRegistry>(),
+            services.GetRequiredService<IIdeFrontendGate>()));
+        builder.Services.AddSingleton(static services => new IdeToolFamily(
+            services.GetRequiredService<IdeFunctions>().Functions,
+            services.GetRequiredService<IIdeFrontendGate>()));
         // Deferred: resolving the real presenter here would close a construction cycle
         // back into MaieuticsRuntimeConfiguration (it consumes IMcpElicitationPresenter).
         builder.Services.AddSingleton<IMcpElicitationPresenter>(static services =>

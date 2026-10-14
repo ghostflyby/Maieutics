@@ -1698,6 +1698,16 @@ public sealed class FrontendApiIntegrationTests
         public Maieutics.Configuration.MaieuticsRuntimeConfiguration RuntimeConfiguration =>
             host.Services.GetRequiredService<Maieutics.Configuration.MaieuticsRuntimeConfiguration>();
 
+        /// <summary>The IDE request registry, so endpoint tests can place pending requests
+        /// and complete them through the real answer route (ADR 0042).</summary>
+        public IdeRequestRegistry IdeRequests =>
+            host.Services.GetRequiredService<IdeRequestRegistry>();
+
+        /// <summary>The live IDE announcement gate, so tests observe the per-socket
+        /// capability lifecycle without driving a run.</summary>
+        public Maieutics.Configuration.IIdeFrontendGate IdeGate =>
+            host.Services.GetRequiredService<Maieutics.Configuration.IIdeFrontendGate>();
+
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real
         /// input-answer endpoint.</summary>
@@ -1746,13 +1756,15 @@ public sealed class FrontendApiIntegrationTests
         public async Task<FrontendEventsConnection> OpenEventsAsync(
             string sessionId,
             CancellationToken cancellationToken,
-            long sinceSequence = 0)
+            long sinceSequence = 0,
+            bool announceIde = false)
         {
             var socket = new ClientWebSocket();
             socket.Options.SetRequestHeader("Authorization", $"Bearer {Token}");
+            var ide = announceIde ? "&ide=1" : string.Empty;
             await socket.ConnectAsync(
                 new Uri(
-                    $"{Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events?sinceSequence={sinceSequence}"),
+                    $"{Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events?sinceSequence={sinceSequence}{ide}"),
                 cancellationToken);
             return new FrontendEventsConnection(socket);
         }

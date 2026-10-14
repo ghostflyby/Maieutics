@@ -147,6 +147,34 @@ export function normalizeHoverContents(contents: unknown): MarkupContent {
   return { kind: "plaintext", value: "" };
 }
 
+/** The normalized wire shape of one hover answer (ADR 0042 decision 4):
+ * LSP-shaped single hover with MarkupContent contents. */
+export interface HoverAnswer {
+  readonly contents: MarkupContent;
+  readonly range?: unknown;
+}
+
+/** Folds the raw `vscode.executeHoverProvider` result into the wire answer.
+ * The provider command answers `Hover[]` (one entry per registered provider);
+ * a lone hover-shaped object is accepted too. The answer is the first hover
+ * carrying contents, normalized; `undefined` when nothing carries a payload
+ * (no provider has answered yet), so the caller passes the raw result through
+ * and polling callers keep seeing "not yet". */
+export function normalizedHoverAnswer(result: unknown): HoverAnswer | undefined {
+  const hover = Array.isArray(result)
+    ? result.find((entry): entry is Record<string, unknown> =>
+      typeof entry === "object" && entry !== null && "contents" in entry
+    )
+    : typeof result === "object" && result !== null && "contents" in result
+    ? result as Record<string, unknown>
+    : undefined;
+  if (hover === undefined) return undefined;
+  return {
+    contents: normalizeHoverContents(hover.contents),
+    ...(hover.range !== undefined ? { range: hover.range } : {}),
+  };
+}
+
 /** Plain-diagnostic shape the Problems answer carries (LSP-compatible: severity
  * number, 0-based range, message, optional source and code). */
 export interface DiagnosticJson {

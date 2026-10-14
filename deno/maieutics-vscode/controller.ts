@@ -84,7 +84,7 @@ import {
   ideMethodCommands,
   type IdeRequestPayload,
   isIdeMethodSupported,
-  normalizeHoverContents,
+  normalizedHoverAnswer,
 } from "./ide.ts";
 import { childRunsOfParent, resolveFrameOwner } from "./runRouting.ts";
 import { encodeSkillSubmission } from "./skillInteraction.ts";
@@ -927,7 +927,7 @@ class NotebookStream {
  * which normalize to MarkupContent, and Problems, which filter to the
  * workspace. Only the fixed table dispatches; arbitrary command names never
  * reach executeCommand. */
-async function executeIdeMethod(
+export async function executeIdeMethod(
   method: string,
   params: Record<string, unknown>,
 ): Promise<unknown> {
@@ -949,12 +949,15 @@ async function executeIdeMethod(
   const command = ideMethodCommands[method];
   const args = ideCommandArgs(method, params).map(materializeIdeArg);
   const result = await vscode.commands.executeCommand(command, ...args);
-  if (
-    method === "textDocument/hover" && typeof result === "object" && result !== null &&
-    "contents" in result
-  ) {
-    const hover = result as { contents: unknown; range?: unknown };
-    return { contents: normalizeHoverContents(hover.contents), range: hover.range };
+  if (method === "textDocument/hover") {
+    // The provider command answers Hover[] (one entry per registered
+    // provider); the wire answer is the documented single {contents, range}
+    // shape with MarkupContent contents (ADR 0042 decision 4) — a raw SDK
+    // hover never crosses the bridge. When no provider answered with a
+    // payload yet, the raw result passes through so polling callers keep
+    // seeing "not yet".
+    const answer = normalizedHoverAnswer(result);
+    if (answer !== undefined) return answer;
   }
 
   return result;

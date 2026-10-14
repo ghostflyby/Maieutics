@@ -191,16 +191,25 @@ async function resolveInstallAsync(): Promise<ResolvedInstall> {
  * (the host then dies with `listen EINVAL`), so the scratch tree lives
  * directly under /tmp where the full socket path stays short. */
 async function makeScratchDirAsync(): Promise<string> {
+  let scratch: string;
   if (Deno.build.os !== "windows") {
     try {
       if ((await Deno.stat("/tmp")).isDirectory) {
-        return await Deno.makeTempDir({ dir: "/tmp", prefix: "maieutics-vscode-test-" });
+        scratch = await Deno.makeTempDir({ dir: "/tmp", prefix: "maieutics-vscode-test-" });
+      } else {
+        scratch = await Deno.makeTempDir({ prefix: "maieutics-vscode-test-" });
       }
     } catch {
       // No /tmp (unusual) — fall through to the default temp dir.
+      scratch = await Deno.makeTempDir({ prefix: "maieutics-vscode-test-" });
     }
+  } else {
+    scratch = await Deno.makeTempDir({ prefix: "maieutics-vscode-test-" });
   }
-  return await Deno.makeTempDir({ prefix: "maieutics-vscode-test-" });
+  // Canonicalize: on macOS /tmp is a symlink to /private/tmp, and VS Code
+  // reports canonical fsPaths in its diagnostics URIs — an uncanonical
+  // workspace root fails the problems answer's workspace-prefix filter.
+  return await Deno.realPath(scratch);
 }
 
 /** The pollable child on platforms that start the binary directly; undefined
@@ -262,9 +271,11 @@ async function launchAsync(
   let args = [...flags, workspaceDir];
   if (Deno.build.os === "linux" && await whichAsync("xvfb-run") !== undefined) {
     // CI's headless boxes have no display; the external xvfb-run wraps the
-    // binary in a virtual one. A desktop Linux without xvfb-run still works.
+    // binary in a virtual one. The binary must be xvfb-run's first argument —
+    // the VS Code flags belong to it, not to xvfb-run's own option parser. A
+    // desktop Linux without xvfb-run still works.
     command = "xvfb-run";
-    args = ["-a", ...args];
+    args = ["-a", install.target, ...flags, workspaceDir];
     console.log("launching under xvfb-run");
   }
   return {

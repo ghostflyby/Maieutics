@@ -310,6 +310,7 @@ public sealed class FrontendIdeBridgeTests
     [Fact(Timeout = 30_000)]
     public void PhysicalPathsMapBackOnlyInsideTheWorkspace()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
         var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
         var root = Path.TrimEndingDirectorySeparator(workspace.Path);

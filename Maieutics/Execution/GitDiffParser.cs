@@ -146,7 +146,7 @@ internal static partial class GitDiffParser
         {
             if (hunks.Count >= MaxHunkLines)
                 throw TooLarge($"file '{newPath}' carries more than {MaxHunkLines} hunks.");
-            var (oldStart, expectedOld, expectedNew) = ParseHunkHeader(lines[index], newPath);
+            var (oldStart, expectedOld, expectedNew) = ParseHunkHeader(lines[index], newPath ?? "(null path)");
             index++;
             var body = ImmutableArray.CreateBuilder<GitDiffLine>();
             var seenOld = 0;

@@ -89,7 +89,6 @@ import {
   ideMethodCommands,
   type IdeRequestPayload,
   isIdeMethodSupported,
-  isValidIdeFolderId,
   isValidIdeFsSegment,
   normalizedHoverAnswer,
   textEditsToWire,
@@ -940,7 +939,7 @@ const ideFolders = new IdeFolderRegistry();
 
 /** Maps the editor's FileSystemError family onto the typed fs codes; the
  * physical target URI is stripped before any of this crosses to the model. */
-function ideFsError(error: unknown, target: vscode.Uri): Error {
+function ideFsError(error: unknown): Error {
   const code = (error as { code?: unknown }).code;
   const mapped = code === "FileNotFound"
     ? "fs_not_found"
@@ -1007,7 +1006,7 @@ async function executeIdeFs(
     try {
       listed = await vscode.workspace.fs.readDirectory(target);
     } catch (error) {
-      throw ideFsError(error, target);
+      throw ideFsError(error);
     }
     return fsEntriesAnswer(
       listed.map(([name, fileType]) => ({
@@ -1022,7 +1021,7 @@ async function executeIdeFs(
   try {
     bytes = await vscode.workspace.fs.readFile(target);
   } catch (error) {
-    throw ideFsError(error, target);
+    throw ideFsError(error);
   }
   if (bytes.byteLength > 1024 * 1024) {
     throw Object.assign(

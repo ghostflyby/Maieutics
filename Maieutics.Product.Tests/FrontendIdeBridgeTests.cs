@@ -30,7 +30,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -68,7 +68,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var navigate = Function(functions.Functions, "ide_navigate");
         var physical = new Uri(Path.Combine(workspace.Path, "b.cs")).AbsoluteUri;
@@ -96,7 +96,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path, TestTimeout);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path, TestTimeout);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -123,7 +123,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -154,7 +154,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         var symbols = Function(functions.Functions, "ide_document_symbols");
 
         var invocation = await InvokeAsync(
@@ -174,7 +174,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path, TestTimeout);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path, TestTimeout);
         gate.Connected = true;
         var escape = Function(functions.Functions, "ide_request");
 
@@ -216,7 +216,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var diagnostics = Function(functions.Functions, "ide_diagnostics");
         var physical = new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri;
@@ -284,7 +284,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -339,7 +339,7 @@ public sealed class FrontendIdeBridgeTests
         File.WriteAllText(
             Path.Combine(workspace.Path, "a.cs"),
             "alpha\nbeta\ngamma\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -364,7 +364,7 @@ public sealed class FrontendIdeBridgeTests
         File.WriteAllText(
             Path.Combine(workspace.Path, "a.cs"),
             "dup\nkeep\ndup\nkeep\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -386,7 +386,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "dup\nkeep\ndup\nkeep\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -407,7 +407,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "alpha\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -428,7 +428,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\nmiddle\nend\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
         const string patch = "*** Begin Patch\n*** Update File: a.cs\n@@\n-middle\n+middle updated\n*** End Patch";
@@ -450,7 +450,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\nmiddle\nend\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
         const string patch = "--- a/a.cs\n+++ b/a.cs\n@@ -1,3 +1,3 @@\n start\n-middle\n+middle updated\n end";
@@ -472,7 +472,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
         const string patch = "--- a/other.cs\n+++ b/other.cs\n@@ -1 +1 @@\n-x\n+y";
@@ -495,7 +495,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -569,7 +569,7 @@ public sealed class FrontendIdeBridgeTests
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\ntwo\n");
         File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var apply = Function(functions.Functions, "ide_apply_edit");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -607,7 +607,7 @@ public sealed class FrontendIdeBridgeTests
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\n");
         File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var apply = Function(functions.Functions, "ide_apply_edit");
 
@@ -647,7 +647,7 @@ public sealed class FrontendIdeBridgeTests
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\n");
         File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
-        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var apply = Function(functions.Functions, "ide_apply_edit");
 
@@ -671,7 +671,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "  x\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var format = Function(functions.Functions, "ide_format_document");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -708,7 +708,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "x\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var actions = Function(functions.Functions, "ide_code_actions");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -748,7 +748,7 @@ public sealed class FrontendIdeBridgeTests
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "symbol\n");
-        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var rename = Function(functions.Functions, "ide_rename");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -777,7 +777,89 @@ public sealed class FrontendIdeBridgeTests
         changes.EnumerateObject().Should().ContainSingle().Which.Name.Should().Be("workspace://local/a.cs");
     }
 
+    // ---------- stage D: the script/plugin channel (direct push) ----------
+
+    /// <summary>Script-style arguments: no agent tool context in the bag —
+    /// exactly what the control-plane invocation path hands the tools.</summary>
+    private static AIFunctionArguments NoContextArguments(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return new AIFunctionArguments(document.RootElement.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => (object?)property.Value.Clone()));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ScriptChainPushesAStandaloneFrameAndCompletesWithoutAgentContext()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "x\n");
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
+
+        var frames = new List<FrontendEventFrame>();
+        var registration = sockets.Announce(
+            "script-session",
+            (frame, _) =>
+            {
+                frames.Add(frame);
+                var data = frame.Data!.Value;
+                var requestId = data.GetProperty("requestId").GetString()!;
+                registry.TryComplete(
+                    requestId,
+                    IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                        "[{\"contents\":{\"kind\":\"markdown\",\"value\":\"x\"},\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}}}]"
+                    ).RootElement.Clone()));
+                return Task.CompletedTask;
+            });
+        try
+        {
+            var invocation = await InvokeAsync(
+                hover,
+                NoContextArguments("""{"uri":"workspace://local/a.cs","select":{"line":1,"column":1}}"""),
+                cancellationToken);
+
+            invocation.Failure.Should().BeNull();
+            var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
+            result.GetArrayLength().Should().Be(1, "the hover answer is the provider's Hover[] shape");
+            var hover0 = result[0];
+            hover0.GetProperty("contents").GetProperty("kind").GetString().Should().Be("markdown");
+            var frame = frames.Should().ContainSingle().Which;
+            frame.Type.Should().Be("ide.request", "raw=" + frame.Data?.GetRawText());
+            frame.Data!.Value.GetProperty("requestId").GetString().Should().NotBeEmpty();
+            frame.Data!.Value.GetProperty("method").GetString().Should().Be("textDocument/hover");
+            frame.Sequence.Should().BeNull("direct pushes are unordered and not replayed");
+        }
+        finally
+        {
+            sockets.Withdraw("script-session", registration);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ScriptChainWithoutAnnouncersFailsTypedUnavailable()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "x\n");
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path, TimeSpan.FromMilliseconds(500));
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+
+        var invocation = await InvokeAsync(
+            hover,
+            NoContextArguments("""{"uri":"workspace://local/a.cs","select":{"line":1,"column":1}}"""),
+            cancellationToken);
+
+        invocation.Failure.Should().NotBeNull();
+        invocation.Failure!.Code.Should().Be("ide_unavailable");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
+
 
 
 
@@ -954,21 +1036,23 @@ public sealed class FrontendIdeBridgeTests
 
     // ---------- helpers ----------
 
-    private static (IdeFunctions functions, IdeRequestRegistry registry, FakeGate gate) CreateFunctions(
+    private static (IdeFunctions functions, IdeRequestRegistry registry, FakeGate gate, FrontendIdeSockets sockets) CreateFunctions(
         string root,
         TimeSpan? timeout = null)
     {
+        var sockets = new FrontendIdeSockets();
         var registry = new IdeRequestRegistry();
         var gate = new FakeGate();
         var functions = new IdeFunctions(
             Workspace.Create(root, root),
             registry,
             gate,
-            new WorkspaceEditFunctions(Workspace.Create(root, root)))
+            new WorkspaceEditFunctions(Workspace.Create(root, root)),
+            sockets)
         {
             RequestTimeout = timeout ?? TimeSpan.FromSeconds(10)
         };
-        return (functions, registry, gate);
+        return (functions, registry, gate, sockets);
     }
 
     private static AIFunction Function(IReadOnlyList<AIFunction> functions, string name)

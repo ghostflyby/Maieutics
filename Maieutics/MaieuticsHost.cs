@@ -318,7 +318,8 @@ public static class MaieuticsHost
             services.GetRequiredService<Workspace>(),
             services.GetRequiredService<IdeRequestRegistry>(),
             services.GetRequiredService<IIdeFrontendGate>(),
-            services.GetRequiredService<WorkspaceEditFunctions>()));
+            services.GetRequiredService<WorkspaceEditFunctions>(),
+            services.GetRequiredService<FrontendIdeSockets>()));
         builder.Services.AddSingleton(static services => new IdeToolFamily(
             services.GetRequiredService<IdeFunctions>().Functions,
             services.GetRequiredService<IIdeFrontendGate>()));
@@ -386,7 +387,8 @@ public static class MaieuticsHost
                     .. services.GetRequiredService<WorkspaceFunctions>().Functions,
                     .. services.GetRequiredService<WorkspaceEditFunctions>().Functions,
                     .. services.GetRequiredService<ResourceFunctions>().Functions,
-                    .. services.GetRequiredService<TerminalFunctions>().Functions
+                    .. services.GetRequiredService<TerminalFunctions>().Functions,
+                    .. services.GetRequiredService<IdeFunctions>().Functions
                 ],
                 pluginHosts: services.GetRequiredService<PluginHostManager>(),
                 credentials: services.GetRequiredService<ReplControlCredentialRegistry>(),

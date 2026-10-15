@@ -174,3 +174,16 @@ Deno.test("collectProblems filters to the workspace and counts tracked documents
   assertEquals(one.documents.length, 1);
   assertEquals(one.documents[0].diagnostics[0].message, "e");
 });
+
+Deno.test("extractIdeRequest reads the standalone script/plugin frame", () => {
+  const request = extractIdeRequest(
+    {
+      type: "ide.request",
+      data: { requestId: "ide-xyz", method: "textDocument/hover", params: { uri: "file:///x" } },
+    } as unknown as Parameters<typeof extractIdeRequest>[0],
+  );
+  assert(request !== undefined);
+  assertEquals(request.requestId, "ide-xyz");
+  assertEquals(request.method, "textDocument/hover");
+  assertEquals(request.params, { uri: "file:///x" });
+});

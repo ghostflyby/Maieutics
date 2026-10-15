@@ -72,17 +72,20 @@ internal sealed class IdeFunctions
     private readonly IdeRequestRegistry requests;
     private readonly IIdeFrontendGate gate;
     private readonly WorkspaceEditFunctions workspaceEdits;
+    private readonly FrontendIdeSockets sockets;
 
     public IdeFunctions(
         Workspace workspace,
         IdeRequestRegistry requests,
         IIdeFrontendGate gate,
-        WorkspaceEditFunctions workspaceEdits)
+        WorkspaceEditFunctions workspaceEdits,
+        FrontendIdeSockets sockets)
     {
         this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
         this.gate = gate ?? throw new ArgumentNullException(nameof(gate));
         this.workspaceEdits = workspaceEdits ?? throw new ArgumentNullException(nameof(workspaceEdits));
+        this.sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
 
         Functions =
         [
@@ -185,8 +188,8 @@ internal sealed class IdeFunctions
         string? minSeverity = null,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var threshold = ParseSeverity(minSeverity);
         JsonElement parameters;
         string? requestedUri = null;
@@ -201,7 +204,7 @@ internal sealed class IdeFunctions
             parameters = BuildObject();
         }
 
-        var answer = await SendAsync(context, "maieutics/problems", parameters, cancellationToken).ConfigureAwait(false);
+        var answer = await SendAsync(announce, "maieutics/problems", parameters, cancellationToken).ConfigureAwait(false);
         return requestedUri is null
             ? BuildWorkspaceDiagnostics(answer, threshold)
             : BuildDocumentDiagnostics(answer, requestedUri, threshold);
@@ -215,12 +218,12 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var resolved = ResolveDocumentUri(uri);
         var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken);
         var parameters = BuildPositionParams(resolved.FileUri, line, character);
-        var answer = await SendAsync(context, "textDocument/hover", parameters, cancellationToken)
+        var answer = await SendAsync(announce, "textDocument/hover", parameters, cancellationToken)
             .ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
@@ -235,8 +238,8 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var method = kind switch
         {
             "definition" => "textDocument/definition",
@@ -258,7 +261,7 @@ internal sealed class IdeFunctions
                 character,
                 [("context", JsonDocument.Parse("""{"includeDeclaration":true}""").RootElement)])
             : BuildPositionParams(resolved.FileUri, line, character);
-        var answer = await SendAsync(context, method, parameters, cancellationToken).ConfigureAwait(false);
+        var answer = await SendAsync(announce, method, parameters, cancellationToken).ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
 
@@ -268,11 +271,11 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var resolved = ResolveDocumentUri(uri);
         var parameters = BuildObject(("uri", resolved.FileUri));
-        var answer = await SendAsync(context, "textDocument/documentSymbol", parameters, cancellationToken)
+        var answer = await SendAsync(announce, "textDocument/documentSymbol", parameters, cancellationToken)
             .ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
@@ -284,11 +287,11 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         var parameters = BuildObject(("query", query));
-        var answer = await SendAsync(context, "workspace/symbol", parameters, cancellationToken)
+        var answer = await SendAsync(announce, "workspace/symbol", parameters, cancellationToken)
             .ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
@@ -302,8 +305,8 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         if (!IdeMethodCatalog.ReadMethods.Contains(method))
             throw new AgentToolException(
                 "ide_method_unsupported",
@@ -311,7 +314,7 @@ internal sealed class IdeFunctions
         if (parameters.ValueKind != JsonValueKind.Object)
             throw new AgentToolException("ide_invalid_arguments", "The parameters must be a JSON object.");
 
-        var answer = await SendAsync(context, method, TranslateOutgoing(parameters), cancellationToken)
+        var answer = await SendAsync(announce, method, TranslateOutgoing(parameters), cancellationToken)
             .ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
@@ -325,14 +328,14 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(newName);
         var resolved = ResolveDocumentUri(uri);
         var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken).ConfigureAwait(true);
-        await EnsureNotDirtyAsync(context, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
+        await EnsureNotDirtyAsync(announce, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
         var parameters = BuildRenameParams(resolved.FileUri, line, character, newName);
-        var answer = await SendAsync(context, "textDocument/rename", parameters, cancellationToken)
+        var answer = await SendAsync(announce, "textDocument/rename", parameters, cancellationToken)
             .ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
@@ -345,8 +348,8 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var resolved = ResolveDocumentUri(uri);
         var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken).ConfigureAwait(true);
         var parameters = BuildPositionParams(
@@ -354,7 +357,7 @@ internal sealed class IdeFunctions
             line,
             character,
             [("context", EmptyDiagnosticsContext())]);
-        var answer = await SendAsync(context, "textDocument/codeAction", parameters, cancellationToken)
+        var answer = await SendAsync(announce, "textDocument/codeAction", parameters, cancellationToken)
             .ConfigureAwait(false);
         return TranslateIncoming(answer);
     }
@@ -367,12 +370,12 @@ internal sealed class IdeFunctions
         [Description("Indent with spaces rather than tabs. Defaults to true.")] bool? insertSpaces = null,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var resolved = ResolveDocumentUri(uri);
-        await EnsureNotDirtyAsync(context, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
+        await EnsureNotDirtyAsync(announce, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
         var parameters = BuildFormatParams(resolved.FileUri, tabSize ?? 4, insertSpaces ?? true);
-        var answer = await SendAsync(context, "textDocument/formatting", parameters, cancellationToken)
+        var answer = await SendAsync(announce, "textDocument/formatting", parameters, cancellationToken)
             .ConfigureAwait(false);
         var edits = TranslateIncoming(answer);
         if (edits.ValueKind != JsonValueKind.Array)
@@ -390,7 +393,7 @@ internal sealed class IdeFunctions
         }
 
         return await ApplyTargetsAsync(
-            context,
+            announce,
             [new IdeEditTarget(resolved.WorkspaceUri, rawEdits.ToImmutable())],
             arguments,
             cancellationToken).ConfigureAwait(true);
@@ -408,10 +411,10 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var context = AgentToolContext.GetRequired(arguments);
-        EnsureConnected(context);
+        var announce = ResolveAnnouncer(arguments);
+        EnsureConnected(arguments);
         var targets = IdeWorkspaceEdit.ParseEnvelope(edit);
-        return await ApplyTargetsAsync(context, targets, arguments, cancellationToken).ConfigureAwait(true);
+        return await ApplyTargetsAsync(announce, targets, arguments, cancellationToken).ConfigureAwait(true);
     }
 
     /// <summary>The decision-6 apply core shared by every write tool: the whole
@@ -421,7 +424,7 @@ internal sealed class IdeFunctions
     /// pre-validation failure rejects everything typed; a mid-apply failure is
     /// reported with exactly what changed and what is pending.</summary>
     private async ValueTask<JsonElement> ApplyTargetsAsync(
-        AgentToolContext context,
+        Func<AIContent, CancellationToken, ValueTask>? announce,
         ImmutableArray<IdeEditTarget> targets,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
@@ -453,7 +456,7 @@ internal sealed class IdeFunctions
                 $"The edit was rejected before any file changed: {string.Join("; ", rejected)}");
 
         await EnsureNotDirtyAsync(
-            context,
+            announce,
             validated.Select(static entry => entry.Resolved.FileUri).Distinct().ToList(),
             cancellationToken).ConfigureAwait(true);
 
@@ -493,7 +496,7 @@ internal sealed class IdeFunctions
     /// shape while the disk holds another, so any dirty target fails the write
     /// typed instead of misplacing.</summary>
     private async ValueTask EnsureNotDirtyAsync(
-        AgentToolContext context,
+        Func<AIContent, CancellationToken, ValueTask>? announce,
         IReadOnlyList<string> fileUris,
         CancellationToken cancellationToken)
     {
@@ -511,7 +514,7 @@ internal sealed class IdeFunctions
 
         buffer.Position = 0;
         using var document = JsonDocument.Parse(buffer);
-        var answer = await SendAsync(context, "maieutics/dirty", document.RootElement.Clone(), cancellationToken)
+        var answer = await SendAsync(announce, "maieutics/dirty", document.RootElement.Clone(), cancellationToken)
             .ConfigureAwait(false);
         if (answer.ValueKind != JsonValueKind.Object ||
             !answer.TryGetProperty("entries", out var entries) ||
@@ -619,8 +622,25 @@ internal sealed class IdeFunctions
     /// <summary>Announces one IDE request on the run's event stream (the sequenced,
     /// replayable <c>ide.request</c> payload — ADR 0042 decision 1) and awaits its answer
     /// through the registry, bounded by the request timeout and the caller's cancellation.</summary>
+    /// <summary>Resolves the announcement path for this call: an agent run
+    /// context announces through the run stream (sequenced, replayable
+    /// progress); a script/plugin invocation has no run to ride, so the
+    /// request pushes directly to the announcing sockets — unordered, not
+    /// replayed, private to announcers (ADR 0042 decision 10 as amended by
+    /// stage D). The answer endpoint is identical on both paths.</summary>
+    private Func<AIContent, CancellationToken, ValueTask>? ResolveAnnouncer(AIFunctionArguments arguments)
+    {
+        if (arguments.Context?.TryGetValue(typeof(AgentToolContext), out var value) == true &&
+            value is AgentToolContext context)
+        {
+            return (content, token) => context.ReportProgressAsync(content, token);
+        }
+
+        return null;
+    }
+
     private async ValueTask<JsonElement> SendAsync(
-        AgentToolContext context,
+        Func<AIContent, CancellationToken, ValueTask>? announce,
         string method,
         JsonElement parameters,
         CancellationToken cancellationToken)
@@ -628,15 +648,29 @@ internal sealed class IdeFunctions
         var registration = requests.Begin();
         try
         {
-            var payload = JsonSerializer.Serialize(
+            var envelope = JsonSerializer.SerializeToElement(
                 new IdeRequestEnvelope(
                     new IdeRequestPayload(registration.RequestId, method, parameters)),
                 IdeFunctionJsonContext.Default.IdeRequestEnvelope);
-            await context
-                .ReportProgressAsync(
+            if (announce is null)
+            {
+                var sent = await sockets
+                    .TrySendToAnnouncingAsync(new FrontendEventFrame("ide.request", Data: envelope.GetProperty("ideRequest").Clone()), cancellationToken)
+                    .ConfigureAwait(false);
+                if (!sent)
+                    throw new AgentToolException(
+                        "ide_unavailable",
+                        "No announcing frontend accepted the ide request (the announcing socket may have just disconnected). Retry.");
+            }
+            else
+            {
+                var payload = JsonSerializer.Serialize(
+                    envelope,
+                    IdeFunctionJsonContext.Default.JsonElement);
+                await announce(
                     new DataContent(Encoding.UTF8.GetBytes(payload), "application/json"),
-                    cancellationToken)
-                .ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             budget.CancelAfter(RequestTimeout);
@@ -669,7 +703,32 @@ internal sealed class IdeFunctions
 
     private void EnsureConnected(AgentToolContext context)
     {
-        if (!gate.IsIdeFrontendConnected(context.SessionId.Value.ToString("N")))
+        EnsureConnectedCore(context.SessionId.Value.ToString("N"));
+    }
+
+    /// <summary>Script-tool invocations (REPL, ide.query) carry no agent tool
+    /// context, so the gate degrades to the process-level check: some
+    /// announcing socket must exist; the caller's session membership cannot
+    /// be verified. Context-bearing agent calls keep the strict per-session
+    /// check.</summary>
+    private void EnsureConnected(AIFunctionArguments arguments)
+    {
+        if (arguments.Context?.TryGetValue(typeof(AgentToolContext), out var value) == true &&
+            value is AgentToolContext context)
+        {
+            EnsureConnectedCore(context.SessionId.Value.ToString("N"));
+            return;
+        }
+
+        if (!gate.HasIdeFrontend)
+            throw new AgentToolException(
+                "ide_unavailable",
+                "No frontend has announced IDE capability; the IDE tools need the extension host's events socket (ide=1).");
+    }
+
+    private void EnsureConnectedCore(string sessionId)
+    {
+        if (!gate.IsIdeFrontendConnected(sessionId))
             throw new AgentToolException(
                 "ide_unavailable",
                 "No frontend connected to this session has announced IDE capability; the IDE tools need the " +

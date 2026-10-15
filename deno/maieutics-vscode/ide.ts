@@ -108,9 +108,23 @@ export function ideCommandArgs(
   }
 }
 
-/** Pulls the `ide.request` payload out of a `tool.progress` frame's json
- * content; undefined for every other frame or shape. */
+/** Pulls the `ide.request` payload out of its two announced forms: the
+ * sequenced `tool.progress` content item an agent run publishes, and the
+ * standalone `ide.request` frame the kernel pushes for script/plugin
+ * calls (unordered, not replayed — stage D). Undefined for every other
+ * frame or shape. */
 export function extractIdeRequest(frame: EventFrame): IdeRequestPayload | undefined {
+  if (frame.type === "ide.request") {
+    const data = frame.data;
+    if (typeof data !== "object" || data === null) return undefined;
+    const record = data as Record<string, unknown>;
+    if (typeof record.requestId !== "string" || typeof record.method !== "string") return undefined;
+    const params = typeof record.params === "object" && record.params !== null
+      ? record.params as Record<string, unknown>
+      : {};
+    return { requestId: record.requestId, method: record.method, params };
+  }
+
   if (frame.type !== "tool.progress") return undefined;
   const content = frame.content;
   if (content === undefined || content.kind !== "json") return undefined;

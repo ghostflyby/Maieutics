@@ -127,6 +127,26 @@ internal sealed class WorkspaceEditFunctions
         string content,
         CancellationToken cancellationToken)
     {
+        return await ApplyComputedContentAsync(uri, content, arguments, cancellationToken);
+    }
+
+    /// <summary>The per-file write bound, exposed so the IDE bridge's apply step
+    /// can pre-validate computed content before entering the gated write
+    /// (ADR 0042 decision 6 — the whole edit is validated before mutating).</summary>
+    internal int MaximumWriteBytes => maximumWriteBytes;
+
+    /// <summary>Applies one computed final content through the same gated write
+    /// path <c>write_text</c> uses — the instruction-surface gate (ADR 0032),
+    /// the per-file size bound, containment via
+    /// <see cref="WorkspaceSnapshot.ResolveWriteTarget" />, the atomic write,
+    /// and the unified diff. The IDE bridge's apply step computes content and
+    /// calls this seam; the gates and the write stay in this class.</summary>
+    internal async ValueTask<WriteTextResult> ApplyComputedContentAsync(
+        string uri,
+        string content,
+        AIFunctionArguments arguments,
+        CancellationToken cancellationToken)
+    {
         GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
         try
         {

@@ -22,6 +22,7 @@ internal static class IdeMethodCatalog
 
     internal static readonly IReadOnlySet<string> ReadMethods = new HashSet<string>(StringComparer.Ordinal)
     {
+        "maieutics/dirty",
         "maieutics/problems",
         "textDocument/hover",
         "textDocument/definition",
@@ -70,12 +71,19 @@ internal sealed class IdeFunctions
     private readonly Workspace workspace;
     private readonly IdeRequestRegistry requests;
     private readonly IIdeFrontendGate gate;
+    private readonly WorkspaceEditFunctions workspaceEdits;
 
-    public IdeFunctions(Workspace workspace, IdeRequestRegistry requests, IIdeFrontendGate gate)
+    public IdeFunctions(
+        Workspace workspace,
+        IdeRequestRegistry requests,
+        IIdeFrontendGate gate,
+        WorkspaceEditFunctions workspaceEdits)
     {
         this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
         this.gate = gate ?? throw new ArgumentNullException(nameof(gate));
+        this.workspaceEdits = workspaceEdits ?? throw new ArgumentNullException(nameof(workspaceEdits));
+
         Functions =
         [
             CreateFunction(
@@ -115,6 +123,37 @@ internal sealed class IdeFunctions
                 "Searches the language service's workspace-wide symbol index by fuzzy 'query' and returns symbol " +
                 "information with 1-based workspace URIs and positions. Prefer this over text search when looking " +
                 "for a type, function, or member by name."),
+            CreateFunction(
+                (Func<string, JsonElement, string, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)RenameAsync,
+                "ide_rename",
+                "Renames the symbol at one position through the language service and returns the resulting workspace " +
+                "edit as data — nothing is written; apply it with ide_apply_edit. 'uri' is a workspace://local file URI, " +
+                "'select' the coordinate or anchor selector (1-based), 'newName' the symbol's new name. Dirty documents " +
+                "are rejected: save or revert first (the edit is computed against buffers, applied against disk)."),
+            CreateFunction(
+                (Func<string, JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)CodeActionsAsync,
+                "ide_code_actions",
+                "Returns the code actions (quick fixes, refactors) the language service offers at one position, as data — " +
+                "nothing is applied. 'uri' is a workspace://local file URI, 'select' the coordinate or anchor selector " +
+                "(1-based). Actions carrying an edit can be applied by passing its 'changes' envelope to ide_apply_edit; " +
+                "command-only actions are listed but cannot be executed."),
+            CreateFunction(
+                (Func<AIFunctionArguments, string, int?, bool?, CancellationToken, ValueTask<JsonElement>>)FormatDocumentAsync,
+                "ide_format_document",
+                "Formats one file through the language service's document formatter and writes the result back in one step " +
+                "(the compute-then-apply two-phase of the other write tools, folded for the common case). 'uri' is a " +
+                "workspace://local file URI; optional tabSize (default 4) and insertSpaces (default true) shape the " +
+                "formatting options. Dirty documents are rejected: save or revert first. Returns the per-file unified diff."),
+            CreateFunction(
+                (Func<JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)ApplyEditAsync,
+                "ide_apply_edit",
+                "Applies one LSP-shaped workspace edit through the kernel's gated write path — the only way IDE-computed " +
+                "edits reach the disk. 'edit' is {\"changes\": {\"workspace://local/…\": [{\"range\": {\"start\": {\"line\", " +
+                "\"character\"}, \"end\": {…}}, \"newText\": \"…\"}]}} with 1-based positions (the same shapes ide_code_actions " +
+                "and ide_rename return). The whole edit is pre-validated first — containment, decodable text, size bounds, " +
+                "and no unsaved buffers — and any failure rejects everything unchanged (ide_edit_rejected / " +
+                "ide_document_dirty). A file that fails mid-apply is reported with what changed and what is pending."),
+
             CreateFunction(
                 (Func<string, JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)RequestAsync,
                 "ide_request",
@@ -277,6 +316,306 @@ internal sealed class IdeFunctions
         return TranslateIncoming(answer);
     }
 
+    [Description("Renames a symbol; returns the workspace edit as data without writing.")]
+    private async ValueTask<JsonElement> RenameAsync(
+        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("Selector: coordinates {\"line\": 42, \"column\": 7} or an anchor block (1-based).")]
+        JsonElement select,
+        [Description("The symbol's new name.")] string newName,
+        AIFunctionArguments arguments,
+        CancellationToken cancellationToken = default)
+    {
+        var context = AgentToolContext.GetRequired(arguments);
+        EnsureConnected(context);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newName);
+        var resolved = ResolveDocumentUri(uri);
+        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken).ConfigureAwait(true);
+        await EnsureNotDirtyAsync(context, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
+        var parameters = BuildRenameParams(resolved.FileUri, line, character, newName);
+        var answer = await SendAsync(context, "textDocument/rename", parameters, cancellationToken)
+            .ConfigureAwait(false);
+        return TranslateIncoming(answer);
+    }
+
+    [Description("Returns the code actions at one position as data without applying anything.")]
+    private async ValueTask<JsonElement> CodeActionsAsync(
+        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("Selector: coordinates {\"line\": 42, \"column\": 7} or an anchor block (1-based).")]
+        JsonElement select,
+        AIFunctionArguments arguments,
+        CancellationToken cancellationToken = default)
+    {
+        var context = AgentToolContext.GetRequired(arguments);
+        EnsureConnected(context);
+        var resolved = ResolveDocumentUri(uri);
+        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken).ConfigureAwait(true);
+        var parameters = BuildPositionParams(
+            resolved.FileUri,
+            line,
+            character,
+            [("context", EmptyDiagnosticsContext())]);
+        var answer = await SendAsync(context, "textDocument/codeAction", parameters, cancellationToken)
+            .ConfigureAwait(false);
+        return TranslateIncoming(answer);
+    }
+
+    [Description("Formats one document through the language service and writes the result back.")]
+    private async ValueTask<JsonElement> FormatDocumentAsync(
+        AIFunctionArguments arguments,
+        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("Spaces per tab for the formatting options. Defaults to 4.")] int? tabSize = null,
+        [Description("Indent with spaces rather than tabs. Defaults to true.")] bool? insertSpaces = null,
+        CancellationToken cancellationToken = default)
+    {
+        var context = AgentToolContext.GetRequired(arguments);
+        EnsureConnected(context);
+        var resolved = ResolveDocumentUri(uri);
+        await EnsureNotDirtyAsync(context, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
+        var parameters = BuildFormatParams(resolved.FileUri, tabSize ?? 4, insertSpaces ?? true);
+        var answer = await SendAsync(context, "textDocument/formatting", parameters, cancellationToken)
+            .ConfigureAwait(false);
+        var edits = TranslateIncoming(answer);
+        if (edits.ValueKind != JsonValueKind.Array)
+            throw new AgentToolException("ide_result_invalid", "The formatting answer is not an edit list.");
+        if (edits.GetArrayLength() == 0)
+            return JsonSerializer.SerializeToElement(
+                new IdeApplyEditsValue("unchanged", [], null, null, null),
+                IdeFunctionJsonContext.Default.IdeApplyEditsValue);
+        var rawEdits = ImmutableArray.CreateBuilder<IdeRawEdit>();
+        foreach (var entry in edits.EnumerateArray())
+        {
+            var (startLine, startCharacter, endLine, endCharacter, newText) =
+                ParseTextEditsEntry(entry, resolved.WorkspaceUri);
+            rawEdits.Add(new IdeRawEdit(startLine, startCharacter, endLine, endCharacter, newText));
+        }
+
+        return await ApplyTargetsAsync(
+            context,
+            [new IdeEditTarget(resolved.WorkspaceUri, rawEdits.ToImmutable())],
+            arguments,
+            cancellationToken).ConfigureAwait(true);
+    }
+
+    [Description("Applies one LSP-shaped workspace edit through the kernel's gated write path.")]
+    private async ValueTask<JsonElement> ApplyEditAsync(
+        [Description("The edit envelope: {\"changes\": {\"workspace://local/…\": [{\"range\": {\"start\": " +
+                     "{\"line\", \"character\"}, \"end\": {…}}, \"newText\": \"…\"}]}} with 1-based positions (the " +
+                     "shapes ide_code_actions and ide_rename return). The whole edit is pre-validated first — " +
+                     "containment, decodable text, size bounds, and no unsaved buffers — and any failure rejects " +
+                     "everything unchanged (ide_edit_rejected / ide_document_dirty); a mid-apply failure is reported " +
+                     "with what changed and what is pending.")]
+        JsonElement edit,
+        AIFunctionArguments arguments,
+        CancellationToken cancellationToken = default)
+    {
+        var context = AgentToolContext.GetRequired(arguments);
+        EnsureConnected(context);
+        var targets = IdeWorkspaceEdit.ParseEnvelope(edit);
+        return await ApplyTargetsAsync(context, targets, arguments, cancellationToken).ConfigureAwait(true);
+    }
+
+    /// <summary>The decision-6 apply core shared by every write tool: the whole
+    /// edit is pre-validated (containment, decode, range table, computed size)
+    /// before anything mutates; then the dirty check (decision 7) answers over
+    /// the bridge; then each file flows through the gated write seam. A
+    /// pre-validation failure rejects everything typed; a mid-apply failure is
+    /// reported with exactly what changed and what is pending.</summary>
+    private async ValueTask<JsonElement> ApplyTargetsAsync(
+        AgentToolContext context,
+        ImmutableArray<IdeEditTarget> targets,
+        AIFunctionArguments arguments,
+        CancellationToken cancellationToken)
+    {
+        var validated = new List<(IdeEditTarget Target, ResolvedDocument Resolved, string Content)>();
+        var rejected = new List<string>();
+        foreach (var target in targets)
+        {
+            try
+            {
+                var resolved = ResolveDocumentUri(target.WorkspaceUri);
+                var current = await IdeSelector.ReadTextAsync(resolved.FullPath, cancellationToken).ConfigureAwait(true);
+                var content = IdeWorkspaceEdit.ComputeContent(target, current);
+                if (Encoding.UTF8.GetByteCount(content) > workspaceEdits.MaximumWriteBytes)
+                    throw new AgentToolException(
+                        "ide_edit_rejected",
+                        $"the computed content exceeds the {workspaceEdits.MaximumWriteBytes} byte write bound.");
+                validated.Add((target, resolved, content));
+            }
+            catch (AgentToolException exception)
+            {
+                rejected.Add($"'{target.WorkspaceUri}': {exception.Message}");
+            }
+        }
+
+        if (rejected.Count > 0)
+            throw new AgentToolException(
+                "ide_edit_rejected",
+                $"The edit was rejected before any file changed: {string.Join("; ", rejected)}");
+
+        await EnsureNotDirtyAsync(
+            context,
+            validated.Select(static entry => entry.Resolved.FileUri).Distinct().ToList(),
+            cancellationToken).ConfigureAwait(true);
+
+        var applied = new List<WriteTextResult>();
+        string? failedUri = null;
+        string? failedError = null;
+        var pending = new List<string>();
+        foreach (var (target, resolved, content) in validated)
+        {
+            if (failedUri is not null)
+            {
+                pending.Add(target.WorkspaceUri);
+                continue;
+            }
+
+            try
+            {
+                applied.Add(await workspaceEdits
+                    .ApplyComputedContentAsync(resolved.WorkspaceUri, content, arguments, cancellationToken)
+                    .ConfigureAwait(true));
+            }
+            catch (AgentToolException exception)
+            {
+                failedUri = target.WorkspaceUri;
+                failedError = exception.Message;
+            }
+        }
+
+        var status = failedUri is not null ? "partial" : "applied";
+        return JsonSerializer.SerializeToElement(
+            new IdeApplyEditsValue(status, applied, failedUri, failedError, pending),
+            IdeFunctionJsonContext.Default.IdeApplyEditsValue);
+    }
+
+    /// <summary>Decision 7's dirty gate: one maieutics/dirty query over the
+    /// bridge answers for every target at once; an unsaved buffer computed one
+    /// shape while the disk holds another, so any dirty target fails the write
+    /// typed instead of misplacing.</summary>
+    private async ValueTask EnsureNotDirtyAsync(
+        AgentToolContext context,
+        IReadOnlyList<string> fileUris,
+        CancellationToken cancellationToken)
+    {
+        if (fileUris.Count == 0) return;
+
+        var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("uris");
+            foreach (var uri in fileUris) writer.WriteStringValue(uri);
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        buffer.Position = 0;
+        using var document = JsonDocument.Parse(buffer);
+        var answer = await SendAsync(context, "maieutics/dirty", document.RootElement.Clone(), cancellationToken)
+            .ConfigureAwait(false);
+        if (answer.ValueKind != JsonValueKind.Object ||
+            !answer.TryGetProperty("entries", out var entries) ||
+            entries.ValueKind != JsonValueKind.Array)
+            throw new AgentToolException("ide_result_invalid", "The dirty answer is not the documented shape.");
+
+        var dirty = new List<string>();
+        foreach (var entry in entries.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object ||
+                !entry.TryGetProperty("dirty", out var dirtyElement) ||
+                dirtyElement.ValueKind != JsonValueKind.True) continue;
+            if (entry.TryGetProperty("uri", out var uriElement) && uriElement.ValueKind == JsonValueKind.String)
+                dirty.Add(uriElement.GetString()!);
+        }
+
+        if (dirty.Count > 0)
+            throw new AgentToolException(
+                "ide_document_dirty",
+                "These documents have unsaved changes; save or revert them before kernel-side writes: " +
+                string.Join(", ", dirty));
+    }
+
+    private static JsonElement BuildRenameParams(string fileUri, int line, int character, string newName)
+    {
+        var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("uri", fileUri);
+            writer.WriteStartObject("position");
+            writer.WriteNumber("line", line);
+            writer.WriteNumber("character", character);
+            writer.WriteEndObject();
+            writer.WriteString("newName", newName);
+            writer.WriteEndObject();
+        }
+
+        buffer.Position = 0;
+        using var document = JsonDocument.Parse(buffer);
+        return document.RootElement.Clone();
+    }
+
+    private static JsonElement BuildFormatParams(string fileUri, int tabSize, bool insertSpaces)
+    {
+        var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("uri", fileUri);
+            writer.WriteStartObject("options");
+            writer.WriteNumber("tabSize", tabSize);
+            writer.WriteBoolean("insertSpaces", insertSpaces);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+
+        buffer.Position = 0;
+        using var document = JsonDocument.Parse(buffer);
+        return document.RootElement.Clone();
+    }
+
+    private static JsonElement EmptyDiagnosticsContext()
+    {
+        using var document = JsonDocument.Parse("""{"diagnostics":[]}""");
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>Parses one wire text edit (1-based after the incoming
+    /// translation) into the raw-edit form the apply core validates; failures
+    /// name the target file.</summary>
+    private static (int StartLine, int StartCharacter, int EndLine, int EndCharacter, string NewText)
+        ParseTextEditsEntry(JsonElement entry, string targetUri)
+    {
+        if (entry.ValueKind != JsonValueKind.Object ||
+            !entry.TryGetProperty("range", out var range) ||
+            range.ValueKind != JsonValueKind.Object ||
+            !TryReadPosition(range, "start", out var startLine, out var startCharacter) ||
+            !TryReadPosition(range, "end", out var endLine, out var endCharacter) ||
+            !entry.TryGetProperty("newText", out var newText) ||
+            newText.ValueKind != JsonValueKind.String)
+            throw new AgentToolException(
+                "ide_result_invalid",
+                $"The formatting edit for '{targetUri}' is not a range+newText pair.");
+
+        return (startLine, startCharacter, endLine, endCharacter, newText.GetString()!);
+    }
+
+    private static bool TryReadPosition(JsonElement range, string side, out int line, out int character)
+    {
+        line = 0;
+        character = 0;
+        return range.TryGetProperty(side, out var position) &&
+               position.ValueKind == JsonValueKind.Object &&
+               position.TryGetProperty("line", out var lineElement) &&
+               lineElement.ValueKind == JsonValueKind.Number &&
+               lineElement.TryGetInt32(out line) &&
+               position.TryGetProperty("character", out var characterElement) &&
+               characterElement.ValueKind == JsonValueKind.Number &&
+               characterElement.TryGetInt32(out character);
+    }
+
+    /// <summary>Announces one IDE request on the run's event stream
+    /// <summary>Announces one IDE request on the run's event stream
     /// <summary>Announces one IDE request on the run's event stream (the sequenced,
     /// replayable <c>ide.request</c> payload — ADR 0042 decision 1) and awaits its answer
     /// through the registry, bounded by the request timeout and the caller's cancellation.</summary>
@@ -628,7 +967,9 @@ internal sealed class IdeFunctions
                 writer.WriteStartObject();
                 foreach (var property in element.EnumerateObject())
                 {
-                    writer.WritePropertyName(property.Name);
+                    // Property names carry URIs too (an LSP changes map is keyed
+                    // by them), so names pass through the same translation.
+                    writer.WritePropertyName(TranslateString(property.Name, outgoing));
                     if (IsPositionValue(property.Value)) WriteShiftedPosition(property.Value, writer, outgoing);
                     else if (depth < MaxTranslationDepth) WriteTranslated(property.Value, writer, outgoing, depth + 1);
                     else property.Value.WriteTo(writer);
@@ -841,4 +1182,20 @@ internal sealed record DiagnosticsTotals(
 [JsonSerializable(typeof(DiagnosticsTotals))]
 [JsonSerializable(typeof(DiagnosticsFileCount))]
 [JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(int?))]
+[JsonSerializable(typeof(bool?))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(IdeApplyEditsValue))]
+[JsonSerializable(typeof(WorkspaceEditDiff))]
+[JsonSerializable(typeof(WriteTextResult))]
 internal sealed partial class IdeFunctionJsonContext : JsonSerializerContext;
+
+/// <summary>The ide_apply_edit / ide_format_document answer: what each file
+/// became through the gated write, or — when a file failed mid-apply — what
+/// changed, what failed, and what is still pending (ADR 0042 decision 6).</summary>
+internal sealed record IdeApplyEditsValue(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("applied")] IReadOnlyList<WriteTextResult> Applied,
+    [property: JsonPropertyName("failedUri")] string? FailedUri = null,
+    [property: JsonPropertyName("failedError")] string? FailedError = null,
+    [property: JsonPropertyName("pending")] IReadOnlyList<string>? Pending = null);

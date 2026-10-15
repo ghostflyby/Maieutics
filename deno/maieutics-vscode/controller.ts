@@ -78,6 +78,8 @@ import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
 import { coerceField, planElicitation } from "./elicitation.ts";
 import {
+  codeActionsToWire,
+  collectDirty,
   collectProblems,
   extractIdeRequest,
   ideCommandArgs,
@@ -85,6 +87,8 @@ import {
   type IdeRequestPayload,
   isIdeMethodSupported,
   normalizedHoverAnswer,
+  textEditsToWire,
+  workspaceEditToWire,
 } from "./ide.ts";
 import { childRunsOfParent, resolveFrameOwner } from "./runRouting.ts";
 import { encodeSkillSubmission } from "./skillInteraction.ts";
@@ -946,6 +950,17 @@ export async function executeIdeMethod(
     return collectProblems(entries, wanted?.toString(), roots);
   }
 
+  if (method === "maieutics/dirty") {
+    const wanted = Array.isArray(params.uris)
+      ? (params.uris as unknown[]).filter((u): u is string => typeof u === "string")
+      : [];
+    const documents = vscode.workspace.textDocuments.map((document) => ({
+      fsPath: document.uri.fsPath,
+      isDirty: document.isDirty,
+    }));
+    return { entries: collectDirty(documents, wanted, (uri) => vscode.Uri.parse(uri).fsPath) };
+  }
+
   const command = ideMethodCommands[method];
   const args = ideCommandArgs(method, params).map(materializeIdeArg);
   const result = await vscode.commands.executeCommand(command, ...args);
@@ -958,6 +973,21 @@ export async function executeIdeMethod(
     // seeing "not yet".
     const answer = normalizedHoverAnswer(result);
     if (answer !== undefined) return answer;
+  }
+
+  // Write group (stage C): compute-only — the answers flatten to plain data
+  // and the kernel's gated write path does any applying.
+  if (method === "textDocument/rename") {
+    if (typeof result !== "object" || result === null || !("entries" in result)) {
+      return { changes: {} };
+    }
+    return workspaceEditToWire(result as { entries(): readonly (readonly [unknown, unknown])[] });
+  }
+  if (method === "textDocument/codeAction") {
+    return codeActionsToWire(Array.isArray(result) ? result : []);
+  }
+  if (method === "textDocument/formatting" && Array.isArray(result)) {
+    return textEditsToWire(result);
   }
 
   return result;

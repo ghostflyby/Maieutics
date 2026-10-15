@@ -317,7 +317,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IdeFunctions>(static services => new IdeFunctions(
             services.GetRequiredService<Workspace>(),
             services.GetRequiredService<IdeRequestRegistry>(),
-            services.GetRequiredService<IIdeFrontendGate>()));
+            services.GetRequiredService<IIdeFrontendGate>(),
+            services.GetRequiredService<WorkspaceEditFunctions>()));
         builder.Services.AddSingleton(static services => new IdeToolFamily(
             services.GetRequiredService<IdeFunctions>().Functions,
             services.GetRequiredService<IIdeFrontendGate>()));

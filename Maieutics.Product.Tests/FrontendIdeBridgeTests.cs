@@ -510,7 +510,275 @@ public sealed class FrontendIdeBridgeTests
         invocation.Failure!.Code.Should().Be("ide_selector_patch_malformed");
     }
 
+    // ---------- stage C: the write path ----------
+
+    /// <summary>Answers each announced request by its method — the write
+    /// tools make several bridge round trips in one call (dirty query, then
+    /// the compute request), so the test scripts answers per method.</summary>
+    private static async Task<IdeInvocation> InvokeAnsweringByMethodAsync(
+        AIFunction function,
+        string argumentsJson,
+        IdeRequestRegistry registry,
+        Func<string, JsonElement, IdeRequestAnswer> answerByMethod,
+        CancellationToken cancellationToken)
+    {
+        TaskCompletionSource<string> announcedPayload = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lastPayloadJson = string.Empty;
+        var lastMethod = string.Empty;
+        var invocation = function.InvokeAsync(
+            ContextArguments(
+                argumentsJson,
+                (content, _) =>
+                {
+                    announcedPayload.TrySetResult(Encoding.UTF8.GetString(Assert.IsType<DataContent>(content).Data.Span));
+                    return ValueTask.CompletedTask;
+                }),
+            cancellationToken).AsTask();
+
+        // Write tools make several bridge round trips in one call (the dirty
+        // query, then the compute request), so keep answering announcements
+        // until the invocation settles. A tool that fails before announcing
+        // surfaces its typed failure here instead of a bare timeout.
+        while (true)
+        {
+            var settled = await Task.WhenAny(
+                announcedPayload.Task,
+                invocation).ConfigureAwait(true);
+            if (settled == invocation) break;
+
+            var payloadJson = announcedPayload.Task.Result;
+            var payload = JsonDocument.Parse(payloadJson).RootElement;
+            var ideRequest = payload.GetProperty("ideRequest");
+            var method = ideRequest.GetProperty("method").GetString()!;
+            var requestId = ideRequest.GetProperty("requestId").GetString()!;
+            if (!registry.TryComplete(requestId, answerByMethod(method, ideRequest.GetProperty("params").Clone())))
+                throw new InvalidOperationException($"The announced ide request ({method}) was not pending.");
+            lastPayloadJson = payloadJson;
+            lastMethod = method;
+            announcedPayload = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        var result = await invocation.ConfigureAwait(true);
+        return new IdeInvocation(lastMethod, lastPayloadJson, Assert.IsType<JsonElement>(result));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ApplyEditAppliesMultiFileEditsThroughTheGatedPath()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\ntwo\n");
+        File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var apply = Function(functions.Functions, "ide_apply_edit");
+        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
+        var bPhysical = new Uri(Path.Combine(workspace.Path, "b.cs")).AbsoluteUri;
+
+        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":4}},"newText":"ONE"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
+
+        var invocation = await InvokeAnsweringByMethodAsync(
+            apply,
+            "{\"edit\":" + edit + "}",
+            registry,
+            (method, parameters) =>
+            {
+                method.Should().Be("maieutics/dirty", "pre-validation asks the bridge before anything mutates");
+                var uris = parameters.GetProperty("uris").EnumerateArray()
+                    .Select(static entry => entry.GetString()).ToList();
+                uris.Should().Contain(aPhysical).And.Contain(bPhysical);
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                    """{"entries":[{"uri":"a","dirty":false},{"uri":"b","dirty":false}]}""").RootElement.Clone());
+            },
+            cancellationToken);
+
+        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("ONE\ntwo\n");
+        File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("xy\n");
+        var envelope = JsonSerializer.Deserialize(invocation.Result, IdeFunctionJsonContext.Default.IdeApplyEditsValue)!;
+        envelope.Status.Should().Be("applied");
+        envelope.Applied.Should().HaveCount(2);
+        envelope.Applied.Should().Contain(static entry => entry.Diff != null, "the gated write answers with unified diffs");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ApplyEditRejectsTheWholeEditWhenAnyTargetIsDirty()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\n");
+        File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var apply = Function(functions.Functions, "ide_apply_edit");
+
+        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":4}},"newText":"ONE"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
+
+        AgentToolException? failure = null;
+        try
+        {
+            await InvokeAnsweringByMethodAsync(
+                apply,
+                "{\"edit\":" + edit + "}",
+                registry,
+                (method, parameters) =>
+                {
+                    method.Should().Be("maieutics/dirty");
+                    var first = parameters.GetProperty("uris").EnumerateArray().First().GetString()!;
+                    return IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                        "{\"entries\":[{\"uri\":\"" + first + "\",\"dirty\":true}]}").RootElement.Clone());
+                },
+                cancellationToken).ConfigureAwait(true);
+        }
+        catch (AgentToolException exception)
+        {
+            failure = exception;
+        }
+
+        failure.Should().NotBeNull();
+        failure!.Code.Should().Be("ide_document_dirty");
+        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("one\n", "nothing changed");
+        File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("x\n");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ApplyEditRejectsOutOfRangeRangesBeforeAnyMutation()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\n");
+        File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
+        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var apply = Function(functions.Functions, "ide_apply_edit");
+
+        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":99,"character":1},"end":{"line":99,"character":2}},"newText":"nope"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
+
+        var invocation = await InvokeAsync(
+            apply,
+            ContextArguments("{\"edit\":" + edit + "}", static (_, _) => ValueTask.CompletedTask),
+            cancellationToken);
+
+        invocation.Failure.Should().NotBeNull();
+        invocation.Failure!.Code.Should().Be("ide_edit_rejected");
+        invocation.Failure.Message.Should().Contain("a.cs").And.Contain("99");
+        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("one\n", "pre-validation rejects before any mutation");
+        File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("x\n");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task FormatDocumentComputesAndAppliesThroughTheGatedPath()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "  x\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var format = Function(functions.Functions, "ide_format_document");
+        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
+
+        var invocation = await InvokeAnsweringByMethodAsync(
+            format,
+            """{"uri":"workspace://local/a.cs"}""",
+            registry,
+            (method, parameters) =>
+            {
+                if (method == "maieutics/dirty")
+                {
+                    return IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                        """{"entries":[{"uri":"a","dirty":false}]}""").RootElement.Clone());
+                }
+
+                method.Should().Be("textDocument/formatting");
+                parameters.GetProperty("uri").GetString().Should().Be(aPhysical);
+                parameters.GetProperty("options").GetProperty("tabSize").GetInt32().Should().Be(4);
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                    """[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"x"}]""").RootElement.Clone());
+            },
+            cancellationToken);
+
+        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("x\n");
+        var envelope = JsonSerializer.Deserialize(invocation.Result, IdeFunctionJsonContext.Default.IdeApplyEditsValue)!;
+        envelope.Status.Should().Be("applied");
+        envelope.Applied.Should().ContainSingle().Which.Diff.Should().NotBeNull();
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CodeActionsReturnDataWithoutApplying()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "x\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var actions = Function(functions.Functions, "ide_code_actions");
+        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
+
+        var invocation = await InvokeAnsweringByMethodAsync(
+            actions,
+            """{"uri":"workspace://local/a.cs","select":{"line":1,"column":1}}""",
+            registry,
+            (method, _) =>
+            {
+                if (method == "maieutics/dirty")
+                {
+                    return IdeRequestAnswer.FromValue(JsonDocument.Parse("{\"entries\":[]}").RootElement.Clone());
+                }
+
+                var answer = "[{\"title\":\"Fix\",\"kind\":\"quickfix\",\"edit\":{\"changes\":{\"" +
+                    aPhysical + "\": [{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"newText\":\"y\"}]}}}]" +
+                    "";
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
+            },
+            cancellationToken);
+
+        invocation.Method.Should().Be("textDocument/codeAction");
+        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("x\n", "code actions are data, never applied");
+        var action = invocation.Result.EnumerateArray().Should().ContainSingle().Which;
+        var edit = action.GetProperty("edit").GetProperty("changes").EnumerateObject().Should().ContainSingle().Which;
+        edit.Name.Should().Be("workspace://local/a.cs", "returned edit URIs translate back to the agent domain");
+        edit.Value.EnumerateArray().Should().ContainSingle().Which
+            .GetProperty("newText").GetString().Should().Be("y");
+        var range = edit.Value.EnumerateArray().First().GetProperty("range");
+        range.GetProperty("start").GetProperty("line").GetInt32().Should().Be(1, "positions translate back to 1-based");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task RenameReturnsDataOnlyThroughTheBridge()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "symbol\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var rename = Function(functions.Functions, "ide_rename");
+        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
+
+        var invocation = await InvokeAnsweringByMethodAsync(
+            rename,
+            """{"uri":"workspace://local/a.cs","select":{"line":1,"column":1},"newName":"renamed"}""",
+            registry,
+            (method, parameters) =>
+            {
+                if (method == "maieutics/dirty")
+                {
+                    return IdeRequestAnswer.FromValue(JsonDocument.Parse("{\"entries\":[]}").RootElement.Clone());
+                }
+
+                parameters.GetProperty("newName").GetString().Should().Be("renamed");
+                var answer = "{\"changes\":{\"" + aPhysical +
+                    "\":[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}},\"newText\":\"renamed\"}]}}";
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
+            },
+            cancellationToken);
+
+        invocation.Method.Should().Be("textDocument/rename");
+        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("symbol\n", "rename returns data; ide_apply_edit writes");
+        var changes = invocation.Result.GetProperty("changes");
+        changes.EnumerateObject().Should().ContainSingle().Which.Name.Should().Be("workspace://local/a.cs");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
+
 
 
     [Fact(Timeout = 120_000)]
@@ -692,7 +960,11 @@ public sealed class FrontendIdeBridgeTests
     {
         var registry = new IdeRequestRegistry();
         var gate = new FakeGate();
-        var functions = new IdeFunctions(Workspace.Create(root, root), registry, gate)
+        var functions = new IdeFunctions(
+            Workspace.Create(root, root),
+            registry,
+            gate,
+            new WorkspaceEditFunctions(Workspace.Create(root, root)))
         {
             RequestTimeout = timeout ?? TimeSpan.FromSeconds(10)
         };
@@ -752,13 +1024,15 @@ public sealed class FrontendIdeBridgeTests
         Func<string, IdeRequestAnswer> answer,
         CancellationToken cancellationToken)
     {
-        var announced = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<string> announcedPayload = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lastPayloadJson = string.Empty;
+        var lastMethod = string.Empty;
         var invocation = function.InvokeAsync(
             ContextArguments(
                 argumentsJson,
                 (content, _) =>
                 {
-                    announced.TrySetResult(Encoding.UTF8.GetString(Assert.IsType<DataContent>(content).Data.Span));
+                    announcedPayload.TrySetResult(Encoding.UTF8.GetString(Assert.IsType<DataContent>(content).Data.Span));
                     return ValueTask.CompletedTask;
                 }),
             cancellationToken).AsTask();
@@ -766,7 +1040,7 @@ public sealed class FrontendIdeBridgeTests
         string payloadJson;
         try
         {
-            payloadJson = await announced.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken)
+            payloadJson = await announcedPayload.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken)
                 .ConfigureAwait(true);
         }
         catch (TimeoutException)
@@ -805,6 +1079,14 @@ public sealed class FrontendIdeBridgeTests
         public bool HasIdeFrontend => Connected;
 
         public bool IsIdeFrontendConnected(string sessionId) => Connected;
+    }
+
+    /// <summary>The canonical physical path of a scratch file — macOS /tmp is a
+    /// symlink to /private/tmp, and the bridge's answers carry the canonical
+    /// form the editor reports.</summary>
+    private static string DenoRealPath(string path)
+    {
+        return Path.GetFullPath(path);
     }
 
     private sealed record IdeInvocation(string Method, string PayloadJson, JsonElement Result);

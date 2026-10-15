@@ -440,8 +440,25 @@ window, `search_text` returns 1-based line/column matches, and
   with path-mismatch rejection so context is never borrowed from an
   unrelated patch. `apply_patch`'s first-match-after-seek semantics are
   untouched.
-- **C — write path.** Write-group methods, `ide_code_actions`/
-  `ide_apply_edit`/format, dirty rejection, whole-edit pre-validation.
+- **C — write path. — IMPLEMENTED 2026-10-15.** The write-group compute
+  methods (`textDocument/rename|codeAction|formatting`) answer through the
+  same ide.request channel and return data only; the named tools are
+  `ide_rename`/`ide_code_actions` (compute) and `ide_format_document`
+  (compute+apply folded), with `ide_apply_edit` as the only writer. The
+  apply core pre-validates the whole edit (containment, decode, range
+  table, computed size) before mutating, then one `maieutics/dirty` query
+  gates everything on unsaved buffers (`ide_document_dirty`), then each
+  file flows through the gated write seam
+  (`WorkspaceEditFunctions.ApplyComputedContentAsync` — the instruction
+  gate, size bounds, and unified diff of write_text); a mid-apply failure
+  is reported with what changed and what is pending. The extension host
+  gained write-group dispatch (`executeDocumentRenameProvider` /
+  `executeCodeActionProvider` / `executeFormatDocumentProvider`) whose
+  answers flatten to plain data — `workspaceEditToWire` notes the public
+  API cannot read file-level workspace operations, so structural refactors
+  lose those ops. Dirty checking costs one bridge round trip per apply;
+  the `TranslateIncoming`/`TranslateOutgoing` deep walk now translates
+  object property names too (an LSP changes map is keyed by them).
 - **D — TS API faces.** Script-tools mount, LSP-shaped facade,
   `ide.query` plugin capability.
 - **E — virtual file systems.** The `idefs://` domain and the two

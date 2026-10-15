@@ -48,6 +48,12 @@ export const ideMethodCommands: Readonly<Record<string, string>> = {
   "typeHierarchy/prepare": "vscode.prepareTypeHierarchy",
   "typeHierarchy/supertypes": "vscode.provideSupertypes",
   "typeHierarchy/subtypes": "vscode.provideSubtypes",
+  // Write group (ADR 0042 stage C): compute-only — the commands answer with
+  // data (WorkspaceEdit/CodeAction/TextEdit shapes) and this side never
+  // applies anything; the kernel's gated write path is the only writer.
+  "textDocument/rename": "vscode.executeDocumentRenameProvider",
+  "textDocument/codeAction": "vscode.executeCodeActionProvider",
+  "textDocument/formatting": "vscode.executeFormatDocumentProvider",
 };
 
 /** Whether the method dispatches without the special-cased Problems path. */
@@ -91,6 +97,12 @@ export function ideCommandArgs(
     case "typeHierarchy/supertypes":
     case "typeHierarchy/subtypes":
       return [objectOf(params.item)];
+    case "textDocument/rename":
+      return [uri, position, stringOf(params.newName) ?? ""];
+    case "textDocument/codeAction":
+      return [uri, position, objectOf(params.context) ?? { diagnostics: [] }];
+    case "textDocument/formatting":
+      return [uri, objectOf(params.options) ?? { tabSize: 4, insertSpaces: true }];
     default:
       return [];
   }
@@ -269,4 +281,101 @@ function objectOf(value: unknown): Record<string, unknown> | undefined {
 
 function stringOf(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+/** The `maieutics/dirty` answer entry: the requested document with its
+ * unsaved-buffer flag as the editor reports it. */
+export interface DirtyEntry {
+  readonly uri: string;
+  readonly dirty: boolean;
+}
+
+/** Pure shape for one open text document the executor sees. */
+export interface DirtyDocument {
+  readonly fsPath: string;
+  readonly isDirty: boolean;
+}
+
+/** Answers the dirty query (ADR 0042 stage C, decision 7): one entry per
+ * requested URI; a document the editor doesn't hold open is on-disk state
+ * and therefore clean by construction. Matching is by fsPath so the kernel's
+ * physical file URI form meets the editor's canonical form. */
+export function collectDirty(
+  documents: readonly DirtyDocument[],
+  requestedUris: readonly string[],
+  fsPathOf: (uri: string) => string,
+): DirtyEntry[] {
+  return requestedUris.map((uri) => {
+    const path = fsPathOf(uri);
+    const document = documents.find((candidate) => candidate.fsPath === path);
+    return { uri, dirty: document?.isDirty === true };
+  });
+}
+
+/** LSP wire shape of one text edit (the kernel contract's 0-based form). */
+export interface WireTextEdit {
+  readonly range: {
+    readonly start: { line: number; character: number };
+    readonly end: { line: number; character: number };
+  };
+  readonly newText: string;
+}
+
+/** Flattens a vscode.WorkspaceEdit into the LSP `changes` map. File-level
+ * operations (create/rename file entries) have no public reader in the
+ * editor's API and are absent here — a documented stage-C limitation
+ * (structural refactors that move code into new files lose those ops). */
+export function workspaceEditToWire(
+  edit: { entries(): readonly (readonly [unknown, unknown])[] },
+): { changes: Record<string, WireTextEdit[]> } {
+  const changes: Record<string, WireTextEdit[]> = {};
+  for (const [uri, edits] of edit.entries()) {
+    const list = Array.isArray(edits) ? edits : [];
+    changes[String(uri)] = list.map((entry) => {
+      const textEdit = entry as { range?: { start?: unknown; end?: unknown }; newText?: unknown };
+      const range = textEdit.range as { start?: unknown; end?: unknown } | undefined;
+      return {
+        range: {
+          start: { ...(range?.start as { line: number; character: number }) },
+          end: { ...(range?.end as { line: number; character: number }) },
+        },
+        newText: typeof textEdit.newText === "string" ? textEdit.newText : "",
+      };
+    });
+  }
+  return { changes };
+}
+
+/** Flattens one compute answer's code actions into plain data: title, kind,
+ * the carried edit (data only), and the command's title. Commands stay
+ * unexecutable — the kernel applies edits, never commands. */
+export function codeActionsToWire(actions: readonly unknown[]): unknown[] {
+  return actions.map((action) => {
+    if (typeof action !== "object" || action === null) return { title: String(action) };
+    const record = action as Record<string, unknown>;
+    const kind = record.kind as { value?: unknown } | undefined;
+    const command = record.command as { title?: unknown } | undefined;
+    const edit = record.edit as { entries(): readonly (readonly [unknown, unknown])[] } | undefined;
+    return {
+      title: typeof record.title === "string" ? record.title : String(record.title),
+      ...(kind && typeof kind.value === "string" ? { kind: kind.value } : {}),
+      ...(edit ? { edit: workspaceEditToWire(edit) } : {}),
+      ...(command && typeof command.title === "string" ? { commandTitle: command.title } : {}),
+    };
+  });
+}
+
+/** Flattens the formatting family's TextEdit[] into the wire shape. */
+export function textEditsToWire(edits: readonly unknown[]): WireTextEdit[] {
+  return edits.map((entry) => {
+    const textEdit = entry as { range?: { start?: unknown; end?: unknown }; newText?: unknown };
+    const range = textEdit.range as { start?: unknown; end?: unknown } | undefined;
+    return {
+      range: {
+        start: { ...(range?.start as { line: number; character: number }) },
+        end: { ...(range?.end as { line: number; character: number }) },
+      },
+      newText: typeof textEdit.newText === "string" ? textEdit.newText : "",
+    };
+  });
 }

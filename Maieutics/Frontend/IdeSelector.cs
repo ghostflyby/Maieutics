@@ -156,7 +156,27 @@ internal static class IdeSelector
     /// <summary>Reads the whole file for the selector scan, bounded at
     /// <see cref="MaxScanBytes" /> (the <c>search_text</c> scan scale) with
     /// strict UTF-8 and BOM stripping; line endings normalize to '\n'.</summary>
+    /// <summary>Reads the whole file as decoded text for the apply path —
+    /// bounded like <see cref="ReadLinesAsync" /> but keeping the byte order
+    /// mark and the original line endings verbatim, so computed content
+    /// round-trips byte-for-byte outside the edited ranges.</summary>
+    internal static async ValueTask<string> ReadTextAsync(
+        string fullPath,
+        CancellationToken cancellationToken)
+    {
+        return await ReadTextCoreAsync(fullPath, cancellationToken).ConfigureAwait(false);
+    }
+
     internal static async ValueTask<IReadOnlyList<string>> ReadLinesAsync(
+        string fullPath,
+        CancellationToken cancellationToken)
+    {
+        var text = await ReadTextCoreAsync(fullPath, cancellationToken).ConfigureAwait(false);
+        if (text.StartsWith('\uFEFF')) text = text[1..];
+        return text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+    }
+
+    private static async ValueTask<string> ReadTextCoreAsync(
         string fullPath,
         CancellationToken cancellationToken)
     {
@@ -191,8 +211,7 @@ internal static class IdeSelector
                 "The selector needs decodable text; the file is not valid UTF-8.");
         }
 
-        if (text.StartsWith('\uFEFF')) text = text[1..];
-        return text.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+        return text;
     }
 
     private static AgentToolException PathMismatch(string displayPath, IEnumerable<string?> available)

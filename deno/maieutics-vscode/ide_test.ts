@@ -52,7 +52,11 @@ Deno.test("the read catalog maps every method to a vscode command without writes
   assertEquals(ideMethodCommands["maieutics/problems"], undefined, "problems is special-cased");
   assert(isIdeMethodSupported("maieutics/problems"));
   assert(isIdeMethodSupported("textDocument/semanticTokens/full"));
-  assert(!isIdeMethodSupported("textDocument/rename"));
+  // Stage C: the write-group commands dispatch compute-only — this side
+  // never applies; the kernel's gated write path is the only writer.
+  assert(isIdeMethodSupported("textDocument/rename"));
+  assert(isIdeMethodSupported("textDocument/codeAction"));
+  assert(isIdeMethodSupported("textDocument/formatting"));
   assert(!isIdeMethodSupported("workspace/executeCommand"));
   assert(!isIdeMethodSupported("vscode.open"));
 });

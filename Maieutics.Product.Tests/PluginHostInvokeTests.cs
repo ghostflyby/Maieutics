@@ -619,4 +619,69 @@ public sealed class PluginHostInvokeTests
             return sent.Writer.WriteAsync(Encoding.UTF8.GetString(buffer.Span), cancellationToken);
         }
     }
+[Fact(Timeout = 60_000)]
+public async Task IdeQueryCapabilityInvokesWhitelistedReadTools()
+{
+    if (OperatingSystem.IsWindows())
+        Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
+    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+    deadline.CancelAfter(Deadline);
+    await using var harness = await CreateHarnessAsync(deadline.Token);
+    harness.Manager.SetCapabilityGrants("plugin-1", ["ide.query"]);
+    var executed = new List<string>();
+    harness.Manager.CapabilityExecutor = (tool, arguments, _) =>
+    {
+        executed.Add(tool);
+        return Task.FromResult(JsonSerializer.SerializeToElement(
+            new { status = "ok", value = $"ide:{tool}" }));
+    };
+
+    harness.Manager.HandleHostMessage(
+        "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ide-1\"," +
+        "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
+        "\"payload\":{\"tool\":\"ide_diagnostics\",\"arguments\":{}}}}");
+
+    var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+    var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+    envelope.Type.Should().Be("capability.result");
+    var payload = JsonSerializer.Deserialize(
+        envelope.Payload!.Value.GetRawText(),
+        ReplControlJsonContext.Default.CapabilityResultPayload)!;
+    payload.Result.GetProperty("value").GetString().Should().Be("ide:ide_diagnostics");
+    executed.Should().ContainSingle().Which.Should().Be("ide_diagnostics");
+}
+
+[Fact(Timeout = 60_000)]
+public async Task IdeQueryCapabilityRejectsWriteToolsByWhitelist()
+{
+    if (OperatingSystem.IsWindows())
+        Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+
+    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+    deadline.CancelAfter(Deadline);
+    await using var harness = await CreateHarnessAsync(deadline.Token);
+    harness.Manager.SetCapabilityGrants("plugin-1", ["ide.query"]);
+    var executorRan = false;
+    harness.Manager.CapabilityExecutor = (_, _, _) =>
+    {
+        executorRan = true;
+        return Task.FromResult(JsonSerializer.SerializeToElement(new { status = "ok" }));
+    };
+
+    harness.Manager.HandleHostMessage(
+        "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ide-2\"," +
+        "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
+        "\"payload\":{\"tool\":\"ide_apply_edit\",\"arguments\":{}}}}");
+
+    var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+    var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+    envelope.Type.Should().Be("capability.error");
+    var payload = JsonSerializer.Deserialize(
+        envelope.Payload!.Value.GetRawText(),
+        ReplControlJsonContext.Default.BusErrorPayload)!;
+    payload.Code.Should().Be("invalid_capability_invoke");
+    executorRan.Should().BeFalse("write tools are unreachable through ide.query");
+}
+
 }

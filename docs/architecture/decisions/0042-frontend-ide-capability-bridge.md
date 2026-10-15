@@ -474,7 +474,14 @@ window, `search_text` returns 1-based line/column matches, and
   to the process-level check. Mounted in the script-tools list; the
   wire frame shape is documented in the protocol doc. The LSP-shaped
   TS facade and the `ide.query` plugin capability (which rides this
-  channel) remain open.
+  channel) — the facade landed as
+  `deno/maieutics-repl-client/ide.ts` (hover/navigate/symbols/diagnostics
+  plus the request escape hatch over the script tools; LSP 0-based in,
+  kernel 1-based conventions translated at the facade). `ide.query`
+  landed as a catalogued capability (kernel whitelist
+  `PluginHostManager.IdeQueryToolNames` narrows it to the read tools —
+  writes are unreachable by construction) with seam tests for the
+  whitelist and the grant path.
 - **E — virtual file systems.** The `idefs://` domain and the two
   `maieutics/fs/*` methods (decision 11): `ide_fs_list`/`ide_fs_read`
   text plane, nonce-scoped folder-id resolution (`<nonce><counter>`)

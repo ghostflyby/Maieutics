@@ -140,10 +140,12 @@ internal sealed class PluginHostManager(
     Func<string?>? workspaceRootAccessor = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
-    /// <summary>The read-only IDE tools `ide.query` may invoke (ADR 0042 stage D):
-    /// the same names the kernel's IdeMethodCatalog.ReadToolNames whitelist carries;
-    /// duplicated here because Plugins sits below Frontend in the dependency
-    /// direction. Keep in sync — the kernel-side handler rejects everything else.</summary>
+    /// <summary>The read-only IDE tools `ide.query` may invoke (ADR 0042 decision 8's
+    /// read group, as tool names): hover, navigation, symbols, the aggregate and
+    /// per-document diagnostics, and the read-only request escape hatch. This copy
+    /// exists because Plugins sits below Frontend in the dependency direction; a
+    /// Product.Tests sync test pins it against the kernel's IdeFunction names —
+    /// keep both lists aligned when the read group changes.</summary>
     internal static readonly IReadOnlySet<string> IdeQueryToolNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "ide_diagnostics", "ide_hover", "ide_navigate", "ide_document_symbols", "ide_workspace_symbols", "ide_request"
@@ -3112,6 +3114,7 @@ internal sealed class PluginHostManager(
                     ReplControlJsonContext.Default.ToolInvokePayload);
                 if (query is null ||
                     string.IsNullOrWhiteSpace(query.Tool) ||
+                    query.Arguments.ValueKind != JsonValueKind.Object ||
                     !IdeQueryToolNames.Contains(query.Tool))
                 {
                     await PushCapabilityErrorAsync(
@@ -3119,7 +3122,7 @@ internal sealed class PluginHostManager(
                         envelope.CorrelationId,
                         "invalid_capability_invoke",
                         "The ide.query payload requires one of the read-only IDE tools: " +
-                        string.Join(", ", IdeQueryToolNames) + ".",
+                        string.Join(", ", IdeQueryToolNames) + " — with object arguments.",
                         budget.Token).ConfigureAwait(false);
                     return;
                 }

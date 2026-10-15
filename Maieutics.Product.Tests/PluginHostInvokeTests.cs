@@ -619,9 +619,9 @@ public sealed class PluginHostInvokeTests
             return sent.Writer.WriteAsync(Encoding.UTF8.GetString(buffer.Span), cancellationToken);
         }
     }
-[Fact(Timeout = 60_000)]
-public async Task IdeQueryCapabilityInvokesWhitelistedReadTools()
-{
+    [Fact(Timeout = 60_000)]
+    public async Task IdeQueryCapabilityInvokesWhitelistedReadTools()
+    {
     if (OperatingSystem.IsWindows())
         Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
@@ -652,9 +652,9 @@ public async Task IdeQueryCapabilityInvokesWhitelistedReadTools()
     executed.Should().ContainSingle().Which.Should().Be("ide_diagnostics");
 }
 
-[Fact(Timeout = 60_000)]
-public async Task IdeQueryCapabilityRejectsWriteToolsByWhitelist()
-{
+    [Fact(Timeout = 60_000)]
+    public async Task IdeQueryCapabilityRejectsWriteToolsByWhitelist()
+    {
     if (OperatingSystem.IsWindows())
         Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
@@ -684,4 +684,23 @@ public async Task IdeQueryCapabilityRejectsWriteToolsByWhitelist()
     executorRan.Should().BeFalse("write tools are unreachable through ide.query");
 }
 
+}
+
+public sealed class IdeQueryWhitelistSyncTests
+{
+    /// <summary>Pins the plugin-side ide.query whitelist against the kernel's
+    /// read-only IDE tool names: the two lists must stay aligned when the read
+    /// group changes, and write tools must stay unreachable through the
+    /// capability (ADR 0042 stage D).</summary>
+    [Fact]
+    public void IdeQueryWhitelistMatchesTheKernelReadGroup()
+    {
+        PluginHostManager.IdeQueryToolNames.Should().BeEquivalentTo([
+            "ide_diagnostics", "ide_hover", "ide_navigate",
+            "ide_document_symbols", "ide_workspace_symbols", "ide_request",
+        ]);
+        PluginHostManager.IdeQueryToolNames.Should().NotIntersectWith([
+            "ide_apply_edit", "ide_format_document", "ide_rename", "ide_code_actions",
+        ], "write tools are unreachable through ide.query");
+    }
 }

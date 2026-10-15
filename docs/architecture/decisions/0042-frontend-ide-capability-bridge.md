@@ -482,13 +482,13 @@ window, `search_text` returns 1-based line/column matches, and
   `PluginHostManager.IdeQueryToolNames` narrows it to the read tools —
   writes are unreachable by construction) with seam tests for the
   whitelist and the grant path.
-- **E — virtual file systems.** The `idefs://` domain and the two
-  `maieutics/fs/*` methods (decision 11): `ide_fs_list`/`ide_fs_read`
-  text plane, nonce-scoped folder-id resolution (`<nonce><counter>`)
-  under the empty-authority URI grammar (display names never cross
-  the API), structural containment, the fs family's bypass of the
-  stage-A translation layer, typed failures. Later in the stage:
-  binary via the
+- **E — virtual file systems. — TEXT PLANE IMPLEMENTED 2026-10-15.** The
+  `idefs://` domain and the two `maieutics/fs/*` methods (decision 11):
+  `ide_fs_list`/`ide_fs_read` text plane, nonce-scoped folder-id
+  resolution (`<nonce><counter>`) under the empty-authority URI grammar
+  (display names never cross the API), structural containment, the fs
+  family's bypass of the stage-A translation layer, typed failures.
+  Later in the stage: binary via the
   object-store round trip,
   `maieutics/fs/search` over `workspace.findTextInFiles` (the remote
   grep — the search gap this family otherwise leaves), and — after C —

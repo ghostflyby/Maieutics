@@ -283,6 +283,18 @@ frontend receives the request again:
    "params": {"uri": "file:///…", "position": {"line": 41, "character": 6}}}}}}
 ```
 
+Agent runs announce the request as a sequenced `tool.progress` content
+item (replayed with the run). Script/plugin calls (REPL `tools.invoke`,
+plugin `capability.invoke` — ADR 0042 stage D) have no run to ride, so
+the kernel instead pushes a standalone, unordered frame to every
+announcing events socket; it is not replayed, and the answer endpoint's
+404 idempotence covers the missing replay:
+
+```json
+{"type": "ide.request", "data": {"requestId": "ide-…", "method": "textDocument/hover",
+ "params": {"uri": "file:///…", "position": {"line": 41, "character": 6}}}}
+```
+
 The frontend answers:
 
 ```

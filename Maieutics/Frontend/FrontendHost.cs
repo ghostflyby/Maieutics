@@ -891,7 +891,9 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-        if (ideAnnounced) ideSockets?.Announce(sessionId);
+        Guid? ideRegistration = ideAnnounced && ideSockets is not null
+            ? ideSockets.Announce(sessionId, (frame, token) => SendFrameAsync(socket, frame, token))
+            : null;
         logger.LogDebug(
             "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}, ide {IdeAnnounced}).",
             sessionId,
@@ -996,7 +998,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
-            if (ideAnnounced) ideSockets?.Withdraw(sessionId);
+            if (ideRegistration is { } registration) ideSockets?.Withdraw(sessionId, registration);
             await peer.CancelAsync().ConfigureAwait(false);
             await drain.ConfigureAwait(false);
             logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);

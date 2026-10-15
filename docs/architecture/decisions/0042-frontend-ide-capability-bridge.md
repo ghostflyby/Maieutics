@@ -459,8 +459,22 @@ window, `search_text` returns 1-based line/column matches, and
   lose those ops. Dirty checking costs one bridge round trip per apply;
   the `TranslateIncoming`/`TranslateOutgoing` deep walk now translates
   object property names too (an LSP changes map is keyed by them).
-- **D — TS API faces.** Script-tools mount, LSP-shaped facade,
-  `ide.query` plugin capability.
+- **D — TS API faces. — IMPLEMENTED 2026-10-15, with a decision-10
+  amendment.** Implementing the script-tools mount exposed that a
+  script/plugin invocation has no run stream to announce on
+  (`AgentToolContext.ReportProgressAsync` is agent-run-bound; the
+  control-plane path hands tools a `ReplToolProgress` whose frames never
+  reach the run events socket), so every scripted IDE call would time
+  out. Amended: `FrontendIdeSockets` now registers announcing sockets
+  (send delegate + per-socket send gate) and `SendAsync` grows a second
+  announcement path — an unordered, standalone `ide.request` frame
+  pushed directly to announcers, not replayed, with the answer
+  endpoint's 404 idempotence covering the missing replay; agent-run
+  announcement is unchanged. The gate degrades for context-less callers
+  to the process-level check. Mounted in the script-tools list; the
+  wire frame shape is documented in the protocol doc. The LSP-shaped
+  TS facade and the `ide.query` plugin capability (which rides this
+  channel) remain open.
 - **E — virtual file systems.** The `idefs://` domain and the two
   `maieutics/fs/*` methods (decision 11): `ide_fs_list`/`ide_fs_read`
   text plane, nonce-scoped folder-id resolution (`<nonce><counter>`)

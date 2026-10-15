@@ -288,14 +288,15 @@ public sealed class FrontendIdeBridgeTests
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
-        var anchored = await InvokeAsync(
+        var ranged = await InvokeAsync(
             hover,
             ContextArguments(
-                """{"uri":"workspace://local/a.cs","select":{"anchor":["class C {}"]}}""",
+                """{"uri":"workspace://local/a.cs","select":{"line":1,"endLine":2}}""",
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
-        anchored.Failure.Should().NotBeNull();
-        anchored.Failure!.Code.Should().Be("ide_selector_unsupported");
+        ranged.Failure.Should().NotBeNull();
+        ranged.Failure!.Code.Should().Be("ide_selector_unsupported",
+            "range selectors are a later stage; anchor and patch resolve since stage B");
 
         var zero = await InvokeAsync(
             hover,
@@ -328,7 +329,189 @@ public sealed class FrontendIdeBridgeTests
             .Should().BeFalse("a path sharing the root's prefix but not its containment is outside");
     }
 
+    // ---------- stage B: anchor and patch selectors ----------
+
+    [Fact(Timeout = 30_000)]
+    public async Task AnchorSelectorResolvesTheUniqueMatchToItsBlockStart()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(
+            Path.Combine(workspace.Path, "a.cs"),
+            "alpha\nbeta\ngamma\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+
+        var invocation = await InvokeWithAnswerAsync(
+            hover,
+            """{"uri":"workspace://local/a.cs","select":{"anchor":["beta","gamma"]}}""",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse("\"h\"").RootElement.Clone()),
+            cancellationToken);
+
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
+        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(
+            1,
+            "the two-line anchor starts at 1-based line 2, which is LSP 0-based line 1");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AmbiguousAnchorWithoutOccurrenceIsTypedWithCandidates()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(
+            Path.Combine(workspace.Path, "a.cs"),
+            "dup\nkeep\ndup\nkeep\n");
+        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+
+        var invocation = await InvokeAsync(
+            hover,
+            ContextArguments(
+                """{"uri":"workspace://local/a.cs","select":{"anchor":["dup"]}}""",
+                static (_, _) => ValueTask.CompletedTask),
+            cancellationToken);
+
+        invocation.Failure.Should().NotBeNull();
+        invocation.Failure!.Code.Should().Be("ide_selector_ambiguous");
+        invocation.Failure.Message.Should().Contain("line 1").And.Contain("line 3");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AnchorOccurrencePicksTheNthMatch()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "dup\nkeep\ndup\nkeep\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+
+        var invocation = await InvokeWithAnswerAsync(
+            hover,
+            """{"uri":"workspace://local/a.cs","select":{"anchor":["dup"],"occurrence":2}}""",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse("\"h\"").RootElement.Clone()),
+            cancellationToken);
+
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
+        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(2);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AnchorWithoutMatchIsTyped()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "alpha\n");
+        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+
+        var invocation = await InvokeAsync(
+            hover,
+            ContextArguments(
+                """{"uri":"workspace://local/a.cs","select":{"anchor":["nope"]}}""",
+                static (_, _) => ValueTask.CompletedTask),
+            cancellationToken);
+
+        invocation.Failure.Should().NotBeNull();
+        invocation.Failure!.Code.Should().Be("ide_selector_no_match");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task V4aPatchSelectorLocatesThroughSectionContext()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\nmiddle\nend\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+        const string patch = "*** Begin Patch\n*** Update File: a.cs\n@@\n-middle\n+middle updated\n*** End Patch";
+
+        var invocation = await InvokeWithAnswerAsync(
+            hover,
+            "{\"uri\":\"workspace://local/a.cs\",\"select\":{\"patch\":" + JsonSerializer.Serialize(patch) + "}}",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse("\"h\"").RootElement.Clone()),
+            cancellationToken);
+
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
+        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(1);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task GitPatchSelectorLocatesThroughHunkContext()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\nmiddle\nend\n");
+        var (functions, registry, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+        const string patch = "--- a/a.cs\n+++ b/a.cs\n@@ -1,3 +1,3 @@\n start\n-middle\n+middle updated\n end";
+
+        var invocation = await InvokeWithAnswerAsync(
+            hover,
+            "{\"uri\":\"workspace://local/a.cs\",\"select\":{\"patch\":" + JsonSerializer.Serialize(patch) + "}}",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse("\"h\"").RootElement.Clone()),
+            cancellationToken);
+
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
+        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(0);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task PatchSelectorRejectsAPathMismatchAsTyped()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\n");
+        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+        const string patch = "--- a/other.cs\n+++ b/other.cs\n@@ -1 +1 @@\n-x\n+y";
+
+        var invocation = await InvokeAsync(
+            hover,
+            ContextArguments(
+                "{\"uri\":\"workspace://local/a.cs\",\"select\":{\"patch\":" + JsonSerializer.Serialize(patch) + "}}",
+                static (_, _) => ValueTask.CompletedTask),
+            cancellationToken);
+
+        invocation.Failure.Should().NotBeNull();
+        invocation.Failure!.Code.Should().Be("ide_selector_path_mismatch");
+        invocation.Failure.Message.Should().Contain("other.cs");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task MalformedPatchIsTyped()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\n");
+        var (functions, _, gate) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var hover = Function(functions.Functions, "ide_hover");
+
+        var invocation = await InvokeAsync(
+            hover,
+            ContextArguments(
+                """{"uri":"workspace://local/a.cs","select":{"patch":"not a diff"}}""",
+                static (_, _) => ValueTask.CompletedTask),
+            cancellationToken);
+
+        invocation.Failure.Should().NotBeNull();
+        invocation.Failure!.Code.Should().Be("ide_selector_patch_malformed");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
+
 
     [Fact(Timeout = 120_000)]
     public async Task AnswerEndpointCompletesPendingRequestsAndTypesEveryRejection()

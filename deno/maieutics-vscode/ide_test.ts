@@ -6,6 +6,7 @@ import {
   ideCommandArgs,
   ideMethodCommands,
   isIdeMethodSupported,
+  normalizedHoverAnswer,
   normalizeHoverContents,
 } from "./ide.ts";
 
@@ -111,6 +112,34 @@ Deno.test("normalizeHoverContents flattens every VS Code contents shape", () => 
     value: "a\n\n```cs\nint\n```",
   });
   assertEquals(normalizeHoverContents(undefined), { kind: "plaintext", value: "" });
+});
+
+Deno.test("normalizedHoverAnswer folds the provider command's Hover[] into one answer", () => {
+  // The real vscode.executeHoverProvider envelope: one Hover per provider.
+  assertEquals(
+    normalizedHoverAnswer([
+      { contents: { value: "const answer: number" }, range: {} },
+      { contents: "second provider" },
+    ]),
+    { contents: { kind: "markdown", value: "const answer: number" }, range: {} },
+  );
+  // A lone hover-shaped object normalizes the same way.
+  assertEquals(
+    normalizedHoverAnswer({ contents: [{ value: "a" }, { language: "ts", value: "x" }] }),
+    { contents: { kind: "markdown", value: "a\n\n```ts\nx\n```" } },
+  );
+  // A range-absent hover keeps the answer range-absent.
+  const ranged = normalizedHoverAnswer([{ contents: "plain text" }]);
+  assertEquals(ranged, { contents: { kind: "plaintext", value: "plain text" } });
+  assertEquals("range" in (ranged ?? {}), false);
+});
+
+Deno.test("normalizedHoverAnswer stays undefined until a hover carries contents", () => {
+  // The shapes a polling caller sees before the language service answers.
+  assertEquals(normalizedHoverAnswer([]), undefined);
+  assertEquals(normalizedHoverAnswer(undefined), undefined);
+  assertEquals(normalizedHoverAnswer(null), undefined);
+  assertEquals(normalizedHoverAnswer([42, "no contents here"]), undefined);
 });
 
 Deno.test("collectProblems filters to the workspace and counts tracked documents", () => {

@@ -226,3 +226,50 @@ jobs:
           path: test-logs/
           if-no-files-found: ignore
           retention-days: 14
+
+  extension:
+    name: Extension
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.6
+          # Built-in Deno module cache: key = job + OS/arch + hash of **/deno.lock.
+          cache: true
+
+      # test:vscode resolves or downloads VS Code stable through npm:@vscode/test-electron
+      # into deno/maieutics-vscode/.vscode-test — cache it per OS so only the first run pays.
+      - name: Cache VS Code stable download
+        uses: actions/cache@v6
+        with:
+          path: deno/maieutics-vscode/.vscode-test
+          key: ${{ runner.os }}-vscode-stable
+
+      - name: Build extension
+        run: deno task --config deno/maieutics-vscode/deno.json build
+
+      - name: Build test bundle
+        run: deno task --config deno/maieutics-vscode/deno.json build:test
+
+      # Electron needs a display server: wrap with xvfb on Linux, macOS runs headed directly.
+      - name: Test in VS Code
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]
+          then
+            xvfb-run -a deno task --config deno/maieutics-vscode/deno.json test:vscode
+          else
+            deno task --config deno/maieutics-vscode/deno.json test:vscode
+          fi

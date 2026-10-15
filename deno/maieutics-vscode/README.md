@@ -86,5 +86,8 @@ Debug: open this folder in VS Code and use "Run Extension" (F5) after `deno task
 ## Permissions
 
 Development runtime needs `allow-net` (loopback mock server tests) and `allow-read` (discovery
-file). The packaged extension talks to the executable over loopback HTTP/WS only; spawning the
-executable uses the Node child-process API, not Deno permissions.
+file). The renderer module regression tests also need `allow-write` for temporary bundles and
+`allow-run` for the Deno executable: they bundle the renderer sources as CJS and verify that the ESM
+gate rejects them. Temporary bundles are removed after the test. The packaged extension talks to the
+executable over loopback HTTP/WS only; spawning the executable uses the Node child-process API, not
+Deno permissions.

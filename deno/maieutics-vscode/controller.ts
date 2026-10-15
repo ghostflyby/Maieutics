@@ -82,10 +82,14 @@ import {
   collectDirty,
   collectProblems,
   extractIdeRequest,
+  fsEntriesAnswer,
+  fsRootsAnswer,
   ideCommandArgs,
+  IdeFolderRegistry,
   ideMethodCommands,
   type IdeRequestPayload,
   isIdeMethodSupported,
+  isValidIdeFsSegment,
   normalizedHoverAnswer,
   textEditsToWire,
   workspaceEditToWire,
@@ -931,6 +935,114 @@ class NotebookStream {
  * which normalize to MarkupContent, and Problems, which filter to the
  * workspace. Only the fixed table dispatches; arbitrary command names never
  * reach executeCommand. */
+const ideFolders = new IdeFolderRegistry();
+
+/** Maps the editor's FileSystemError family onto the typed fs codes; the
+ * physical target URI is stripped before any of this crosses to the model. */
+function ideFsError(error: unknown): Error {
+  const code = (error as { code?: unknown }).code;
+  const mapped = code === "FileNotFound"
+    ? "fs_not_found"
+    : code === "FileIsADirectory"
+    ? "fs_is_directory"
+    : code === "NoPermissions"
+    ? "fs_access_denied"
+    : code === "Unavailable"
+    ? "fs_scheme_unreadable"
+    : "fs_failed";
+  return Object.assign(new Error(`${mapped}: (target stripped)`), { code: mapped });
+}
+
+/** Executes the maieutics/fs methods against vscode.workspace.fs (ADR 0042
+ * decision 11): the root list answers the folder registry; folder enumeration
+ * and reads resolve the id, validate every relative segment (defense in
+ * depth — Uri.joinPath normalizes dot segments), and serve through
+ * workspace.fs so every FileSystemProvider scheme works identically. */
+async function executeIdeFs(
+  method: string,
+  params: Record<string, unknown>,
+  registry: IdeFolderRegistry,
+): Promise<unknown> {
+  const segments = Array.isArray(params.segments)
+    ? (params.segments as unknown[]).filter((s): s is string => typeof s === "string")
+    : [];
+  for (const segment of segments) {
+    if (!isValidIdeFsSegment(segment)) {
+      throw Object.assign(new Error("The path segment is not a valid workspace-path segment."), {
+        code: "ide_invalid_arguments",
+      });
+    }
+  }
+
+  const folderId = typeof params.folderId === "string" ? params.folderId : undefined;
+  if (method === "maieutics/fs/list" && folderId === undefined) {
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+      id: registry.register(folder.uri.toString()),
+      uri: folder.uri.toString(),
+    }));
+    return fsRootsAnswer(roots);
+  }
+
+  if (folderId === undefined) {
+    throw Object.assign(
+      new Error("The uri must address a file inside a folder."),
+      { code: "ide_invalid_arguments" },
+    );
+  }
+
+  const folderUri = registry.resolve(folderId);
+  if (folderUri === undefined) {
+    throw Object.assign(
+      new Error("The folder id is not registered on this activation; re-list the roots."),
+      { code: "fs_no_folder" },
+    );
+  }
+
+  const base = vscode.Uri.parse(folderUri, true);
+  const target = segments.length === 0 ? base : vscode.Uri.joinPath(base, ...segments);
+
+  if (method === "maieutics/fs/list") {
+    let listed: [string, vscode.FileType][];
+    try {
+      listed = await vscode.workspace.fs.readDirectory(target);
+    } catch (error) {
+      throw ideFsError(error);
+    }
+    return fsEntriesAnswer(
+      listed.map(([name, fileType]) => ({
+        name,
+        isDirectory: fileType === vscode.FileType.Directory,
+      })),
+      typeof params.cursor === "string" ? params.cursor : undefined,
+    );
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(target);
+  } catch (error) {
+    throw ideFsError(error);
+  }
+  if (bytes.byteLength > 1024 * 1024) {
+    throw Object.assign(
+      new Error("The read is bounded at 1 MiB of text; split the file or window the source."),
+      { code: "fs_too_large" },
+    );
+  }
+
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw Object.assign(new Error("The file is not valid UTF-8 text."), { code: "fs_not_text" });
+  }
+
+  return {
+    uri: `idefs:///${folderId}${segments.map((segment) => `/${segment}`).join("")}`,
+    content: text,
+  };
+}
+
 export async function executeIdeMethod(
   method: string,
   params: Record<string, unknown>,
@@ -959,6 +1071,10 @@ export async function executeIdeMethod(
       isDirty: document.isDirty,
     }));
     return { entries: collectDirty(documents, wanted, (uri) => vscode.Uri.parse(uri).fsPath) };
+  }
+
+  if (method === "maieutics/fs/list" || method === "maieutics/fs/read") {
+    return await executeIdeFs(method, params, ideFolders);
   }
 
   const command = ideMethodCommands[method];

@@ -858,7 +858,119 @@ public sealed class FrontendIdeBridgeTests
         invocation.Failure!.Code.Should().Be("ide_unavailable");
     }
 
+    // ---------- stage E: virtual file systems ----------
+
+    [Fact(Timeout = 30_000)]
+    public async Task FsListAndFsReadRoundTripThroughTheDirectChannel()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        File.WriteAllText(Path.Combine(workspace.Path, "remote.ts"), "alpha\nbeta\n");
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+
+        var seenFolderIds = new List<string>();
+        var registration = sockets.Announce(
+            "script-session",
+            (frame, _) =>
+            {
+                var data = frame.Data!.Value;
+                var method = data.GetProperty("method").GetString()!;
+                var requestId = data.GetProperty("requestId").GetString()!;
+                IdeRequestAnswer answer;
+                if (method == "maieutics/fs/list")
+                {
+                    var parameters = data.GetProperty("params");
+                    var folderId = parameters.GetProperty("folderId").GetString() ?? "";
+                    seenFolderIds.Add(folderId);
+                    var content = parameters.GetProperty("segments").GetArrayLength() == 0
+                        ? "{\"folders\":[{\"id\":\"ab1\",\"uri\":\"file:///repo\"}]}"
+                        : "{\"entries\":[{\"name\":\"remote.ts\",\"isDirectory\":false}]}";
+                    answer = IdeRequestAnswer.FromValue(JsonDocument.Parse(content).RootElement.Clone());
+                }
+                else if (method == "maieutics/fs/read")
+                {
+                    seenFolderIds.Add(
+                        data.GetProperty("params").GetProperty("folderId").GetString() ?? "");
+                    answer = IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                        "{\"content\":\"alpha\\nbeta\\n\",\"totalLines\":2}").RootElement.Clone());
+                }
+                else
+                {
+                    answer = IdeRequestAnswer.FromError("unexpected", method);
+                }
+
+                registry.TryComplete(requestId, answer);
+                return Task.CompletedTask;
+            });
+        try
+        {
+            var list = Function(functions.Functions, "ide_fs_list");
+            var roots = await InvokeAsync(
+                list,
+                NoContextArguments("{}"),
+                cancellationToken);
+            roots.Failure.Should().BeNull();
+            var rootValue = (JsonElement)roots.Result!;
+            rootValue.GetProperty("folders")[0].GetProperty("id").GetString().Should().Be("ab1");
+            rootValue.GetProperty("folders")[0].GetProperty("uri").GetString().Should().StartWith("file://");
+
+            var read = Function(functions.Functions, "ide_fs_read");
+            var invocation = await InvokeAsync(
+                read,
+                NoContextArguments("""{"uri":"idefs:///ab1/remote.ts","startLine":1,"maxLines":1}"""),
+                cancellationToken);
+
+            invocation.Failure.Should().BeNull();
+            var value = (JsonElement)invocation.Result!;
+            value.GetProperty("uri").GetString().Should().Be("idefs:///ab1/remote.ts");
+            value.GetProperty("content").GetString().Should().Be("alpha", "the window returns only the first line");
+            value.GetProperty("nextStartLine").GetInt32().Should().Be(2, "one line remains");
+            seenFolderIds.Should().Contain("ab1");
+        }
+        finally
+        {
+            sockets.Withdraw("script-session", registration);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IdeFsRejectsForeignIdsAndTraversalBeforeTheBridge()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var read = Function(functions.Functions, "ide_fs_read");
+
+        var foreign = await InvokeAsync(
+            read,
+            NoContextArguments("{\"uri\":\"idefs:///ZZ9!/remote.ts\"}"),
+            cancellationToken);
+        foreign.Failure.Should().NotBeNull();
+        foreign.Failure!.Code.Should().Be("ide_invalid_arguments",
+            "an id outside the [a-z0-9] token shape fails the kernel-side shape check");
+
+        // A shape-valid id cannot be verified locally (resolution is the
+        // frontend's duty), so it fails typed unavailable once the call
+        // reaches the empty announcer set.
+        var shapeValid = await InvokeAsync(
+            read,
+            NoContextArguments("{\"uri\":\"idefs:///zz9nope/remote.ts\"}"),
+            cancellationToken);
+        shapeValid.Failure.Should().NotBeNull();
+        shapeValid.Failure!.Code.Should().Be("ide_unavailable");
+
+        var traversal = await InvokeAsync(
+            read,
+            NoContextArguments("{\"uri\":\"idefs:///ab1/../secret\"}"),
+            cancellationToken);
+        traversal.Failure.Should().NotBeNull();
+        traversal.Failure!.Code.Should().Be("ide_invalid_arguments");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
+
 
 
 

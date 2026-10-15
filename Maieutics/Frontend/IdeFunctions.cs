@@ -148,6 +148,19 @@ internal sealed class IdeFunctions
                 "workspace://local file URI; optional tabSize (default 4) and insertSpaces (default true) shape the " +
                 "formatting options. Dirty documents are rejected: save or revert first. Returns the per-file unified diff."),
             CreateFunction(
+                (Func<AIFunctionArguments, string?, string?, CancellationToken, ValueTask<JsonElement>>)FsListAsync,
+                "ide_fs_list",
+                "Lists the IDE-side virtual file systems — remote workspaces and extension file systems that the " +
+                "workspace tools cannot see. The root call (no uri) returns the folders as opaque id + platform URI " +
+                "pairs; a folder call returns that folder's entries (pass a returned idefs:// URI back as-is; do " +
+                "not construct or guess ids or paths). Not searched yet and read-only."),
+            CreateFunction(
+                (Func<AIFunctionArguments, string, int?, int?, CancellationToken, ValueTask<JsonElement>>)FsReadAsync,
+                "ide_fs_read",
+                "Reads one virtual file as text (remote/extension file systems included) through the ide-capable " +
+                "frontend. 'uri' is an idefs:// file URI from ide_fs_list; startLine (1-based) and maxLines window " +
+                "the read like read_text. An empty result means nothing was reported — not that the file is clean/empty."),
+            CreateFunction(
                 (Func<JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)ApplyEditAsync,
                 "ide_apply_edit",
                 "Applies one LSP-shaped workspace edit through the kernel's gated write path — the only way IDE-computed " +
@@ -622,6 +635,128 @@ internal sealed class IdeFunctions
     /// <summary>Announces one IDE request on the run's event stream (the sequenced,
     /// replayable <c>ide.request</c> payload — ADR 0042 decision 1) and awaits its answer
     /// through the registry, bounded by the request timeout and the caller's cancellation.</summary>
+    // ---------- stage E: virtual file systems (decision 11) ----------
+
+    private const string IdeFsUriPrefix = "idefs:///";
+
+    /// <summary>Validates one `idefs:///<folderId>/<segments…>` URI and splits it.
+    /// This is the kernel-side half of the containment contract (ADR 0042 decision
+    /// 11): the id segment must be the opaque ASCII token shape the frontend
+    /// assigns, every following segment must satisfy the workspace segment
+    /// syntax (no empty/./.. segments, no separators, no control characters) —
+    /// rejection here happens before the bridge is ever engaged. Failures are
+    /// typed `ide_invalid_arguments`.</summary>
+    internal static (string FolderId, string[] Segments) ParseIdeFsUri(string uri)
+    {
+        const string prefix = IdeFsUriPrefix;
+        if (string.IsNullOrWhiteSpace(uri) ||
+            !uri.StartsWith(prefix, StringComparison.Ordinal) ||
+            uri.Length <= prefix.Length)
+            throw new AgentToolException(
+                "ide_invalid_arguments",
+                $"The uri must be {prefix}<folderId>/<path> (note the empty authority's third slash).");
+
+        var rest = uri[prefix.Length..];
+        var separator = rest.IndexOf('/');
+        var folderId = separator < 0 ? rest : rest[..separator];
+        if (folderId.Length is < 2 or > 24 ||
+            folderId.Any(static character => character is < '0' or > 'z' || (character > '9' && character < 'a')))
+            throw new AgentToolException(
+                "ide_invalid_arguments",
+                $"The folder id '{folderId}' is not the frontend's opaque token shape ([a-z0-9]+). Re-list the roots.");
+
+        var segments = separator < 0
+            ? Array.Empty<string>()
+            : rest[(separator + 1)..].Split('/');
+        foreach (var segment in segments)
+        {
+            if (segment.Length == 0 || segment is "." or ".." || segment.Contains('\\') ||
+                segment.Any(static character => character < ' '))
+                throw new AgentToolException(
+                    "ide_invalid_arguments",
+                    $"The path segment is not a valid workspace-path segment.");
+        }
+
+        return (folderId, segments);
+    }
+
+    /// <summary>Lists the IDE-side virtual file system: the root call (no uri)
+    /// answers the folders themselves — an intentionally small, bounded set;
+    /// a folder call answers one folder's entries as a keyset page (the
+    /// `list_directory` shape). No recursion, no traversal outside the named
+    /// folder: containment is structural (ADR 0042 decision 11).</summary>
+    private async ValueTask<JsonElement> FsListAsync(
+        AIFunctionArguments arguments,
+        [Description("Optional idefs:// folder URI; omit to list the folders themselves.")]
+        string? uri = null,
+        [Description("Optional keyset cursor: the last entry name of the previous page.")]
+        string? cursor = null,
+        CancellationToken cancellationToken = default)
+    {
+        var announce = ResolveAnnouncer(arguments);
+        string? folderId = null;
+        string[] segments = [];
+        if (uri is not null)
+        {
+            (folderId, segments) = ParseIdeFsUri(uri);
+            if (segments.Length == 0)
+                throw new AgentToolException(
+                    "ide_invalid_arguments",
+                    "Use the root call (no uri) to list folders; folder enumeration takes a path inside one folder.");
+        }
+
+        EnsureConnected(arguments);
+
+        var parameters = JsonSerializer.SerializeToElement(
+            new IdeFsListParams(folderId, segments, cursor),
+            IdeFunctionJsonContext.Default.IdeFsListParams);
+        return await SendAsync(announce, "maieutics/fs/list", parameters, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Reads one virtual file as text: the bridge answers the decoded
+    /// full text (bounded at 1 MiB by the frontend), the kernel windows it with
+    /// the read_text conventions — 1-based startLine, at most 1000 lines per
+    /// call, nextStartLine when more lines remain.</summary>
+    private async ValueTask<JsonElement> FsReadAsync(
+        AIFunctionArguments arguments,
+        [Description("An idefs:// file URI, as returned by ide_fs_list.")] string uri,
+        [Description("First line of the window (1-based). Defaults to 1.")] int? startLine = null,
+        [Description("Lines to return (default 200, max 1000).")] int? maxLines = null,
+        CancellationToken cancellationToken = default)
+    {
+        var announce = ResolveAnnouncer(arguments);
+        var (folderId, segments) = ParseIdeFsUri(uri);
+        if (segments.Length == 0)
+            throw new AgentToolException("ide_invalid_arguments", "The uri must address a file inside a folder.");
+
+        EnsureConnected(arguments);
+
+        var parameters = JsonSerializer.SerializeToElement(
+            new IdeFsReadParams(folderId, segments, startLine, maxLines),
+            IdeFunctionJsonContext.Default.IdeFsReadParams);
+        var answer = await SendAsync(announce, "maieutics/fs/read", parameters, cancellationToken)
+            .ConfigureAwait(false);
+        if (answer.ValueKind != JsonValueKind.Object ||
+            !answer.TryGetProperty("content", out var content) ||
+            content.ValueKind != JsonValueKind.String)
+            throw new AgentToolException("ide_result_invalid", "The read answer carries no text content.");
+
+        var text = content.GetString() ?? string.Empty;
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var start = startLine is { } s && s >= 1 ? Math.Min(s - 1, lines.Length) : 0;
+        var count = Math.Min(maxLines is { } m && m > 0 ? m : 200, 1_000);
+        var window = lines.Skip(start).Take(count).ToArray();
+        var next = start + window.Length;
+        return JsonSerializer.SerializeToElement(
+            new IdeFsReadValue(
+                uri,
+                string.Join('\n', window),
+                next < lines.Length ? next + 1 : null,
+                lines.Length),
+            IdeFunctionJsonContext.Default.IdeFsReadValue);
+    }
+
     /// <summary>Resolves the announcement path for this call: an agent run
     /// context announces through the run stream (sequenced, replayable
     /// progress); a script/plugin invocation has no run to ride, so the
@@ -1199,6 +1334,30 @@ internal sealed record IdeRequestPayload(
 internal sealed record IdeRequestEnvelope(
     [property: JsonPropertyName("ideRequest")] IdeRequestPayload IdeRequest);
 
+/// <summary>The maieutics/fs/list payload: a null FolderId is the root call
+/// (folders themselves); otherwise the folder-relative segments to enumerate
+/// with an optional keyset cursor.</summary>
+internal sealed record IdeFsListParams(
+    [property: JsonPropertyName("folderId")] string? FolderId,
+    [property: JsonPropertyName("segments")] string[] Segments,
+    [property: JsonPropertyName("cursor")] string? Cursor);
+
+/// <summary>The maieutics/fs/read payload: folder-relative path plus the
+/// read_text-style 1-based window.</summary>
+internal sealed record IdeFsReadParams(
+    [property: JsonPropertyName("folderId")] string FolderId,
+    [property: JsonPropertyName("segments")] string[] Segments,
+    [property: JsonPropertyName("startLine")] int? StartLine,
+    [property: JsonPropertyName("maxLines")] int? MaxLines);
+
+/// <summary>One virtual-file read answer: the requested window and the
+/// next 1-based line when more lines remain.</summary>
+internal sealed record IdeFsReadValue(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("nextStartLine")] int? NextStartLine,
+    [property: JsonPropertyName("totalLines")] int TotalLines);
+
 /// <summary>Workspace-wide diagnostics aggregate (ADR 0042 decision 8): severity totals,
 /// the top files, and the analysis-state marker that keeps "nothing reported" from being
 /// read as "no problems".</summary>
@@ -1243,6 +1402,9 @@ internal sealed record DiagnosticsTotals(
 [JsonSerializable(typeof(JsonElement))]
 [JsonSerializable(typeof(int?))]
 [JsonSerializable(typeof(bool?))]
+[JsonSerializable(typeof(IdeFsListParams))]
+[JsonSerializable(typeof(IdeFsReadParams))]
+[JsonSerializable(typeof(IdeFsReadValue))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(IdeApplyEditsValue))]
 [JsonSerializable(typeof(WorkspaceEditDiff))]

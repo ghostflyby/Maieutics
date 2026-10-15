@@ -140,6 +140,16 @@ internal sealed class PluginHostManager(
     Func<string?>? workspaceRootAccessor = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
+    /// <summary>The read-only IDE tools `ide.query` may invoke (ADR 0042 decision 8's
+    /// read group, as tool names): hover, navigation, symbols, the aggregate and
+    /// per-document diagnostics, and the read-only request escape hatch. This copy
+    /// exists because Plugins sits below Frontend in the dependency direction; a
+    /// Product.Tests sync test pins it against the kernel's IdeFunction names —
+    /// keep both lists aligned when the read group changes.</summary>
+    internal static readonly IReadOnlySet<string> IdeQueryToolNames = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "ide_diagnostics", "ide_hover", "ide_navigate", "ide_document_symbols", "ide_workspace_symbols", "ide_request"
+    };
     private const int EnvelopeVersion = 1;
     // 30s: the extension-point channel also covers on-demand worker starts
     // (ADR 0035) — a cold spawn's handshake rides the same budget.
@@ -3090,6 +3100,43 @@ internal sealed class PluginHostManager(
                     envelope.CorrelationId,
                     "capability_unavailable",
                     "The kernel capability executor is not available.",
+                    budget.Token).ConfigureAwait(false);
+                return;
+            }
+
+            // ide.query (ADR 0042 stage D): the payload is a tools.invoke shape
+            // narrowed to the read-only IDE tools — writes are unreachable through
+            // this capability by construction.
+            if (request.Capability == ReplCapabilityName.IdeQuery)
+            {
+                var query = JsonSerializer.Deserialize(
+                    payload.GetRawText(),
+                    ReplControlJsonContext.Default.ToolInvokePayload);
+                if (query is null ||
+                    string.IsNullOrWhiteSpace(query.Tool) ||
+                    query.Arguments.ValueKind != JsonValueKind.Object ||
+                    !IdeQueryToolNames.Contains(query.Tool))
+                {
+                    await PushCapabilityErrorAsync(
+                        socket,
+                        envelope.CorrelationId,
+                        "invalid_capability_invoke",
+                        "The ide.query payload requires one of the read-only IDE tools: " +
+                        string.Join(", ", IdeQueryToolNames) + " — with object arguments.",
+                        budget.Token).ConfigureAwait(false);
+                    return;
+                }
+
+                var queryResult = await executor(query.Tool, query.Arguments, budget.Token).ConfigureAwait(false);
+                await PushCapabilityReplyAsync(
+                    socket,
+                    new ReplEnvelope(
+                        envelope.Version,
+                        ReplMessageType.CapabilityResult,
+                        envelope.CorrelationId,
+                        JsonSerializer.SerializeToElement(
+                            new CapabilityResultPayload(queryResult),
+                            ReplControlJsonContext.Default.CapabilityResultPayload)),
                     budget.Token).ConfigureAwait(false);
                 return;
             }

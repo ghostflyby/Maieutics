@@ -176,12 +176,18 @@ internal static class ReplCapabilityName
     /// published skill set at runtime; the entries merge into the plugin's contribution
     /// slot below the declarative roots and the generated part.</summary>
     public const string SkillsPublish = "skills.publish";
+
+    /// <summary>IDE read-side queries (ADR 0042 stage D): a granted worker invokes the
+    /// kernel's read-only IDE tools (diagnostics, hover, navigation, symbols) — the
+    /// whitelist is enforced kernel-side; write tools are unreachable through this
+    /// capability.</summary>
+    public const string IdeQuery = "ide.query";
 }
 
 internal static class PluginCapabilityCatalog
 {
     public static readonly IReadOnlyList<string> All =
-        [ReplCapabilityName.ToolsInvoke, ReplCapabilityName.UiModels, ReplCapabilityName.SkillsPublish];
+        [ReplCapabilityName.ToolsInvoke, ReplCapabilityName.UiModels, ReplCapabilityName.SkillsPublish, ReplCapabilityName.IdeQuery];
 
     public static bool Contains(string capability)
     {

@@ -1,6 +1,6 @@
 /// <reference lib="deno.ns" />
-import { assert, assertEquals, assertRejects } from "@std/assert";
-import { createIde, IdeUnavailableError, shiftPositions } from "./ide.ts";
+import { assertEquals, assertRejects } from "@std/assert";
+import { createIde, type IdeUnavailableError, shiftPositions } from "./ide.ts";
 
 Deno.test("shiftPositions converts LSP positions and leaves everything else", () => {
   const input = {

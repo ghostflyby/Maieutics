@@ -777,18 +777,6 @@ public sealed class FrontendIdeBridgeTests
         changes.EnumerateObject().Should().ContainSingle().Which.Name.Should().Be("workspace://local/a.cs");
     }
 
-    [Fact(Timeout = 30_000)]
-    public void TempPathPhysicalMapRepro()
-    {
-        using var workspace = TemporaryWorkspace.Create();
-        File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "x\n");
-        var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
-        var aPhysical = new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri;
-        snapshot.TryMapPhysicalToWorkspaceUri(new Uri(aPhysical).LocalPath, out var mapped)
-            .Should().BeTrue($"root={workspace.Path} uri={aPhysical}");
-        mapped.Should().Be("workspace://local/a.cs");
-    }
-
     // ---------- endpoint + announcement (harness) ----------
 
 

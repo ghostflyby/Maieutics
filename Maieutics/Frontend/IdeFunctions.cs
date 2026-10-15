@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
@@ -170,7 +171,7 @@ internal sealed class IdeFunctions
     [Description("Returns the language service's hover information at one position.")]
     private async ValueTask<JsonElement> HoverAsync(
         [Description("A workspace://local file URI, as returned by other tools.")] string uri,
-        [Description("Coordinate selector: {\"line\": 42, \"column\": 7} (1-based lines and columns).")]
+        [Description("Selector: {\"line\": 42, \"column\": 7} coordinates, {\"anchor\": [lines], \"occurrence?\"} (1-based, must be unique), or {\"patch\": \"…\"} (V4A or git diff; its context lines locate the position).")]
         JsonElement select,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
@@ -178,7 +179,7 @@ internal sealed class IdeFunctions
         var context = AgentToolContext.GetRequired(arguments);
         EnsureConnected(context);
         var resolved = ResolveDocumentUri(uri);
-        var (line, character) = ParsePosition(select);
+        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken);
         var parameters = BuildPositionParams(resolved.FileUri, line, character);
         var answer = await SendAsync(context, "textDocument/hover", parameters, cancellationToken)
             .ConfigureAwait(false);
@@ -190,7 +191,7 @@ internal sealed class IdeFunctions
         [Description("One of: definition, type_definition, declaration, implementation, references, highlights.")]
         string kind,
         [Description("A workspace://local file URI, as returned by other tools.")] string uri,
-        [Description("Coordinate selector: {\"line\": 42, \"column\": 7} (1-based lines and columns).")]
+        [Description("Selector: {\"line\": 42, \"column\": 7} coordinates, {\"anchor\": [lines], \"occurrence?\"} (1-based, must be unique), or {\"patch\": \"…\"} (V4A or git diff; its context lines locate the position).")]
         JsonElement select,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
@@ -210,7 +211,7 @@ internal sealed class IdeFunctions
                 $"Unknown navigate kind '{kind}'. Use definition, type_definition, declaration, implementation, references, or highlights."),
         };
         var resolved = ResolveDocumentUri(uri);
-        var (line, character) = ParsePosition(select);
+        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken);
         var parameters = method == "textDocument/references"
             ? BuildPositionParams(
                 resolved.FileUri,
@@ -343,7 +344,11 @@ internal sealed class IdeFunctions
             var resolved = workspace.Capture().Resolve(uri);
             if (resolved.IsDirectory)
                 throw new WorkspaceException("ide_invalid_arguments", "The uri must address a file, not a directory.");
-            return new ResolvedDocument(resolved.FullPath, ToFileUri(resolved.FullPath), resolved.Uri);
+            return new ResolvedDocument(
+                resolved.FullPath,
+                ToFileUri(resolved.FullPath),
+                resolved.Uri,
+                WorkspaceSnapshot.ToDisplayPath(resolved.Segments));
         }
         catch (WorkspaceException exception)
         {
@@ -351,19 +356,73 @@ internal sealed class IdeFunctions
         }
     }
 
-    private static (int Line, int Character) ParsePosition(JsonElement select)
+    /// <summary>Resolves one selector — coordinates (stage A), an anchor block
+    /// or a patch (stage B) — to a 0-based position inside the resolved
+    /// document. Anchor and patch forms need the file's lines for the
+    /// unique-match locator (bounded at the read scan scale).</summary>
+    private async ValueTask<(int Line, int Character)> ResolvePositionAsync(
+        ResolvedDocument resolved,
+        JsonElement select,
+        CancellationToken cancellationToken)
     {
-        // Selector-kind detection precedes position validation, so an anchor or patch
-        // selector is a typed stage-B rejection, not a missing-line complaint.
-        if (select.ValueKind == JsonValueKind.Object &&
-            (select.TryGetProperty("anchor", out _) || select.TryGetProperty("patch", out _)))
-            throw new AgentToolException(
-                "ide_selector_unsupported",
-                "Anchor and patch selectors arrive in a later stage; use the coordinate object {line, column}.");
+        JsonElement anchor = default;
+        JsonElement patch = default;
+        var hasAnchor = select.ValueKind == JsonValueKind.Object && select.TryGetProperty("anchor", out anchor);
+        var hasPatch = select.ValueKind == JsonValueKind.Object && select.TryGetProperty("patch", out patch);
+        if (hasAnchor && hasPatch)
+            throw new AgentToolException("ide_invalid_arguments", "The selector 'anchor' and 'patch' forms are mutually exclusive.");
+        if (hasAnchor)
+        {
+            if (anchor.ValueKind != JsonValueKind.Array)
+                throw new AgentToolException("ide_invalid_arguments", "The selector 'anchor' must be an array of context lines.");
+            var occurrence = 0;
+            if (select.TryGetProperty("occurrence", out var occurrenceElement))
+            {
+                if (occurrenceElement.ValueKind != JsonValueKind.Number ||
+                    !occurrenceElement.TryGetInt32(out var parsed))
+                    throw new AgentToolException("ide_invalid_arguments", "The selector 'occurrence' must be a number.");
+                occurrence = parsed;
+            }
+
+            // 0 means "not given" — the locator then requires a unique match.
+
+            var anchorLines = ImmutableArray.CreateBuilder<string>(anchor.GetArrayLength());
+            foreach (var entry in anchor.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.String)
+                    throw new AgentToolException("ide_invalid_arguments", "Every selector 'anchor' entry must be a string.");
+                anchorLines.Add(entry.GetString() ?? string.Empty);
+            }
+
+            var anchorFileLines = await IdeSelector
+                .ReadLinesAsync(resolved.FullPath, cancellationToken)
+                .ConfigureAwait(false);
+            var anchorLine = IdeSelector.LocateAnchor(anchorFileLines, anchorLines.ToImmutable(), occurrence);
+            return (anchorLine - 1, 0);
+        }
+
+        if (hasPatch)
+        {
+            if (patch.ValueKind != JsonValueKind.String)
+                throw new AgentToolException(
+                    "ide_invalid_arguments",
+                    "The selector 'patch' must be a string holding a V4A or git unified diff.");
+            var patchFileLines = await IdeSelector
+                .ReadLinesAsync(resolved.FullPath, cancellationToken)
+                .ConfigureAwait(false);
+            var patchLine = IdeSelector.LocatePatch(patchFileLines, patch.GetString()!, resolved.DisplayPath);
+            return (patchLine - 1, 0);
+        }
+
+        return ParseCoordinateSelect(select);
+    }
+
+    private static (int Line, int Character) ParseCoordinateSelect(JsonElement select)
+    {
         if (select.ValueKind != JsonValueKind.Object)
             throw new AgentToolException(
                 "ide_selector_unsupported",
-                "The selector must be the coordinate object {line, column}; anchor and patch selectors arrive in a later stage.");
+                "The selector must be {line, column}, {anchor: [context lines], occurrence?}, or {patch: \"…\"}.");
         if (!select.TryGetProperty("line", out var lineElement) || lineElement.ValueKind != JsonValueKind.Number ||
             !lineElement.TryGetInt32(out var line) || line < 1)
             throw new AgentToolException("ide_invalid_arguments", "The selector needs a 1-based 'line' number.");
@@ -722,7 +781,7 @@ internal sealed class IdeFunctions
             });
     }
 
-    private sealed record ResolvedDocument(string FullPath, string FileUri, string WorkspaceUri);
+    private sealed record ResolvedDocument(string FullPath, string FileUri, string WorkspaceUri, string DisplayPath);
 }
 
 /// <summary>The <c>ide.request</c> payload carried as an application/json progress item on

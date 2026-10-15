@@ -427,8 +427,19 @@ window, `search_text` returns 1-based line/column matches, and
   (`FrontendIdeBridgeTests`), plus pure-module bridge tests
   (`deno/maieutics-vscode/ide_test.ts`), and an end-to-end frame round
   trip (kernel progress frame → wire → answer endpoint).
-- **B — addressing.** Unique-match anchor locator; selector grammar
-  across all IDE tools; git unified diff parser.
+- **B — addressing. — IMPLEMENTED 2026-10-15.** The unique-match anchor
+  locator (`IdeSelector`: ordinal line equality, CRLF-normalized, no
+  whitespace drift, `occurrence` disambiguation with 0 = unique-required,
+  typed ambiguity/no-match failures listing bounded candidates, scan
+  bounded at the `search_text` 8 MiB scale) wired into
+  `ide_hover`/`ide_navigate`; the patch selector form locates through
+  pre-image context lines — a V4A change section (`ApplyPatchParser`) or
+  a git hunk's first hunk (`GitDiffParser`, the new bounded unified-diff
+  parser in Execution, `a/`/`b/`-stripped paths, `/dev/null` sides,
+  rename/binary/no-newline tolerance, typed malformed/too-large bounds) —
+  with path-mismatch rejection so context is never borrowed from an
+  unrelated patch. `apply_patch`'s first-match-after-seek semantics are
+  untouched.
 - **C — write path.** Write-group methods, `ide_code_actions`/
   `ide_apply_edit`/format, dirty rejection, whole-edit pre-validation.
 - **D — TS API faces.** Script-tools mount, LSP-shaped facade,

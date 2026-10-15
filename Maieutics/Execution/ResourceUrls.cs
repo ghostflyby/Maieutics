@@ -127,6 +127,9 @@ internal sealed class ResourceRegistry
             ["skill"] = ResourceProviderClass.BuiltIn,
             ["mcp-prompt"] = null,
             ["mcp"] = ResourceProviderClass.Mcp,
+            // The IDE bridge's virtual-file domain (ADR 0042 decision 11): addressed
+            // only by the bridge's own tools, so no resource provider may claim it.
+            ["idefs"] = null,
             ["file"] = null
         };
 

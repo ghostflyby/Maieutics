@@ -393,3 +393,226 @@ export function textEditsToWire(edits: readonly unknown[]): WireTextEdit[] {
     };
   });
 }
+
+// ---------- stage E: virtual file systems (decision 11) ----------
+
+/** One registered workspace folder: the opaque id the facade addresses, plus
+ * the folder's platform URI (audit/orientation — never an addressing key). */
+export interface IdeFolderEntry {
+  readonly id: string;
+  readonly uri: string;
+}
+
+/** The folder-id registry: ids are `<nonce><counter>` — an activation nonce
+ * makes different activations' id spaces disjoint (a foreign id fails typed
+ * instead of silently resolving elsewhere), the counter never reuses retired
+ * values, and an id binds to its folder for life at first listing. */
+export class IdeFolderRegistry {
+  private readonly nonce: string;
+  private counter = 0;
+  private readonly byId = new Map<string, string>();
+
+  constructor(nonce?: string) {
+    this.nonce = nonce ?? IdeFolderRegistry.randomNonce();
+  }
+
+  private static randomNonce(): string {
+    const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const cryptoObject =
+      (globalThis as { crypto?: { getRandomValues(values: Uint32Array): void } }).crypto;
+    if (cryptoObject) {
+      const values = new Uint32Array(8);
+      cryptoObject.getRandomValues(values);
+      let random = "";
+      for (const value of values) random += alphabet[value % alphabet.length];
+      return random;
+    }
+
+    // Hosts without webcrypto: a time-mixed nonce is weaker than webcrypto
+    // but still collides only across activations started in the same
+    // millisecond with identical counters.
+    let mixed = Date.now().toString(36);
+    mixed = mixed.slice(-8).padStart(8, "0");
+    return mixed;
+  }
+
+  /** Binds one folder URI to a fresh id at first listing; ids never renumber
+   * and retired ids are never reused. Returns the assigned id. */
+  register(uriString: string): string {
+    for (const [id, known] of this.byId) {
+      if (known === uriString) return id;
+    }
+    this.counter += 1;
+    const id = `${this.nonce}${this.counter.toString(36)}`;
+    this.byId.set(id, uriString);
+    return id;
+  }
+
+  /** The current id+uri listing (root-call answer). */
+  list(): IdeFolderEntry[] {
+    return [...this.byId.entries()].map(([id, uri]) => ({ id, uri }));
+  }
+
+  /** The folder URI an id was bound to; undefined for unknown ids. */
+  resolve(id: string): string | undefined {
+    return this.byId.get(id);
+  }
+} /** The 36-base id shape the frontend assigns: activation nonce + counter. */
+export function isValidIdeFolderId(id: string): boolean {
+  return /^[a-z0-9]{3,24}$/.test(id);
+}
+
+/** Validates one relative segment with the workspace-path rules the kernel
+ * enforces on the idefs domain (defense in depth before Uri.joinPath, which
+ * normalizes dot segments — an unvalidated ".." would escape the folder). */
+export function isValidIdeFsSegment(segment: string): boolean {
+  return (
+    segment.length > 0 &&
+    segment !== "." && segment !== ".." &&
+    !segment.includes("/") && !segment.includes("\\") &&
+    !segment.includes("\u0000") &&
+    ![...segment].some((character) => character < " ")
+  );
+}
+
+/** The fs/list answer for the root call. */
+export function fsRootsAnswer(registrations: readonly IdeFolderEntry[]): unknown {
+  return { folders: registrations };
+}
+
+/** One entry of a directory listing, already flattened to the wire shape. */
+export interface FsEntry {
+  readonly name: string;
+  readonly isDirectory: boolean;
+}
+
+/** The fs/list answer for a folder call: entries sorted by name with the
+ * keyset cursor applied (strictly-after `cursor`), so pagination is stable
+ * across concurrent modifications of the same folder. */
+export function fsEntriesAnswer(
+  entries: readonly FsEntry[],
+  cursor: string | undefined,
+): { entries: FsEntry[]; nextCursor?: string } {
+  const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const effective = cursor !== undefined ? sorted.filter((entry) => entry.name > cursor) : sorted;
+  const page = effective.slice(0, 200);
+  const next = page.length === 200 ? page[page.length - 1]?.name : undefined;
+  return next === undefined ? { entries: page } : { entries: page, nextCursor: next };
+}
+
+// ---------- stage D: the facade and position translation ----------
+
+/** The kernel's gate answer for the IDE tools when no frontend announced.
+ * The client layer flattens failed tool envelopes to `Error` messages
+ * shaped `"<code>: <message>"`; this type restores the code. */
+export class IdeUnavailableError extends Error {
+  /** The stable kernel code, always "ide_unavailable". */
+  readonly code = "ide_unavailable";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "IdeUnavailableError";
+  }
+}
+
+function toIdeUnavailable(error: unknown): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("ide_unavailable:")) {
+    return new IdeUnavailableError(message.slice("ide_unavailable:".length).trim());
+  }
+  return error;
+}
+
+/** LSP position: 0-based line and UTF-16 character offset. */
+export interface LspPosition {
+  readonly line: number;
+  readonly character: number;
+}
+
+/** LSP range. */
+export interface LspRange {
+  readonly start: LspPosition;
+  readonly end: LspPosition;
+}
+
+function toSelector(position: LspPosition): { line: number; character: number } {
+  // LSP 0-based in; the kernel's agent convention is 1-based.
+  return { line: position.line + 1, character: position.character + 1 };
+}
+
+/** True for the LSP position shape — `{line, character}`, both numbers —
+ * the only shape the kernel's position translation touches. */
+function isPosition(value: unknown): value is { line: number; character: number } {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.line === "number" && typeof record.character === "number";
+}
+
+/** Recursively converts every LSP position between the facade's 0-based
+ * convention and the kernel's 1-based one (delta +1 in, −1 out). Bare
+ * numbers (folding ranges, counts) and other shapes pass through. */
+export function shiftPositions(value: unknown, delta: number, depth = 0): unknown {
+  if (depth > 32) return value;
+  if (Array.isArray(value)) return value.map((entry) => shiftPositions(entry, delta, depth + 1));
+  if (typeof value !== "object" || value === null) return value;
+  if (isPosition(value)) {
+    return {
+      line: value.line + delta,
+      character: value.character + delta,
+    };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = shiftPositions(entry, delta, depth + 1);
+  }
+  return out;
+}
+
+async function invokeReadTool<T>(
+  invoke: (tool: string, args?: Record<string, unknown>) => Promise<unknown>,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await invoke(tool, args) as T;
+  } catch (error) {
+    throw toIdeUnavailable(error);
+  }
+}
+
+/** The IdeFacade shape: the read-only IDE queries the kernel offers scripts. */
+export interface IdeFacade {
+  hover(uri: string, position: LspPosition): Promise<unknown>;
+  navigate(kind: string, uri: string, position: LspPosition): Promise<unknown>;
+  documentSymbols(uri: string): Promise<unknown>;
+  workspaceSymbols(query: string): Promise<unknown>;
+  diagnostics(): Promise<unknown>;
+  documentDiagnostics(uri: string, minSeverity?: string): Promise<unknown>;
+  request(method: string, params: Record<string, unknown>): Promise<unknown>;
+}
+
+/** Creates the facade over an injected invoke — for tests and hosts that
+ * already hold a client. The module-level `ide` export is the default
+ * instance over the default client. */
+export function createIde(
+  invoke: (tool: string, args?: Record<string, unknown>) => Promise<unknown>,
+): IdeFacade {
+  const read = <T>(tool: string, args: Record<string, unknown>) =>
+    invokeReadTool<T>(invoke, tool, args)
+      .then((result) => shiftPositions(result, -1) as unknown);
+  return {
+    hover: (uri, position) => read("ide_hover", { uri, select: toSelector(position) }),
+    navigate: (kind, uri, position) =>
+      read("ide_navigate", { kind, uri, select: toSelector(position) }),
+    documentSymbols: (uri) => read("ide_document_symbols", { uri }),
+    workspaceSymbols: (query) => read("ide_workspace_symbols", { query }),
+    diagnostics: () => read("ide_diagnostics", {}),
+    documentDiagnostics: (uri, minSeverity) =>
+      read("ide_diagnostics", minSeverity === undefined ? { uri } : { uri, minSeverity }),
+    request: (method, params) =>
+      read(
+        "ide_request",
+        shiftPositions({ method, parameters: params }, 1) as Record<string, unknown>,
+      ),
+  };
+}

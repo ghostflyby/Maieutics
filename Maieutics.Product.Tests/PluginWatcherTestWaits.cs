@@ -16,7 +16,11 @@ internal static class PluginWatcherTestWaits
     /// debounce registered with the provider (the advance fires it) — and never a sleep: a
     /// file change bursts into several watcher events, each re-arming the debounce, and the
     /// pass loop converges on the event whose debounce wins. The completed signal source is
-    /// replaced on the next read, so a pass never re-awaits a stale registration.</summary>
+    /// replaced on the next read, so a pass never re-awaits a stale registration.
+    /// Cancellation surfaces: a canceled <see cref="Task.WaitAsync"/> completes
+    /// synchronously forever, and treating it as "another debounce registered" would turn
+    /// the loop into a hot spin that masks the true failure site (this exact spin once
+    /// converted a reload-wait timeout into a downstream OCE at ApproveAsync).</summary>
     internal static async Task AwaitReloadAppliedByAdvancingAsync(
         PluginHostManager manager,
         FakeTimeProvider clock,
@@ -25,6 +29,7 @@ internal static class PluginWatcherTestWaits
     {
         while (!applied.IsCompleted)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Task registered = manager.WatcherDebounceRegistered;
             Task settled = await Task.WhenAny(
                 applied,

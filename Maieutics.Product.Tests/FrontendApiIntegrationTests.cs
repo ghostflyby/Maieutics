@@ -1692,6 +1692,11 @@ public sealed class FrontendApiIntegrationTests
         public Maieutics.Commands.MaieuticsAgentSessionManager SessionManager =>
             host.Services.GetRequiredService<Maieutics.Commands.MaieuticsAgentSessionManager>();
 
+        /// <summary>The live turn queue, so tests can arm its worker seams (the
+        /// queue.updated liveness contract, ADR 0025).</summary>
+        public FrontendTurnQueue TurnQueue =>
+            host.Services.GetRequiredService<FrontendTurnQueue>();
+
         /// <summary>The live runtime configuration, so tests can await hot-reload completion
         /// (each completed reload swaps a fresh completion task) instead of polling the
         /// status surface.</summary>

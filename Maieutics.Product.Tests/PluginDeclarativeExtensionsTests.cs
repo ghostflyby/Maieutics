@@ -18,7 +18,11 @@ namespace Maieutics.Product.Tests;
 /// </summary>
 public sealed class PluginDeclarativeExtensionsTests
 {
-    private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(20);
+    // Headroom over the watcher→debounce→reload chain's real-time tail under the
+    // nightly's three-pass parallel load (a 20 s budget expired twice there), while
+    // still firing inside the 60 s Fact timeout so the failure reports at the true
+    // wait instead of the outer kill.
+    private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(55);
 
     [Fact(Timeout = 60_000)]
     public async Task DeclarativeOnlyPluginsPublishSyntheticRegistrations()
@@ -450,6 +454,86 @@ public sealed class PluginDeclarativeExtensionsTests
     /// approvals file. The fake clock owns the watcher debounce: tests that change watched
     /// files advance it past <see cref="PluginHostManager.PluginReloadDebounce"/> through
     /// <see cref="PluginWatcherTestWaits"/> instead of waiting the window out in real time.</summary>
+    /// <summary>Deterministic regression for the nightly failures behind
+    /// McpDataFileEditsReplaceTheContributionOnReload (an OperationCanceledException at
+    /// ApproveAsync after the reload wait silently ate the whole budget): the wait now
+    /// surfaces cancellation at its own line instead of hot-spinning, and the budget
+    /// carries enough headroom for the watcher chain's real-time tail under load.</summary>
+    [Fact(Timeout = 30_000)]
+    public async Task ReloadWaitSurfacesCancellationAtTheWait()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        var root = CreateMcpDataFilePluginsRoot("declarative-wait-cancel");
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
+        try
+        {
+            using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            await manager.StartAsync(lifecycle.Token);
+            await manager.WaitUntilReadyAsync(lifecycle.Token);
+
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            var applied = manager.ReloadApplied;
+            Func<Task> wait = async () => await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager,
+                clock,
+                applied,
+                canceled.Token);
+            (await wait.Should().ThrowAsync<OperationCanceledException>()).Which.Should().NotBeNull(
+                "a dead budget token must fail the wait immediately, not win the advance race forever");
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    /// <summary>Deterministic regression for the latent signal skip on the restart path:
+    /// a watched edit that adds a local plugin (a set change) settles through a host
+    /// restart, and the ReloadApplied signal completes there — before the fix a waiter
+    /// watching this edit parked forever.</summary>
+    [Fact(Timeout = 60_000)]
+    public async Task ASetChangeCompletesTheReloadAppliedSignalThroughTheRestart()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        var root = CreateMcpDataFilePluginsRoot("declarative-set-change");
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(Deadline);
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+
+            var applied = CaptureReloadApplied(manager);
+            Directory.CreateDirectory(Path.Combine(root, "second-plugin"));
+            File.WriteAllText(
+                Path.Combine(root, "second-plugin", "maieutics.json"),
+                """
+                {
+                  "capabilities": ["tools.invoke"]
+                }
+                """);
+
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+                manager, clock, applied, deadline.Token);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static PluginHostManager CreateManager(string root, FakeTimeProvider clock)
     {
         return new PluginHostManager(

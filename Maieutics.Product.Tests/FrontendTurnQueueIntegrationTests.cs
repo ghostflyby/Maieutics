@@ -474,6 +474,56 @@ public sealed class FrontendTurnQueueIntegrationTests
         Trace("drained");
     }
 
+    /// <summary>Deterministic regression for the queue.updated liveness failure behind
+    /// <see cref="QueueUpdatedFramesReachEveryEventsSocket" /> (CI: provider parked=1,
+    /// frames seen running=none, 45 s hang). The old serving loop deferred every queue
+    /// frame behind the whole run stream: the running transition published while the
+    /// socket was already serving the parked run was never flushed until the run
+    /// settled, and a client gating on that frame starved with it. The gate holds the
+    /// dequeue window open deterministically, so the transition lands mid-serve by
+    /// construction; the frame must arrive while the run is still parked.</summary>
+    [Fact(Timeout = 120_000)]
+    public async Task RunningTransitionFlushesWhileTheRunIsServed()
+    {
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
+        var provider = new GatedOpenAiServer();
+        this.provider = provider;
+        await using var harness = await StartHarnessAsync(deadline.Token, provider);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+
+        await using var socket = await harness.OpenEventsAsync(sessionId, deadline.Token);
+        (await socket.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+
+        // Hold the worker between the submission handshake and the Running publish, so
+        // the enqueue's dequeue frame (running=none) is already flushed and the socket
+        // has entered the run's serving loop before the transition exists.
+        var releaseRunning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.TurnQueue.RunningPublishGateForTests = _ => releaseRunning.Task;
+        try
+        {
+            var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "gated one");
+            await provider.WaitForParkedAsync(1, deadline.Token);
+            Trace("run parked at the provider");
+
+            // The transition publishes while the run is parked mid-serve — the exact
+            // interleaving the old loop deferred for the run's whole lifetime.
+            releaseRunning.SetResult();
+            var running = await CollectQueueFrameUntilAsync(
+                socket,
+                queue => HasRunningItem(queue, ids[0]),
+                deadline.Token);
+            running.GetProperty("running").Should().NotBeNull(
+                "the running transition reaches a serving client while the run is parked, not after it settles");
+
+            await ReleaseOneAsync(provider, deadline.Token);
+            await WaitForUserTextsAsync(harness, sessionId, 1, deadline.Token);
+        }
+        finally
+        {
+            harness.TurnQueue.RunningPublishGateForTests = null;
+        }
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task WorkerSurvivesADirectSubmissionRace()
     {

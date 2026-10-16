@@ -371,7 +371,13 @@ window, `search_text` returns 1-based line/column matches, and
     and the bound is measured on the response body after JSON
     escaping. Reads answer the saved provider
     state — decision 7's buffer/disk divergence declaration extends
-    verbatim. Text is the v1 plane: the frontend decodes with a fatal
+    verbatim. **Amended by stage F (decision 12): a document open with
+    unsaved changes answers its editor buffer instead — the same
+    buffer-authoritative rule the local family serves, matched by
+    canonical URI string, so `untitled:` and virtual schemes can never
+    match and stay excluded; clean or closed files keep answering the
+    provider bytes, fatal-decoded.** Text is the v1 plane: the frontend
+    decodes with a fatal
     UTF-8 decoder and invalid bytes fail typed `fs_not_text`; binary
     rides the existing object plane in a later sub-stage (the frontend
     ingests through the attachment endpoint and answers with the content
@@ -499,7 +505,11 @@ window, `search_text` returns 1-based line/column matches, and
     `workspace_bridge_inactive` — per call, so attaching or closing the
     IDE flips the behavior live without restarting the REPL. Paths
     outside the workspace, sync APIs, and binary APIs pass through
-    unchanged (declared).
+    unchanged (declared). The decision-12 editor semantics extend to
+    the virtual family: `ide_fs_read` answers a dirty document's buffer
+    (canonical-URI match, `untitled:`/virtual schemes can never match)
+    and clean or closed files keep answering the provider bytes — the
+    stage-E saved-state declaration holds everywhere else.
 
 ## Later stages
 

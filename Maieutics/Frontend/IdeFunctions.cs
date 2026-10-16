@@ -161,7 +161,9 @@ internal sealed class IdeFunctions
                 "ide_fs_read",
                 "Reads one virtual file as text (remote/extension file systems included) through the ide-capable " +
                 "frontend. 'uri' is an idefs:// file URI from ide_fs_list; startLine (1-based) and maxLines window " +
-                "the read like read_text. An empty result means nothing was reported — not that the file is clean/empty."),
+                "the read like read_text. A document open with unsaved changes answers its editor text — the same " +
+                "buffer-authoritative rule read_text serves under the bridge; clean or closed files answer the " +
+                "saved provider state. An empty result means nothing was reported — not that the file is clean/empty."),
             CreateFunction(
                 (Func<JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)ApplyEditAsync,
                 "ide_apply_edit",

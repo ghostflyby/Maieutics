@@ -2,6 +2,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   collectProblems,
+  dirtyBufferAnswer,
   extractIdeRequest,
   ideCommandArgs,
   ideMethodCommands,
@@ -293,4 +294,37 @@ Deno.test("isCoveredLocalTarget gates the local fs family to the window's own fo
     "a window with no folders covers nothing",
   );
   assertEquals(isCoveredLocalTarget("/home/user/ws/a.ts", ["C:\\other\\proj"]), false);
+});
+
+Deno.test("dirtyBufferAnswer serves the virtual family's editor semantics", () => {
+  const documents = [
+    {
+      uriString: "vscode-remote://ssh-remote+host/home/u/proj/a.ts",
+      isDirty: true,
+      text: "unsaved remote edit",
+    },
+    {
+      uriString: "vscode-remote://ssh-remote+host/home/u/proj/b.ts",
+      isDirty: false,
+      text: "clean model text",
+    },
+    { uriString: "untitled:Untitled-1", isDirty: true, text: "never addressable" },
+  ];
+
+  assertEquals(
+    dirtyBufferAnswer(documents, "vscode-remote://ssh-remote+host/home/u/proj/a.ts"),
+    "unsaved remote edit",
+    "a dirty remote document answers its buffer",
+  );
+  assertEquals(
+    dirtyBufferAnswer(documents, "vscode-remote://ssh-remote+host/home/u/proj/b.ts"),
+    undefined,
+    "a clean document falls through to the provider bytes",
+  );
+  assertEquals(
+    dirtyBufferAnswer(documents, "vscode-remote://ssh-remote+host/home/u/proj/missing.ts"),
+    undefined,
+  );
+  // The untitled document in the list can never answer: targets are always
+  // folder-derived URIs, so that entry matches nothing above.
 });

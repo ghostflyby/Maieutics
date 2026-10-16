@@ -598,6 +598,27 @@ export function isCoveredLocalTarget(fsPath: string, roots: readonly string[]): 
   return false;
 }
 
+/** One open editor document, flattened so the pure half never imports vscode. */
+export interface OpenDocumentText {
+  readonly uriString: string;
+  readonly isDirty: boolean;
+  readonly text: string;
+}
+
+/** The editor semantics for the virtual family (decision 12's
+ * buffer-authoritative rule applied to `idefs`): an open, dirty document
+ * answers its buffer — unsaved edits on a remote or extension-scheme file are
+ * visible the same way the local family serves them. Matching is by canonical
+ * URI string, the same rule the local handler uses; a scheme mismatch
+ * (untitled:, virtual documents) can never match, which keeps them excluded. */
+export function dirtyBufferAnswer(
+  documents: readonly OpenDocumentText[],
+  targetUriString: string,
+): string | undefined {
+  const open = documents.find((document) => document.uriString === targetUriString);
+  return open !== undefined && open.isDirty ? open.text : undefined;
+}
+
 function normalizeLocalPath(path: string): string {
   const unified = path.replace(/\\/g, "/").replace(/\/+$/, "");
   return unified.length === 0 ? "/" : unified.toLowerCase();

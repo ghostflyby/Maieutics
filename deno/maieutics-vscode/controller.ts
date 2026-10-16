@@ -81,6 +81,7 @@ import {
   codeActionsToWire,
   collectDirty,
   collectProblems,
+  dirtyBufferAnswer,
   extractIdeRequest,
   fsEntriesAnswer,
   fsRootsAnswer,
@@ -1012,6 +1013,30 @@ async function executeIdeFs(
     );
   }
 
+  // Editor semantics (decision 12 applied to the virtual family): a dirty open
+  // document answers its buffer — unsaved edits on a remote or extension-scheme
+  // file are visible the same way the local family serves them. Clean or closed
+  // files answer the provider bytes below; untitled:/virtual schemes can never
+  // match the joined folder URI, which keeps them excluded.
+  const virtualUri = `idefs:///${folderId}${segments.map((segment) => `/${segment}`).join("")}`;
+  const buffer = dirtyBufferAnswer(
+    vscode.workspace.textDocuments.map((document) => ({
+      uriString: document.uri.toString(),
+      isDirty: document.isDirty,
+      text: document.getText(),
+    })),
+    target.toString(),
+  );
+  if (buffer !== undefined) {
+    if (new TextEncoder().encode(buffer).byteLength > 1024 * 1024) {
+      throw Object.assign(
+        new Error("The read is bounded at 1 MiB of text; split the file or window the source."),
+        { code: "fs_too_large" },
+      );
+    }
+    return { uri: virtualUri, content: buffer };
+  }
+
   let bytes: Uint8Array;
   try {
     bytes = await vscode.workspace.fs.readFile(target);
@@ -1033,7 +1058,7 @@ async function executeIdeFs(
   }
 
   return {
-    uri: `idefs:///${folderId}${segments.map((segment) => `/${segment}`).join("")}`,
+    uri: virtualUri,
     content: text,
   };
 }

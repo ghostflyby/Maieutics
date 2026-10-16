@@ -453,7 +453,20 @@ window, `search_text` returns 1-based line/column matches, and
     answers `ide_method_unsupported`, which the bridge absorbs once
     process-wide and then reports itself inactive for the session
     (local I/O — exactly the pre-bridge behavior — instead of typing
-    every read to death). The wire family is
+    every read to death). **Coverage** — forwarding applies only to
+    files the elected frontend's workspace folders actually cover: the
+    kernel fetches the authority's folder roots once per election (the
+    `maieutics/fs/list` root answer, `file://` URIs parsed to physical
+    prefixes, cached per registration) and every bridged operation
+    checks the target against them; an uncovered path never reaches the
+    frontend, where the "IDE authoritative text state" claim would be
+    false — it falls back to the local channel per call (single-target
+    flows re-run whole; `apply_patch` falls back per file, patch files
+    being independent). The frontend re-checks against its own
+    `workspaceFolders` and answers typed `fs_not_covered` (defense in
+    depth, and the authority when folders changed since the fetch);
+    staleness is safe both ways — a narrow cache keeps newly opened
+    folders local, a wide one meets `fs_not_covered` and falls back. The wire family is
     `maieutics/fs/local/read|list` (read group) and
     `maieutics/fs/local/write|delete` (write group, the decision-11
     ruling applied verbatim: kernel-gated, frontend-executed —

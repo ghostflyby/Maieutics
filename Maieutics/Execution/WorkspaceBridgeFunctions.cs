@@ -87,8 +87,17 @@ internal sealed class WorkspaceBridgeFunctions
     {
         var (channel, logical) = Acquire(uri, arguments);
         EnforcePolicy(PermissionKind.Read, logical, arguments);
-        var text = await channel.ReadTextAsync(logical.Segments, MaximumReadBytes, cancellationToken)
-            .ConfigureAwait(false);
+        string text;
+        try
+        {
+            text = await channel.ReadTextAsync(logical.Segments, MaximumReadBytes, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkspaceBridgeCoverageException)
+        {
+            throw Uncovered(logical.DisplayPath);
+        }
+
         return JsonSerializer.SerializeToElement(
             new WorkspaceFsReadValue(logical.Uri, text),
             WorkspaceBridgeJsonSerializerContext.Default.WorkspaceFsReadValue);
@@ -113,10 +122,17 @@ internal sealed class WorkspaceBridgeFunctions
 
         // A script write carries no kernel-side before state, so the precondition is
         // omitted; the dirty gate still refuses to land under an editor being typed in.
-        await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
-        await channel
-            .WriteAsync(logical.Segments, content, null, createExclusive: false, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+            await channel
+                .WriteAsync(logical.Segments, content, null, createExclusive: false, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkspaceBridgeCoverageException)
+        {
+            throw Uncovered(logical.DisplayPath);
+        }
         return JsonSerializer.SerializeToElement(
             new WorkspaceFsWriteValue(logical.Uri, "written"),
             WorkspaceBridgeJsonSerializerContext.Default.WorkspaceFsWriteValue);
@@ -130,7 +146,15 @@ internal sealed class WorkspaceBridgeFunctions
     {
         var (channel, logical) = Acquire(uri, arguments, allowRoot: true);
         EnforcePolicy(PermissionKind.Read, logical, arguments);
-        var listing = await channel.ListAsync(logical.Segments, 10_000, cancellationToken).ConfigureAwait(false);
+        WorkspaceBridgeListing listing;
+        try
+        {
+            listing = await channel.ListAsync(logical.Segments, 10_000, cancellationToken).ConfigureAwait(false);
+        }
+        catch (WorkspaceBridgeCoverageException)
+        {
+            throw Uncovered(logical.DisplayPath);
+        }
         if (listing.Truncated)
             throw new WorkspaceException(
                 "workspace_directory_too_large",
@@ -223,6 +247,17 @@ internal sealed class WorkspaceBridgeFunctions
                AgentSessionId.TryParse(text, out var sessionId)
             ? sessionId
             : null;
+    }
+
+    /// <summary>The coverage ruling for the shim's endpoints: a path outside the
+    /// frontend's folders is not a bridge failure — it is the shim's fallback signal,
+    /// because the caller (the Deno fs shim) serves uncovered paths natively.</summary>
+    private static AgentToolException Uncovered(string displayPath)
+    {
+        return new AgentToolException(
+            "workspace_bridge_inactive",
+            $"The IDE frontend's workspace folders do not cover '{displayPath}'; the caller falls back to " +
+            "direct file I/O.");
     }
 
     private static byte[] EncodeUtf8(string content)

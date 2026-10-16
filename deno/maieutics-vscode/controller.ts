@@ -88,6 +88,7 @@ import {
   IdeFolderRegistry,
   ideMethodCommands,
   type IdeRequestPayload,
+  isCoveredLocalTarget,
   isIdeMethodSupported,
   isValidIdeFsSegment,
   localFsEntriesAnswer,
@@ -1085,6 +1086,19 @@ async function executeIdeFsLocal(
     );
   }
   const target = vscode.Uri.parse(rawUri, true);
+  // The coverage ruling (ADR 0042 decision 12): this window serves only what its
+  // workspace folders cover — defense in depth behind the kernel's cached prefix
+  // check, and the authority when folders changed since the kernel fetched them.
+  if (
+    !isCoveredLocalTarget(
+      target.fsPath,
+      (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+    )
+  ) {
+    throw Object.assign(new Error("the path is outside this frontend's workspace folders"), {
+      code: "fs_not_covered",
+    });
+  }
 
   if (method === "maieutics/fs/local/read") {
     // Buffer-authoritative: the dirty buffer is the point of the bridge. A

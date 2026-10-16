@@ -5,6 +5,7 @@ import {
   extractIdeRequest,
   ideCommandArgs,
   ideMethodCommands,
+  isCoveredLocalTarget,
   isIdeMethodSupported,
   localFsEntriesAnswer,
   localFsError,
@@ -263,4 +264,33 @@ Deno.test("sha256Hex matches the known SHA-256 vectors the write precondition ha
     await sha256Hex("hello"),
     "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
   );
+});
+
+Deno.test("isCoveredLocalTarget gates the local fs family to the window's own folders", () => {
+  const roots = ["/home/user/ws"];
+  assertEquals(isCoveredLocalTarget("/home/user/ws/a.ts", roots), true);
+  assertEquals(
+    isCoveredLocalTarget("/home/user/ws", roots),
+    true,
+    "the folder root itself is covered",
+  );
+  assertEquals(isCoveredLocalTarget("/home/user/ws/sub/deep/b.ts", roots), true);
+  assertEquals(
+    isCoveredLocalTarget("/home/user/wsthing/a.ts", roots),
+    false,
+    "prefix collisions fail",
+  );
+  assertEquals(isCoveredLocalTarget("/home/user/ws../a.ts", roots), false);
+  assertEquals(isCoveredLocalTarget("/elsewhere/a.ts", roots), false);
+  assertEquals(
+    isCoveredLocalTarget("/home/user/WS/A.TS", roots),
+    true,
+    "case mismatches over-match harmlessly",
+  );
+  assertEquals(
+    isCoveredLocalTarget("/home/user/ws/a.ts", []),
+    false,
+    "a window with no folders covers nothing",
+  );
+  assertEquals(isCoveredLocalTarget("/home/user/ws/a.ts", ["C:\\other\\proj"]), false);
 });

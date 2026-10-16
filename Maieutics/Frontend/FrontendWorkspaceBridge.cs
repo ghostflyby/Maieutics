@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
@@ -24,6 +25,16 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
     private readonly FrontendIdeSockets sockets;
     private readonly IdeRequestRegistry requests;
     private readonly Workspace workspace;
+
+    /// <summary>The elected authority's coverage: the physical directory prefixes of
+    /// the workspace folders it answered at election time (ADR 0042 decision 12's
+    /// coverage ruling — the bridge serves only files the frontend actually opens).
+    /// Keyed by registration id; an entry for a dead registration is dead weight and
+    /// the cache is capped by wholesale clearing. Staleness is safe in both
+    /// directions: a narrow cache keeps newly opened folders local, and a wide one
+    /// (folders closed since) meets the frontend's own fs_not_covered check.</summary>
+    private readonly ConcurrentDictionary<Guid, string[]> coverage = new();
+
     private volatile bool cohortPredates;
 
     public FrontendWorkspaceBridge(FrontendIdeSockets sockets, IdeRequestRegistry requests, Workspace workspace)
@@ -47,6 +58,82 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             : null;
     }
 
+    /// <summary>The coverage ruling's kernel half: the physical path must sit under
+    /// (or be) one of the authority's workspace-folder roots; anything else falls
+    /// back to the local channel per call.</summary>
+    private async Task EnsureCoveredAsync(IdeAnnouncerHandle authority, IReadOnlyList<string> segments, CancellationToken cancellationToken)
+    {
+        var roots = await GetCoverageAsync(authority, cancellationToken).ConfigureAwait(false);
+        var target = workspace.Capture().ToPhysicalPath(segments);
+        if (!IsCovered(target, roots))
+            throw new WorkspaceBridgeCoverageException(target);
+    }
+
+    private async Task<string[]> GetCoverageAsync(IdeAnnouncerHandle authority, CancellationToken cancellationToken)
+    {
+        if (coverage.TryGetValue(authority.RegistrationId, out var known)) return known;
+
+        // The coverage set is the authority's own folder answer — the idefs root
+        // listing ({folderId: null}), the same shape the folder registry serves.
+        var parameters = JsonSerializer.SerializeToElement(
+            new IdeFsListParams(null, [], null),
+            IdeFunctionJsonContext.Default.IdeFsListParams);
+        var answer = await SendAsync(authority, "maieutics/fs/list", parameters, cancellationToken)
+            .ConfigureAwait(false);
+        var roots = ParseCoverageRoots(answer);
+        if (coverage.Count > 64) coverage.Clear();
+
+        coverage[authority.RegistrationId] = roots;
+        return roots;
+    }
+
+    private string[] ParseCoverageRoots(JsonElement answer)
+    {
+        if (answer.ValueKind != JsonValueKind.Object ||
+            !answer.TryGetProperty("folders", out var folders) ||
+            folders.ValueKind != JsonValueKind.Array)
+            throw new AgentToolException("ide_result_invalid", "The folder listing is not the documented shape.");
+
+        var roots = new List<string>();
+        foreach (var folder in folders.EnumerateArray())
+        {
+            if (folder.ValueKind != JsonValueKind.Object ||
+                !folder.TryGetProperty("uri", out var uri) ||
+                uri.ValueKind != JsonValueKind.String ||
+                uri.GetString() is not { Length: > 0 } raw ||
+                !Uri.TryCreate(raw, UriKind.Absolute, out var parsed) ||
+                parsed.Scheme != "file")
+                continue;
+
+            try
+            {
+                roots.Add(Path.TrimEndingDirectorySeparator(Path.GetFullPath(parsed.LocalPath)));
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+            }
+        }
+
+        return [.. roots];
+    }
+
+    private static bool IsCovered(string target, string[] roots)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(target));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var root in roots)
+        {
+            if (string.Equals(normalized, root, comparison)) return true;
+            if (normalized.Length > root.Length + 1 &&
+                normalized[root.Length] is '/' or '\\' &&
+                normalized.StartsWith(root, comparison))
+                return true;
+        }
+
+        return false;
+    }
+
     private sealed class Channel(
         FrontendWorkspaceBridge owner,
         IdeAnnouncerHandle authority) : WorkspaceBridgeChannel
@@ -56,6 +143,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             int maximumBytes,
             CancellationToken cancellationToken)
         {
+            await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
                 new FsLocalReadParams(PhysicalUri(owner.workspace, segments)),
                 BridgeJsonContext.Default.FsLocalReadParams);
@@ -71,6 +159,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             int maximumEntries,
             CancellationToken cancellationToken)
         {
+            await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
                 new FsLocalListParams(PhysicalUri(owner.workspace, segments), maximumEntries),
                 BridgeJsonContext.Default.FsLocalListParams);
@@ -114,6 +203,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             bool createExclusive,
             CancellationToken cancellationToken)
         {
+            await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
                 new FsLocalWriteParams(
                     PhysicalUri(owner.workspace, segments),
@@ -130,6 +220,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             IReadOnlyList<string> segments,
             CancellationToken cancellationToken)
         {
+            await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
                 new FsLocalDeleteParams(PhysicalUri(owner.workspace, segments)),
                 BridgeJsonContext.Default.FsLocalDeleteParams);
@@ -144,6 +235,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         {
             if (segments.Count == 0) return;
 
+            await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var fileUri = new Uri(owner.workspace.Capture().ToPhysicalPath(segments)).AbsoluteUri;
             var buffer = new MemoryStream();
             using (var writer = new Utf8JsonWriter(buffer))
@@ -238,6 +330,18 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 
             if (answer.ErrorCode is { } code)
             {
+                if (code == "fs_not_covered")
+                {
+                    // Defense in depth: the cached coverage said covered, the frontend's
+                    // own folder check disagreed. Same verdict as the kernel-side ruling.
+                    var uncovered = parameters.ValueKind == JsonValueKind.Object &&
+                                    parameters.TryGetProperty("uri", out var coveredUri) &&
+                                    coveredUri.ValueKind == JsonValueKind.String
+                        ? coveredUri.GetString() ?? "unknown"
+                        : "unknown";
+                    throw new WorkspaceBridgeCoverageException(uncovered);
+                }
+
                 if (code == "ide_method_unsupported")
                 {
                     // The announcing frontend predates the local family; the coherent

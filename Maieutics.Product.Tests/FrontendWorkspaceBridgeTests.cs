@@ -190,6 +190,91 @@ public sealed class FrontendWorkspaceBridgeTests
             "a cohort that predates the local family returns the tools to local I/O, process-wide");
     }
 
+    // ---------- coverage: the bridge serves only what the IDE's folders cover ----------
+
+    [Fact]
+    public async Task PathsOutsideTheFrontendsFoldersFallBackToLocalIo()
+    {
+        using var harness = BridgeHarness.Create();
+        // The window opens only the app/ subfolder of the kernel workspace root: a
+        // file under docs/ is a valid workspace URI the bridge must not claim.
+        var appFolder = Path.Combine(harness.Root, "app");
+        Directory.CreateDirectory(appFolder);
+        harness.DiskFrontend.CoverageRoot = appFolder;
+        Directory.CreateDirectory(Path.Combine(harness.Root, "docs"));
+        await File.WriteAllTextAsync(Path.Combine(appFolder, "inside.cs"), "inside disk\n", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(harness.Root, "docs", "outside.cs"), "outside disk\n", TestContext.Current.CancellationToken);
+        harness.DiskFrontend.AnswerText["inside.cs"] = "inside buffer\n";
+        var functions = new WorkspaceFunctions(harness.Workspace, bridge: harness.Bridge);
+        var read = functions.Functions.Single(static function => function.Name == "read_text");
+
+        var inside = (JsonElement)(await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/app/inside.cs"}"""),
+            TestContext.Current.CancellationToken))!;
+        inside.GetProperty("text").GetString().Should().Be("inside buffer",
+            "a covered path forwards and answers the IDE's text state");
+
+        var outside = (JsonElement)(await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/docs/outside.cs"}"""),
+            TestContext.Current.CancellationToken))!;
+        outside.GetProperty("text").GetString().Should().Be("outside disk",
+            "an uncovered path falls back to the local channel");
+        harness.DiskFrontend.Requests.Should().NotContain(
+            request => request.Method == "maieutics/fs/local/read" && request.PhysicalUri.Contains("outside"),
+            "uncovered paths never reach the frontend");
+    }
+
+    [Fact]
+    public async Task MixedPatchServesCoveredFilesThroughTheBridgeAndUncoveredFilesLocally()
+    {
+        using var harness = BridgeHarness.Create();
+        var appFolder = Path.Combine(harness.Root, "app");
+        Directory.CreateDirectory(appFolder);
+        harness.DiskFrontend.CoverageRoot = appFolder;
+        await File.WriteAllTextAsync(Path.Combine(appFolder, "covered.txt"), "covered one\n", TestContext.Current.CancellationToken);
+        var edit = new WorkspaceEditFunctions(harness.Workspace, bridge: harness.Bridge);
+        var patch = edit.Functions.Single(static function => function.Name == "apply_patch");
+
+        var result = (JsonElement)(await patch.InvokeAsync(
+            harness.ScriptArguments(
+                """{"patch":"*** Begin Patch\n*** Update File: app/covered.txt\n@@\n-covered one\n+covered two\n*** Add File: docs/local.txt\n+patched locally\n*** End Patch\n"}"""),
+            TestContext.Current.CancellationToken))!;
+
+        var operations = result.GetProperty("files").EnumerateArray()
+            .Select(static entry => entry.GetProperty("operation").GetString())
+            .ToList();
+        operations.Should().Equal(["updated", "created"], "both files apply, each through its own channel");
+        File.ReadAllText(Path.Combine(appFolder, "covered.txt")).Should().Be("covered two\n",
+            "the covered file went through the bridge (hash precondition, watchers)");
+        File.ReadAllText(Path.Combine(harness.Root, "docs", "local.txt")).Should().Be("patched locally\n",
+            "the uncovered file was served locally");
+    }
+
+    [Fact]
+    public async Task WorkspaceFsScriptToolsReportUncoveredPathsAsTheShimFallbackSignal()
+    {
+        using var harness = BridgeHarness.Create();
+        var appFolder = Path.Combine(harness.Root, "app");
+        Directory.CreateDirectory(appFolder);
+        harness.DiskFrontend.CoverageRoot = appFolder;
+        Directory.CreateDirectory(Path.Combine(harness.Root, "docs"));
+        await File.WriteAllTextAsync(Path.Combine(harness.Root, "docs", "cell.ts"), "native\n", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(appFolder, "cell.ts"), "served\n", TestContext.Current.CancellationToken);
+        var functions = new WorkspaceBridgeFunctions(harness.Workspace, harness.Bridge);
+        var read = functions.Functions.Single(static function => function.Name == "workspace_fs_read");
+
+        var uncovered = await Record.ExceptionAsync(async () => await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/docs/cell.ts"}"""),
+            TestContext.Current.CancellationToken));
+        uncovered.Should().BeOfType<AgentToolException>().Which.Code.Should().Be("workspace_bridge_inactive",
+            "the coverage miss is the shim's per-call fallback signal, not an error");
+
+        var served = (JsonElement)(await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/app/cell.ts"}"""),
+            TestContext.Current.CancellationToken))!;
+        served.GetProperty("content").GetString().Should().Be("served\n");
+    }
+
     // ---------- workspace tools under the bridge ----------
 
     [Fact]
@@ -342,7 +427,7 @@ public sealed class FrontendWorkspaceBridgeTests
         public Workspace Workspace { get; }
         public FrontendIdeSockets Sockets { get; } = new();
         public IdeRequestRegistry Registry { get; } = new();
-        public FakeDiskFrontend DiskFrontend { get; } = new();
+        public FakeDiskFrontend DiskFrontend { get; }
         public FrontendWorkspaceBridge Bridge { get; private set; } = null!;
         public (string Method, string PhysicalUri, JsonElement Params)? LastRequest { get; private set; }
         private readonly List<Guid> registrations = [];
@@ -352,6 +437,7 @@ public sealed class FrontendWorkspaceBridgeTests
             Root = Path.Combine(Path.GetTempPath(), $"ws-bridge-{Guid.NewGuid():N}");
             Directory.CreateDirectory(Root);
             Workspace = Workspace.Create(Root, Root);
+            DiskFrontend = new FakeDiskFrontend(Root);
             Bridge = new FrontendWorkspaceBridge(Sockets, Registry, Workspace) { RequestTimeout = BridgeTimeout };
             AttachFrontend();
         }
@@ -416,7 +502,7 @@ public sealed class FrontendWorkspaceBridgeTests
     /// the local disk — buffer state from <see cref="AnswerText" /> when configured,
     /// fatal-UTF-8 reads otherwise, hash-preconditioned writes, exclusive creates,
     /// and the dirty set answering maieutics/dirty.</summary>
-    private sealed class FakeDiskFrontend
+    private sealed class FakeDiskFrontend(string root)
     {
         public List<(string Method, string PhysicalUri)> Requests { get; } = [];
 
@@ -425,6 +511,10 @@ public sealed class FrontendWorkspaceBridgeTests
         public HashSet<string> DirtyUris { get; } = new(StringComparer.Ordinal);
 
         public string[]? SupportedMethods { get; set; }
+
+        /// <summary>The folder this window opens for the coverage ruling; the harness
+        /// root by default, settable to a subfolder to create uncovered kernel paths.</summary>
+        public string CoverageRoot { get; set; } = root;
 
         public IdeRequestAnswer Answer(string method, JsonElement parameters)
         {
@@ -438,8 +528,28 @@ public sealed class FrontendWorkspaceBridgeTests
                 "maieutics/fs/local/write" => Write(parameters),
                 "maieutics/fs/local/delete" => Delete(parameters),
                 "maieutics/dirty" => Dirty(parameters),
+                // The folder registry's root answer: this window opens its coverage root.
+                "maieutics/fs/list" when !parameters.TryGetProperty("folderId", out var folderId) ||
+                    folderId.ValueKind == JsonValueKind.Null => IdeRequestAnswer.FromValue(
+                    JsonDocument.Parse(
+                        JsonSerializer.Serialize(new
+                        {
+                            folders = new[] { new { id = "fs1", uri = new Uri(CoverageRoot).AbsoluteUri } },
+                        })).RootElement.Clone()),
                 _ => IdeRequestAnswer.FromError("ide_method_unsupported", $"Unknown method '{method}'."),
             };
+        }
+
+        /// <summary>The coverage ruling's frontend half: only the window's own
+        /// folder is served; anything else answers typed fs_not_covered.</summary>
+        private IdeRequestAnswer Covered(JsonElement parameters, Func<string, IdeRequestAnswer> serve)
+        {
+            var path = Path.GetFullPath(PathOf(parameters));
+            var prefix = Path.TrimEndingDirectorySeparator(CoverageRoot);
+            return path.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+                string.Equals(path, prefix, StringComparison.Ordinal)
+                ? serve(path)
+                : IdeRequestAnswer.FromError("fs_not_covered", "fs_not_covered: (target stripped)");
         }
 
         private static string PathOf(JsonElement parameters)
@@ -449,56 +559,60 @@ public sealed class FrontendWorkspaceBridgeTests
 
         private IdeRequestAnswer Read(JsonElement parameters)
         {
-            var path = PathOf(parameters);
-            var name = Path.GetFileName(path);
+            return Covered(parameters, path =>
+            {
+                var name = Path.GetFileName(path);
 
-            // Buffer state answers when the test configured it (keyed by file name in
-            // this stand-in; the real handler keys by document URI).
-            if (AnswerText.TryGetValue(name, out var text))
-            {
-                return IdeRequestAnswer.FromValue(
-                    JsonDocument.Parse(JsonSerializer.Serialize(new { content = text })).RootElement.Clone());
-            }
+                // Buffer state answers when the test configured it (keyed by file name in
+                // this stand-in; the real handler keys by document URI).
+                if (AnswerText.TryGetValue(name, out var text))
+                {
+                    return IdeRequestAnswer.FromValue(
+                        JsonDocument.Parse(JsonSerializer.Serialize(new { content = text })).RootElement.Clone());
+                }
 
-            if (!File.Exists(path))
-                return IdeRequestAnswer.FromError("fs_not_found", "fs_not_found: (target stripped)");
-            try
-            {
-                var decoded = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
-                return IdeRequestAnswer.FromValue(
-                    JsonDocument.Parse(JsonSerializer.Serialize(new { content = decoded })).RootElement.Clone());
-            }
-            catch (DecoderFallbackException)
-            {
-                return IdeRequestAnswer.FromError("fs_not_text", "fs_not_text: (target stripped)");
-            }
+                if (!File.Exists(path))
+                    return IdeRequestAnswer.FromError("fs_not_found", "fs_not_found: (target stripped)");
+                try
+                {
+                    var decoded = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
+                    return IdeRequestAnswer.FromValue(
+                        JsonDocument.Parse(JsonSerializer.Serialize(new { content = decoded })).RootElement.Clone());
+                }
+                catch (DecoderFallbackException)
+                {
+                    return IdeRequestAnswer.FromError("fs_not_text", "fs_not_text: (target stripped)");
+                }
+            });
         }
 
         private IdeRequestAnswer List(JsonElement parameters)
         {
-            var path = PathOf(parameters);
-            if (!Directory.Exists(path))
-                return IdeRequestAnswer.FromError("fs_not_found", "fs_not_found: (target stripped)");
+            return Covered(parameters, path =>
+            {
+                if (!Directory.Exists(path))
+                    return IdeRequestAnswer.FromError("fs_not_found", "fs_not_found: (target stripped)");
 
-            var entries = new DirectoryInfo(path).EnumerateFileSystemInfos()
-                .OrderBy(static entry => entry.Name, StringComparer.Ordinal)
-                .Select(static entry => (Name: entry.Name, Kind: entry switch
-                {
-                    _ when (entry.Attributes & FileAttributes.Directory) != 0 => 2,
-                    _ when (entry.Attributes & FileAttributes.ReparsePoint) != 0 => 64,
-                    _ => 1,
-                }))
-                .ToList();
-            var maximum = parameters.TryGetProperty("maximumEntries", out var bound) &&
-                bound.ValueKind == JsonValueKind.Number
-                ? bound.GetInt32()
-                : 10_000;
-            var page = entries.Take(maximum)
-                .Select(static entry => JsonSerializer.Serialize(new { name = entry.Name, kind = KindName(entry.Kind) }))
-                .ToList();
-            var truncated = entries.Count > maximum ? "true" : "false";
-            var payload = $"{{\"entries\":[{string.Join(",", page)}],\"truncated\":{truncated}}}";
-            return IdeRequestAnswer.FromValue(JsonDocument.Parse(payload).RootElement.Clone());
+                var entries = new DirectoryInfo(path).EnumerateFileSystemInfos()
+                    .OrderBy(static entry => entry.Name, StringComparer.Ordinal)
+                    .Select(static entry => (Name: entry.Name, Kind: entry switch
+                    {
+                        _ when (entry.Attributes & FileAttributes.Directory) != 0 => 2,
+                        _ when (entry.Attributes & FileAttributes.ReparsePoint) != 0 => 64,
+                        _ => 1,
+                    }))
+                    .ToList();
+                var maximum = parameters.TryGetProperty("maximumEntries", out var bound) &&
+                    bound.ValueKind == JsonValueKind.Number
+                    ? bound.GetInt32()
+                    : 10_000;
+                var page = entries.Take(maximum)
+                    .Select(static entry => JsonSerializer.Serialize(new { name = entry.Name, kind = KindName(entry.Kind) }))
+                    .ToList();
+                var truncated = entries.Count > maximum ? "true" : "false";
+                var payload = $"{{\"entries\":[{string.Join(",", page)}],\"truncated\":{truncated}}}";
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse(payload).RootElement.Clone());
+            });
         }
 
         private static string KindName(int fileType)
@@ -511,51 +625,55 @@ public sealed class FrontendWorkspaceBridgeTests
 
         private IdeRequestAnswer Write(JsonElement parameters)
         {
-            var path = PathOf(parameters);
-            var content = parameters.GetProperty("content").GetString()!;
-            var expectedHash = parameters.TryGetProperty("expectedHash", out var hash) &&
-                hash.ValueKind == JsonValueKind.String
-                ? hash.GetString()
-                : null;
-            var createExclusive = parameters.TryGetProperty("createExclusive", out var exclusive) &&
-                exclusive.ValueKind == JsonValueKind.True;
-
-            string? current = null;
-            var exists = File.Exists(path);
-            if (exists)
+            return Covered(parameters, path =>
             {
-                try
+                var content = parameters.GetProperty("content").GetString()!;
+                var expectedHash = parameters.TryGetProperty("expectedHash", out var hash) &&
+                    hash.ValueKind == JsonValueKind.String
+                    ? hash.GetString()
+                    : null;
+                var createExclusive = parameters.TryGetProperty("createExclusive", out var exclusive) &&
+                    exclusive.ValueKind == JsonValueKind.True;
+
+                string? current = null;
+                var exists = File.Exists(path);
+                if (exists)
                 {
-                    current = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
+                    try
+                    {
+                        current = new UTF8Encoding(false, true).GetString(File.ReadAllBytes(path));
+                    }
+                    catch (DecoderFallbackException)
+                    {
+                        current = null;
+                    }
                 }
-                catch (DecoderFallbackException)
+
+                if (expectedHash is not null)
                 {
-                    current = null;
+                    if (current is null || Hash(current) != expectedHash)
+                        return IdeRequestAnswer.FromError("fs_conflict", "fs_conflict: (target stripped)");
                 }
-            }
+                else if (createExclusive && exists)
+                {
+                    return IdeRequestAnswer.FromError("fs_exists", "fs_exists: (target stripped)");
+                }
 
-            if (expectedHash is not null)
-            {
-                if (current is null || Hash(current) != expectedHash)
-                    return IdeRequestAnswer.FromError("fs_conflict", "fs_conflict: (target stripped)");
-            }
-            else if (createExclusive && exists)
-            {
-                return IdeRequestAnswer.FromError("fs_exists", "fs_exists: (target stripped)");
-            }
-
-            File.WriteAllText(path, content);
-            return IdeRequestAnswer.FromValue(JsonDocument.Parse("{}").RootElement.Clone());
+                File.WriteAllText(path, content);
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse("{}").RootElement.Clone());
+            });
         }
 
         private IdeRequestAnswer Delete(JsonElement parameters)
         {
-            var path = PathOf(parameters);
-            if (!File.Exists(path))
-                return IdeRequestAnswer.FromError("fs_not_found", "fs_not_found: (target stripped)");
+            return Covered(parameters, path =>
+            {
+                if (!File.Exists(path))
+                    return IdeRequestAnswer.FromError("fs_not_found", "fs_not_found: (target stripped)");
 
-            File.Delete(path);
-            return IdeRequestAnswer.FromValue(JsonDocument.Parse("{}").RootElement.Clone());
+                File.Delete(path);
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse("{}").RootElement.Clone());
+            });
         }
 
         private IdeRequestAnswer Dirty(JsonElement parameters)

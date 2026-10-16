@@ -570,8 +570,37 @@ export function localFsError(error: unknown): Error {
  * the same text — exactly what a read of the current state answers — so a
  * state the kernel never saw fails `fs_conflict` instead of overwriting. */
 export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  const cryptoObject = globalThis as {
+    crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
+  };
+  const digest = await cryptoObject.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The coverage ruling's frontend half (ADR 0042 decision 12): the local fs
+ * family serves only paths inside the workspace folders this window actually
+ * opens — a path outside them answers typed `fs_not_covered`, and the kernel
+ * serves it locally where its state claims are true. Comparison is
+ * case-insensitive: a case mismatch still serves the requested file itself,
+ * so the gate may over-match harmlessly but never under-serves a real folder. */
+export function isCoveredLocalTarget(fsPath: string, roots: readonly string[]): boolean {
+  const normalized = normalizeLocalPath(fsPath);
+  for (const root of roots) {
+    const prefix = normalizeLocalPath(root);
+    if (normalized === prefix) return true;
+    const withSeparator = prefix === "/" || /^[a-zA-Z]:$/.test(prefix) ? prefix : `${prefix}/`;
+    if (normalized.startsWith(withSeparator)) return true;
+  }
+
+  return false;
+}
+
+function normalizeLocalPath(path: string): string {
+  const unified = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return unified.length === 0 ? "/" : unified.toLowerCase();
 }
 
 // ---------- stage D: the facade and position translation ----------

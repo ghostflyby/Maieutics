@@ -353,6 +353,51 @@ public sealed class ReplControlHostTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task BusToolInvokeBindsTheOwnerAgentSessionForSessionScopedGates()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness and its real Deno client ride a Unix domain socket.");
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        var ownerSessionId = Maieutics.Agent.AgentSessionId.Create().Value.ToString("N");
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "repl-default");
+        registry.RegisterOwner(Environment.ProcessId, ownerSessionId);
+
+        string? captured = null;
+        var probe = AIFunctionFactory.Create(
+            (AIFunctionArguments arguments) =>
+            {
+                captured = Maieutics.Agent.ScriptInvocationContext.TryGet(arguments)?.SessionId;
+                return JsonSerializer.SerializeToElement(new { ok = true });
+            },
+            new AIFunctionFactoryOptions { Name = "probe_session", Description = "Captures the bound session." });
+
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, timeout.Token, [probe]);
+        await using (application)
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, timeout.Token);
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"control.hello","payload":{"sessionId":"repl-default"}}""",
+                timeout.Token);
+            var ready = await ReceiveBusAsync(socket, timeout.Token);
+            ready.Should().Contain("\"type\":\"control.ready\"");
+
+            await SendBusAsync(
+                socket,
+                """{"version":1,"type":"tool.invoke","correlationId":"t1","payload":{"tool":"probe_session","arguments":{}}}""",
+                timeout.Token);
+            var result = await ReceiveBusAsync(socket, timeout.Token);
+            result.Should().Contain("\"status\":\"ok\"");
+            captured.Should().Be(ownerSessionId,
+                "session-scoped gates (the IDE workspace bridge, ADR 0042 decision 12) key on the " +
+                "pid-verified owner agent session, not the REPL-local id the hello claims");
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task DisposeRemovesSocketFile()
     {
         if (OperatingSystem.IsWindows())

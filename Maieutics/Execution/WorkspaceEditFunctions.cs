@@ -175,14 +175,25 @@ internal sealed class WorkspaceEditFunctions
                     $"write_text writes at most {maximumWriteBytes} UTF-8 bytes per file.");
 
             var snapshot = workspace.Capture();
-            if (WorkspaceToolCalls.AcquireBridge(bridge, arguments) is { } channel)
-                return await ApplyBridgedContentAsync(
-                    snapshot,
-                    channel,
-                    uri,
-                    content,
-                    bytes,
-                    cancellationToken).ConfigureAwait(false);
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (bridgedChannel is { } channel)
+            {
+                try
+                {
+                    return await ApplyBridgedContentAsync(
+                        snapshot,
+                        channel,
+                        uri,
+                        content,
+                        bytes,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (WorkspaceBridgeCoverageException)
+                {
+                    // The coverage ruling: outside the frontend's folders the local
+                    // channel serves the write — nothing has mutated yet.
+                }
+            }
 
             var target = snapshot.ResolveWriteTarget(uri);
             byte[]? beforeRaw = null;
@@ -294,6 +305,79 @@ internal sealed class WorkspaceEditFunctions
                 : UnifiedDiff.Create(answeredText, content, logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
     }
 
+    /// <summary>The bridged edit_text flow, extracted so the uncovered fallback can
+    /// re-enter the local path unchanged. Throws <see cref="WorkspaceBridgeCoverageException" />
+    /// from the first channel call — before anything mutated.</summary>
+    private async ValueTask<EditTextResult> EditBridgedAsync(
+        WorkspaceSnapshot snapshot,
+        WorkspaceBridgeChannel channel,
+        string uri,
+        AIFunctionArguments arguments,
+        string oldText,
+        string newText,
+        bool? replaceAll,
+        CancellationToken cancellationToken)
+    {
+        var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+        string answered;
+        try
+        {
+            answered = await channel
+                .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkspaceException exception) when (exception.Code == "workspace_invalid_utf8")
+        {
+            throw new WorkspaceException(
+                "workspace_binary_file",
+                "The file is not UTF-8 text, so edit_text cannot edit it.");
+        }
+
+        var bridgeBeforeBytes = EncodeUtf8(answered);
+        var bridgeBefore = TryDecodeText(bridgeBeforeBytes, out var bridgeHadBom) ??
+            throw new WorkspaceException(
+                "workspace_binary_file",
+                "The file is not UTF-8 text, so edit_text cannot edit it.");
+
+        var (bridgeSearch, bridgeReplacement) = MatchLineEndings(bridgeBefore, oldText, newText);
+        var bridgeOccurrences = CountOccurrences(bridgeBefore, bridgeSearch);
+        if (bridgeOccurrences == 0)
+            throw new WorkspaceException(
+                "workspace_edit_target_not_found",
+                "oldText does not appear in the file. Read the file again and copy the exact text, " +
+                "including indentation.");
+
+        if (bridgeOccurrences > 1 && replaceAll is not true)
+            throw new WorkspaceException(
+                "workspace_edit_target_not_unique",
+                $"oldText appears {bridgeOccurrences} times; pass replaceAll to replace every occurrence.");
+
+        var bridgeAfter = bridgeBefore.Replace(bridgeSearch, bridgeReplacement);
+        var bridgeWritten = bridgeHadBom ? bridgeAfter.Insert(0, "\uFEFF") : bridgeAfter;
+        await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+        await channel
+            .WriteAsync(
+                logical.Segments,
+                bridgeWritten,
+                WorkspaceBridgeChannel.ContentHash(answered),
+                createExclusive: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var bridgeDiff = UnifiedDiff.Create(
+            bridgeBefore,
+            bridgeAfter,
+            logical.DisplayPath,
+            maximumDiffBytes,
+            maximumDiffLines);
+        return new EditTextResult(
+            logical.Uri,
+            bridgeOccurrences,
+            bridgeBeforeBytes.Length,
+            EncodeUtf8(bridgeWritten).Length,
+            bridgeDiff!);
+    }
+
     [Description("Replaces exact text inside one workspace UTF-8 text file.")]
     private async ValueTask<EditTextResult> EditTextAsync(
         [Description("The workspace://local URI of the file to edit.")]
@@ -325,66 +409,18 @@ internal sealed class WorkspaceEditFunctions
                     "newText must differ from oldText.");
 
             var snapshot = workspace.Capture();
-            if (WorkspaceToolCalls.AcquireBridge(bridge, arguments) is { } channel)
+            var editBridged = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (editBridged is { } channel)
             {
-                var logical = snapshot.ResolveLogical(uri, allowRoot: false);
-                string answered;
                 try
                 {
-                    answered = await channel
-                        .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                    return await EditBridgedAsync(snapshot, channel, uri, arguments, oldText, newText, replaceAll, cancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch (WorkspaceException exception) when (exception.Code == "workspace_invalid_utf8")
+                catch (WorkspaceBridgeCoverageException)
                 {
-                    throw new WorkspaceException(
-                        "workspace_binary_file",
-                        "The file is not UTF-8 text, so edit_text cannot edit it.");
+                    // Uncovered: the local channel serves the edit; nothing mutated.
                 }
-
-                var bridgeBeforeBytes = EncodeUtf8(answered);
-                var bridgeBefore = TryDecodeText(bridgeBeforeBytes, out var bridgeHadBom) ??
-                    throw new WorkspaceException(
-                        "workspace_binary_file",
-                        "The file is not UTF-8 text, so edit_text cannot edit it.");
-
-                var (bridgeSearch, bridgeReplacement) = MatchLineEndings(bridgeBefore, oldText, newText);
-                var bridgeOccurrences = CountOccurrences(bridgeBefore, bridgeSearch);
-                if (bridgeOccurrences == 0)
-                    throw new WorkspaceException(
-                        "workspace_edit_target_not_found",
-                        "oldText does not appear in the file. Read the file again and copy the exact text, " +
-                        "including indentation.");
-
-                if (bridgeOccurrences > 1 && replaceAll is not true)
-                    throw new WorkspaceException(
-                        "workspace_edit_target_not_unique",
-                        $"oldText appears {bridgeOccurrences} times; pass replaceAll to replace every occurrence.");
-
-                var bridgeAfter = bridgeBefore.Replace(bridgeSearch, bridgeReplacement);
-                var bridgeWritten = bridgeHadBom ? bridgeAfter.Insert(0, "\uFEFF") : bridgeAfter;
-                await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
-                await channel
-                    .WriteAsync(
-                        logical.Segments,
-                        bridgeWritten,
-                        WorkspaceBridgeChannel.ContentHash(answered),
-                        createExclusive: false,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                var bridgeDiff = UnifiedDiff.Create(
-                    bridgeBefore,
-                    bridgeAfter,
-                    logical.DisplayPath,
-                    maximumDiffBytes,
-                    maximumDiffLines);
-                return new EditTextResult(
-                    logical.Uri,
-                    bridgeOccurrences,
-                    bridgeBeforeBytes.Length,
-                    EncodeUtf8(bridgeWritten).Length,
-                    bridgeDiff!);
             }
 
             var file = snapshot.Resolve(uri, false);
@@ -469,9 +505,7 @@ internal sealed class WorkspaceEditFunctions
             foreach (var change in document.Files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                files.Add(channel is { } bridged
-                    ? await ApplyBridgedFileChangeAsync(snapshot, bridged, change, cancellationToken).ConfigureAwait(false)
-                    : await ApplyFileChangeAsync(snapshot, change, cancellationToken).ConfigureAwait(false));
+                files.Add(await ApplyOnePatchFileAsync(snapshot, channel, change, cancellationToken).ConfigureAwait(false));
             }
 
             return new ApplyPatchResult(files.ToImmutable());
@@ -597,6 +631,31 @@ internal sealed class WorkspaceEditFunctions
                     "workspace_patch_invalid",
                     $"Unsupported patch operation '{change.Kind}'.");
         }
+    }
+
+    /// <summary>Routes one patch file through the bridge when acquired; a file the
+    /// authority does not cover (the coverage ruling) is served by the local path for
+    /// that file only — patch files are independent, and mixed bridged/local files in
+    /// one patch keep the same per-file semantics either way.</summary>
+    private async ValueTask<ApplyPatchFileResult> ApplyOnePatchFileAsync(
+        WorkspaceSnapshot snapshot,
+        WorkspaceBridgeChannel? channel,
+        ApplyPatchFileChange change,
+        CancellationToken cancellationToken)
+    {
+        if (channel is { } bridged)
+        {
+            try
+            {
+                return await ApplyBridgedFileChangeAsync(snapshot, bridged, change, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (WorkspaceBridgeCoverageException)
+            {
+            }
+        }
+
+        return await ApplyFileChangeAsync(snapshot, change, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Applies one parsed file operation through the IDE bridge (ADR 0042

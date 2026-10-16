@@ -96,6 +96,23 @@ internal sealed record WorkspaceBridgeEntry(string Name, string Kind, long? Size
 /// directory held more than the requested bound.</summary>
 internal sealed record WorkspaceBridgeListing(ImmutableArray<WorkspaceBridgeEntry> Entries, bool Truncated);
 
+/// <summary>The elected authority's workspace folders do not cover the target path
+/// (ADR 0042 decision 12's coverage ruling): the bridge only serves files the
+/// frontend actually opens — outside them the "IDE authoritative text state"
+/// claim is false, so the operation falls back to the local channel. Thrown by
+/// the channel before any mutation; single-target flows re-run the whole
+/// operation locally, and apply_patch falls back for that file only.</summary>
+internal sealed class WorkspaceBridgeCoverageException : Exception
+{
+    internal WorkspaceBridgeCoverageException(string path)
+        : base($"The IDE frontend's workspace folders do not cover '{path}'; the operation is served locally.")
+    {
+        Path = path;
+    }
+
+    internal string Path { get; }
+}
+
 /// <summary>Call-site helpers shared by the workspace tools: the calling session for
 /// session-scoped gates — the agent run context when the model called the tool, the
 /// script-invocation context the control host bound when the REPL or a plugin relay

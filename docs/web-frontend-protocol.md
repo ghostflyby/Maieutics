@@ -346,7 +346,11 @@ buffer. An operation that loses its target mid-call fails typed
 
 Kernel-side gates (instruction surface, bounds, the dirty gate over
 `maieutics/dirty`, unified diff) run before the bridge exactly as for the
-`idefs://` family. A frontend predating this family answers
+`idefs://` family. **Coverage**: the kernel forwards only paths under the
+elected frontend's workspace folders (fetched once per election from the
+`maieutics/fs/list` root answer and cached); a handler whose window does not
+cover the target answers `fs_not_covered`, and the kernel serves the path
+locally instead. A frontend predating this family answers
 `ide_method_unsupported`; the kernel absorbs that once and serves the
 session from local I/O again (the pre-bridge behavior).
 

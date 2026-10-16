@@ -488,11 +488,24 @@ window, `search_text` returns 1-based line/column matches, and
     and containment validation runs before the bridge exactly as
     decision 11 rules, over a new pure `ResolveLogical` split (no disk
     pre-flight: a deleted-on-disk, open-dirty file stays readable
-    through its buffer). `search_text` stays disk-local in this stage —
-    scan-through-bridge is one round trip per file, and the
-    `maieutics/fs/search` ruling defers it for idefs the same way; the
-    tool description declares that a bridged read may answer unsaved
-    buffer state which search cannot see. The same channel is the
+    through its buffer). Stage F-II generalized search onto the same
+    channel system: the searched root follows the same coverage ruling
+    as the file operations — covered → the elected frontend's
+    provider-mediated scan (`maieutics/fs/local/search`, the local
+    scan's bounds), uncovered, unsupported, or no frontend → the local
+    disk scan; a frontend predating the method degrades per call and
+    never flips the cohort. Stage F-III gives local-disk roots the fast
+    path: the extension spawns the install's bundled ripgrep
+    (`vscode.env.appRoot` resolves it; grep is the universal fallback,
+    columns collapsing to 1) with the default posture an agent most
+    often wants — VCS ignore files respected (dependencies skipped),
+    hidden entries included except `.git` — and `include`/`exclude`
+    globs (rg-style, an identical matcher in the kernel's local scan
+    via `SearchGlobs`) plus `respectIgnore: false` composing any
+    filtering rule; the provider scan remains the fallback for every
+    other scheme. Both searches read saved provider state — bridged
+    reads answer buffer state that search cannot see, and the tool
+    descriptions declare it. The same channel is the
     REPL's file plane for workspace paths: the worker wraps the async
     text APIs (`Deno.readTextFile`, `Deno.writeTextFile`,
     `Deno.readDir` — the `patchFetch` precedent), resolves paths
@@ -588,10 +601,14 @@ window, `search_text` returns 1-based line/column matches, and
   (display names never cross the API), structural containment, the fs
   family's bypass of the stage-A translation layer, typed failures.
   Later in the stage: binary via the
-  object-store round trip,
-  `maieutics/fs/search` over `workspace.findTextInFiles` (the remote
-  grep — the search gap this family otherwise leaves), and — after C —
-  the kernel-gated, frontend-executed write path.
+  object-store round trip, and — after C — the kernel-gated,
+  frontend-executed write path. The search gap landed as stage F-II
+  (`maieutics/fs/search` + `ide_fs_search`); the originally named
+  `workspace.findTextInFiles` is proposed API and unusable in a
+  marketplace extension, so the implementation is a bounded
+  provider-mediated scan over `workspace.fs` — every scheme with a
+  FileSystemProvider works identically, under the local scan's bounds
+  with a wall-clock budget as the ReDoS backstop.
 - **F — workspace file-system forwarding. — IMPLEMENTED 2026-10-16.**
   Decision 12: the `IWorkspaceIoBridge` seam in Execution (null acquire
   = the unchanged local pinned walk), authority election and targeted
@@ -627,9 +644,10 @@ window, `search_text` returns 1-based line/column matches, and
   (the model has no read tool that can follow them) —
   `untitled:` and virtual documents never surface as entries at all,
   and the kernel re-checks every returned URI.
-- Until stage E's `maieutics/fs/search` lands, the idefs domain has
-  no text-search equivalent — the `ide_fs_*` tool descriptions must
-  say so.
+- The idefs domain's text search landed with stage F-II
+  (`maieutics/fs/search` + `ide_fs_search`): bounded provider-mediated
+  scans, one contract shared with the local family's bridged search,
+  so results are comparable across domains.
 - `apply_patch` behavior is unchanged (first-match-after-seek); the
   stricter unique-match semantics live only in the read-side selector
   locator.

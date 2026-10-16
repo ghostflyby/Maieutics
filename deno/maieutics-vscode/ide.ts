@@ -570,7 +570,7 @@ export function localFsError(error: unknown): Error {
  * the same text — exactly what a read of the current state answers — so a
  * state the kernel never saw fails `fs_conflict` instead of overwriting. */
 export async function sha256Hex(text: string): Promise<string> {
-  const cryptoObject = globalThis as {
+  const cryptoObject = globalThis as unknown as {
     crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
   };
   const digest = await cryptoObject.crypto.subtle.digest(
@@ -739,4 +739,363 @@ export function createIde(
         shiftPositions({ method, parameters: params }, 1) as Record<string, unknown>,
       ),
   };
+}
+
+// ---------- stage F-II: generalized search (provider-mediated tree scan) ----------
+
+/** The fs surface the scan walks: opaque path strings, the two operations the
+ * scan needs. The controller adapts `vscode.workspace.fs` onto this; tests
+ * inject an in-memory tree. */
+export interface SearchTreeFs {
+  /** Lists one directory's entries as [name, fileTypeBits] pairs
+   * (vscode.FileType bits: File=1, Directory=2, SymbolicLink=64). */
+  list(path: string): Promise<Array<[string, number]>>;
+  /** Reads one file's bytes. */
+  read(path: string): Promise<Uint8Array>;
+  /** Joins a path with relative segments. */
+  join(base: string, segments: readonly string[]): string;
+}
+
+/** One search match, in the search_text wire convention: the path relative to
+ * the searched root (posix separators), 1-based line and column, and a bounded
+ * line preview. */
+export interface TreeSearchMatch {
+  readonly path: string;
+  readonly line: number;
+  readonly column: number;
+  readonly preview: string;
+}
+
+/** The scan's bounds, mirroring the kernel's local search_text: per-file read
+ * cap, total scanned-bytes cap, file and entry ceilings, match ceiling, and a
+ * wall-clock budget (the extension host has no regex-timeout primitive, so the
+ * budget is the ReDoS backstop for model-supplied patterns). */
+export interface TreeSearchBounds {
+  readonly query: string;
+  readonly regex: boolean;
+  readonly caseSensitive: boolean;
+  readonly maximumMatches: number;
+  readonly maximumFileBytes: number;
+  readonly maximumBytes: number;
+  readonly maximumFiles: number;
+  readonly maximumEntries: number;
+  readonly budgetMs: number;
+}
+
+export interface TreeSearchResult {
+  readonly matches: TreeSearchMatch[];
+  readonly truncated: boolean;
+  readonly scannedBytes: number;
+}
+
+const SEARCH_PREVIEW_CHARACTERS = 512;
+const SEARCH_WALL_CLOCK_BUDGET_MS = 20_000;
+
+/** The defaults the kernel's local search_text carries; both fs families serve
+ * the same bounded contract so results are comparable across domains. */
+export function defaultTreeSearchBounds(
+  query: string,
+  regex: boolean,
+  caseSensitive: boolean,
+  maximumMatches: number,
+): TreeSearchBounds {
+  return {
+    query,
+    regex,
+    caseSensitive,
+    maximumMatches,
+    maximumFileBytes: 2 * 1024 * 1024,
+    maximumBytes: 64 * 1024 * 1024,
+    maximumFiles: 10_000,
+    maximumEntries: 10_000,
+    budgetMs: SEARCH_WALL_CLOCK_BUDGET_MS,
+  };
+}
+
+/** Depth-first bounded scan of the provider tree: regular files only (symlinks
+ * are never descended), denied metadata directories skipped, binary and
+ * oversize files skipped with the scan continuing, and every ceiling turning
+ * into `truncated` rather than an error — the kernel owns the typed failures.
+ * Literal queries use indexOf; regex compiles once per call. */
+export async function searchTree(
+  fs: SearchTreeFs,
+  root: string,
+  bounds: TreeSearchBounds,
+): Promise<TreeSearchResult> {
+  const matches: TreeSearchMatch[] = [];
+  let truncated = false;
+  let scannedBytes = 0;
+  let visitedFiles = 0;
+  const deadline = Date.now() + bounds.budgetMs;
+  const matcher = createMatcher(bounds.query, bounds.regex, bounds.caseSensitive);
+
+  const directories: Array<{ path: string; segments: string[] }> = [{ path: root, segments: [] }];
+  while (directories.length > 0) {
+    if (
+      matches.length >= bounds.maximumMatches || scannedBytes >= bounds.maximumBytes ||
+      visitedFiles >= bounds.maximumFiles || Date.now() > deadline
+    ) {
+      truncated = true;
+      break;
+    }
+    const directory = directories.shift()!;
+    let entries: Array<[string, number]>;
+    try {
+      entries = await fs.list(directory.path);
+    } catch {
+      continue; // unreadable directory: skip, the scan continues
+    }
+    if (entries.length > bounds.maximumEntries) truncated = true;
+    entries = entries.slice(0, bounds.maximumEntries);
+    entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const childDirectories: typeof directories = [];
+    for (const [name, fileType] of entries) {
+      const segments = [...directory.segments, name];
+      const path = fs.join(root, segments);
+      if ((fileType & 2) !== 0) {
+        if (!isDeniedSearchDirectory(name)) childDirectories.push({ path, segments });
+        continue;
+      }
+      if ((fileType & 1) === 0 || (fileType & 64) !== 0) continue; // not a regular file
+      if (
+        visitedFiles >= bounds.maximumFiles || scannedBytes >= bounds.maximumBytes ||
+        matches.length >= bounds.maximumMatches || Date.now() > deadline
+      ) {
+        truncated = true;
+        break;
+      }
+
+      visitedFiles += 1;
+      let bytes: Uint8Array;
+      try {
+        bytes = await fs.read(path);
+      } catch {
+        continue;
+      }
+      if (bytes.byteLength > bounds.maximumFileBytes) {
+        truncated = true;
+        continue;
+      }
+      scannedBytes += bytes.byteLength;
+      if (scannedBytes > bounds.maximumBytes) {
+        truncated = true;
+        break;
+      }
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        continue; // binary: skipped, counted nowhere (the kernel reports its own counters)
+      }
+      collectMatches(matches, text, segments, matcher, bounds.maximumMatches);
+      if (matches.length >= bounds.maximumMatches || Date.now() > deadline) {
+        truncated = matches.length < bounds.maximumMatches || true;
+      }
+    }
+    if (truncated) break;
+    for (let index = childDirectories.length - 1; index >= 0; index -= 1) {
+      directories.unshift(childDirectories[index]);
+    }
+  }
+
+  return { matches, truncated, scannedBytes };
+}
+
+function isDeniedSearchDirectory(name: string): boolean {
+  return name.toLowerCase() === ".git";
+}
+
+interface TreeMatcher {
+  readonly isRegex: boolean;
+  readonly caseSensitive: boolean;
+  readonly pattern: string;
+  readonly regex?: RegExp;
+}
+
+function createMatcher(query: string, regex: boolean, caseSensitive: boolean): TreeMatcher {
+  if (regex) {
+    return {
+      isRegex: true,
+      caseSensitive,
+      pattern: query,
+      regex: new RegExp(query, caseSensitive ? "g" : "gi"),
+    };
+  }
+  return { isRegex: false, caseSensitive, pattern: caseSensitive ? query : query.toLowerCase() };
+}
+
+/** Collects every match in one decoded file, capped by the caller. Lines split
+ * on \n with \r trimmed; line/column are 1-based; the preview clips the line to
+ * the preview window around the match. */
+function collectMatches(
+  matches: TreeSearchMatch[],
+  text: string,
+  segments: string[],
+  matcher: TreeMatcher,
+  maximumMatches: number,
+): void {
+  const lines = text.split("\n");
+  for (
+    let lineIndex = 0;
+    lineIndex < lines.length && matches.length < maximumMatches;
+    lineIndex += 1
+  ) {
+    const raw = lines[lineIndex];
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const haystack = matcher.isRegex ? line : (matcher.caseSensitive ? line : line.toLowerCase());
+    let offset = 0;
+    while (matches.length < maximumMatches) {
+      const found = matcher.isRegex
+        ? matchAt(matcher.regex!, haystack, offset)
+        : haystack.indexOf(matcher.pattern, offset);
+      if (found < 0) break;
+      matches.push({
+        path: segments.join("/"),
+        line: lineIndex + 1,
+        column: found + 1,
+        preview: clipPreview(line, found),
+      });
+      offset = found + Math.max(1, matcher.isRegex ? 1 : matcher.pattern.length);
+      if (offset > haystack.length) break;
+    }
+  }
+}
+
+function matchAt(regex: RegExp, line: string, offset: number): number {
+  regex.lastIndex = offset;
+  const found = regex.exec(line);
+  return found === null ? -1 : found.index;
+}
+
+function clipPreview(line: string, column: number): string {
+  if (line.length <= SEARCH_PREVIEW_CHARACTERS) return line;
+  const start = Math.max(0, Math.min(column - 64, line.length - SEARCH_PREVIEW_CHARACTERS));
+  return line.slice(start, start + SEARCH_PREVIEW_CHARACTERS);
+}
+
+// ---------- stage F-III: the fast search path (bundled rg, grep fallback) ----------
+
+/** The ignore/filter knobs both search surfaces accept. Defaults: the fast path
+ * respects VCS ignore files and includes hidden entries except `.git` — the
+ * most-wanted agent default (dependencies and build junk skipped, dotfile
+ * configs visible). `respectIgnore: false` composes with the globs to reach
+ * any filtering rule. */
+export interface SearchFilterOptions {
+  readonly include?: readonly string[];
+  readonly exclude?: readonly string[];
+  readonly respectIgnore?: boolean;
+}
+
+/** Resolves the bundled ripgrep (the VS Code install ships one) or one on the
+ * PATH; null when neither exists and the caller falls back to grep. */
+export function bundledRgPath(appRoot: string): string {
+  return `${appRoot.replace(/\/+$/, "")}/resources/app/node_modules/@vscode/ripgrep/bin/rg`;
+}
+
+/** Assembles the rg command line for one bounded search: the default ignore
+ * posture (VCS ignores respected, hidden included, `.git` excluded), the
+ * caller's globs, and the match contract. Spawn with cwd = the searched root
+ * and `.` as the path so answers come back root-relative. */
+export function buildRgArgs(
+  query: string,
+  regex: boolean,
+  caseSensitive: boolean,
+  filter: SearchFilterOptions,
+): string[] {
+  const args = ["--json", "--hidden", "-g", "!.git"];
+  if (filter.respectIgnore === false) args.push("--no-ignore");
+  if (!caseSensitive) args.push("-i");
+  if (regex) args.push("--regexp");
+  else args.push("--fixed-strings");
+  args.push("-e", query);
+  for (const glob of filter.include ?? []) args.push("-g", glob);
+  for (const glob of filter.exclude ?? []) args.push("-g", `!${glob}`);
+  args.push(".");
+  return args;
+}
+
+/** Parses one rg `--json` match event into the wire match: the path stripped of
+ * the `./` prefix and normalized to posix separators, 1-based line, and the
+ * byte-offset submatch converted to a 1-based character column (rg reports
+ * bytes; the wire contract is characters). Non-match events parse to null. */
+export function parseRgMatchEvent(eventLine: string): TreeSearchMatch | null {
+  let event: {
+    type?: string;
+    data?: {
+      path?: { text?: string };
+      lines?: { text?: string };
+      line_number?: number;
+      submatches?: Array<{ start?: number }>;
+    };
+  };
+  try {
+    event = JSON.parse(eventLine);
+  } catch {
+    return null;
+  }
+  if (event.type !== "match" || event.data === undefined) return null;
+
+  const rawPath = event.data.path?.text ?? "";
+  const lineText = event.data.lines?.text ?? "";
+  const lineNumber = event.data.line_number;
+  const start = event.data.submatches?.[0]?.start;
+  if (rawPath.length === 0 || lineNumber === undefined || start === undefined) return null;
+
+  // Bytes → characters: the column counts the characters preceding the match.
+  const lineBytes = new TextEncoder().encode(lineText);
+  const preceding = new TextDecoder("utf-8", { fatal: false }).decode(lineBytes.slice(0, start));
+
+  return {
+    path: rawPath.replace(/^\.\//, "").replace(/\\/g, "/"),
+    line: lineNumber,
+    column: [...preceding].length + 1,
+    preview: clipPreview(lineText.replace(/\r?\n$/, ""), [...preceding].length),
+  };
+}
+
+/** The rg-style glob the filters accept: `**` crosses separators, `*` and `?`
+ * stay within one segment, and a glob without a separator matches the file
+ * name at any depth (the gitignore rule). */
+export function globToMatcher(pattern: string): (relativePath: string) => boolean {
+  const hasSeparator = pattern.includes("/");
+  // The placeholder is a private-use codepoint: a control character would trip
+  // the no-control-regex lint, and it cannot collide — NUL never passes the
+  // kernel's glob validation.
+  const source = "^" + pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\uE000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+    .replace(/\uE000/g, ".*") +
+    "$";
+  const regex = new RegExp(source, "i");
+  return (relativePath) => {
+    const path = relativePath.replace(/\\/g, "/");
+    if (hasSeparator) return regex.test(path);
+
+    // The gitignore rule: a separator-free glob names a segment — it matches
+    // the file's own name and every ancestor directory, so `node_modules`
+    // reaches the files inside without a trailing `/**`.
+    return path.split("/").some((segment) => regex.test(segment));
+  };
+}
+
+/** The include/exclude verdict for one file's relative path: at least one
+ * include must match (when any are given) and no exclude may match. */
+export function passesSearchFilters(
+  relativePath: string,
+  filter: SearchFilterOptions,
+): boolean {
+  if (filter.exclude !== undefined) {
+    for (const pattern of filter.exclude) {
+      if (globToMatcher(pattern)(relativePath)) return false;
+    }
+  }
+  if (filter.include !== undefined && filter.include.length > 0) {
+    for (const pattern of filter.include) {
+      if (globToMatcher(pattern)(relativePath)) return true;
+    }
+    return false;
+  }
+  return true;
 }

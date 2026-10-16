@@ -969,6 +969,66 @@ public sealed class FrontendIdeBridgeTests
         traversal.Failure!.Code.Should().Be("ide_invalid_arguments");
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task IdeFsSearchMapsRelativePathsOntoTheIdefsDomain()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var search = Function(functions.Functions, "ide_fs_search");
+
+        var invocation = await InvokeWithAnswerAsync(
+            search,
+            """{"uri":"idefs:///aaa1111/1/src","query":"needle","regex":true}""",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                """{"matches":[{"path":"a.ts","line":2,"column":3,"preview":"the needle here"}],"truncated":true,"scannedBytes":42}""").RootElement.Clone()),
+            cancellationToken);
+
+        invocation.Method.Should().Be("maieutics/fs/search");
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
+        outgoing.GetProperty("params").GetProperty("folderId").GetString().Should().Be("aaa1111");
+        outgoing.GetProperty("params").GetProperty("segments").EnumerateArray()
+            .Select(static segment => segment.GetString()).Should().Equal(["1", "src"]);
+        outgoing.GetProperty("params").GetProperty("regex").GetBoolean().Should().BeTrue();
+        outgoing.GetProperty("params").GetProperty("maximumMatches").GetInt32().Should().Be(200);
+
+        var matches = invocation.Result.GetProperty("matches");
+        matches.GetArrayLength().Should().Be(1);
+        var match = matches[0];
+        match.GetProperty("uri").GetString().Should().Be("idefs:///aaa1111/1/src/a.ts",
+            "the kernel maps the answered relative path onto the idefs domain");
+        match.GetProperty("line").GetInt32().Should().Be(2);
+        match.GetProperty("column").GetInt32().Should().Be(3);
+        invocation.Result.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        invocation.Result.GetProperty("scannedBytes").GetInt64().Should().Be(42);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IdeFsSearchRejectsBadArgumentsWithoutARoundTrip()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var search = Function(functions.Functions, "ide_fs_search");
+
+        var empty = await InvokeAsync(
+            search,
+            NoContextArguments("""{"uri":"idefs:///aaa1111","query":""}"""),
+            cancellationToken);
+        empty.Failure.Should().NotBeNull();
+        empty.Failure!.Code.Should().Be("ide_invalid_arguments");
+
+        var over = await InvokeAsync(
+            search,
+            NoContextArguments("""{"uri":"idefs:///aaa1111","query":"x","regex":true,"maxResults":201}"""),
+            cancellationToken);
+        over.Failure.Should().NotBeNull();
+        over.Failure!.Code.Should().Be("ide_invalid_arguments");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
 
 

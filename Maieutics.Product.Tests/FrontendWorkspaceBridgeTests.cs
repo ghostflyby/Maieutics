@@ -295,11 +295,14 @@ public sealed class FrontendWorkspaceBridgeTests
     }
 
     [Fact]
-    public async Task SearchTextStaysDiskLocalUnderTheBridge()
+    public async Task SearchTextIsServedByTheBridgeWhenTheFrontendCoversTheRoot()
     {
         using var harness = BridgeHarness.Create();
-        await File.WriteAllTextAsync(Path.Combine(harness.Root, "a.cs"), "needle on disk\n", TestContext.Current.CancellationToken);
-        harness.DiskFrontend.AnswerText["a.cs"] = "buffer without the needle\n";
+        Directory.CreateDirectory(Path.Combine(harness.Root, "sub"));
+        await File.WriteAllTextAsync(
+            Path.Combine(harness.Root, "sub", "a.cs"),
+            "alpha needle beta\nsecond line\n",
+            TestContext.Current.CancellationToken);
         var functions = new WorkspaceFunctions(harness.Workspace, bridge: harness.Bridge);
         var search = functions.Functions.Single(static function => function.Name == "search_text");
 
@@ -307,10 +310,131 @@ public sealed class FrontendWorkspaceBridgeTests
             harness.ScriptArguments("""{"query":"needle"}"""),
             TestContext.Current.CancellationToken))!;
 
+        var matches = result.GetProperty("matches");
+        matches.GetArrayLength().Should().Be(1);
+        var match = matches[0];
+        match.GetProperty("uri").GetString().Should().Be("workspace://local/sub/a.cs",
+            "the kernel maps the answered relative path onto the workspace domain");
+        match.GetProperty("line").GetInt32().Should().Be(1);
+        match.GetProperty("column").GetInt32().Should().Be(7);
+        harness.DiskFrontend.Requests.Should().Contain(
+            request => request.Method == "maieutics/fs/local/search",
+            "a covered root is served by the frontend's provider scan");
+
+        // The filter knobs ride the same request untouched.
+        var filtered = (JsonElement)(await search.InvokeAsync(
+            harness.ScriptArguments(
+                """{"query":"needle","include":["**/*.cs"],"exclude":["**/generated/**"],"respectIgnore":false}"""),
+            TestContext.Current.CancellationToken))!;
+        filtered.GetProperty("matches").GetArrayLength().Should().BeGreaterThanOrEqualTo(0);
+        harness.LastRequest!.Value.Params.GetProperty("include").EnumerateArray()
+            .Select(static glob => glob.GetString()).Should().Equal(["**/*.cs"],
+            "the filter knobs ride the search request untouched");
+        harness.LastRequest!.Value.Params.GetProperty("respectIgnore").GetBoolean().Should().BeFalse();
+
+        // The regex path rides the same bridge contract.
+        var regex = (JsonElement)(await search.InvokeAsync(
+            harness.ScriptArguments("""{"query":"n[e]edle","regex":true}"""),
+            TestContext.Current.CancellationToken))!;
+        regex.GetProperty("matches").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SearchTextLocalScanHonorsTheFilterGlobs()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        Directory.CreateDirectory(Path.Combine(workspace.Path, "generated"));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "keep.ts"), "needle\n", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "generated", "drop.ts"), "needle\n", cancellationToken);
+        var functions = new WorkspaceFunctions(Workspace.Create(workspace.Path, workspace.Path));
+        var search = functions.Functions.Single(static function => function.Name == "search_text");
+
+        var result = (JsonElement)(await search.InvokeAsync(new AIFunctionArguments(
+            new Dictionary<string, object?>
+            {
+                ["query"] = "needle",
+                ["exclude"] = new[] { "generated/**" },
+            }), cancellationToken))!;
+
+        var matches = result.GetProperty("matches").EnumerateArray()
+            .Select(static entry => entry.GetProperty("uri").GetString())
+            .ToList();
+        matches.Should().Contain("workspace://local/keep.ts");
+        matches.Should().NotContain(uri => uri!.Contains("generated"),
+            "the local scan judges the same globs the frontend's fast search does");
+        result.GetProperty("skippedByFilter").GetInt32().Should().BeGreaterThanOrEqualTo(1);
+    }
+
+    [Fact]
+    public void SearchGlobsFollowTheGitignoreNamingRule()
+    {
+        SearchGlobs.Passes("src/a.ts", "a.ts", ["**/*.ts"], null).Should().BeTrue();
+        SearchGlobs.Passes("src/a.js", "a.js", ["**/*.ts"], null).Should().BeFalse(
+            "include is a whitelist");
+        SearchGlobs.Passes("generated/x.ts", "x.ts", null, ["generated/**"]).Should().BeFalse();
+        SearchGlobs.Passes("src/gen/x.ts", "x.ts", null, ["generated/**"]).Should().BeTrue(
+            "exclude needs the /** tail to reach descendants");
+        SearchGlobs.Passes("a/node_modules/x.js", "x.js", null, ["node_modules"]).Should().BeFalse(
+            "a separator-free glob names a segment at any depth");
+        SearchGlobs.Passes("a/modules/x.js", "x.js", null, ["node_modules"]).Should().BeTrue();
+        SearchGlobs.Passes("anything.go", "anything.go", null, null).Should().BeTrue(
+            "no filters passes everything");
+    }
+
+    [Fact]
+    public async Task SearchTextFallsBackLocallyWhenTheFrontendCannotSearch()
+    {
+        using var harness = BridgeHarness.Create();
+        await File.WriteAllTextAsync(Path.Combine(harness.Root, "a.cs"), "needle on disk\n", TestContext.Current.CancellationToken);
+        harness.DiskFrontend.AnswerText["a.cs"] = "buffer without the needle\n";
+        harness.DiskFrontend.SupportedMethods =
+        [
+            "maieutics/fs/list",
+            "maieutics/fs/local/read",
+            "maieutics/fs/local/list",
+            "maieutics/fs/local/write",
+            "maieutics/fs/local/delete",
+            "maieutics/dirty",
+        ];
+        var functions = new WorkspaceFunctions(harness.Workspace, bridge: harness.Bridge);
+        var search = functions.Functions.Single(static function => function.Name == "search_text");
+        var read = functions.Functions.Single(static function => function.Name == "read_text");
+
+        var result = (JsonElement)(await search.InvokeAsync(
+            harness.ScriptArguments("""{"query":"needle"}"""),
+            TestContext.Current.CancellationToken))!;
         result.GetProperty("matches").GetArrayLength().Should().Be(1,
-            "search declares disk state, the one place the bridge does not reach in this stage");
-        harness.DiskFrontend.Requests.Should().NotContain(request =>
-            request.Method.StartsWith("maieutics/fs/local", StringComparison.Ordinal));
+            "a frontend predating the search method degrades this call to the local scan");
+
+        // The degradation is per call: the rest of the bridge stays active.
+        var buffered = (JsonElement)(await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/a.cs"}"""),
+            TestContext.Current.CancellationToken))!;
+        buffered.GetProperty("text").GetString().Should().Be("buffer without the needle");
+    }
+
+    [Fact]
+    public async Task SearchTextFallsBackLocallyOnACoverageMiss()
+    {
+        using var harness = BridgeHarness.Create();
+        var appFolder = Path.Combine(harness.Root, "app");
+        Directory.CreateDirectory(appFolder);
+        harness.DiskFrontend.CoverageRoot = appFolder;
+        Directory.CreateDirectory(Path.Combine(harness.Root, "docs"));
+        await File.WriteAllTextAsync(Path.Combine(harness.Root, "docs", "x.ts"), "needle here\n", TestContext.Current.CancellationToken);
+        var functions = new WorkspaceFunctions(harness.Workspace, bridge: harness.Bridge);
+        var search = functions.Functions.Single(static function => function.Name == "search_text");
+
+        var result = (JsonElement)(await search.InvokeAsync(
+            harness.ScriptArguments("""{"query":"needle","uri":"workspace://local/docs"}"""),
+            TestContext.Current.CancellationToken))!;
+
+        result.GetProperty("matches").GetArrayLength().Should().Be(1,
+            "an uncovered root is scanned locally");
+        harness.DiskFrontend.Requests.Should().NotContain(
+            request => request.Method == "maieutics/fs/local/search",
+            "uncovered trees never reach the frontend");
     }
 
     [Fact]
@@ -662,6 +786,87 @@ public sealed class FrontendWorkspaceBridgeTests
                 File.WriteAllText(path, content);
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse("{}").RootElement.Clone());
             });
+        }
+
+        /// <summary>A compact real scan over the stand-in's disk: the same bounded
+        /// contract the extension's provider scan serves (literal or regex, 1-based
+        /// line/column, bounded previews, relative posix paths under the root).</summary>
+        private IdeRequestAnswer Search(JsonElement parameters)
+        {
+            return Covered(parameters, root =>
+            {
+                var query = parameters.GetProperty("query").GetString()!;
+                var useRegex = parameters.TryGetProperty("regex", out var regexElement) &&
+                               regexElement.ValueKind == JsonValueKind.True;
+                var caseSensitive = !parameters.TryGetProperty("caseSensitive", out var caseElement) ||
+                                    caseElement.ValueKind != JsonValueKind.False;
+                var maximum = parameters.TryGetProperty("maximumMatches", out var bound) &&
+                              bound.ValueKind == JsonValueKind.Number
+                    ? bound.GetInt32()
+                    : 200;
+                var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+                var regex = useRegex
+                    ? new System.Text.RegularExpressions.Regex(
+                        query,
+                        caseSensitive
+                            ? System.Text.RegularExpressions.RegexOptions.None
+                            : System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                    : null;
+                var matches = new List<string>();
+                var scanned = 0L;
+                var rootDirectory = new DirectoryInfo(root);
+                foreach (var file in rootDirectory.EnumerateFiles("*", SearchOption.AllDirectories))
+                {
+                    string text;
+                    try
+                    {
+                        text = File.ReadAllText(file.FullName);
+                    }
+                    catch (IOException)
+                    {
+                        continue;
+                    }
+
+                    scanned += text.Length;
+                    var lines = text.Split('\n');
+                    for (var lineIndex = 0; lineIndex < lines.Length && matches.Count < maximum; lineIndex += 1)
+                    {
+                        var line = lines[lineIndex].TrimEnd('\r');
+                        if (regex is { } pattern)
+                        {
+                            foreach (System.Text.RegularExpressions.Match found in pattern.Matches(line))
+                            {
+                                matches.Add(MatchJson(rootDirectory, file, lineIndex + 1, found.Index + 1, line));
+                                if (matches.Count >= maximum) break;
+                            }
+
+                            continue;
+                        }
+
+                        var haystack = caseSensitive ? line : line.ToLowerInvariant();
+                        var needle = caseSensitive ? query : query.ToLowerInvariant();
+                        var offset = 0;
+                        while (matches.Count < maximum)
+                        {
+                            var index = haystack.IndexOf(needle, offset, comparison);
+                            if (index < 0) break;
+
+                            matches.Add(MatchJson(rootDirectory, file, lineIndex + 1, index + 1, line));
+                            offset = index + needle.Length;
+                        }
+                    }
+                }
+
+                var payload = $"{{\"matches\":[{string.Join(",", matches)}],\"truncated\":false,\"scannedBytes\":{scanned}}}";
+                return IdeRequestAnswer.FromValue(JsonDocument.Parse(payload).RootElement.Clone());
+            });
+        }
+
+        private static string MatchJson(DirectoryInfo root, FileInfo file, int line, int column, string lineText)
+        {
+            var relative = Path.GetRelativePath(root.FullName, file.FullName).Replace('\\', '/');
+            var preview = JsonSerializer.Serialize(lineText.Length > 512 ? lineText[..512] : lineText);
+            return $"{{\"path\":\"{relative}\",\"line\":{line},\"column\":{column},\"preview\":{preview}}}";
         }
 
         private IdeRequestAnswer Delete(JsonElement parameters)

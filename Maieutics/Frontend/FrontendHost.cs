@@ -1090,6 +1090,10 @@ internal sealed class FrontendHost : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         var (initial, channel) = stream.Subscribe(since);
+        // Sentinels: the finally observes late faults of the in-flight tasks the raced
+        // loop below abandons on non-happy exits (backpressure close, a failed send).
+        var queueWake = Task.CompletedTask;
+        var nextFrame = Task.FromResult(false);
         try
         {
             foreach (var frame in initial) await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
@@ -1103,8 +1107,8 @@ internal sealed class FrontendHost : IAsyncDisposable
             // armed at a time; when the run frame wins the race, the wake stays armed
             // for the next race (WaitForChangeAsync wakes are broadcasts, so the
             // armed task neither steals nor loses anything).
-            var queueWake = flushQueueAsync(cancellationToken);
-            Task<bool> nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
+            queueWake = flushQueueAsync(cancellationToken);
+            nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
             while (true)
             {
                 var settled = await Task.WhenAny(nextFrame, queueWake).ConfigureAwait(false);
@@ -1140,6 +1144,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
+            if (queueWake.IsFaulted) _ = queueWake.Exception;
+            if (nextFrame.IsFaulted) _ = nextFrame.Exception;
             stream.Unsubscribe(channel);
         }
     }

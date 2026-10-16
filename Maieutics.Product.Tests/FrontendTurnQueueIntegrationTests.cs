@@ -498,7 +498,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // the enqueue's dequeue frame (running=none) is already flushed and the socket
         // has entered the run's serving loop before the transition exists.
         var releaseRunning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        harness.TurnQueue.RunningPublishGateForTests = _ => releaseRunning.Task;
+        harness.TurnQueue.RunningPublishGateForTests = token => releaseRunning.Task.WaitAsync(token);
         try
         {
             var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "gated one");
@@ -521,6 +521,9 @@ public sealed class FrontendTurnQueueIntegrationTests
         finally
         {
             harness.TurnQueue.RunningPublishGateForTests = null;
+            // A failure before the release must unpark the worker, or harness disposal
+            // hangs on the worker completion and masks the real assertion.
+            releaseRunning.TrySetResult();
         }
     }
 

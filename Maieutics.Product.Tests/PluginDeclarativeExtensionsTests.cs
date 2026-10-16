@@ -22,7 +22,7 @@ public sealed class PluginDeclarativeExtensionsTests
     // nightly's three-pass parallel load (a 20 s budget expired twice there), while
     // still firing inside the 60 s Fact timeout so the failure reports at the true
     // wait instead of the outer kill.
-    private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(55);
+    private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(50);
 
     [Fact(Timeout = 60_000)]
     public async Task DeclarativeOnlyPluginsPublishSyntheticRegistrations()

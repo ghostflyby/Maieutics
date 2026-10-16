@@ -1058,12 +1058,15 @@ export function parseRgMatchEvent(eventLine: string): TreeSearchMatch | null {
  * name at any depth (the gitignore rule). */
 export function globToMatcher(pattern: string): (relativePath: string) => boolean {
   const hasSeparator = pattern.includes("/");
+  // The placeholder is a private-use codepoint: a control character would trip
+  // the no-control-regex lint, and it cannot collide — NUL never passes the
+  // kernel's glob validation.
   const source = "^" + pattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "\u0000")
+    .replace(/\*\*/g, "\uE000")
     .replace(/\*/g, "[^/]*")
     .replace(/\?/g, "[^/]")
-    .replace(/\u0000/g, ".*") +
+    .replace(/\uE000/g, ".*") +
     "$";
   const regex = new RegExp(source, "i");
   return (relativePath) => {

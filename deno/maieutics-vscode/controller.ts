@@ -100,7 +100,6 @@ import {
   normalizedHoverAnswer,
   parseRgMatchEvent,
   passesSearchFilters,
-  type SearchFilterOptions,
   searchTree,
   type SearchTreeFs,
   sha256Hex,

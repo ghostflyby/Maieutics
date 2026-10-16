@@ -323,6 +323,18 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(static services => new IdeToolFamily(
             services.GetRequiredService<IdeFunctions>().Functions,
             services.GetRequiredService<IIdeFrontendGate>()));
+        // The workspace file-system bridge (ADR 0042 stage F, decision 12): when an
+        // announcing frontend is live, the workspace tools' I/O forwards to the elected
+        // authority through this seam; with no frontend the acquire is null and the
+        // tools keep their local pinned-walk behavior.
+        builder.Services.AddSingleton<FrontendWorkspaceBridge>();
+        builder.Services.AddSingleton<IWorkspaceIoBridge>(static services =>
+            services.GetRequiredService<FrontendWorkspaceBridge>());
+        builder.Services.AddSingleton<WorkspaceBridgeFunctions>(static services =>
+            new WorkspaceBridgeFunctions(
+                services.GetRequiredService<Workspace>(),
+                services.GetRequiredService<IWorkspaceIoBridge>(),
+                services.GetRequiredService<PermissionPolicyAcquirer>()));
         // Deferred: resolving the real presenter here would close a construction cycle
         // back into MaieuticsRuntimeConfiguration (it consumes IMcpElicitationPresenter).
         builder.Services.AddSingleton<IMcpElicitationPresenter>(static services =>
@@ -388,7 +400,8 @@ public static class MaieuticsHost
                     .. services.GetRequiredService<WorkspaceEditFunctions>().Functions,
                     .. services.GetRequiredService<ResourceFunctions>().Functions,
                     .. services.GetRequiredService<TerminalFunctions>().Functions,
-                    .. services.GetRequiredService<IdeFunctions>().Functions
+                    .. services.GetRequiredService<IdeFunctions>().Functions,
+                    .. services.GetRequiredService<WorkspaceBridgeFunctions>().Functions
                 ],
                 pluginHosts: services.GetRequiredService<PluginHostManager>(),
                 credentials: services.GetRequiredService<ReplControlCredentialRegistry>(),
@@ -468,14 +481,16 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(static services =>
             new WorkspaceFunctions(
                 services.GetRequiredService<Workspace>(),
-                resources: services.GetRequiredService<ResourceRegistry>()));
+                resources: services.GetRequiredService<ResourceRegistry>(),
+                bridge: services.GetRequiredService<IWorkspaceIoBridge>()));
         builder.Services.AddSingleton(static services =>
             new WorkspaceEditFunctions(
                 services.GetRequiredService<Workspace>(),
                 // The instruction-surface write gate (ADR 0032) reads the session's effective
                 // write policy; without the acquirer the gate stays dormant and model-initiated
                 // writes to AGENTS.md/.agents would inherit the legacy containment-only posture.
-                acquirer: services.GetRequiredService<PermissionPolicyAcquirer>()));
+                acquirer: services.GetRequiredService<PermissionPolicyAcquirer>(),
+                bridge: services.GetRequiredService<IWorkspaceIoBridge>()));
         builder.Services.AddSingleton<Frontend.SubagentEventBuffer>();
         // The task-plane tools share the built-in task:// provider instance that the resource
         // registry composes; the concrete type is not otherwise registered.

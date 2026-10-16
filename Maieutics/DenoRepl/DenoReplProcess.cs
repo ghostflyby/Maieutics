@@ -114,7 +114,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             options.SessionId,
             options.Generation,
             options.ClientUrl,
-            options.WindowsPipeName);
+            options.WindowsPipeName,
+            workspaceRoot: options.WorkingDirectory);
         environment[DenoReplEnvironment.BrokerAddress] = options.Broker.Address;
         foreach (var pair in environment) startInfo.Environment[pair.Key] = pair.Value;
 
@@ -181,6 +182,7 @@ internal static class DenoReplEnvironment
     internal const string PipeName = "MAIEUTICS_REPL_PIPE";
     internal const string Credential = "MAIEUTICS_REPL_CREDENTIAL";
     internal const string BrokerAddress = "DENO_PERMISSION_BROKER_PATH";
+    internal const string WorkspaceRoot = "MAIEUTICS_WORKSPACE_ROOT";
 
     /// <summary>
     ///     Builds the complete REPL child environment both derivation paths use (the kernel-derived
@@ -189,14 +191,17 @@ internal static class DenoReplEnvironment
     ///     cache variables, and on Windows SystemRoot + MAIEUTICS_REPL_PIPE. The kernel-derived path
     ///     adds <see cref="BrokerAddress"/> (DENO_PERMISSION_BROKER_PATH) at launch; the
     ///     host-derived path deliberately omits it — the host appends its own forwarded broker path
-    ///     (B5a env contract) and never takes it from the kernel env.
+    ///     (B5a env contract) and never takes it from the kernel env. The workspace root
+    ///     (ADR 0042 decision 12) arms the worker's fs shim for the bridge; the broker baseline
+    ///     allowlists the name so Deno.env.get can read it.
     /// </summary>
     internal static Dictionary<string, string> Build(
         string ipcAddress,
         string sessionId,
         int generation,
         string clientModule,
-        string? windowsPipeName)
+        string? windowsPipeName,
+        string? workspaceRoot = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ipcAddress);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -209,6 +214,7 @@ internal static class DenoReplEnvironment
             [Generation] = generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
             [ClientModule] = clientModule
         };
+        if (!string.IsNullOrWhiteSpace(workspaceRoot)) environment[WorkspaceRoot] = workspaceRoot;
         CopyEnvironment(environment, "DENO_DIR");
         CopyEnvironment(environment, "TMPDIR");
         CopyEnvironment(environment, "TMP");

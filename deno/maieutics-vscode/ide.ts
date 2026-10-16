@@ -500,6 +500,130 @@ export function fsEntriesAnswer(
   return next === undefined ? { entries: page } : { entries: page, nextCursor: next };
 }
 
+// ---------- stage F: workspace file-system forwarding (decision 12) ----------
+
+/** The vscode.FileType bit values, mirrored here so the pure half never
+ * imports vscode: File=1, Directory=2, SymbolicLink=64. */
+export const LocalFileType = { File: 1, Directory: 2, SymbolicLink: 64 } as const;
+
+/** Maps a vscode.FileType bit set onto the workspace tools' kind string;
+ * directory wins over the symbolic-link bit, matching the kernel's local
+ * listing (a link to a directory lists as a directory it refuses to traverse). */
+export function mapLocalFileTypeKind(fileType: number): string {
+  if ((fileType & LocalFileType.Directory) !== 0) return "directory";
+  if ((fileType & LocalFileType.SymbolicLink) !== 0) return "symbolic_link";
+  if ((fileType & LocalFileType.File) !== 0) return "file";
+  return "other";
+}
+
+/** One entry of a bridged workspace directory listing. */
+export interface LocalFsEntry {
+  readonly name: string;
+  readonly kind: string;
+}
+
+/** The fs/local/list answer: names sorted, bounded by maximumEntries, with
+ * the overflow reported as `truncated` — the kernel pages locally and turns
+ * the truncation into its own typed directory-too-large failure. */
+export function localFsEntriesAnswer(
+  listed: readonly (readonly [string, number])[],
+  maximumEntries: number,
+): { entries: LocalFsEntry[]; truncated: boolean } {
+  const bound = Math.max(0, Math.floor(maximumEntries));
+  const sorted = [...listed].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return {
+    entries: sorted.slice(0, bound).map(([name, fileType]) => ({
+      name,
+      kind: mapLocalFileTypeKind(fileType),
+    })),
+    truncated: sorted.length > bound,
+  };
+}
+
+/** Maps the editor's FileSystemError family onto the typed fs codes for both
+ * fs families; the physical target never appears in the message. The stage-F
+ * superset adds the two codes the local family's writes and listings need. */
+export function mapLocalFsErrorCode(code: unknown): string {
+  return code === "FileNotFound"
+    ? "fs_not_found"
+    : code === "FileIsADirectory"
+    ? "fs_is_directory"
+    : code === "FileNotADirectory"
+    ? "fs_not_directory"
+    : code === "FileExists"
+    ? "fs_exists"
+    : code === "NoPermissions"
+    ? "fs_access_denied"
+    : code === "Unavailable"
+    ? "fs_scheme_unreadable"
+    : "fs_failed";
+}
+
+/** Builds the typed error a fs handler throws: the mapped code, the physical
+ * target stripped from the message. */
+export function localFsError(error: unknown): Error {
+  const mapped = mapLocalFsErrorCode((error as { code?: unknown }).code);
+  return Object.assign(new Error(`${mapped}: (target stripped)`), { code: mapped });
+}
+
+/** The lowercase-hex SHA-256 the write precondition carries: both sides hash
+ * the same text — exactly what a read of the current state answers — so a
+ * state the kernel never saw fails `fs_conflict` instead of overwriting. */
+export async function sha256Hex(text: string): Promise<string> {
+  const cryptoObject = globalThis as {
+    crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
+  };
+  const digest = await cryptoObject.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The coverage ruling's frontend half (ADR 0042 decision 12): the local fs
+ * family serves only paths inside the workspace folders this window actually
+ * opens — a path outside them answers typed `fs_not_covered`, and the kernel
+ * serves it locally where its state claims are true. Comparison is
+ * case-insensitive: a case mismatch still serves the requested file itself,
+ * so the gate may over-match harmlessly but never under-serves a real folder. */
+export function isCoveredLocalTarget(fsPath: string, roots: readonly string[]): boolean {
+  const normalized = normalizeLocalPath(fsPath);
+  for (const root of roots) {
+    const prefix = normalizeLocalPath(root);
+    if (normalized === prefix) return true;
+    const withSeparator = prefix === "/" || /^[a-zA-Z]:$/.test(prefix) ? prefix : `${prefix}/`;
+    if (normalized.startsWith(withSeparator)) return true;
+  }
+
+  return false;
+}
+
+/** One open editor document, flattened so the pure half never imports vscode. */
+export interface OpenDocumentText {
+  readonly uriString: string;
+  readonly isDirty: boolean;
+  readonly text: string;
+}
+
+/** The editor semantics for the virtual family (decision 12's
+ * buffer-authoritative rule applied to `idefs`): an open, dirty document
+ * answers its buffer — unsaved edits on a remote or extension-scheme file are
+ * visible the same way the local family serves them. Matching is by canonical
+ * URI string, the same rule the local handler uses; a scheme mismatch
+ * (untitled:, virtual documents) can never match, which keeps them excluded. */
+export function dirtyBufferAnswer(
+  documents: readonly OpenDocumentText[],
+  targetUriString: string,
+): string | undefined {
+  const open = documents.find((document) => document.uriString === targetUriString);
+  return open !== undefined && open.isDirty ? open.text : undefined;
+}
+
+function normalizeLocalPath(path: string): string {
+  const unified = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return unified.length === 0 ? "/" : unified.toLowerCase();
+}
+
 // ---------- stage D: the facade and position translation ----------
 
 /** The kernel's gate answer for the IDE tools when no frontend announced.

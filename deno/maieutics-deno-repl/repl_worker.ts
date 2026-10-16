@@ -6,6 +6,7 @@ import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";
 import { patchFetch } from "../shared/resource_bridge.ts";
 import { CREDENTIAL_ENV, IPC_ENV } from "./repl_process_env.ts";
+import { type FsBridgeDeno, installFsBridge, WORKSPACE_ROOT_ENV } from "./fs_bridge.ts";
 import {
   INPUT_MAILBOX_LINK_LABEL,
   type ReplActorEvent,
@@ -52,6 +53,7 @@ export const rpc = {
     installSharedBootstrap();
     await installMaieuticsNamespace();
     installHostEnvironment();
+    await installWorkspaceFsBridge();
     kernel = await createReplKernel({ transform: createTsxTransform() });
   },
 
@@ -305,6 +307,31 @@ function installResourceFetch(): void {
     address,
     ...(credential === undefined ? {} : { credential }),
   });
+}
+
+/**
+ * Routes the async text fs APIs for workspace paths through the kernel's
+ * workspace bridge (ADR 0042 decision 12), so TS cells read and write the
+ * IDE's authoritative text state while an IDE frontend is attached. No-op
+ * without the kernel-passed workspace root; the per-call typed fallback
+ * keeps every API working unchanged when the bridge is inactive.
+ */
+async function installWorkspaceFsBridge(): Promise<void> {
+  const root = Deno.env.get(WORKSPACE_ROOT_ENV);
+  if (root === undefined || root.length === 0) return;
+
+  const clientUrl = Deno.env.get(CLIENT_ENV);
+  if (clientUrl === undefined || clientUrl.length === 0) return;
+  const client = await import(clientUrl) as {
+    tools?: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> };
+  };
+  if (client.tools === undefined) return;
+
+  installFsBridge(
+    Deno as unknown as FsBridgeDeno,
+    root,
+    (tool, args) => client.tools!.invoke(tool, args),
+  );
 }
 
 /**

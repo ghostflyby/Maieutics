@@ -57,6 +57,7 @@ internal static class PermissionBaseline
             DenoReplEnvironment.Generation,
             DenoReplEnvironment.ClientModule,
             DenoReplEnvironment.IpcAddress,
+            DenoReplEnvironment.WorkspaceRoot,
             "DENO_DIR",
             "TMPDIR",
             "TMP",

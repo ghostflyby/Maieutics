@@ -12,6 +12,7 @@ internal sealed class ReplControlSessionRegistry
     private readonly Lock changeLock = new();
     private readonly ConcurrentDictionary<int, string> pluginHosts = new();
     private readonly ConcurrentDictionary<int, string> sessions = new();
+    private readonly ConcurrentDictionary<int, string> ownerSessions = new();
     private TaskCompletionSource registryChanged = CreateSignal();
 
     public void Register(int processId, string sessionId)
@@ -22,9 +23,23 @@ internal sealed class ReplControlSessionRegistry
         SignalChange();
     }
 
+    /// <summary>Records the owning agent session of a REPL child, beside the pid-verified
+    /// hello identity: the handshake authorizes the REPL-local session id the client claims,
+    /// while session-scoped gates (the IDE workspace bridge, ADR 0042 decision 12) key on
+    /// the agent session the events announce uses — the pid mapping, not the client's claim,
+    /// is the trustworthy translation between the two.</summary>
+    public void RegisterOwner(int processId, string ownerSessionId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerSessionId);
+        ownerSessions[processId] = ownerSessionId;
+        SignalChange();
+    }
+
     public void Unregister(int processId)
     {
         sessions.TryRemove(processId, out _);
+        ownerSessions.TryRemove(processId, out _);
         SignalChange();
     }
 
@@ -75,6 +90,19 @@ internal sealed class ReplControlSessionRegistry
         }
 
         sessionId = string.Empty;
+        return false;
+    }
+
+    /// <summary>The owning agent session id of a REPL child, when one was registered.</summary>
+    public bool TryGetOwnerSession(int processId, out string ownerSessionId)
+    {
+        if (ownerSessions.TryGetValue(processId, out var value))
+        {
+            ownerSessionId = value;
+            return true;
+        }
+
+        ownerSessionId = string.Empty;
         return false;
     }
 

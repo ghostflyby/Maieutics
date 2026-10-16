@@ -125,6 +125,7 @@ internal sealed class LocalDenoReplSessionFactory(
                     policy,
                     sessionId,
                     generation,
+                    workingDirectory,
                     startup.Token).ConfigureAwait(false) is { } hostGeneration)
             {
                 return hostGeneration;
@@ -150,6 +151,10 @@ internal sealed class LocalDenoReplSessionFactory(
                 ownerSessionId,
                 startup.Token).ConfigureAwait(false);
             sessionRegistry.Register(process.ProcessId, sessionId);
+            // The owner mapping backs the script tools' session-scoped gates (ADR 0042
+            // decision 12): the hello identity is the REPL-local session id; the gates
+            // key on the agent session the frontend announces against.
+            sessionRegistry.RegisterOwner(process.ProcessId, ownerSessionId.Value.ToString("N"));
 
             var connection = evalHost.WaitForConnectionAsync(sessionId, generation, startup.Token);
             var connected = connection;
@@ -211,9 +216,10 @@ internal sealed class LocalDenoReplSessionFactory(
         EffectivePolicy? policy,
         string sessionId,
         int generation,
+        string workingDirectory,
         CancellationToken cancellationToken)
     {
-        var derive = BuildDerivePayload(policy, sessionId, generation);
+        var derive = BuildDerivePayload(policy, sessionId, generation, workingDirectory);
         try
         {
             var outcome = await pluginHosts!.RequestReplDeriveAsync(derive, cancellationToken).ConfigureAwait(false);
@@ -258,7 +264,8 @@ internal sealed class LocalDenoReplSessionFactory(
     private HostReplDerivePayload BuildDerivePayload(
         EffectivePolicy? policy,
         string sessionId,
-        int generation)
+        int generation,
+        string workingDirectory)
     {
         return new HostReplDerivePayload(
             sessionId,
@@ -269,7 +276,8 @@ internal sealed class LocalDenoReplSessionFactory(
                 sessionId,
                 generation,
                 modules.ClientUrl,
-                controlHost.WindowsPipeName),
+                controlHost.WindowsPipeName,
+                workspaceRoot: workingDirectory),
             policy is null ? null : DenoPermissionRenderer.BuildHostReplPermissions(policy),
             Report: true);
     }

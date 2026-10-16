@@ -35,6 +35,7 @@ internal sealed class WorkspaceEditFunctions
     private readonly int maximumEditedFileBytes;
     private readonly int maximumDiffBytes;
     private readonly int maximumDiffLines;
+    private readonly IWorkspaceIoBridge? bridge;
 
     internal WorkspaceEditFunctions(
         Workspace workspace,
@@ -42,10 +43,12 @@ internal sealed class WorkspaceEditFunctions
         int maximumWriteBytes = DefaultMaximumWriteBytes,
         int maximumEditedFileBytes = DefaultMaximumEditedFileBytes,
         int maximumDiffBytes = DefaultMaximumDiffBytes,
-        int maximumDiffLines = DefaultMaximumDiffLines)
+        int maximumDiffLines = DefaultMaximumDiffLines,
+        IWorkspaceIoBridge? bridge = null)
     {
         this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         this.acquirer = acquirer;
+        this.bridge = bridge;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumWriteBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEditedFileBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDiffBytes);
@@ -62,13 +65,15 @@ internal sealed class WorkspaceEditFunctions
                 "write_text",
                 "Creates or overwrites one workspace UTF-8 text file and returns a bounded unified diff " +
                 "of the change. Missing parent directories are created. Refuses symbolic links, " +
-                "directories, and .git paths."),
+                "directories, and .git paths. When an IDE frontend is attached, the write is executed " +
+                "through it after a dirty-document check: unsaved changes must be saved or reverted first."),
             CreateFunction(
                 (Func<string, AIFunctionArguments, string, string, bool?, CancellationToken, ValueTask<EditTextResult>>)EditTextAsync,
                 "edit_text",
                 "Replaces exact text inside one workspace UTF-8 text file and returns a bounded unified " +
                 "diff of the change. The target text must appear exactly once unless replaceAll is true. " +
-                "Refuses binary files, symbolic links, and .git paths."),
+                "Refuses binary files, symbolic links, and .git paths. Reads and writes follow the IDE's " +
+                "text state when an IDE frontend is attached; unsaved changes are rejected (save or revert first)."),
             CreateFunction(
                 (Func<string, AIFunctionArguments, CancellationToken, ValueTask<ApplyPatchResult>>)ApplyPatchAsync,
                 "apply_patch",
@@ -96,7 +101,10 @@ internal sealed class WorkspaceEditFunctions
     /// <summary>Gates model-initiated writes to instruction surfaces: an instruction path
     /// requires an explicit allow in the calling session's effective write policy — absence
     /// of a matching allow denies, and any matching deny denies (ADR 0032 decision 1). A
-    /// host without the permission acquirer keeps the legacy containment-only behavior.</summary>
+    /// host without the permission acquirer keeps the legacy containment-only behavior. The
+    /// calling session comes from either context — the model's run context or the control
+    /// host's script binding (ADR 0042 decision 12) — and a caller carrying neither is
+    /// denied fail-closed instead of crashing the invocation.</summary>
     private void GateInstructionSurface(string? relativePath, AIFunctionArguments arguments)
     {
         if (acquirer is null || relativePath is null || !InstructionSurface.IsInstructionSurface(relativePath))
@@ -104,10 +112,17 @@ internal sealed class WorkspaceEditFunctions
             return;
         }
 
-        var sessionId = AgentToolContext.GetRequired(arguments).SessionId;
+        var normalized = relativePath.Replace('\\', '/');
+        if (!AgentSessionId.TryParse(WorkspaceToolCalls.TryGetSessionId(arguments), out var sessionId))
+        {
+            throw new AgentToolException(
+                "instructions_write_forbidden",
+                $"'{normalized}' is an instruction surface: model-initiated writes require an explicit allow " +
+                "in the calling session's permission policy.");
+        }
+
         var policy = acquirer.Acquire(PermissionLayer.Empty, sessionId);
         var rules = policy.For(PermissionKind.Write);
-        var normalized = relativePath.Replace('\\', '/');
         if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)) ||
             !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)))
         {
@@ -160,6 +175,26 @@ internal sealed class WorkspaceEditFunctions
                     $"write_text writes at most {maximumWriteBytes} UTF-8 bytes per file.");
 
             var snapshot = workspace.Capture();
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (bridgedChannel is { } channel)
+            {
+                try
+                {
+                    return await ApplyBridgedContentAsync(
+                        snapshot,
+                        channel,
+                        uri,
+                        content,
+                        bytes,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (WorkspaceBridgeCoverageException)
+                {
+                    // The coverage ruling: outside the frontend's folders the local
+                    // channel serves the write — nothing has mutated yet.
+                }
+            }
+
             var target = snapshot.ResolveWriteTarget(uri);
             byte[]? beforeRaw = null;
             string? beforeText = null;
@@ -209,6 +244,140 @@ internal sealed class WorkspaceEditFunctions
         }
     }
 
+    /// <summary>The bridged write core (ADR 0042 decision 12): the before side is read
+    /// through the channel — the IDE's authoritative text state — the dirty gate runs
+    /// kernel-side, and the write carries the SHA-256 of the answered text as its
+    /// precondition, so a state the frontend changed under us fails
+    /// <c>workspace_write_conflict</c> instead of overwriting silently. A before side
+    /// that cannot be decoded or read honestly (binary, oversize) omits the diff and the
+    /// hash, exactly like the local path's unreadable-before handling.</summary>
+    private async ValueTask<WriteTextResult> ApplyBridgedContentAsync(
+        WorkspaceSnapshot snapshot,
+        WorkspaceBridgeChannel channel,
+        string uri,
+        string content,
+        byte[] bytes,
+        CancellationToken cancellationToken)
+    {
+        var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+        string? answeredText = null;
+        long? beforeSize = null;
+        var exists = true;
+        try
+        {
+            answeredText = await channel.ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                .ConfigureAwait(false);
+            beforeSize = Encoding.UTF8.GetByteCount(answeredText);
+        }
+        catch (WorkspaceException exception) when (exception.Code == "workspace_path_not_found")
+        {
+            exists = false;
+        }
+        catch (WorkspaceException exception) when (
+            exception.Code is "workspace_file_too_large" or "workspace_invalid_utf8")
+        {
+            answeredText = null;
+        }
+
+        var beforeBytes = answeredText is null ? null : EncodeUtf8(answeredText);
+        if (beforeBytes is not null && beforeBytes.AsSpan().SequenceEqual(bytes))
+            return new WriteTextResult(logical.Uri, "unchanged", beforeSize, bytes.Length, null);
+
+        if (exists)
+            await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+
+        await channel
+            .WriteAsync(
+                logical.Segments,
+                content,
+                answeredText is null ? null : WorkspaceBridgeChannel.ContentHash(answeredText),
+                createExclusive: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return new WriteTextResult(
+            logical.Uri,
+            exists ? "updated" : "created",
+            beforeSize,
+            bytes.Length,
+            answeredText is null
+                ? null
+                : UnifiedDiff.Create(answeredText, content, logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+    }
+
+    /// <summary>The bridged edit_text flow, extracted so the uncovered fallback can
+    /// re-enter the local path unchanged. Throws <see cref="WorkspaceBridgeCoverageException" />
+    /// from the first channel call — before anything mutated.</summary>
+    private async ValueTask<EditTextResult> EditBridgedAsync(
+        WorkspaceSnapshot snapshot,
+        WorkspaceBridgeChannel channel,
+        string uri,
+        AIFunctionArguments arguments,
+        string oldText,
+        string newText,
+        bool? replaceAll,
+        CancellationToken cancellationToken)
+    {
+        var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+        string answered;
+        try
+        {
+            answered = await channel
+                .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (WorkspaceException exception) when (exception.Code == "workspace_invalid_utf8")
+        {
+            throw new WorkspaceException(
+                "workspace_binary_file",
+                "The file is not UTF-8 text, so edit_text cannot edit it.");
+        }
+
+        var bridgeBeforeBytes = EncodeUtf8(answered);
+        var bridgeBefore = TryDecodeText(bridgeBeforeBytes, out var bridgeHadBom) ??
+            throw new WorkspaceException(
+                "workspace_binary_file",
+                "The file is not UTF-8 text, so edit_text cannot edit it.");
+
+        var (bridgeSearch, bridgeReplacement) = MatchLineEndings(bridgeBefore, oldText, newText);
+        var bridgeOccurrences = CountOccurrences(bridgeBefore, bridgeSearch);
+        if (bridgeOccurrences == 0)
+            throw new WorkspaceException(
+                "workspace_edit_target_not_found",
+                "oldText does not appear in the file. Read the file again and copy the exact text, " +
+                "including indentation.");
+
+        if (bridgeOccurrences > 1 && replaceAll is not true)
+            throw new WorkspaceException(
+                "workspace_edit_target_not_unique",
+                $"oldText appears {bridgeOccurrences} times; pass replaceAll to replace every occurrence.");
+
+        var bridgeAfter = bridgeBefore.Replace(bridgeSearch, bridgeReplacement);
+        var bridgeWritten = bridgeHadBom ? bridgeAfter.Insert(0, "\uFEFF") : bridgeAfter;
+        await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+        await channel
+            .WriteAsync(
+                logical.Segments,
+                bridgeWritten,
+                WorkspaceBridgeChannel.ContentHash(answered),
+                createExclusive: false,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var bridgeDiff = UnifiedDiff.Create(
+            bridgeBefore,
+            bridgeAfter,
+            logical.DisplayPath,
+            maximumDiffBytes,
+            maximumDiffLines);
+        return new EditTextResult(
+            logical.Uri,
+            bridgeOccurrences,
+            bridgeBeforeBytes.Length,
+            EncodeUtf8(bridgeWritten).Length,
+            bridgeDiff!);
+    }
+
     [Description("Replaces exact text inside one workspace UTF-8 text file.")]
     private async ValueTask<EditTextResult> EditTextAsync(
         [Description("The workspace://local URI of the file to edit.")]
@@ -240,6 +409,20 @@ internal sealed class WorkspaceEditFunctions
                     "newText must differ from oldText.");
 
             var snapshot = workspace.Capture();
+            var editBridged = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (editBridged is { } channel)
+            {
+                try
+                {
+                    return await EditBridgedAsync(snapshot, channel, uri, arguments, oldText, newText, replaceAll, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (WorkspaceBridgeCoverageException)
+                {
+                    // Uncovered: the local channel serves the edit; nothing mutated.
+                }
+            }
+
             var file = snapshot.Resolve(uri, false);
             if (!file.IsRegularFile)
                 throw new WorkspaceException(
@@ -317,11 +500,12 @@ internal sealed class WorkspaceEditFunctions
 
             var document = ApplyPatchParser.Parse(patch);
             var snapshot = workspace.Capture();
+            var channel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
             var files = ImmutableArray.CreateBuilder<ApplyPatchFileResult>(document.Files.Length);
             foreach (var change in document.Files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                files.Add(await ApplyFileChangeAsync(snapshot, change, cancellationToken).ConfigureAwait(false));
+                files.Add(await ApplyOnePatchFileAsync(snapshot, channel, change, cancellationToken).ConfigureAwait(false));
             }
 
             return new ApplyPatchResult(files.ToImmutable());
@@ -441,6 +625,151 @@ internal sealed class WorkspaceEditFunctions
                     "deleted",
                     null,
                     UnifiedDiff.Create(beforeText, "", WorkspaceSnapshot.ToDisplayPath(file.Segments), maximumDiffBytes, maximumDiffLines));
+            }
+            default:
+                throw new WorkspaceException(
+                    "workspace_patch_invalid",
+                    $"Unsupported patch operation '{change.Kind}'.");
+        }
+    }
+
+    /// <summary>Routes one patch file through the bridge when acquired; a file the
+    /// authority does not cover (the coverage ruling) is served by the local path for
+    /// that file only — patch files are independent, and mixed bridged/local files in
+    /// one patch keep the same per-file semantics either way.</summary>
+    private async ValueTask<ApplyPatchFileResult> ApplyOnePatchFileAsync(
+        WorkspaceSnapshot snapshot,
+        WorkspaceBridgeChannel? channel,
+        ApplyPatchFileChange change,
+        CancellationToken cancellationToken)
+    {
+        if (channel is { } bridged)
+        {
+            try
+            {
+                return await ApplyBridgedFileChangeAsync(snapshot, bridged, change, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (WorkspaceBridgeCoverageException)
+            {
+            }
+        }
+
+        return await ApplyFileChangeAsync(snapshot, change, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Applies one parsed file operation through the IDE bridge (ADR 0042
+    /// decision 12): reads answer the channel's authoritative text state, updates and
+    /// deletes run the dirty gate and carry the before-text hash, and creates are
+    /// exclusive so an existing target fails <c>workspace_path_exists</c> exactly like
+    /// the local exclusive create. Same per-file semantics as the local sibling:
+    /// failures propagate after earlier operations applied, without rollback.</summary>
+    private async ValueTask<ApplyPatchFileResult> ApplyBridgedFileChangeAsync(
+        WorkspaceSnapshot snapshot,
+        WorkspaceBridgeChannel channel,
+        ApplyPatchFileChange change,
+        CancellationToken cancellationToken)
+    {
+        switch (change.Kind)
+        {
+            case "create_file":
+            {
+                var logical = snapshot.ResolveLogical(ToWorkspaceUri(change.Path), allowRoot: false);
+                await channel
+                    .WriteAsync(logical.Segments, change.Diff ?? "", null, createExclusive: true, cancellationToken)
+                    .ConfigureAwait(false);
+                return new ApplyPatchFileResult(
+                    logical.DisplayPath,
+                    "created",
+                    null,
+                    UnifiedDiff.Create(null, change.Diff ?? "", logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+            }
+            case "update_file":
+            {
+                if (change.Changes.Length == 0)
+                    throw new WorkspaceException(
+                        "workspace_patch_invalid",
+                        $"The update for '{change.Path}' contains no change sections.");
+
+                var logical = snapshot.ResolveLogical(ToWorkspaceUri(change.Path), allowRoot: false);
+                string answered;
+                try
+                {
+                    answered = await channel
+                        .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (WorkspaceException exception) when (exception.Code == "workspace_invalid_utf8")
+                {
+                    throw new WorkspaceException(
+                        "workspace_binary_file",
+                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+                }
+
+                var before = TryDecodeText(EncodeUtf8(answered), out var hadByteOrderMark) ??
+                    throw new WorkspaceException(
+                        "workspace_binary_file",
+                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+
+                var after = ApplyChangeSections(before, change.Path, change.Changes);
+                if (string.Equals(before, after, StringComparison.Ordinal))
+                    return new ApplyPatchFileResult(logical.DisplayPath, "unchanged", null, null);
+
+                var written = hadByteOrderMark ? after.Insert(0, "\uFEFF") : after;
+                if (change.MoveToPath is { } moveTo)
+                {
+                    var moved = snapshot.ResolveLogical(ToWorkspaceUri(moveTo), allowRoot: false);
+                    await channel
+                        .WriteAsync(moved.Segments, written, null, createExclusive: true, cancellationToken)
+                        .ConfigureAwait(false);
+                    await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+                    await channel.DeleteAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+                    return new ApplyPatchFileResult(
+                        moved.DisplayPath,
+                        "created",
+                        logical.DisplayPath,
+                        UnifiedDiff.Create(before, after, moved.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                }
+
+                await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+                await channel
+                    .WriteAsync(
+                        logical.Segments,
+                        written,
+                        WorkspaceBridgeChannel.ContentHash(answered),
+                        createExclusive: false,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return new ApplyPatchFileResult(
+                    logical.DisplayPath,
+                    "updated",
+                    null,
+                    UnifiedDiff.Create(before, after, logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+            }
+            case "delete_file":
+            {
+                var logical = snapshot.ResolveLogical(ToWorkspaceUri(change.Path), allowRoot: false);
+                string? beforeText;
+                try
+                {
+                    beforeText = await channel
+                        .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (WorkspaceException exception) when (
+                    exception.Code is "workspace_path_not_found" or "workspace_file_too_large" or
+                        "workspace_invalid_utf8")
+                {
+                    beforeText = null;
+                }
+
+                await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+                await channel.DeleteAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
+                return new ApplyPatchFileResult(
+                    logical.DisplayPath,
+                    "deleted",
+                    null,
+                    UnifiedDiff.Create(beforeText, "", logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
             }
             default:
                 throw new WorkspaceException(

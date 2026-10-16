@@ -2,12 +2,19 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   collectProblems,
+  dirtyBufferAnswer,
   extractIdeRequest,
   ideCommandArgs,
   ideMethodCommands,
+  isCoveredLocalTarget,
   isIdeMethodSupported,
+  localFsEntriesAnswer,
+  localFsError,
+  mapLocalFileTypeKind,
+  mapLocalFsErrorCode,
   normalizedHoverAnswer,
   normalizeHoverContents,
+  sha256Hex,
 } from "./ide.ts";
 
 const progressFrame = (value: unknown) => ({
@@ -186,4 +193,138 @@ Deno.test("extractIdeRequest reads the standalone script/plugin frame", () => {
   assertEquals(request.requestId, "ide-xyz");
   assertEquals(request.method, "textDocument/hover");
   assertEquals(request.params, { uri: "file:///x" });
+});
+
+// ---------- stage F: workspace file-system forwarding (decision 12) ----------
+
+Deno.test("mapLocalFileTypeKind resolves directory and symlink bits like the local listing", () => {
+  assertEquals(mapLocalFileTypeKind(1), "file");
+  assertEquals(mapLocalFileTypeKind(2), "directory");
+  assertEquals(mapLocalFileTypeKind(64), "symbolic_link");
+  assertEquals(
+    mapLocalFileTypeKind(1 | 64),
+    "symbolic_link",
+    "a symlinked file keeps the link kind",
+  );
+  assertEquals(
+    mapLocalFileTypeKind(2 | 64),
+    "directory",
+    "a symlinked directory lists as a directory",
+  );
+  assertEquals(mapLocalFileTypeKind(0), "other");
+});
+
+Deno.test("localFsEntriesAnswer sorts, bounds, and reports truncation", () => {
+  const answer = localFsEntriesAnswer(
+    [["z.ts", 1], ["a", 2], ["m.md", 1], ["link", 64]],
+    3,
+  );
+  assertEquals(answer.truncated, true);
+  assertEquals(answer.entries.length, 3);
+  assertEquals(answer.entries.map((entry) => entry.name), ["a", "link", "m.md"]);
+  assertEquals(answer.entries[0].kind, "directory");
+  assertEquals(answer.entries[1].kind, "symbolic_link");
+
+  const exact = localFsEntriesAnswer([["a", 1]], 3);
+  assertEquals(exact.truncated, false);
+  assertEquals(exact.entries.length, 1);
+
+  const empty = localFsEntriesAnswer([], 0);
+  assertEquals(empty.truncated, false);
+  assertEquals(empty.entries, []);
+});
+
+Deno.test("mapLocalFsErrorCode covers both fs families' error surfaces", () => {
+  assertEquals(mapLocalFsErrorCode("FileNotFound"), "fs_not_found");
+  assertEquals(mapLocalFsErrorCode("FileIsADirectory"), "fs_is_directory");
+  assertEquals(mapLocalFsErrorCode("FileNotADirectory"), "fs_not_directory");
+  assertEquals(mapLocalFsErrorCode("FileExists"), "fs_exists");
+  assertEquals(mapLocalFsErrorCode("NoPermissions"), "fs_access_denied");
+  assertEquals(mapLocalFsErrorCode("Unavailable"), "fs_scheme_unreadable");
+  assertEquals(mapLocalFsErrorCode(undefined), "fs_failed");
+});
+
+Deno.test("localFsError strips the physical target from the message", () => {
+  const error = localFsError(
+    Object.assign(new Error("ENOENT: /home/user/secret/a.ts"), { code: "FileNotFound" }),
+  );
+  assertEquals((error as { code?: string }).code, "fs_not_found");
+  assert(!error.message.includes("/home/user"), "the physical target never crosses");
+});
+
+Deno.test("sha256Hex matches the known SHA-256 vectors the write precondition hashes", async () => {
+  assertEquals(
+    await sha256Hex(""),
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  );
+  assertEquals(
+    await sha256Hex("class C {}\n"),
+    "8a7eaee3a2ed1ded2f10c111143f7629820f78b4e63210aebe6b9986850db4ac",
+  );
+  assertEquals(
+    await sha256Hex("hello"),
+    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+  );
+});
+
+Deno.test("isCoveredLocalTarget gates the local fs family to the window's own folders", () => {
+  const roots = ["/home/user/ws"];
+  assertEquals(isCoveredLocalTarget("/home/user/ws/a.ts", roots), true);
+  assertEquals(
+    isCoveredLocalTarget("/home/user/ws", roots),
+    true,
+    "the folder root itself is covered",
+  );
+  assertEquals(isCoveredLocalTarget("/home/user/ws/sub/deep/b.ts", roots), true);
+  assertEquals(
+    isCoveredLocalTarget("/home/user/wsthing/a.ts", roots),
+    false,
+    "prefix collisions fail",
+  );
+  assertEquals(isCoveredLocalTarget("/home/user/ws../a.ts", roots), false);
+  assertEquals(isCoveredLocalTarget("/elsewhere/a.ts", roots), false);
+  assertEquals(
+    isCoveredLocalTarget("/home/user/WS/A.TS", roots),
+    true,
+    "case mismatches over-match harmlessly",
+  );
+  assertEquals(
+    isCoveredLocalTarget("/home/user/ws/a.ts", []),
+    false,
+    "a window with no folders covers nothing",
+  );
+  assertEquals(isCoveredLocalTarget("/home/user/ws/a.ts", ["C:\\other\\proj"]), false);
+});
+
+Deno.test("dirtyBufferAnswer serves the virtual family's editor semantics", () => {
+  const documents = [
+    {
+      uriString: "vscode-remote://ssh-remote+host/home/u/proj/a.ts",
+      isDirty: true,
+      text: "unsaved remote edit",
+    },
+    {
+      uriString: "vscode-remote://ssh-remote+host/home/u/proj/b.ts",
+      isDirty: false,
+      text: "clean model text",
+    },
+    { uriString: "untitled:Untitled-1", isDirty: true, text: "never addressable" },
+  ];
+
+  assertEquals(
+    dirtyBufferAnswer(documents, "vscode-remote://ssh-remote+host/home/u/proj/a.ts"),
+    "unsaved remote edit",
+    "a dirty remote document answers its buffer",
+  );
+  assertEquals(
+    dirtyBufferAnswer(documents, "vscode-remote://ssh-remote+host/home/u/proj/b.ts"),
+    undefined,
+    "a clean document falls through to the provider bytes",
+  );
+  assertEquals(
+    dirtyBufferAnswer(documents, "vscode-remote://ssh-remote+host/home/u/proj/missing.ts"),
+    undefined,
+  );
+  // The untitled document in the list can never answer: targets are always
+  // folder-derived URIs, so that entry matches nothing above.
 });

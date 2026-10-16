@@ -1146,6 +1146,94 @@ public sealed class FrontendIdeBridgeTests
             .Should().Contain("tool-backed answer");
     }
 
+    [Fact(Timeout = 120_000)]
+    public async Task RunLoopForwardsWorkspaceReadsThroughTheBridgeAndTheAnswerCarriesTheBufferState()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var workspace = TemporaryWorkspace.Create();
+        File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "disk state\n");
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            toolFlow: true,
+            toolName: "read_text",
+            toolArgumentsJson: """{"uri":"workspace://local/a.txt"}""",
+            expectedToolResultText: "buffer state");
+        // Pin the composed workspace root to the throwaway directory so the model's
+        // workspace://local/a.txt call resolves against a file this test owns.
+        await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
+            cancellationToken,
+            provider,
+            hanging: false,
+        transformConfiguration: body => body.Replace(
+            "\"Maieutics\": {",
+            "\"Maieutics\": {\n    \"Workspace\": { \"Root\": " +
+            JsonSerializer.Serialize(workspace.Path) + " },"));
+
+        var sessionId = await harness.GetSessionIdAsync(cancellationToken);
+        await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
+        await WaitForAsync(() => harness.IdeGate.IsIdeFrontendConnected(sessionId), cancellationToken);
+
+        var runId = await harness.SubmitTurnAsync(sessionId, "read a.txt", cancellationToken);
+
+        // The bridge's targeted frames arrive on this events socket (other announcers
+        // never see them). First the coverage fetch — the authority's folder roots —
+        // then the read itself; each answered through the real endpoint like the
+        // extension host would.
+        var coverageFrames = await events.CollectUntilAsync(
+            frame => IsIdeRequestMethod(frame, "maieutics/fs/list"), cancellationToken);
+        await AnswerIdeRequestAsync(
+            harness,
+            IdeRequestIdOf(coverageFrames[^1]),
+            new { folders = new[] { new { id = "f1", uri = new Uri(workspace.Path).AbsoluteUri } } },
+            cancellationToken);
+
+        var readFrames = await events.CollectUntilAsync(
+            frame => IsIdeRequestMethod(frame, "maieutics/fs/local/read"), cancellationToken);
+        var readRequest = readFrames[^1].GetProperty("data");
+        readRequest.GetProperty("params").GetProperty("uri").GetString().Should().Be(
+            new Uri(Path.Combine(workspace.Path, "a.txt")).AbsoluteUri,
+            "the kernel translates the workspace URI to the physical address (decision 4's authority)");
+        await AnswerIdeRequestAsync(
+            harness,
+            readRequest.GetProperty("requestId").GetString()!,
+            new { content = "buffer state\n" },
+            cancellationToken);
+
+        await harness.WaitForTurnCommittedAsync(sessionId, cancellationToken, runId);
+        var trailing = await events.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.status" &&
+                     frame.GetProperty("state").GetString() == "idle",
+            cancellationToken);
+        trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
+    }
+
+    private static bool IsIdeRequestMethod(JsonElement frame, string method)
+    {
+        return frame.GetProperty("type").GetString() == "ide.request" &&
+               frame.TryGetProperty("data", out var data) &&
+               data.ValueKind == JsonValueKind.Object &&
+               data.TryGetProperty("method", out var methodElement) &&
+               methodElement.GetString() == method;
+    }
+
+    private static string IdeRequestIdOf(JsonElement frame)
+    {
+        return frame.GetProperty("data").GetProperty("requestId").GetString()!;
+    }
+
+    private static async Task AnswerIdeRequestAsync(
+        FrontendApiIntegrationTests.FrontendHarness harness,
+        string requestId,
+        object value,
+        CancellationToken cancellationToken)
+    {
+        var answered = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/ide/{requestId}",
+            new { value },
+            cancellationToken);
+        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     // ---------- helpers ----------
 
     private static (IdeFunctions functions, IdeRequestRegistry registry, FakeGate gate, FrontendIdeSockets sockets) CreateFunctions(

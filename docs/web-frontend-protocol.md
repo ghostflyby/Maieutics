@@ -318,6 +318,42 @@ sends outside it and there is no arbitrary-command passthrough. Write-group
 language operations return data only and are applied kernel-side through the
 gated edit path (later stage).
 
+### Workspace file-system forwarding (`maieutics/fs/local/*`, ADR 0042 decision 12)
+
+While the calling session has a live announcing frontend, the kernel serves
+the workspace repository file system through the bridge instead of its local
+walk, so reads answer the IDE's text state (dirty buffers included) and
+writes land through `workspace.fs`. These requests are **targeted**: the
+kernel elects one authoritative announcer per session (the earliest live
+announcement; re-elected deterministically on disconnect) and pushes the
+frame only to that socket — other announcers never see it, so the
+first-answer-wins broadcast cannot answer a read with a different window's
+buffer. An operation that loses its target mid-call fails typed
+`ide_unavailable`. The methods:
+
+- `maieutics/fs/local/read` — `{uri}` (physical `file://`) →
+  `{content}`: the dirty document's buffer text, else a fatal-UTF-8 decode
+  of the file bytes (`fs_not_text` on binary), capped at 8 MiB
+  (`fs_too_large`).
+- `maieutics/fs/local/list` — `{uri, maximumEntries}` →
+  `{entries: [{name, kind, sizeBytes?}], truncated}` with `kind` one of
+  `file|directory|symbolic_link|other`; names sorted, kernel pages locally.
+- `maieutics/fs/local/write` — `{uri, content, expectedHash?}` →
+  `{}`: the frontend hashes its current state and answers
+  `fs_conflict` on a mismatch (no silent last-write-wins), then
+  `workspace.fs.writeFile` (parents created).
+- `maieutics/fs/local/delete` — `{uri}` → `{}` via `workspace.fs.delete`.
+
+Kernel-side gates (instruction surface, bounds, the dirty gate over
+`maieutics/dirty`, unified diff) run before the bridge exactly as for the
+`idefs://` family. **Coverage**: the kernel forwards only paths under the
+elected frontend's workspace folders (fetched once per election from the
+`maieutics/fs/list` root answer and cached); a handler whose window does not
+cover the target answers `fs_not_covered`, and the kernel serves the path
+locally instead. A frontend predating this family answers
+`ide_method_unsupported`; the kernel absorbs that once and serves the
+session from local I/O again (the pre-bridge behavior).
+
 ## Comm channels (interactive widgets and view families)
 
 Interactive widgets (ADR 0024) and native view families (ADR 0038, the

@@ -39,6 +39,7 @@ internal sealed class WorkspaceFunctions
     private readonly long maximumSearchBytes;
     private readonly Workspace workspace;
     private readonly ResourceRegistry? resources;
+    private readonly IWorkspaceIoBridge? bridge;
 
     internal WorkspaceFunctions(
         Workspace workspace,
@@ -46,10 +47,12 @@ internal sealed class WorkspaceFunctions
         int maximumDirectoryEntries = DefaultMaximumDirectoryEntries,
         int maximumFileBytes = DefaultMaximumFileBytes,
         long maximumSearchBytes = DefaultMaximumSearchBytes,
-        ResourceRegistry? resources = null)
+        ResourceRegistry? resources = null,
+        IWorkspaceIoBridge? bridge = null)
     {
         this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         this.resources = resources;
+        this.bridge = bridge;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDirectoryEntries);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFileBytes);
@@ -62,19 +65,23 @@ internal sealed class WorkspaceFunctions
         Functions =
         [
             CreateFunction(
-                (Func<string?, string?, int?, CancellationToken, ValueTask<ListDirectoryResult>>)ListDirectoryAsync,
+                (Func<AIFunctionArguments, string?, string?, int?, CancellationToken, ValueTask<ListDirectoryResult>>)ListDirectoryAsync,
                 "list_directory",
-                "Lists one workspace directory without recursion. Omit uri to list the workspace root."),
+                "Lists one workspace directory without recursion. Omit uri to list the workspace root. " +
+                "When an IDE frontend is attached, the listing is served through it."),
             CreateFunction(
-                (Func<string, int?, int?, CancellationToken, ValueTask<ReadTextResult>>)ReadTextAsync,
+                (Func<AIFunctionArguments, string, int?, int?, CancellationToken, ValueTask<ReadTextResult>>)ReadTextAsync,
                 "read_text",
                 "Reads a bounded range of lines from a UTF-8 text resource: a workspace://local " +
-                "URI or any other registered resource URI (see list_resources)."),
+                "URI or any other registered resource URI (see list_resources). When an IDE frontend " +
+                "is attached, workspace reads answer the editor's text state — unsaved changes included."),
             CreateFunction(
                 (Func<string, string?, bool?, bool?, int?, CancellationToken, ValueTask<SearchTextResult>>)
                 SearchTextAsync,
                 "search_text",
-                "Searches UTF-8 workspace files recursively with a literal query or bounded regular expression.")
+                "Searches UTF-8 workspace files recursively with a literal query or bounded regular expression. " +
+                "Search always reads saved file state on disk, even when an IDE frontend serves read_text " +
+                "from unsaved editor buffers, so the two may disagree on files with unsaved changes.")
         ];
     }
 
@@ -93,7 +100,8 @@ internal sealed class WorkspaceFunctions
     }
 
     [Description("Lists one workspace directory without recursion.")]
-    private ValueTask<ListDirectoryResult> ListDirectoryAsync(
+    private async ValueTask<ListDirectoryResult> ListDirectoryAsync(
+        AIFunctionArguments arguments,
         [Description("A workspace://local URI. Omit to list the workspace root.")]
         string? uri = null,
         [Description("An opaque cursor returned by an earlier page.")]
@@ -112,22 +120,38 @@ internal sealed class WorkspaceFunctions
                     "workspace_invalid_arguments",
                     $"pageSize must be between 1 and {MaximumPageSize}.");
 
-            var directory = snapshot.Resolve(uri);
-            if (!directory.IsDirectory)
-                throw new WorkspaceException(
-                    "workspace_not_directory",
-                    "The workspace URI does not identify a directory.");
-
-            var decodedCursor = DecodeCursor(cursor, directory.Uri, snapshot.Version);
-            var entries = new List<FileSystemInfo>();
-            foreach (var entry in new DirectoryInfo(directory.FullPath).EnumerateFileSystemInfos())
+            var logicalRoot = snapshot.ResolveLogical(uri, allowRoot: true);
+            List<WorkspaceDirectoryEntry> entries;
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (bridgedChannel is { } channel)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                entries.Add(entry);
-                if (entries.Count > maximumDirectoryEntries)
-                    throw new WorkspaceException(
-                        "workspace_directory_too_large",
-                        $"A directory cannot contain more than {maximumDirectoryEntries} visible entries.");
+                try
+                {
+                    var listing = await channel
+                        .ListAsync(logicalRoot.Segments, maximumDirectoryEntries, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (listing.Truncated)
+                        throw new WorkspaceException(
+                            "workspace_directory_too_large",
+                            $"A directory cannot contain more than {maximumDirectoryEntries} visible entries.");
+
+                    entries = listing.Entries
+                        .Select(entry => new WorkspaceDirectoryEntry(
+                            entry.Name,
+                            snapshot.ToWorkspaceUri([.. logicalRoot.Segments, entry.Name]),
+                            entry.Kind,
+                            entry.SizeBytes))
+                        .ToList();
+                }
+                catch (WorkspaceBridgeCoverageException)
+                {
+                    // The frontend's folders do not cover this directory; list locally.
+                    entries = EnumerateLocalDirectory(snapshot, uri, maximumDirectoryEntries, cancellationToken);
+                }
+            }
+            else
+            {
+                entries = EnumerateLocalDirectory(snapshot, uri, maximumDirectoryEntries, cancellationToken);
             }
 
             var comparisons = 0;
@@ -138,6 +162,7 @@ internal sealed class WorkspaceFunctions
                 return StringComparer.Ordinal.Compare(left.Name, right.Name);
             });
 
+            var decodedCursor = DecodeCursor(cursor, logicalRoot.Uri, snapshot.Version);
             var offset = decodedCursor is null
                 ? 0
                 : entries.FindIndex(entry => StringComparer.Ordinal.Compare(entry.Name, decodedCursor.LastName) > 0);
@@ -146,15 +171,14 @@ internal sealed class WorkspaceFunctions
             var page = entries
                 .Skip(offset)
                 .Take(requestedPageSize)
-                .Select(entry => CreateEntry(snapshot, entry, directory.Segments))
                 .ToImmutableArray();
             var nextOffset = offset + page.Length;
-            return ValueTask.FromResult(new ListDirectoryResult(
-                directory.Uri,
+            return new ListDirectoryResult(
+                logicalRoot.Uri,
                 page,
                 nextOffset < entries.Count
-                    ? EncodeCursor(directory.Uri, snapshot.Version, page[^1].Name)
-                    : null));
+                    ? EncodeCursor(logicalRoot.Uri, snapshot.Version, page[^1].Name)
+                    : null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -166,8 +190,37 @@ internal sealed class WorkspaceFunctions
         }
     }
 
+    /// <summary>The local directory enumeration behind the un-bridged path, shared by
+    /// the no-frontend and uncovered-fallback branches.</summary>
+    private List<WorkspaceDirectoryEntry> EnumerateLocalDirectory(
+        WorkspaceSnapshot snapshot,
+        string? uri,
+        int maximumDirectoryEntries,
+        CancellationToken cancellationToken)
+    {
+        var directory = snapshot.Resolve(uri);
+        if (!directory.IsDirectory)
+            throw new WorkspaceException(
+                "workspace_not_directory",
+                "The workspace URI does not identify a directory.");
+
+        var entries = new List<WorkspaceDirectoryEntry>();
+        foreach (var entry in new DirectoryInfo(directory.FullPath).EnumerateFileSystemInfos())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            entries.Add(CreateEntry(snapshot, entry, directory.Segments));
+            if (entries.Count > maximumDirectoryEntries)
+                throw new WorkspaceException(
+                    "workspace_directory_too_large",
+                    $"A directory cannot contain more than {maximumDirectoryEntries} visible entries.");
+        }
+
+        return entries;
+    }
+
     [Description("Reads a bounded range of lines from a UTF-8 text resource.")]
     private async ValueTask<ReadTextResult> ReadTextAsync(
+        AIFunctionArguments arguments,
         [Description("The resource URI: workspace://local/... or any registered resource URI.")]
         string uri,
         [Description("The first one-based line to return.")]
@@ -199,6 +252,31 @@ internal sealed class WorkspaceFunctions
             }
 
             var snapshot = workspace.Capture();
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (bridgedChannel is { } channel)
+            {
+                // The bridge answers the IDE's authoritative text state (dirty buffers
+                // included) and the kernel windows it with the local read conventions.
+                // The coverage ruling: a path outside the frontend's workspace folders
+                // is served locally — the bridge never claims state it does not hold.
+                var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+                try
+                {
+                    var text = await channel
+                        .ReadTextAsync(logical.Segments, MaximumReadScanBytes, cancellationToken)
+                        .ConfigureAwait(false);
+                    return await ReadTextCoreAsync(
+                        logical.Uri,
+                        new MemoryStream(StrictUtf8.GetBytes(text)),
+                        requestedStartLine,
+                        maximumLines,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (WorkspaceBridgeCoverageException)
+                {
+                }
+            }
+
             var file = snapshot.Resolve(uri, false);
             if (file.IsDirectory)
                 throw new WorkspaceException(

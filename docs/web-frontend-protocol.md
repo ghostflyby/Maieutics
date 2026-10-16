@@ -344,6 +344,16 @@ buffer. An operation that loses its target mid-call fails typed
   `workspace.fs.writeFile` (parents created).
 - `maieutics/fs/local/delete` — `{uri}` → `{}` via `workspace.fs.delete`.
 
+- `maieutics/fs/local/search` — `{uri, query, regex?, caseSensitive?,
+  maximumMatches?}` → `{matches: [{path, line, column, preview}],
+  truncated, scannedBytes}`: a bounded provider-mediated scan of the
+  tree under the kernel-translated `file://` root — literal or regex
+  (pattern ≤ 512 chars), 1-based lines/columns, `path` relative to the
+  root with posix separators. The kernel maps paths onto the workspace
+  domain and applies its own match bound (200). The same scan serves
+  the `idefs://` family as `maieutics/fs/search`
+  (`{folderId, segments, …}`, matches relative to the searched folder).
+
 Kernel-side gates (instruction surface, bounds, the dirty gate over
 `maieutics/dirty`, unified diff) run before the bridge exactly as for the
 `idefs://` family. **Coverage**: the kernel forwards only paths under the

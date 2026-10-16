@@ -76,12 +76,14 @@ internal sealed class WorkspaceFunctions
                 "URI or any other registered resource URI (see list_resources). When an IDE frontend " +
                 "is attached, workspace reads answer the editor's text state — unsaved changes included."),
             CreateFunction(
-                (Func<string, string?, bool?, bool?, int?, CancellationToken, ValueTask<SearchTextResult>>)
+                (Func<AIFunctionArguments, string, string?, bool?, bool?, int?, CancellationToken, ValueTask<SearchTextResult>>)
                 SearchTextAsync,
                 "search_text",
                 "Searches UTF-8 workspace files recursively with a literal query or bounded regular expression. " +
-                "Search always reads saved file state on disk, even when an IDE frontend serves read_text " +
-                "from unsaved editor buffers, so the two may disagree on files with unsaved changes.")
+                "When an IDE frontend is attached and covers the searched tree, the frontend's provider-mediated " +
+                "scan serves the search; otherwise the local disk scan does. Search reads saved file state either " +
+                "way — even when an IDE frontend serves read_text from unsaved editor buffers — so the two may " +
+                "disagree on files with unsaved changes.")
         ];
     }
 
@@ -188,6 +190,21 @@ internal sealed class WorkspaceFunctions
         {
             throw ToAgentToolException(exception);
         }
+    }
+
+    /// <summary>Maps a bridged match's root-relative posix path onto the workspace
+    /// URI domain; empty for a malformed path (the frontend is trusted, but a
+    /// traversal segment must never reach the model as an addressable URI).</summary>
+    private static string ToRootedUri(
+        WorkspaceSnapshot snapshot,
+        IReadOnlyList<string> rootSegments,
+        string relativePath)
+    {
+        var segments = relativePath.Split('/');
+        if (segments.Any(static segment => segment.Length == 0 || segment is "." or ".."))
+            return string.Empty;
+
+        return snapshot.ToWorkspaceUri([.. rootSegments, .. segments]);
     }
 
     /// <summary>The local directory enumeration behind the un-bridged path, shared by
@@ -352,6 +369,7 @@ internal sealed class WorkspaceFunctions
 
     [Description("Searches UTF-8 workspace files recursively.")]
     private async ValueTask<SearchTextResult> SearchTextAsync(
+        AIFunctionArguments arguments,
         [Description("The non-empty literal or regular-expression query.")]
         string query,
         [Description("A workspace://local file or directory URI. Omit to search the root.")]
@@ -404,6 +422,52 @@ internal sealed class WorkspaceFunctions
 
             var snapshot = workspace.Capture();
             var searchRoot = snapshot.Resolve(uri);
+
+            // The search generalization (ADR 0042 stage F-II): like the file
+            // operations, the covered search root is served by the elected frontend's
+            // provider-mediated scan — one bounded contract both sides implement. A
+            // frontend predating the method, a root outside its folders, or no
+            // frontend at all falls back to the local disk scan.
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            if (bridgedChannel is { } channel)
+            {
+                var bridgedRoot = snapshot.ResolveLogical(uri, allowRoot: true);
+                try
+                {
+                    var bridged = await channel.SearchAsync(
+                        bridgedRoot.Segments,
+                        query,
+                        compiledRegex is not null,
+                        caseSensitive is not false,
+                        requestedMaximumResults,
+                        cancellationToken).ConfigureAwait(false);
+                    if (bridged is not null)
+                        return new SearchTextResult(
+                            bridgedRoot.Uri,
+                            [.. bridged.Matches.Select(match => new WorkspaceSearchMatch(
+                                ToRootedUri(snapshot, bridgedRoot.Segments, match.RelativePath),
+                                match.Line,
+                                match.Column,
+                                match.Preview))
+                                .Where(static match => match.Uri.Length > 0)],
+                            bridged.Truncated,
+                            bridged.ScannedBytes,
+                            0,
+                            0,
+                            0,
+                            0);
+                }
+                catch (WorkspaceBridgeCoverageException)
+                {
+                    // Uncovered root: the local channel owns this tree.
+                }
+                catch (AgentToolException exception) when (exception.Code == "ide_method_unsupported")
+                {
+                    // Defensive: SearchAsync converts this to null; kept for symmetry
+                    // with the coverage fallback so any future path here degrades, too.
+                }
+            }
+
             return await SearchCoreAsync(
                 snapshot,
                 searchRoot,

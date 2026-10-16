@@ -229,6 +229,69 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                 .ConfigureAwait(false);
         }
 
+        public override async Task<WorkspaceBridgeSearch?> SearchAsync(
+            IReadOnlyList<string> segments,
+            string query,
+            bool regex,
+            bool caseSensitive,
+            int maximumMatches,
+            CancellationToken cancellationToken)
+        {
+            await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
+            var parameters = JsonSerializer.SerializeToElement(
+                new FsLocalSearchParams(
+                    PhysicalUri(owner.workspace, segments),
+                    query,
+                    regex,
+                    caseSensitive,
+                    maximumMatches),
+                BridgeJsonContext.Default.FsLocalSearchParams);
+            JsonElement answer;
+            try
+            {
+                answer = await owner
+                    .SendAsync(authority, "maieutics/fs/local/search", parameters, cancellationToken, tolerateUnsupported: true)
+                    .ConfigureAwait(false);
+            }
+            catch (IdeMethodUnsupportedException)
+            {
+                return null;
+            }
+
+            if (answer.ValueKind != JsonValueKind.Object ||
+                !answer.TryGetProperty("matches", out var matches) ||
+                matches.ValueKind != JsonValueKind.Array)
+                throw new AgentToolException("ide_result_invalid", "The search answer is not the documented shape.");
+
+            var builder = ImmutableArray.CreateBuilder<WorkspaceBridgeSearchMatch>(matches.GetArrayLength());
+            foreach (var match in matches.EnumerateArray())
+            {
+                if (match.ValueKind != JsonValueKind.Object ||
+                    !match.TryGetProperty("path", out var path) || path.ValueKind != JsonValueKind.String ||
+                    !match.TryGetProperty("line", out var line) || line.ValueKind != JsonValueKind.Number ||
+                    !line.TryGetInt32(out var lineValue) ||
+                    !match.TryGetProperty("column", out var column) || column.ValueKind != JsonValueKind.Number ||
+                    !column.TryGetInt32(out var columnValue) ||
+                    !match.TryGetProperty("preview", out var preview) || preview.ValueKind != JsonValueKind.String)
+                    throw new AgentToolException("ide_result_invalid", "A search match is not the documented shape.");
+
+                builder.Add(new WorkspaceBridgeSearchMatch(
+                    path.GetString()!,
+                    lineValue,
+                    columnValue,
+                    preview.GetString()!));
+            }
+
+            var truncated = answer.TryGetProperty("truncated", out var truncatedElement) &&
+                            truncatedElement.ValueKind == JsonValueKind.True;
+            var scanned = answer.TryGetProperty("scannedBytes", out var scannedElement) &&
+                          scannedElement.ValueKind == JsonValueKind.Number &&
+                          scannedElement.TryGetInt64(out var scannedValue)
+                ? scannedValue
+                : 0;
+            return new WorkspaceBridgeSearch(builder.ToImmutable(), truncated, scanned);
+        }
+
         public override async Task EnsureCleanAsync(
             IReadOnlyList<string> segments,
             CancellationToken cancellationToken)
@@ -289,11 +352,23 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         }
     }
 
+    /// <summary>Raised when the answering frontend predates the requested method and
+    /// the caller asked to tolerate that: a per-call degradation signal, never the
+    /// cohort flip.</summary>
+    internal sealed class IdeMethodUnsupportedException : Exception
+    {
+        internal IdeMethodUnsupportedException()
+            : base("The IDE frontend does not support this method.")
+        {
+        }
+    }
+
     private async Task<JsonElement> SendAsync(
         IdeAnnouncerHandle authority,
         string method,
         JsonElement parameters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool tolerateUnsupported = false)
     {
         var registration = requests.Begin();
         try
@@ -344,6 +419,14 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 
                 if (code == "ide_method_unsupported")
                 {
+                    if (tolerateUnsupported)
+                    {
+                        // Search (and any later per-call-degradable method): the caller
+                        // has a full local implementation, so an old frontend degrades
+                        // this one call instead of retiring the whole bridge.
+                        throw new IdeMethodUnsupportedException();
+                    }
+
                     // The announcing frontend predates the local family; the coherent
                     // degradation is the pre-bridge behavior, process-wide, not a typed
                     // error on every read. Absorbed once; the next acquire returns null.
@@ -400,6 +483,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 [JsonSerializable(typeof(FsLocalListParams))]
 [JsonSerializable(typeof(FsLocalWriteParams))]
 [JsonSerializable(typeof(FsLocalDeleteParams))]
+[JsonSerializable(typeof(FsLocalSearchParams))]
 internal sealed partial class BridgeJsonContext : JsonSerializerContext;
 
 internal sealed record FsLocalReadParams(string Uri);
@@ -413,3 +497,10 @@ internal sealed record FsLocalWriteParams(
     [property: JsonPropertyName("createExclusive")] bool CreateExclusive);
 
 internal sealed record FsLocalDeleteParams(string Uri);
+
+internal sealed record FsLocalSearchParams(
+    string Uri,
+    string Query,
+    bool Regex,
+    bool CaseSensitive,
+    int MaximumMatches);

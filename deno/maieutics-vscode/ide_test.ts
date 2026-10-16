@@ -2,6 +2,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   collectProblems,
+  defaultTreeSearchBounds,
   dirtyBufferAnswer,
   extractIdeRequest,
   ideCommandArgs,
@@ -14,6 +15,8 @@ import {
   mapLocalFsErrorCode,
   normalizedHoverAnswer,
   normalizeHoverContents,
+  searchTree,
+  type SearchTreeFs,
   sha256Hex,
 } from "./ide.ts";
 
@@ -327,4 +330,97 @@ Deno.test("dirtyBufferAnswer serves the virtual family's editor semantics", () =
   );
   // The untitled document in the list can never answer: targets are always
   // folder-derived URIs, so that entry matches nothing above.
+});
+
+Deno.test("searchTree walks the provider tree with the search_text contract", async () => {
+  const tree: Record<string, Array<[string, number]>> = {
+    "root://src": [["a.ts", 1], ["nested", 2], ["skip.log", 1]],
+    "root://src/nested": [["b.ts", 1], ["link", 64]],
+  };
+  const files: Record<string, string> = {
+    "root://src/a.ts": "alpha needle beta\nplain line\n",
+    "root://src/nested/b.ts": "x\nNEEDLE here\n",
+    "root://src/skip.log": "no match here\n",
+  };
+  const fs: SearchTreeFs = {
+    list: (path) => Promise.resolve(tree[path] ?? []),
+    read: (path) => Promise.resolve(new TextEncoder().encode(files[path] ?? "")),
+    join: (base, segments) => `${base}/${segments.join("/")}`,
+  };
+
+  const literal = await searchTree(
+    fs,
+    "root://src",
+    defaultTreeSearchBounds("needle", false, true, 200),
+  );
+  assertEquals(literal.truncated, false);
+  assertEquals(literal.matches.length, 1, "case-sensitive literal matches only the exact case");
+  assertEquals(literal.matches[0], {
+    path: "a.ts",
+    line: 1,
+    column: 7,
+    preview: "alpha needle beta",
+  });
+
+  const insensitive = await searchTree(
+    fs,
+    "root://src",
+    defaultTreeSearchBounds("needle", false, false, 200),
+  );
+  assertEquals(insensitive.matches.length, 2, "case folding finds the folded buffer");
+
+  const regex = await searchTree(
+    fs,
+    "root://src",
+    defaultTreeSearchBounds("n[e]ed\\w+", true, true, 200),
+  );
+  assertEquals(regex.matches.length, 1, "the regex path rides the same contract");
+});
+
+Deno.test("searchTree bounds turn into truncation and skip binary files", async () => {
+  const tree: Record<string, Array<[string, number]>> = {
+    "root://w": [["bin.dat", 1], ["big.ts", 1], ["hit.ts", 1], ["oversize.ts", 1]],
+  };
+  const files: Record<string, string> = {
+    "root://w/bin.dat": "needle",
+    "root://w/big.ts": "needle\n",
+    "root://w/hit.ts": "needle\n",
+    "root://w/oversize.ts": "needle and far past the per-file cap\n",
+  };
+  const fs: SearchTreeFs = {
+    list: (path) => Promise.resolve(tree[path] ?? []),
+    read: (path) => {
+      if (path.endsWith("bin.dat")) {
+        return Promise.resolve(new Uint8Array([0x00, 0x01, 0x02]));
+      }
+      return Promise.resolve(new TextEncoder().encode(files[path] ?? ""));
+    },
+    join: (base, segments) => `${base}/${segments.join("/")}`,
+  };
+
+  const bounded = await searchTree(fs, "root://w", {
+    query: "needle",
+    regex: false,
+    caseSensitive: true,
+    maximumMatches: 10,
+    maximumFileBytes: 16,
+    maximumBytes: 1_000_000,
+    maximumFiles: 100,
+    maximumEntries: 100,
+    budgetMs: 10_000,
+  });
+  assertEquals(bounded.truncated, true, "the per-file cap on oversize.ts truncates");
+  assertEquals(
+    bounded.matches.map((match) => match.path),
+    ["big.ts", "hit.ts"],
+    "the binary file and the oversize file are skipped, the scan continues",
+  );
+
+  const empty = await searchTree(
+    fs,
+    "root://missing",
+    defaultTreeSearchBounds("x", false, true, 200),
+  );
+  assertEquals(empty.matches, []);
+  assertEquals(empty.truncated, false, "an unreadable root scans to nothing, not a truncation");
 });

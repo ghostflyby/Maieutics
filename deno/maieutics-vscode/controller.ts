@@ -81,6 +81,7 @@ import {
   codeActionsToWire,
   collectDirty,
   collectProblems,
+  defaultTreeSearchBounds,
   dirtyBufferAnswer,
   extractIdeRequest,
   fsEntriesAnswer,
@@ -95,6 +96,8 @@ import {
   localFsEntriesAnswer,
   localFsError,
   normalizedHoverAnswer,
+  searchTree,
+  type SearchTreeFs,
   sha256Hex,
   textEditsToWire,
   workspaceEditToWire,
@@ -997,6 +1000,10 @@ async function executeIdeFs(
   const base = vscode.Uri.parse(folderUri, true);
   const target = segments.length === 0 ? base : vscode.Uri.joinPath(base, ...segments);
 
+  if (method === "maieutics/fs/search") {
+    return await executeIdeFsSearch(target, params);
+  }
+
   if (method === "maieutics/fs/list") {
     let listed: [string, vscode.FileType][];
     try {
@@ -1091,6 +1098,51 @@ async function readLocalState(
   }
 }
 
+/** Adapts vscode.workspace.fs onto the pure scan's fs surface: paths are
+ * canonical Uri strings, so the scan stays scheme-agnostic and the pure half
+ * never imports vscode. */
+function workspaceSearchTreeFs(): SearchTreeFs {
+  return {
+    list: async (path) =>
+      await vscode.workspace.fs.readDirectory(vscode.Uri.parse(path, true)).then((entries) =>
+        entries.map(([name, fileType]) => [name, fileType as number])
+      ),
+    read: async (path) => await vscode.workspace.fs.readFile(vscode.Uri.parse(path, true)),
+    join: (base, segments) =>
+      vscode.Uri.joinPath(vscode.Uri.parse(base, true), ...segments).toString(),
+  };
+}
+
+/** Runs the bounded provider-mediated scan for both fs families and answers the
+ * documented search shape. `maximumMatches` is the kernel's own 1-200 bound. */
+async function executeIdeFsSearch(
+  root: vscode.Uri,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  const query = typeof params.query === "string" ? params.query : undefined;
+  if (query === undefined || query.length === 0) {
+    throw Object.assign(new Error("The search requires a non-empty query."), {
+      code: "ide_invalid_arguments",
+    });
+  }
+  const regex = params.regex === true;
+  const caseSensitive = params.caseSensitive !== false;
+  const maximumMatches =
+    typeof params.maximumMatches === "number" && Number.isFinite(params.maximumMatches)
+      ? Math.max(1, Math.min(200, Math.floor(params.maximumMatches)))
+      : 200;
+  const result = await searchTree(
+    workspaceSearchTreeFs(),
+    root.toString(),
+    defaultTreeSearchBounds(query, regex, caseSensitive, maximumMatches),
+  );
+  return {
+    matches: result.matches,
+    truncated: result.truncated,
+    scannedBytes: result.scannedBytes,
+  };
+}
+
 /** Executes the maieutics/fs/local methods — the workspace repository file
  * system served through the IDE (ADR 0042 decision 12). Params carry
  * kernel-translated physical `file://` URIs (the stage-A translation
@@ -1123,6 +1175,10 @@ async function executeIdeFsLocal(
     throw Object.assign(new Error("the path is outside this frontend's workspace folders"), {
       code: "fs_not_covered",
     });
+  }
+
+  if (method === "maieutics/fs/local/search") {
+    return await executeIdeFsSearch(target, params);
   }
 
   if (method === "maieutics/fs/local/read") {

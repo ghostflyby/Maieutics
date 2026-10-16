@@ -78,6 +78,21 @@ internal abstract class WorkspaceBridgeChannel
     /// under an editor the user is still typing in.</summary>
     public abstract Task EnsureCleanAsync(IReadOnlyList<string> segments, CancellationToken cancellationToken);
 
+    /// <summary>Searches the tree under the named root through the frontend's
+    /// provider-mediated scan, answering the same bounded contract as the local
+    /// scan (literal or regex, 1-based positions, relative posix paths under the
+    /// root). Returns null when this frontend predates the search method — a
+    /// per-call fallback signal for the caller (search has a full local
+    /// implementation, so unlike the file operations an unsupported search must
+    /// not flip the bridge inactive).</summary>
+    public abstract Task<WorkspaceBridgeSearch?> SearchAsync(
+        IReadOnlyList<string> segments,
+        string query,
+        bool regex,
+        bool caseSensitive,
+        int maximumMatches,
+        CancellationToken cancellationToken);
+
     /// <summary>The hash the write precondition carries: lowercase hex SHA-256 of
     /// the UTF-8 bytes of the text both sides read through the channel.</summary>
     internal static string ContentHash(string text)
@@ -95,6 +110,14 @@ internal sealed record WorkspaceBridgeEntry(string Name, string Kind, long? Size
 /// <summary>One bridged directory listing: the bounded entries and whether the
 /// directory held more than the requested bound.</summary>
 internal sealed record WorkspaceBridgeListing(ImmutableArray<WorkspaceBridgeEntry> Entries, bool Truncated);
+
+/// <summary>One bridged search match: the path relative to the searched root
+/// (posix separators), the 1-based line and column, and the bounded preview.</summary>
+internal sealed record WorkspaceBridgeSearchMatch(string RelativePath, int Line, int Column, string Preview);
+
+/// <summary>One bridged search: the bounded matches and whether the scan hit a
+/// ceiling (file, byte, match, or wall-clock budget) before finishing the tree.</summary>
+internal sealed record WorkspaceBridgeSearch(ImmutableArray<WorkspaceBridgeSearchMatch> Matches, bool Truncated, long ScannedBytes);
 
 /// <summary>The elected authority's workspace folders do not cover the target path
 /// (ADR 0042 decision 12's coverage ruling): the bridge only serves files the

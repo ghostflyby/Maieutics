@@ -26,6 +26,8 @@ internal static class IdeMethodCatalog
         "maieutics/problems",
         "maieutics/fs/local/read",
         "maieutics/fs/local/list",
+        "maieutics/fs/local/search",
+        "maieutics/fs/search",
         "textDocument/hover",
         "textDocument/definition",
         "textDocument/typeDefinition",
@@ -165,6 +167,13 @@ internal sealed class IdeFunctions
                 "buffer-authoritative rule read_text serves under the bridge; clean or closed files answer the " +
                 "saved provider state. An empty result means nothing was reported — not that the file is clean/empty."),
             CreateFunction(
+                (Func<AIFunctionArguments, string, string, bool?, bool?, int?, CancellationToken, ValueTask<JsonElement>>)FsSearchAsync,
+                "ide_fs_search",
+                "Searches a virtual file system recursively with a literal query or bounded regular expression " +
+                "(remote/extension file systems included), through the ide-capable frontend's provider scan. " +
+                "'uri' is an idefs:// file or folder URI from ide_fs_list; matches carry idefs:// URIs with " +
+                "1-based lines and columns. Results are bounded like search_text."),
+            CreateFunction(
                 (Func<JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)ApplyEditAsync,
                 "ide_apply_edit",
                 "Applies one LSP-shaped workspace edit through the kernel's gated write path — the only way IDE-computed " +
@@ -181,7 +190,8 @@ internal sealed class IdeFunctions
                 "catalog: textDocument/signatureHelp, textDocument/foldingRange, textDocument/inlayHint, " +
                 "textDocument/selectionRange, textDocument/semanticTokens/full, callHierarchy/* (prepare, " +
                 "incomingCalls, outgoingCalls), typeHierarchy/* (prepare, supertypes, subtypes), and the " +
-                "workspace fs reads maieutics/fs/local/read and maieutics/fs/local/list (kernel-translated " +
+                "workspace fs reads maieutics/fs/local/read, maieutics/fs/local/list, and " +
+                "maieutics/fs/local/search (kernel-translated " +
                 "file:// URIs). 'method' is the catalog name; 'parameters' is the LSP-shaped params object " +
                 "with workspace://local URIs. Position and range objects ({line, character}) use this suite's " +
                 "1-based convention and are converted; foldingRange's bare startLine/endLine numbers are the " +
@@ -761,6 +771,86 @@ internal sealed class IdeFunctions
                 next < lines.Length ? next + 1 : null,
                 lines.Length),
             IdeFunctionJsonContext.Default.IdeFsReadValue);
+    }
+
+    /// <summary>Searches one virtual file system tree (decision 11's deferred
+    /// search, landed on the decision-12 scan contract): the frontend walks the
+    /// folder through its FileSystemProviders with the same bounds as the local
+    /// search, and the kernel maps the answered relative paths back onto the
+    /// idefs:// domain with 1-based positions.</summary>
+    private async ValueTask<JsonElement> FsSearchAsync(
+        AIFunctionArguments arguments,
+        [Description("An idefs:// file or folder URI, as returned by ide_fs_list.")] string uri,
+        [Description("The non-empty literal or regular-expression query.")] string query,
+        [Description("Whether query is a regular expression. Defaults to false.")] bool? regex = null,
+        [Description("Whether matching is case-sensitive. Defaults to true.")] bool? caseSensitive = null,
+        [Description("The maximum number of matches to return, from 1 through 200.")] int? maxResults = null,
+        CancellationToken cancellationToken = default)
+    {
+        var announce = ResolveAnnouncer(arguments);
+        var (folderId, segments) = ParseIdeFsUri(uri);
+        if (string.IsNullOrEmpty(query))
+            throw new AgentToolException("ide_invalid_arguments", "query is required and cannot be empty.");
+
+        var requestedMaximumResults = maxResults ?? 200;
+        if (requestedMaximumResults is < 1 or > 200)
+            throw new AgentToolException(
+                "ide_invalid_arguments",
+                "maxResults must be between 1 and 200.");
+        if (regex is true && query.Length > 512)
+            throw new AgentToolException(
+                "ide_invalid_arguments",
+                "Regular expression queries cannot exceed 512 characters.");
+
+        EnsureConnected(arguments);
+
+        var parameters = JsonSerializer.SerializeToElement(
+            new IdeFsSearchParams(folderId, segments, query, regex is true, caseSensitive is not false, requestedMaximumResults),
+            IdeFunctionJsonContext.Default.IdeFsSearchParams);
+        var answer = await SendAsync(announce, "maieutics/fs/search", parameters, cancellationToken)
+            .ConfigureAwait(false);
+        if (answer.ValueKind != JsonValueKind.Object ||
+            !answer.TryGetProperty("matches", out var matches) ||
+            matches.ValueKind != JsonValueKind.Array)
+            throw new AgentToolException("ide_result_invalid", "The search answer is not the documented shape.");
+
+        var built = new List<JsonElement>();
+        foreach (var match in matches.EnumerateArray())
+        {
+            if (match.ValueKind != JsonValueKind.Object ||
+                !match.TryGetProperty("path", out var path) || path.ValueKind != JsonValueKind.String ||
+                !match.TryGetProperty("line", out var line) || line.ValueKind != JsonValueKind.Number ||
+                !match.TryGetProperty("column", out var column) || column.ValueKind != JsonValueKind.Number ||
+                !match.TryGetProperty("preview", out var preview) || preview.ValueKind != JsonValueKind.String)
+                throw new AgentToolException("ide_result_invalid", "A search match is not the documented shape.");
+
+            var relative = (path.GetString() ?? string.Empty).Split('/');
+            if (relative.Any(static segment => segment.Length == 0 || segment is "." or ".."))
+                continue;
+
+            // The answered path is relative to the searched root, so the match's
+            // addressable URI is the folder id, the root's own segments, then it.
+            var matchUri = $"idefs:///{folderId}/{string.Join("/", segments.Concat(relative))}";
+            built.Add(JsonSerializer.SerializeToElement(
+                new IdeFsSearchMatchValue(
+                    matchUri,
+                    line.GetInt32(),
+                    column.GetInt32(),
+                    preview.GetString()!),
+                IdeFunctionJsonContext.Default.IdeFsSearchMatchValue));
+        }
+
+        var truncated = answer.TryGetProperty("truncated", out var truncatedElement) &&
+                        truncatedElement.ValueKind == JsonValueKind.True;
+        return JsonSerializer.SerializeToElement(
+            new IdeFsSearchValue(
+                uri,
+                [.. built],
+                truncated,
+                answer.TryGetProperty("scannedBytes", out var scanned) && scanned.ValueKind == JsonValueKind.Number
+                    ? scanned.GetInt64()
+                    : 0),
+            IdeFunctionJsonContext.Default.IdeFsSearchValue);
     }
 
     /// <summary>Resolves the announcement path for this call: an agent run
@@ -1371,6 +1461,32 @@ internal sealed record IdeFsReadValue(
     [property: JsonPropertyName("nextStartLine")] int? NextStartLine,
     [property: JsonPropertyName("totalLines")] int TotalLines);
 
+/// <summary>The maieutics/fs/search payload: folder-relative root plus the
+/// search_text-shaped literal/regex query under the shared bounded contract.</summary>
+internal sealed record IdeFsSearchParams(
+    [property: JsonPropertyName("folderId")] string FolderId,
+    [property: JsonPropertyName("segments")] string[] Segments,
+    [property: JsonPropertyName("query")] string Query,
+    [property: JsonPropertyName("regex")] bool Regex,
+    [property: JsonPropertyName("caseSensitive")] bool CaseSensitive,
+    [property: JsonPropertyName("maximumMatches")] int MaximumMatches);
+
+/// <summary>One virtual search match: the idefs:// URI of the matching file with
+/// the 1-based line/column and bounded preview.</summary>
+internal sealed record IdeFsSearchMatchValue(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("line")] int Line,
+    [property: JsonPropertyName("column")] int Column,
+    [property: JsonPropertyName("preview")] string Preview);
+
+/// <summary>One virtual search answer: the requested root, the bounded matches,
+/// the truncation marker, and the scanned-bytes count the frontend reports.</summary>
+internal sealed record IdeFsSearchValue(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("matches")] ImmutableArray<JsonElement> Matches,
+    [property: JsonPropertyName("truncated")] bool Truncated,
+    [property: JsonPropertyName("scannedBytes")] long ScannedBytes);
+
 /// <summary>Workspace-wide diagnostics aggregate (ADR 0042 decision 8): severity totals,
 /// the top files, and the analysis-state marker that keeps "nothing reported" from being
 /// read as "no problems".</summary>
@@ -1418,6 +1534,9 @@ internal sealed record DiagnosticsTotals(
 [JsonSerializable(typeof(IdeFsListParams))]
 [JsonSerializable(typeof(IdeFsReadParams))]
 [JsonSerializable(typeof(IdeFsReadValue))]
+[JsonSerializable(typeof(IdeFsSearchParams))]
+[JsonSerializable(typeof(IdeFsSearchValue))]
+[JsonSerializable(typeof(IdeFsSearchMatchValue))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(IdeApplyEditsValue))]
 [JsonSerializable(typeof(WorkspaceEditDiff))]

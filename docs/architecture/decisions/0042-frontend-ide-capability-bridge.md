@@ -494,9 +494,18 @@ window, `search_text` returns 1-based line/column matches, and
     provider-mediated scan (`maieutics/fs/local/search`, the local
     scan's bounds), uncovered, unsupported, or no frontend → the local
     disk scan; a frontend predating the method degrades per call and
-    never flips the cohort. Both searches read saved provider state —
-    bridged reads answer buffer state that search cannot see, and the
-    tool descriptions declare it. The same channel is the
+    never flips the cohort. Stage F-III gives local-disk roots the fast
+    path: the extension spawns the install's bundled ripgrep
+    (`vscode.env.appRoot` resolves it; grep is the universal fallback,
+    columns collapsing to 1) with the default posture an agent most
+    often wants — VCS ignore files respected (dependencies skipped),
+    hidden entries included except `.git` — and `include`/`exclude`
+    globs (rg-style, an identical matcher in the kernel's local scan
+    via `SearchGlobs`) plus `respectIgnore: false` composing any
+    filtering rule; the provider scan remains the fallback for every
+    other scheme. Both searches read saved provider state — bridged
+    reads answer buffer state that search cannot see, and the tool
+    descriptions declare it. The same channel is the
     REPL's file plane for workspace paths: the worker wraps the async
     text APIs (`Deno.readTextFile`, `Deno.writeTextFile`,
     `Deno.readDir` — the `patchFetch` precedent), resolves paths

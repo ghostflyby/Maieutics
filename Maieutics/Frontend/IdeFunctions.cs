@@ -167,7 +167,7 @@ internal sealed class IdeFunctions
                 "buffer-authoritative rule read_text serves under the bridge; clean or closed files answer the " +
                 "saved provider state. An empty result means nothing was reported — not that the file is clean/empty."),
             CreateFunction(
-                (Func<AIFunctionArguments, string, string, bool?, bool?, int?, CancellationToken, ValueTask<JsonElement>>)FsSearchAsync,
+                (Func<AIFunctionArguments, string, string, bool?, bool?, int?, string[]?, string[]?, bool?, CancellationToken, ValueTask<JsonElement>>)FsSearchAsync,
                 "ide_fs_search",
                 "Searches a virtual file system recursively with a literal query or bounded regular expression " +
                 "(remote/extension file systems included), through the ide-capable frontend's provider scan. " +
@@ -785,6 +785,9 @@ internal sealed class IdeFunctions
         [Description("Whether query is a regular expression. Defaults to false.")] bool? regex = null,
         [Description("Whether matching is case-sensitive. Defaults to true.")] bool? caseSensitive = null,
         [Description("The maximum number of matches to return, from 1 through 200.")] int? maxResults = null,
+        [Description("Globs a file's relative path must match (rg style: **, *, ?; a pattern without a slash matches the file name at any depth). At most 16.")] string[]? include = null,
+        [Description("Globs a file's relative path must not match. At most 16.")] string[]? exclude = null,
+        [Description("Whether the frontend's fast search respects VCS ignore files. Defaults to true; only the frontend's fast search implements this.")] bool? respectIgnore = null,
         CancellationToken cancellationToken = default)
     {
         var announce = ResolveAnnouncer(arguments);
@@ -801,11 +804,24 @@ internal sealed class IdeFunctions
             throw new AgentToolException(
                 "ide_invalid_arguments",
                 "Regular expression queries cannot exceed 512 characters.");
+        foreach (var filters in new[] { include, exclude })
+        {
+            if (filters is null) continue;
+            if (filters.Length > 16)
+                throw new AgentToolException(
+                    "ide_invalid_arguments",
+                    "At most 16 include/exclude globs are accepted per search.");
+            foreach (var pattern in filters)
+            {
+                if (pattern.Length == 0 || pattern.Length > 128 || pattern.Contains('\0'))
+                    throw new AgentToolException("ide_invalid_arguments", "Search globs must be 1-128 characters.");
+            }
+        }
 
         EnsureConnected(arguments);
 
         var parameters = JsonSerializer.SerializeToElement(
-            new IdeFsSearchParams(folderId, segments, query, regex is true, caseSensitive is not false, requestedMaximumResults),
+            new IdeFsSearchParams(folderId, segments, query, regex is true, caseSensitive is not false, requestedMaximumResults, include, exclude, respectIgnore is not false),
             IdeFunctionJsonContext.Default.IdeFsSearchParams);
         var answer = await SendAsync(announce, "maieutics/fs/search", parameters, cancellationToken)
             .ConfigureAwait(false);
@@ -1469,7 +1485,10 @@ internal sealed record IdeFsSearchParams(
     [property: JsonPropertyName("query")] string Query,
     [property: JsonPropertyName("regex")] bool Regex,
     [property: JsonPropertyName("caseSensitive")] bool CaseSensitive,
-    [property: JsonPropertyName("maximumMatches")] int MaximumMatches);
+    [property: JsonPropertyName("maximumMatches")] int MaximumMatches,
+    [property: JsonPropertyName("include")] string[]? Include,
+    [property: JsonPropertyName("exclude")] string[]? Exclude,
+    [property: JsonPropertyName("respectIgnore")] bool RespectIgnore);
 
 /// <summary>One virtual search match: the idefs:// URI of the matching file with
 /// the 1-based line/column and bounded preview.</summary>

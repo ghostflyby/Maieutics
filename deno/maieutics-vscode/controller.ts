@@ -78,6 +78,8 @@ import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
 import { coerceField, planElicitation } from "./elicitation.ts";
 import {
+  buildRgArgs,
+  bundledRgPath,
   codeActionsToWire,
   collectDirty,
   collectProblems,
@@ -96,12 +98,16 @@ import {
   localFsEntriesAnswer,
   localFsError,
   normalizedHoverAnswer,
+  parseRgMatchEvent,
+  passesSearchFilters,
+  type SearchFilterOptions,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
   textEditsToWire,
   workspaceEditToWire,
 } from "./ide.ts";
+import { type ChildProcess, spawn } from "node:child_process";
 import { childRunsOfParent, resolveFrameOwner } from "./runRouting.ts";
 import { encodeSkillSubmission } from "./skillInteraction.ts";
 
@@ -1113,8 +1119,233 @@ function workspaceSearchTreeFs(): SearchTreeFs {
   };
 }
 
-/** Runs the bounded provider-mediated scan for both fs families and answers the
- * documented search shape. `maximumMatches` is the kernel's own 1-200 bound. */
+/** The search answer shape both executors return. */
+interface IdeFsSearchAnswer {
+  matches: Array<{ path: string; line: number; column: number; preview: string }>;
+  truncated: boolean;
+  scannedBytes: number;
+}
+
+/** The filter knobs parsed from any search request. */
+interface IdeFsSearchFilter {
+  include: string[] | undefined;
+  exclude: string[] | undefined;
+  respectIgnore: boolean;
+}
+
+function parseSearchFilter(params: Record<string, unknown>): IdeFsSearchFilter {
+  const read = (name: string): string[] | undefined => {
+    if (!Array.isArray(params[name])) return undefined;
+    const values = (params[name] as unknown[]).filter((v): v is string => typeof v === "string")
+      .filter((v) => v.length > 0 && v.length <= 128 && !v.includes("\u0000"));
+    return values.length === 0 ? undefined : values.slice(0, 16);
+  };
+  return {
+    include: read("include"),
+    exclude: read("exclude"),
+    respectIgnore: params.respectIgnore !== false,
+  };
+}
+
+/** Ripgrep resolution: the install's bundled rg first (it always exists on
+ * desktop builds and ships with the remote server), then the PATH. Cached;
+ * null means the grep and provider fallbacks take over. */
+let rgResolution: Promise<string | null> | undefined;
+
+function probeRgPath(candidate: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(candidate, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code === 0 ? candidate : null));
+  });
+}
+
+async function resolveRg(): Promise<string | null> {
+  rgResolution ??= (async () => {
+    const bundled = await probeRgPath(bundledRgPath(vscode.env.appRoot));
+    if (bundled !== null) return bundled;
+    return await probeRgPath("rg");
+  })();
+  return await rgResolution;
+}
+
+/** Runs ripgrep with the kernel's match bound: stdout parses incrementally and
+ * the child is killed once the ceiling is reached — the cancellation and the
+ * bound are the same mechanism. Returns null when rg could not run at all. */
+function rgSearch(
+  rgPath: string,
+  root: vscode.Uri,
+  query: string,
+  regex: boolean,
+  caseSensitive: boolean,
+  filter: IdeFsSearchFilter,
+  maximumMatches: number,
+): Promise<IdeFsSearchAnswer | null> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        rgPath,
+        buildRgArgs(query, regex, caseSensitive, filter),
+        { cwd: root.fsPath, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch {
+      resolve(null);
+      return;
+    }
+
+    const matches: IdeFsSearchAnswer["matches"] = [];
+    let truncated = false;
+    let settled = false;
+    const finish = (result: IdeFsSearchAnswer | null): void => {
+      if (settled) return;
+      settled = true;
+      if (result === null) child.kill();
+      resolve(result);
+    };
+
+    // The wall clock is the ReDoS/runaway backstop; a partial answer beats a
+    // hang, and the truncation flag makes the cut visible to the model.
+    const budget = setTimeout(() => {
+      truncated = true;
+      child.kill();
+      finish({ matches, truncated, scannedBytes: 0 });
+    }, 20_000);
+
+    let buffer = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf-8");
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const eventLine = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const match = parseRgMatchEvent(eventLine);
+        if (match !== null && passesSearchFilters(match.path, filter)) matches.push(match);
+        if (matches.length >= maximumMatches) {
+          clearTimeout(budget);
+          child.kill();
+          finish({ matches, truncated: true, scannedBytes: 0 });
+          return;
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+    child.on("error", () => {
+      clearTimeout(budget);
+      finish(null);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      clearTimeout(budget);
+      if (code === 0 || code === 1) {
+        finish({ matches, truncated, scannedBytes: 0 });
+        return;
+      }
+
+      // Exit 2 with parsed matches still answers them (truncated); a total
+      // failure — the kernel pre-validates patterns, so this is environmental —
+      // falls back to the slower executors.
+      finish(matches.length > 0 ? { matches, truncated: true, scannedBytes: 0 } : null);
+    });
+  });
+}
+
+/** The universal grep fallback: line numbers and previews, every column a 1
+ * (grep has no per-match column), `--null` separating the path so paths with
+ * colons still parse. Degraded but present on every machine. */
+function grepSearch(
+  root: vscode.Uri,
+  query: string,
+  caseSensitive: boolean,
+  filter: IdeFsSearchFilter,
+  maximumMatches: number,
+): Promise<IdeFsSearchAnswer | null> {
+  return new Promise((resolve) => {
+    const args = [
+      "-r",
+      "-n",
+      "-I",
+      "--binary-files=without-match",
+      "--null",
+      ...(caseSensitive ? [] : ["-i"]),
+      "-F",
+      "-e",
+      query,
+      ".",
+    ];
+    let child: ChildProcess;
+    try {
+      child = spawn("grep", args, { cwd: root.fsPath, stdio: ["ignore", "pipe", "pipe"] });
+    } catch {
+      resolve(null);
+      return;
+    }
+
+    const matches: IdeFsSearchAnswer["matches"] = [];
+    let truncated = false;
+    let settled = false;
+    const finish = (result: IdeFsSearchAnswer | null): void => {
+      if (settled) return;
+      settled = true;
+      if (result === null) child.kill();
+      resolve(result);
+    };
+    const budget = setTimeout(() => {
+      truncated = true;
+      child.kill();
+      finish({ matches, truncated, scannedBytes: 0 });
+    }, 20_000);
+
+    let buffer = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf-8");
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const record = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const nul = record.indexOf("\u0000");
+        const colon = nul >= 0 ? record.indexOf(":", nul) : record.indexOf(":");
+        if (nul < 0 || colon < 0) {
+          newline = buffer.indexOf("\n");
+          continue;
+        }
+        const path = record.slice(0, nul).replace(/^\.\//, "").replace(/\\/g, "/");
+        const line = Number(record.slice(nul + 1, colon));
+        const text = record.slice(colon + 1);
+        if (Number.isFinite(line) && passesSearchFilters(path, filter)) {
+          matches.push({ path, line, column: 1, preview: text.slice(0, 512) });
+        }
+        if (matches.length >= maximumMatches) {
+          clearTimeout(budget);
+          child.kill();
+          finish({ matches, truncated: true, scannedBytes: 0 });
+          return;
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+    child.on("error", () => {
+      clearTimeout(budget);
+      finish(null);
+    });
+    child.on("close", () => {
+      if (settled) return;
+      clearTimeout(budget);
+      finish({ matches, truncated, scannedBytes: 0 });
+    });
+  });
+}
+
+/** Runs the search for both fs families: ripgrep for local-disk roots (the
+ * install's bundled rg — fast, ignore-aware), grep as the universal fallback,
+ * and the bounded provider scan for every other scheme and as the last
+ * resort. `maximumMatches` is the kernel's own 1-200 bound. */
 async function executeIdeFsSearch(
   root: vscode.Uri,
   params: Record<string, unknown>,
@@ -1131,13 +1362,33 @@ async function executeIdeFsSearch(
     typeof params.maximumMatches === "number" && Number.isFinite(params.maximumMatches)
       ? Math.max(1, Math.min(200, Math.floor(params.maximumMatches)))
       : 200;
+  const filter = parseSearchFilter(params);
+
+  if (root.scheme === "file") {
+    const rgPath = await resolveRg();
+    if (rgPath !== null) {
+      const fast = await rgSearch(
+        rgPath,
+        root,
+        query,
+        regex,
+        caseSensitive,
+        filter,
+        maximumMatches,
+      );
+      if (fast !== null) return fast;
+    }
+    const grep = await grepSearch(root, query, caseSensitive, filter, maximumMatches);
+    if (grep !== null) return grep;
+  }
+
   const result = await searchTree(
     workspaceSearchTreeFs(),
     root.toString(),
     defaultTreeSearchBounds(query, regex, caseSensitive, maximumMatches),
   );
   return {
-    matches: result.matches,
+    matches: result.matches.filter((match) => passesSearchFilters(match.path, filter)),
     truncated: result.truncated,
     scannedBytes: result.scannedBytes,
   };

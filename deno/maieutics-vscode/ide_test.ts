@@ -1,6 +1,7 @@
 /// <reference lib="deno.ns" />
 import { assert, assertEquals } from "@std/assert";
 import {
+  buildRgArgs,
   collectProblems,
   defaultTreeSearchBounds,
   dirtyBufferAnswer,
@@ -15,6 +16,8 @@ import {
   mapLocalFsErrorCode,
   normalizedHoverAnswer,
   normalizeHoverContents,
+  parseRgMatchEvent,
+  passesSearchFilters,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
@@ -423,4 +426,90 @@ Deno.test("searchTree bounds turn into truncation and skip binary files", async 
   );
   assertEquals(empty.matches, []);
   assertEquals(empty.truncated, false, "an unreadable root scans to nothing, not a truncation");
+});
+
+Deno.test("parseRgMatchEvent maps rg's byte offsets onto character columns", () => {
+  // "const é = 1; needle" — the needle starts at byte 14 but character 12.
+  const line = "const é = 1; needle\n";
+  const lineBytes = new TextEncoder().encode(line);
+  const needle = new TextEncoder().encode("needle");
+  let needleByteOffset = -1;
+  for (let index = 0; index + needle.length <= lineBytes.length; index += 1) {
+    if (needle.every((byte, position) => lineBytes[index + position] === byte)) {
+      needleByteOffset = index;
+      break;
+    }
+  }
+  if (needleByteOffset < 0) throw new Error("fixture: the needle is not in the line");
+  const event = JSON.stringify({
+    type: "match",
+    data: {
+      path: { text: "./src/é.ts" },
+      lines: { text: line },
+      line_number: 3,
+      submatches: [{
+        match: { text: "needle" },
+        start: needleByteOffset,
+        end: needleByteOffset + 5,
+      }],
+    },
+  });
+  const match = parseRgMatchEvent(event);
+  assertEquals(match, {
+    path: "src/é.ts",
+    line: 3,
+    column: 14,
+    preview: "const é = 1; needle",
+  });
+
+  assertEquals(parseRgMatchEvent('{"type":"begin","data":{}}'), null);
+  assertEquals(parseRgMatchEvent("not json"), null);
+});
+
+Deno.test("buildRgArgs composes the default posture and the caller's filters", () => {
+  assertEquals(
+    buildRgArgs("needle", false, true, {}),
+    ["--json", "--hidden", "-g", "!.git", "--fixed-strings", "-e", "needle", "."],
+  );
+  assertEquals(
+    buildRgArgs("foo\\d+", true, false, {
+      respectIgnore: false,
+      include: ["**/*.ts"],
+      exclude: ["generated/**"],
+    }),
+    [
+      "--json",
+      "--hidden",
+      "-g",
+      "!.git",
+      "--no-ignore",
+      "-i",
+      "--regexp",
+      "-e",
+      "foo\\d+",
+      "-g",
+      "**/*.ts",
+      "-g",
+      "!generated/**",
+      ".",
+    ],
+  );
+});
+
+Deno.test("passesSearchFilters applies the gitignore naming rule", () => {
+  const filter = { include: ["**/*.ts"], exclude: ["generated/**"] };
+  assertEquals(passesSearchFilters("src/a.ts", filter), true);
+  assertEquals(passesSearchFilters("src/gen/b.ts", filter), true, "exclude needs the /** tail");
+  assertEquals(passesSearchFilters("generated/x.ts", filter), false);
+  assertEquals(passesSearchFilters("src/a.js", filter), false, "include is a whitelist");
+
+  const name = { exclude: ["node_modules"] };
+  assertEquals(
+    passesSearchFilters("a/node_modules/x.js", name),
+    false,
+    "a slash-free glob matches the basename at any depth",
+  );
+  assertEquals(passesSearchFilters("a/modules/x.js", name), true);
+
+  assertEquals(passesSearchFilters("anything.go", {}), true, "no filters passes everything");
 });

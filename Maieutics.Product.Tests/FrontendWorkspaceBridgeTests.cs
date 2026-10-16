@@ -321,11 +321,65 @@ public sealed class FrontendWorkspaceBridgeTests
             request => request.Method == "maieutics/fs/local/search",
             "a covered root is served by the frontend's provider scan");
 
+        // The filter knobs ride the same request untouched.
+        var filtered = (JsonElement)(await search.InvokeAsync(
+            harness.ScriptArguments(
+                """{"query":"needle","include":["**/*.cs"],"exclude":["**/generated/**"],"respectIgnore":false}"""),
+            TestContext.Current.CancellationToken))!;
+        filtered.GetProperty("matches").GetArrayLength().Should().BeGreaterThanOrEqualTo(0);
+        harness.LastRequest!.Value.Params.GetProperty("include").EnumerateArray()
+            .Select(static glob => glob.GetString()).Should().Equal(["**/*.cs"],
+            "the filter knobs ride the search request untouched");
+        harness.LastRequest!.Value.Params.GetProperty("respectIgnore").GetBoolean().Should().BeFalse();
+
         // The regex path rides the same bridge contract.
         var regex = (JsonElement)(await search.InvokeAsync(
             harness.ScriptArguments("""{"query":"n[e]edle","regex":true}"""),
             TestContext.Current.CancellationToken))!;
         regex.GetProperty("matches").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SearchTextLocalScanHonorsTheFilterGlobs()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        Directory.CreateDirectory(Path.Combine(workspace.Path, "generated"));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "keep.ts"), "needle\n", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "generated", "drop.ts"), "needle\n", cancellationToken);
+        var functions = new WorkspaceFunctions(Workspace.Create(workspace.Path, workspace.Path));
+        var search = functions.Functions.Single(static function => function.Name == "search_text");
+
+        var result = (JsonElement)(await search.InvokeAsync(new AIFunctionArguments(
+            new Dictionary<string, object?>
+            {
+                ["query"] = "needle",
+                ["exclude"] = new[] { "generated/**" },
+            }), cancellationToken))!;
+
+        var matches = result.GetProperty("matches").EnumerateArray()
+            .Select(static entry => entry.GetProperty("uri").GetString())
+            .ToList();
+        matches.Should().Contain("workspace://local/keep.ts");
+        matches.Should().NotContain(uri => uri!.Contains("generated"),
+            "the local scan judges the same globs the frontend's fast search does");
+        result.GetProperty("skippedByFilter").GetInt32().Should().BeGreaterThanOrEqualTo(1);
+    }
+
+    [Fact]
+    public void SearchGlobsFollowTheGitignoreNamingRule()
+    {
+        SearchGlobs.Passes("src/a.ts", "a.ts", ["**/*.ts"], null).Should().BeTrue();
+        SearchGlobs.Passes("src/a.js", "a.js", ["**/*.ts"], null).Should().BeFalse(
+            "include is a whitelist");
+        SearchGlobs.Passes("generated/x.ts", "x.ts", null, ["generated/**"]).Should().BeFalse();
+        SearchGlobs.Passes("src/gen/x.ts", "x.ts", null, ["generated/**"]).Should().BeTrue(
+            "exclude needs the /** tail to reach descendants");
+        SearchGlobs.Passes("a/node_modules/x.js", "x.js", null, ["node_modules"]).Should().BeFalse(
+            "a separator-free glob names a segment at any depth");
+        SearchGlobs.Passes("a/modules/x.js", "x.js", null, ["node_modules"]).Should().BeTrue();
+        SearchGlobs.Passes("anything.go", "anything.go", null, null).Should().BeTrue(
+            "no filters passes everything");
     }
 
     [Fact]

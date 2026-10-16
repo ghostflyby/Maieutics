@@ -345,11 +345,17 @@ buffer. An operation that loses its target mid-call fails typed
 - `maieutics/fs/local/delete` — `{uri}` → `{}` via `workspace.fs.delete`.
 
 - `maieutics/fs/local/search` — `{uri, query, regex?, caseSensitive?,
-  maximumMatches?}` → `{matches: [{path, line, column, preview}],
-  truncated, scannedBytes}`: a bounded provider-mediated scan of the
-  tree under the kernel-translated `file://` root — literal or regex
-  (pattern ≤ 512 chars), 1-based lines/columns, `path` relative to the
-  root with posix separators. The kernel maps paths onto the workspace
+  maximumMatches?, include?, exclude?, respectIgnore?}` →
+  `{matches: [{path, line, column, preview}], truncated, scannedBytes}`:
+  a bounded scan of the tree under the kernel-translated `file://`
+  root — literal or regex (pattern ≤ 512 chars), 1-based lines/columns,
+  `path` relative to the root with posix separators. Local-disk roots
+  are served by ripgrep when available (the install's bundled rg, then
+  the PATH; grep as the universal fallback, columns always 1), with the
+  default posture respecting VCS ignore files and including hidden
+  entries except `.git`; the globs are rg-style (`**`, `*`, `?`; a
+  pattern without a separator names a segment at any depth) and the
+  provider scan judges the same globs itself. The kernel maps paths onto the workspace
   domain and applies its own match bound (200). The same scan serves
   the `idefs://` family as `maieutics/fs/search`
   (`{folderId, segments, …}`, matches relative to the searched folder).

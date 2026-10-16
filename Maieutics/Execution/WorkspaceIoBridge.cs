@@ -91,6 +91,9 @@ internal abstract class WorkspaceBridgeChannel
         bool regex,
         bool caseSensitive,
         int maximumMatches,
+        IReadOnlyList<string>? include,
+        IReadOnlyList<string>? exclude,
+        bool respectIgnore,
         CancellationToken cancellationToken);
 
     /// <summary>The hash the write precondition carries: lowercase hex SHA-256 of

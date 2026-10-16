@@ -235,6 +235,9 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             bool regex,
             bool caseSensitive,
             int maximumMatches,
+            IReadOnlyList<string>? include,
+            IReadOnlyList<string>? exclude,
+            bool respectIgnore,
             CancellationToken cancellationToken)
         {
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
@@ -244,7 +247,10 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                     query,
                     regex,
                     caseSensitive,
-                    maximumMatches),
+                    maximumMatches,
+                    include?.ToArray(),
+                    exclude?.ToArray(),
+                    respectIgnore),
                 BridgeJsonContext.Default.FsLocalSearchParams);
             JsonElement answer;
             try
@@ -503,4 +509,7 @@ internal sealed record FsLocalSearchParams(
     string Query,
     bool Regex,
     bool CaseSensitive,
-    int MaximumMatches);
+    int MaximumMatches,
+    string[]? Include,
+    string[]? Exclude,
+    bool RespectIgnore);

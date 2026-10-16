@@ -24,6 +24,8 @@ internal static class IdeMethodCatalog
     {
         "maieutics/dirty",
         "maieutics/problems",
+        "maieutics/fs/local/read",
+        "maieutics/fs/local/list",
         "textDocument/hover",
         "textDocument/definition",
         "textDocument/typeDefinition",
@@ -176,11 +178,13 @@ internal sealed class IdeFunctions
                 "Calls an IDE language-service request that the dedicated tools do not cover, from the fixed read " +
                 "catalog: textDocument/signatureHelp, textDocument/foldingRange, textDocument/inlayHint, " +
                 "textDocument/selectionRange, textDocument/semanticTokens/full, callHierarchy/* (prepare, " +
-                "incomingCalls, outgoingCalls), typeHierarchy/* (prepare, supertypes, subtypes). 'method' is the " +
-                "catalog name; 'parameters' is the LSP-shaped params object with workspace://local URIs. Position " +
-                "and range objects ({line, character}) use this suite's 1-based convention and are converted; " +
-                "foldingRange's bare startLine/endLine numbers are the provider's own 0-based lines — pass those " +
-                "as returned. Write methods and unknown methods are rejected without a round trip.")
+                "incomingCalls, outgoingCalls), typeHierarchy/* (prepare, supertypes, subtypes), and the " +
+                "workspace fs reads maieutics/fs/local/read and maieutics/fs/local/list (kernel-translated " +
+                "file:// URIs). 'method' is the catalog name; 'parameters' is the LSP-shaped params object " +
+                "with workspace://local URIs. Position and range objects ({line, character}) use this suite's " +
+                "1-based convention and are converted; foldingRange's bare startLine/endLine numbers are the " +
+                "provider's own 0-based lines — pass those as returned. Write methods and unknown methods are " +
+                "rejected without a round trip.")
         ];
     }
 
@@ -842,16 +846,23 @@ internal sealed class IdeFunctions
     }
 
     /// <summary>Script-tool invocations (REPL, ide.query) carry no agent tool
-    /// context, so the gate degrades to the process-level check: some
-    /// announcing socket must exist; the caller's session membership cannot
-    /// be verified. Context-bearing agent calls keep the strict per-session
-    /// check.</summary>
+    /// context; when the control host bound the calling connection's owning session
+    /// (ADR 0042 decision 12), the gate checks that session — otherwise it degrades to
+    /// the process-level check. Context-bearing agent calls keep the strict
+    /// per-session check.</summary>
     private void EnsureConnected(AIFunctionArguments arguments)
     {
         if (arguments.Context?.TryGetValue(typeof(AgentToolContext), out var value) == true &&
             value is AgentToolContext context)
         {
             EnsureConnectedCore(context.SessionId.Value.ToString("N"));
+            return;
+        }
+
+        if (ScriptInvocationContext.TryGet(arguments) is { } script &&
+            script.SessionId is { } sessionId)
+        {
+            EnsureConnectedCore(sessionId);
             return;
         }
 

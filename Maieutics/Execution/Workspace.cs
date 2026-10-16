@@ -7,6 +7,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Maieutics.Execution;
 
+
 /// <summary>The authoritative workspace: a fixed, product-owned home directory
 /// (ADR 0027). The root never changes mid-process; external projects are opened as managed
 /// links under <c>projects/</c>, which bumps the snapshot version. Exposes the permission
@@ -469,6 +470,58 @@ internal sealed partial record WorkspaceSnapshot(
             "workspace_path_not_found",
             "The workspace URI does not identify an existing path.",
             exception);
+    }
+
+    /// <summary>The purely logical resolution behind the IDE bridge (ADR 0042 decision
+    /// 12): the same URI grammar, denied names, and containment as <see cref="Resolve" />
+    /// with no disk pre-flight, so a file deleted on disk but open dirty in the editor
+    /// stays addressable through its buffer while the bridge is serving reads.</summary>
+    internal WorkspaceLogicalPath ResolveLogical(string? uri, bool allowRoot = true)
+    {
+        var segments = ParseSegments(uri, allowRoot);
+        return new WorkspaceLogicalPath(segments, ToWorkspaceUri(segments), ToDisplayPath(segments));
+    }
+
+    /// <summary>Computes the physical address of logical segments for the bridge's
+    /// <c>file://</c> parameters: components combine under the root, and the one
+    /// permitted traversal is the registered <c>projects/&lt;name&gt;</c> hop, resolved
+    /// exactly as the local walk resolves it. Existence is not required — a write target
+    /// may not exist yet — so attribute probes that fail simply continue the combine.</summary>
+    internal string ToPhysicalPath(IReadOnlyList<string> segments)
+    {
+        var current = RootPath;
+        for (var index = 0; index < segments.Count; index++)
+        {
+            var candidate = Path.Combine(current, segments[index]);
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(candidate);
+            }
+            catch (Exception exception) when (
+                exception is FileNotFoundException or DirectoryNotFoundException or ArgumentException)
+            {
+                if (index == segments.Count - 1) return candidate;
+
+                return Path.Combine(new[] { candidate }.Concat(segments.Skip(index + 1)).ToArray());
+            }
+
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                var target = ResolveRegisteredLink(segments, index, candidate);
+                if (target is null)
+                    throw new WorkspaceException(
+                        "workspace_symbolic_link_not_allowed",
+                        "Workspace tools cannot read or traverse symbolic links.");
+
+                current = target;
+                continue;
+            }
+
+            current = candidate;
+        }
+
+        return current;
     }
 
     private static IReadOnlyList<string> ParseSegments(string? uri, bool allowRoot)
@@ -1091,6 +1144,13 @@ internal sealed record WorkspacePath(
             Segments);
     }
 }
+
+/// <summary>The logical-only resolution the IDE bridge operates on: the validated
+/// segments, their wire URI, and the diff-header display path.</summary>
+internal sealed record WorkspaceLogicalPath(
+    IReadOnlyList<string> Segments,
+    string Uri,
+    string DisplayPath);
 
 /// <summary>A resolved write target. The final segment may be missing (the tool creates it),
 /// <see cref="ParentPath"/> is the physical parent chain to create when absent, and

@@ -412,6 +412,82 @@ window, `search_text` returns 1-based line/column matches, and
     it is the only write path whose execution point cannot be the
     kernel.
 
+12. **The workspace repository file system itself forwards through the
+    bridge when an IDE is attached — the idefs mechanism applied in the
+    local direction, with one elected authority.** Decision 11 built a
+    domain for file systems the kernel cannot see; stage F points the
+    same mechanism at the one it can: while the calling session has a
+    live ide-announcing frontend, the workspace tools' repository I/O
+    (`read_text`, `list_directory`, `edit_text`, `apply_patch`, and the
+    write/diff cores behind `write_text`) is served by the frontend
+    instead of the kernel's pinned local walk, so reads answer the
+    IDE's text state — dirty editor buffers included, which closes
+    decision 7's declared read-side divergence under the bridge — and
+    writes land through `workspace.fs.writeFile`, where the IDE's
+    watchers carry them into open editors. Five rulings make it
+    deterministic with several IDEs of several kinds attached at once:
+    (a) **Authority election** — `FrontendIdeSockets` stamps every
+    announcement with a monotonic registration sequence, and the
+    workspace bridge serves a call from the *earliest live
+    announcement of the calling session* (process-wide for
+    context-less script calls, refined to per-session when the control
+    bus passes the REPL's owning session); a withdraw re-elects the
+    next-earliest, so authority walks forward deterministically as
+    windows close. (b) **Targeted delivery** — workspace fs requests
+    are pushed to the elected registration *only* (the decision-1
+    broadcast stays the language-service family's path): another
+    announcer never sees the frame, so the first-answer-wins race that
+    decision 11 defused with disjoint id spaces cannot answer a read
+    with a different window's buffer at all. (c) **Pin and fail
+    typed** — an operation pins its registration; losing it mid-call
+    fails `ide_unavailable` instead of silently re-asking a different
+    IDE whose buffers may disagree. (d) **Hash precondition** — every
+    bridge write carries the SHA-256 of the before text the kernel
+    itself read through the bridge; the frontend hashes its current
+    state (buffer when dirty, fatal-decoded disk bytes when clean) and
+    answers `fs_conflict` on mismatch, so two windows of one workspace
+    cannot silently last-write-wins each other. (e) **Kind
+    neutrality** — the announce carries a version, not a product; any
+    IDE kind speaking the bridge is just an announcer, and mixed
+    cohorts degrade coherently: a frontend predating the local family
+    answers `ide_method_unsupported`, which the bridge absorbs once
+    process-wide and then reports itself inactive for the session
+    (local I/O — exactly the pre-bridge behavior — instead of typing
+    every read to death). The wire family is
+    `maieutics/fs/local/read|list` (read group) and
+    `maieutics/fs/local/write|delete` (write group, the decision-11
+    ruling applied verbatim: kernel-gated, frontend-executed —
+    instruction-surface gate (ADR 0032), bounds, dirty gate, and the
+    unified diff all stay kernel-side), carrying kernel-translated
+    physical `file://` URIs — decision 4's translation authority, the
+    stage-A/C precedent; no folder ids are needed because the kernel
+    owns the local mapping. Buffer-authoritative reads are served from
+    `openTextDocument().getText()` when the document is dirty and from
+    a fatal UTF-8 decode of `workspace.fs.readFile` when clean, which
+    keeps binary files typing `fs_not_text` instead of surfacing
+    replacement-character mush. The kernel's URI grammar, denied-name,
+    and containment validation runs before the bridge exactly as
+    decision 11 rules, over a new pure `ResolveLogical` split (no disk
+    pre-flight: a deleted-on-disk, open-dirty file stays readable
+    through its buffer). `search_text` stays disk-local in this stage —
+    scan-through-bridge is one round trip per file, and the
+    `maieutics/fs/search` ruling defers it for idefs the same way; the
+    tool description declares that a bridged read may answer unsaved
+    buffer state which search cannot see. The same channel is the
+    REPL's file plane for workspace paths: the worker wraps the async
+    text APIs (`Deno.readTextFile`, `Deno.writeTextFile`,
+    `Deno.readDir` — the `patchFetch` precedent), resolves paths
+    against the workspace root passed by env var, routes workspace
+    paths to three script-only kernel tools (`workspace_fs_read/write/
+    list`, invisible to model profiles) that ride the bridge channel
+    with the session's read/write policy enforced kernel-side (the
+    permission broker never sees a bridged call, so the tool is the
+    enforcement point), and falls back to the real Deno API on a typed
+    `workspace_bridge_inactive` — per call, so attaching or closing the
+    IDE flips the behavior live without restarting the REPL. Paths
+    outside the workspace, sync APIs, and binary APIs pass through
+    unchanged (declared).
+
 ## Later stages
 
 - **A — channel + read tools. — IMPLEMENTED 2026-10-13.** Upgrade-parameter
@@ -493,6 +569,18 @@ window, `search_text` returns 1-based line/column matches, and
   `maieutics/fs/search` over `workspace.findTextInFiles` (the remote
   grep — the search gap this family otherwise leaves), and — after C —
   the kernel-gated, frontend-executed write path.
+- **F — workspace file-system forwarding. — IMPLEMENTED 2026-10-16.**
+  Decision 12: the `IWorkspaceIoBridge` seam in Execution (null acquire
+  = the unchanged local pinned walk), authority election and targeted
+  delivery in `FrontendIdeSockets`, the `maieutics/fs/local/*` family
+  (buffer-authoritative reads, hash-preconditioned writes, deletes,
+  listings), the workspace tools' bridged paths (`read_text`,
+  `list_directory`, `write_text`, `edit_text`, `apply_patch`;
+  `search_text` declared disk-local), the per-session
+  `ScriptInvocationContext` for script tools, and the REPL worker's
+  async text-API shim over `workspace_fs_read/write/list` with the
+  typed inactive fallback. Binary I/O and `maieutics/fs/search` remain
+  open in both directions.
 
 ## Consequences
 

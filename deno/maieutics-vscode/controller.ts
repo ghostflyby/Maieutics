@@ -90,7 +90,10 @@ import {
   type IdeRequestPayload,
   isIdeMethodSupported,
   isValidIdeFsSegment,
+  localFsEntriesAnswer,
+  localFsError,
   normalizedHoverAnswer,
+  sha256Hex,
   textEditsToWire,
   workspaceEditToWire,
 } from "./ide.ts";
@@ -938,19 +941,10 @@ class NotebookStream {
 const ideFolders = new IdeFolderRegistry();
 
 /** Maps the editor's FileSystemError family onto the typed fs codes; the
- * physical target URI is stripped before any of this crosses to the model. */
+ * physical target URI is stripped before any of this crosses to the model.
+ * The mapping itself is the pure stage-F superset both fs families share. */
 function ideFsError(error: unknown): Error {
-  const code = (error as { code?: unknown }).code;
-  const mapped = code === "FileNotFound"
-    ? "fs_not_found"
-    : code === "FileIsADirectory"
-    ? "fs_is_directory"
-    : code === "NoPermissions"
-    ? "fs_access_denied"
-    : code === "Unavailable"
-    ? "fs_scheme_unreadable"
-    : "fs_failed";
-  return Object.assign(new Error(`${mapped}: (target stripped)`), { code: mapped });
+  return localFsError(error);
 }
 
 /** Executes the maieutics/fs methods against vscode.workspace.fs (ADR 0042
@@ -1043,6 +1037,137 @@ async function executeIdeFs(
   };
 }
 
+/** The bridge's read of one file's current state (ADR 0042 decision 12):
+ * a dirty open document answers its buffer; otherwise the file's bytes,
+ * fatal-decoded. Returns undefined only for a missing file, so the write
+ * precondition's `fs_conflict` and the exclusive create's `fs_exists` stay
+ * distinguishable. */
+async function readLocalState(
+  target: vscode.Uri,
+): Promise<string | undefined> {
+  const open = vscode.workspace.textDocuments.find(
+    (document) => document.uri.toString() === target.toString(),
+  );
+  if (open !== undefined && open.isDirty) return open.getText();
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(target);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "FileNotFound") return undefined;
+    throw localFsError(error);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    // A binary target has no text state to hash or answer; callers that read
+    // for the model already failed typed in their own handler.
+    return undefined;
+  }
+}
+
+/** Executes the maieutics/fs/local methods — the workspace repository file
+ * system served through the IDE (ADR 0042 decision 12). Params carry
+ * kernel-translated physical `file://` URIs (the stage-A translation
+ * authority; no containment re-check here — the kernel owns the workspace
+ * domain). Reads answer the IDE's text state (dirty buffers included);
+ * writes precondition on the hash of the state a read would answer, so a
+ * concurrent IDE-side change fails `fs_conflict` instead of silently
+ * winning, and land through workspace.fs so watchers update open editors. */
+async function executeIdeFsLocal(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  const rawUri = typeof params.uri === "string" ? params.uri : undefined;
+  if (rawUri === undefined || !rawUri.startsWith("file:")) {
+    throw Object.assign(
+      new Error("The local fs family takes a kernel-translated file:// uri."),
+      { code: "ide_invalid_arguments" },
+    );
+  }
+  const target = vscode.Uri.parse(rawUri, true);
+
+  if (method === "maieutics/fs/local/read") {
+    // Buffer-authoritative: the dirty buffer is the point of the bridge. A
+    // clean or closed file answers a fatal-decoded byte read, which keeps
+    // binary files typed `fs_not_text` instead of surfacing replacement mush.
+    const open = vscode.workspace.textDocuments.find(
+      (document) => document.uri.toString() === target.toString(),
+    );
+    if (open !== undefined && open.isDirty) return { content: open.getText() };
+    let bytes: Uint8Array;
+    try {
+      bytes = await vscode.workspace.fs.readFile(target);
+    } catch (error) {
+      throw localFsError(error);
+    }
+    if (bytes.byteLength > 8 * 1024 * 1024) {
+      throw Object.assign(
+        new Error("The read is bounded at 8 MiB of text."),
+        { code: "fs_too_large" },
+      );
+    }
+    try {
+      return { content: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+    } catch {
+      throw Object.assign(new Error("The file is not valid UTF-8 text."), { code: "fs_not_text" });
+    }
+  }
+
+  if (method === "maieutics/fs/local/list") {
+    const maximum =
+      typeof params.maximumEntries === "number" && Number.isFinite(params.maximumEntries)
+        ? Math.max(0, Math.floor(params.maximumEntries))
+        : 10_000;
+    let listed: [string, vscode.FileType][];
+    try {
+      listed = await vscode.workspace.fs.readDirectory(target);
+    } catch (error) {
+      throw localFsError(error);
+    }
+    return localFsEntriesAnswer(
+      listed.map(([name, fileType]) => [name, fileType as number]),
+      maximum,
+    );
+  }
+
+  if (method === "maieutics/fs/local/write") {
+    const content = typeof params.content === "string" ? params.content : undefined;
+    if (content === undefined) {
+      throw Object.assign(new Error("The write requires string content."), {
+        code: "ide_invalid_arguments",
+      });
+    }
+    const expectedHash = typeof params.expectedHash === "string" ? params.expectedHash : undefined;
+    const createExclusive = params.createExclusive === true;
+    const current = await readLocalState(target);
+    if (expectedHash !== undefined) {
+      if (current === undefined || (await sha256Hex(current)) !== expectedHash) {
+        throw Object.assign(
+          new Error("The file changed since the kernel read it; re-read and retry."),
+          { code: "fs_conflict" },
+        );
+      }
+    } else if (createExclusive && current !== undefined) {
+      throw Object.assign(new Error("The workspace path already exists."), { code: "fs_exists" });
+    }
+    await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(content));
+    return {};
+  }
+
+  if (method === "maieutics/fs/local/delete") {
+    try {
+      await vscode.workspace.fs.delete(target, { recursive: false });
+    } catch (error) {
+      throw localFsError(error);
+    }
+    return {};
+  }
+
+  throw Object.assign(new Error(`The method '${method}' is not supported.`), {
+    code: "ide_method_unsupported",
+  });
+}
+
 export async function executeIdeMethod(
   method: string,
   params: Record<string, unknown>,
@@ -1075,6 +1200,10 @@ export async function executeIdeMethod(
 
   if (method === "maieutics/fs/list" || method === "maieutics/fs/read") {
     return await executeIdeFs(method, params, ideFolders);
+  }
+
+  if (method.startsWith("maieutics/fs/local/")) {
+    return await executeIdeFsLocal(method, params);
   }
 
   const command = ideMethodCommands[method];

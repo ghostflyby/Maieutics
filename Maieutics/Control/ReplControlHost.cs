@@ -274,6 +274,12 @@ internal sealed partial class ReplControlHost : IDisposable
         }
 
         var sessionId = identity.Id;
+        // Session-scoped gates (the IDE workspace bridge, ADR 0042 decision 12) key on
+        // the owning agent session the events announce carries, not the REPL-local id
+        // the hello claims; the pid-verified owner registration is the translation.
+        var gateSessionId = peerProcessId > 0 && registry.TryGetOwnerSession(peerProcessId, out var ownerSession)
+            ? ownerSession
+            : sessionId;
         logger.LogDebug(
             "Control-bus connection accepted for session {SessionId} (peer process {PeerProcessId}).",
             sessionId,
@@ -316,6 +322,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 logger.LogDebug("Control message received: {Message}.", text);
                 await HandleBusMessageAsync(
                     sessionId,
+                    gateSessionId,
                     connection,
                     text,
                     toolInvocations,
@@ -459,6 +466,7 @@ internal sealed partial class ReplControlHost : IDisposable
 
     private async Task HandleBusMessageAsync(
         string sessionId,
+        string gateSessionId,
         SessionBusConnection connection,
         string text,
         ICollection<Task> toolInvocations,
@@ -570,7 +578,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     break;
                 }
 
-                toolInvocations.Add(HandleBusToolInvokeAsync(sessionId, connection, envelope, ct));
+                toolInvocations.Add(HandleBusToolInvokeAsync(gateSessionId, connection, envelope, ct));
                 break;
             default:
                 await PushErrorAsync(
@@ -703,15 +711,15 @@ internal sealed partial class ReplControlHost : IDisposable
             return;
         }
 
-        connections.TryGetValue(
-            ResolveRequestSessionId(context, request.SessionId) ?? string.Empty,
-            out var progressConnection);
+        var requestSessionId = ResolveRequestSessionId(context, request.SessionId);
+        connections.TryGetValue(requestSessionId ?? string.Empty, out var progressConnection);
         var envelope = await InvokeToolAsync(
             request.Tool,
             request.Arguments,
             request.CorrelationId,
             progressConnection,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            sessionId: requestSessionId).ConfigureAwait(false);
         await WriteEnvelopeAsync(context, envelope, cancellationToken).ConfigureAwait(false);
     }
 
@@ -742,7 +750,8 @@ internal sealed partial class ReplControlHost : IDisposable
                 request.Arguments,
                 envelope.CorrelationId,
                 connection,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                sessionId).ConfigureAwait(false);
             await PushAsync(
                 connection,
                 new ReplEnvelope(
@@ -858,6 +867,14 @@ internal sealed partial class ReplControlHost : IDisposable
                     .ConfigureAwait(false);
             }
             var arguments = new AIFunctionArguments(argumentValues);
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                // Session-scoped gates (the IDE workspace bridge, ADR 0042 decision 12)
+                // read the calling connection's owning session from here instead of
+                // degrading to the process level.
+                arguments.Context ??= new Dictionary<object, object?>();
+                arguments.Context[typeof(ScriptInvocationContext)] = new ScriptInvocationContext(sessionId);
+            }
             if (progressConnection is not null && !string.IsNullOrWhiteSpace(correlationId))
             {
                 arguments.Context ??= new Dictionary<object, object?>();

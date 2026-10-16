@@ -388,6 +388,12 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         state.Worker = new WorkerRun(cancellation, completion);
     }
 
+    /// <summary>Test seam for the queue.updated liveness contract: awaited between the
+    /// submission handshake returning and the Running publish, so a test can hold the
+    /// dequeue window open deterministically while a client is already serving the
+    /// run's frames. Null in production.</summary>
+    internal Func<CancellationToken, Task>? RunningPublishGateForTests { get; set; }
+
     /// <summary>
     ///     One session's serial worker: dequeue the head, submit it through
     ///     <see cref="FrontendSessionService.StartTurnAsync" />, wait for the run to
@@ -431,6 +437,8 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 {
                     var runId = await SubmitWithBusyRetryAsync(sessionId, item.Text, cancellation.Token)
                         .ConfigureAwait(false);
+                    if (RunningPublishGateForTests is { } gate)
+                        await gate(cancellation.Token).ConfigureAwait(false);
                     lock (state.Gate)
                     {
                         state.Running = new RunningItem(item.Id, runId);

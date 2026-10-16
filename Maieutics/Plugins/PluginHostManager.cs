@@ -1135,6 +1135,15 @@ internal sealed class PluginHostManager(
                     logger.LogInformation(
                         "Watched change at '{Path}' changes the local plugin set; restarting the plugin host.",
                         args.FullPath);
+                    // A set change settles the reload through the restart: the new host
+                    // re-runs full discovery, so the applied signal completes here — a
+                    // waiter watching this edit would otherwise park forever on a signal
+                    // the restart path never completed.
+                    lock (gate)
+                    {
+                        reloadApplied.TrySetResult();
+                    }
+
                     _ = RestartForPluginSetChangeAsync();
                     return;
                 }

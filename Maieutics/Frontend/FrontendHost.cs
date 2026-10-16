@@ -921,13 +921,39 @@ internal sealed class FrontendHost : IAsyncDisposable
                 }
                 else
                 {
-                    await ServeStreamAsync(socket, runStream, since, peer.Token).ConfigureAwait(false);
+                    // A run-scoped socket addresses one run; queue state is not part of
+                    // its stream, so the interleaving flush is a no-op here.
+                    await ServeStreamAsync(
+                        socket,
+                        runStream,
+                        since,
+                        static _ => Task.CompletedTask,
+                        peer.Token).ConfigureAwait(false);
                 }
             }
             else
             {
                 FrontendRunStream? previous = null;
                 var queueVersion = 0L;
+
+                // One full-state queue.updated when the version moved past the caller's
+                // view; shared by the pre-serve flush and the run-frame interleaving.
+                async Task FlushQueueAsync(CancellationToken token)
+                {
+                    var (frameSnapshot, latestQueueVersion) = turnQueue.FrameSnapshot(sessionId);
+                    if (latestQueueVersion == queueVersion) return;
+
+                    queueVersion = latestQueueVersion;
+                    logger.LogTrace(
+                        "Flushing queue.updated for session {SessionId} at version {QueueVersion}.",
+                        sessionId,
+                        queueVersion);
+                    if (socket.State == WebSocketState.Open)
+                        await SendFrameAsync(
+                            socket,
+                            new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                            token).ConfigureAwait(false);
+                }
 
                 // The pending run wait is carried across loop iterations instead of being
                 // recreated each time. The announcements channel hands each item to exactly
@@ -954,20 +980,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     // its queued cell before text arrives. Comparing versions — not the
                     // wake winner — makes the order deterministic; a scheduling race here
                     // parked the frame behind a gated run on slow runners.
-                    (var frameSnapshot, var latestQueueVersion) = turnQueue.FrameSnapshot(sessionId);
-                    if (latestQueueVersion != queueVersion)
-                    {
-                        queueVersion = latestQueueVersion;
-                        logger.LogTrace(
-                            "Flushing queue.updated for session {SessionId} at version {QueueVersion}.",
-                            sessionId,
-                            queueVersion);
-                        if (socket.State == WebSocketState.Open)
-                            await SendFrameAsync(
-                                socket,
-                                new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
-                                peer.Token).ConfigureAwait(false);
-                    }
+                    await FlushQueueAsync(peer.Token).ConfigureAwait(false);
 
                     if (ReferenceEquals(settled, runWait))
                     {
@@ -975,7 +988,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                         // the run just served.
                         pendingRunWait = null;
                         var stream = await runWait.ConfigureAwait(false);
-                        await ServeStreamAsync(socket, stream, since, peer.Token).ConfigureAwait(false);
+                        await ServeStreamAsync(socket, stream, since, FlushQueueAsync, peer.Token)
+                            .ConfigureAwait(false);
                         previous = stream;
                         // Replay offsets are per run; later runs stream live from their start.
                         since = 0;
@@ -1072,15 +1086,52 @@ internal sealed class FrontendHost : IAsyncDisposable
         WebSocket socket,
         FrontendRunStream stream,
         long since,
+        Func<CancellationToken, Task> flushQueueAsync,
         CancellationToken cancellationToken)
     {
         var (initial, channel) = stream.Subscribe(since);
+        // Sentinels: the finally observes late faults of the in-flight tasks the raced
+        // loop below abandons on non-happy exits (backpressure close, a failed send).
+        var queueWake = Task.CompletedTask;
+        var nextFrame = Task.FromResult(false);
         try
         {
             foreach (var frame in initial) await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
 
-            await foreach (var frame in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-                await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
+            // Queue frames must interleave with run frames, not defer behind the whole
+            // run: a run parked at a gated provider once pinned a worker transition
+            // (running) behind the park for the run's entire lifetime, and a client
+            // gating on that frame starved with it. One WaitToReadAsync in flight,
+            // raced against the queue wake, flushes every mutation's frame between
+            // run frames instead of within one whole run. Exactly one queue wake is
+            // armed at a time; when the run frame wins the race, the wake stays armed
+            // for the next race (WaitForChangeAsync wakes are broadcasts, so the
+            // armed task neither steals nor loses anything).
+            queueWake = flushQueueAsync(cancellationToken);
+            nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
+            while (true)
+            {
+                var settled = await Task.WhenAny(nextFrame, queueWake).ConfigureAwait(false);
+                if (ReferenceEquals(settled, queueWake))
+                {
+                    await queueWake.ConfigureAwait(false);
+                    queueWake = flushQueueAsync(cancellationToken);
+                    continue;
+                }
+
+                if (!await nextFrame.ConfigureAwait(false)) break;
+
+                nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
+                while (channel.Reader.TryRead(out var frame))
+                {
+                    await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
+                    if (queueWake.IsCompleted)
+                    {
+                        await queueWake.ConfigureAwait(false);
+                        queueWake = flushQueueAsync(cancellationToken);
+                    }
+                }
+            }
         }
         catch (ChannelClosedException exception) when
             (exception.InnerException is FrontendRunStream.FrontendBackpressureException)
@@ -1093,6 +1144,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
+            if (queueWake.IsFaulted) _ = queueWake.Exception;
+            if (nextFrame.IsFaulted) _ = nextFrame.Exception;
             stream.Unsubscribe(channel);
         }
     }

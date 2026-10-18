@@ -20,7 +20,7 @@ namespace Maieutics.Product.Tests;
 ///     per-socket capability announcement that gates the family.
 /// </summary>
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendIdeBridgeTests
+public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromMilliseconds(500);
 
@@ -1029,7 +1029,266 @@ public sealed class FrontendIdeBridgeTests
         over.Failure!.Code.Should().Be("ide_invalid_arguments");
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task IdeDebugStartRequiresExactlyOneOfNameOrConfiguration()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var debugRegistry = new IdeRequestRegistry();
+        var debugSockets = new FrontendIdeSockets();
+        var debugFunctions = new IdeDebugTools(
+            debugRegistry,
+            gate,
+            debugSockets,
+            Workspace.Create(workspace.Path, workspace.Path));
+        var start = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_start");
+
+        const string bothKinds = """{"launchName":"probe","configuration":{"type":"node","request":"launch"}}""";
+
+        var neither = await InvokeAsync(
+            start,
+            NoContextArguments("{}"),
+            cancellationToken);
+        neither.Failure.Should().NotBeNull();
+        neither.Failure!.Code.Should().Be("ide_invalid_arguments");
+
+        var both = await InvokeAsync(
+            start,
+            NoContextArguments(bothKinds),
+            cancellationToken);
+        both.Failure.Should().NotBeNull();
+        both.Failure!.Code.Should().Be("ide_invalid_arguments");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IdeDebugStartRidesTheBridgeWithTheLaunchNameAndOverride()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var debugSockets = new FrontendIdeSockets();
+        var debugFunctions = new IdeDebugTools(
+            registry,
+            gate,
+            debugSockets,
+            Workspace.Create(workspace.Path, workspace.Path));
+        var start = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_start");
+        var debugRegistration = debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
+
+        var invocation = await InvokeWithAnswerAsync(
+            start,
+            """{"launchName":"probe","stopOnEntry":true}""",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                """{"sessionId":"dbg-1","state":"running"}""").RootElement.Clone()),
+            cancellationToken);
+
+        invocation.Method.Should().Be("maieutics/debug/start");
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
+        outgoing.GetProperty("params").GetProperty("launchName").GetString().Should().Be("probe");
+        outgoing.GetProperty("params").GetProperty("stopOnEntry").GetBoolean().Should().BeTrue();
+        invocation.Result.GetProperty("sessionId").GetString().Should().Be("dbg-1");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IdeDebugStateClampsWaitAndIdeDebugControlValidatesAction()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path, TestTimeout);
+        gate.Connected = true;
+        var debugSockets = new FrontendIdeSockets();
+        var debugFunctions = new IdeDebugTools(
+            registry,
+            gate,
+            debugSockets,
+            Workspace.Create(workspace.Path, workspace.Path));
+        var state = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_state");
+        var debugRegistration = debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
+        var control = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_control");
+
+        var invocation = await InvokeWithAnswerAsync(
+            state,
+            """{"sessionId":"dbg-1","waitSeconds":999}""",
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                """{"sessionId":"dbg-1","version":3,"state":"paused","reason":"breakpoint","threadId":5}""").RootElement.Clone()),
+            cancellationToken);
+        invocation.Result.GetProperty("state").GetString().Should().Be("paused");
+        invocation.Result.GetProperty("threadId").GetInt32().Should().Be(5);
+
+        var badAction = await InvokeAsync(
+            control,
+            NoContextArguments("""{"sessionId":"dbg-1","action":"detonate"}"""),
+            cancellationToken);
+        badAction.Failure.Should().NotBeNull();
+        badAction.Failure!.Code.Should().Be("ide_invalid_arguments");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IdeDebugVariablesRequiresATarget()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var debugRegistry = new IdeRequestRegistry();
+        var debugSockets = new FrontendIdeSockets();
+        var debugFunctions = new IdeDebugTools(
+            debugRegistry,
+            gate,
+            debugSockets,
+            Workspace.Create(workspace.Path, workspace.Path));
+        var variables = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_variables");
+
+        var failure = await InvokeAsync(
+            variables,
+            NoContextArguments("""{"sessionId":"dbg-1"}"""),
+            cancellationToken);
+        failure.Failure.Should().NotBeNull();
+        failure.Failure!.Code.Should().Be("ide_invalid_arguments");
+    }
+
+    /// <summary>The composed-host integration the debug tools need: the
+    /// IdeToolFamily's concat must actually put the debug tools into a run
+    /// profile (a broken registration would leave every unit round trip green
+    /// while the model never sees the tools), and the frame/answer loop must
+    /// carry the debug methods like any other family member.</summary>
+    [Fact(Timeout = 120_000)]
+    public async Task RunLoopServesIdeDebugToolsThroughTheBridge()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            toolFlow: true,
+            toolName: "ide_debug_configurations",
+            toolArgumentsJson: "{}",
+            expectedToolResultText: "probe launch");
+        await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
+            cancellationToken,
+            provider,
+            hanging: false);
+
+        var sessionId = await harness.GetSessionIdAsync(cancellationToken);
+        await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
+        await WaitForAsync(() => harness.IdeGate.IsIdeFrontendConnected(sessionId), cancellationToken);
+
+        var runId = await harness.SubmitTurnAsync(sessionId, "list launch configs", cancellationToken);
+
+        // A run-context call announces inside a sequenced tool.progress content
+        // item (decision 1) — not the standalone frame the context-less path uses.
+        using var collectDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        collectDeadline.CancelAfter(TimeSpan.FromSeconds(45));
+        var seen = new List<string>();
+        string? requestId = null;
+        try
+        {
+            while (requestId is null)
+            {
+                var frame = await events.ReceiveFrameAsync(collectDeadline.Token).ConfigureAwait(true);
+                var type = frame.GetProperty("type").GetString();
+                string? described = type;
+                if (frame.TryGetProperty("content", out var content) &&
+                    content.TryGetProperty("value", out var value) &&
+                    value.TryGetProperty("ideRequest", out var request))
+                {
+                    described = $"{type}:{request.GetProperty("method").GetString()}";
+                    if (request.GetProperty("method").GetString() == "maieutics/debug/configurations")
+                    {
+                        requestId = request.GetProperty("requestId").GetString();
+                    }
+                }
+
+                seen.Add(described ?? type ?? "?");
+                if (type == "run.failed") {
+                    output.WriteLine("run.failed frame: " + frame.GetRawText());
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            output.WriteLine("debug e2e frames seen: " + string.Join(" | ", seen.TakeLast(40)));
+            throw;
+        }
+
+        output.WriteLine("debug e2e matched the configurations request");
+        var answered = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/ide/{requestId}",
+            new { value = new { configs = new[] { new { name = "probe launch", type = "node", request = "launch" } } } },
+            cancellationToken);
+        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await harness.WaitForTurnCommittedAsync(sessionId, cancellationToken, runId);
+        var trailing = await events.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.status" &&
+                     frame.GetProperty("state").GetString() == "idle",
+            cancellationToken);
+        trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task IdeDebugBreakpointsResolveSelectorsKernelSide()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        Directory.CreateDirectory(Path.Combine(workspace.Path, "src"));
+        await File.WriteAllTextAsync(
+            Path.Combine(workspace.Path, "src", "app.ts"),
+            "const a = 1;\nconst b = 2;\nconst c = 3;\n",
+            cancellationToken);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var debugFunctions = new IdeDebugTools(
+            registry,
+            gate,
+            new FrontendIdeSockets(),
+            Workspace.Create(workspace.Path, workspace.Path));
+        var breakpoints = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_breakpoints");
+
+        const string patch = "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-const b = 2;\n+const b = 20;\n*** End Patch\n";
+        var pointsJson = JsonSerializer.Serialize(new
+        {
+            sessionId = "dbg-1",
+            uri = "workspace://local/src/app.ts",
+            points = new object[]
+            {
+                new { line = 1 },
+                new { anchor = new[] { "const b = 2;" } },
+                new { patch },
+            },
+        });
+        var invocation = await InvokeWithAnswerAsync(
+            breakpoints,
+            pointsJson,
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                """{"breakpoints":[{"line":0},{"line":1},{"line":1}]}""").RootElement.Clone()),
+            cancellationToken);
+
+        invocation.Method.Should().Be("maieutics/debug/breakpoints");
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
+        outgoing.GetProperty("params").GetProperty("lines").EnumerateArray()
+            .Select(static line => line.GetInt32()).Should().Equal(
+                [1, 2, 2],
+                "the line stays, the anchor locates its block, the patch locates its hunk — all 1-based");
+
+        // Anchors failing resolution fail typed at the true site, before
+        // anything crosses to the frontend.
+        var missing = await InvokeAsync(
+            breakpoints,
+            NoContextArguments(
+                """{"sessionId":"dbg-1","uri":"workspace://local/src/app.ts","points":[{"anchor":["no such line"]}]}"""),
+            cancellationToken);
+        missing.Failure.Should().NotBeNull();
+        missing.Failure!.Code.Should().Be("ide_selector_no_match");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
+
+
 
 
 

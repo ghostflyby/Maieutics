@@ -95,15 +95,19 @@ import {
   isCoveredLocalTarget,
   isIdeMethodSupported,
   isValidIdeFsSegment,
+  type LaunchConfiguration,
   localFsEntriesAnswer,
   localFsError,
   normalizedHoverAnswer,
+  parseLaunchConfigurations,
   parseRgMatchEvent,
   passesSearchFilters,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
   textEditsToWire,
+  type TrackedDebugSession,
+  transitionDebugSession,
   workspaceEditToWire,
 } from "./ide.ts";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -1513,10 +1517,343 @@ async function executeIdeFsLocal(
   });
 }
 
+// ---------- debug bridge (decision 13) ----------
+
+/** The tracked debug sessions (decision 13): state transitions land here from
+ * the debug events, and the kernel's state/wait tool reads or waits on them.
+ * Sessions are visible in the debug UI by design — the user ruled the UI
+ * impact acceptable for the bridge. */
+const debugSessions = new Map<string, TrackedDebugSession>();
+const debugWatchers = new Map<string, Array<(session: TrackedDebugSession) => void>>();
+const debugObjects = new Map<string, vscode.DebugSession>();
+
+function applyDebugTransition(
+  sessionId: string,
+  event: Parameters<typeof transitionDebugSession>[1],
+): TrackedDebugSession {
+  const next = transitionDebugSession(debugSessions.get(sessionId), event);
+  debugSessions.set(sessionId, next);
+  const watchers = debugWatchers.get(sessionId);
+  if (watchers !== undefined && watchers.length > 0) {
+    debugWatchers.set(
+      sessionId,
+      watchers.filter((watcher) => {
+        watcher(next);
+        return false;
+      }),
+    );
+  }
+  return next;
+}
+
+/** The debug event wiring runs once at module load: the listeners live for the
+ * extension host's lifetime, matching the bridge's app-level role. */
+vscode.debug.onDidStartDebugSession((session) => {
+  debugObjects.set(session.id, session);
+  applyDebugTransition(session.id, { kind: "start" });
+});
+vscode.debug.onDidReceiveDebugSessionCustomEvent((event) => {
+  if (event.event !== "stopped") return;
+  const body = (event.body ?? {}) as { reason?: unknown; threadId?: unknown };
+  applyDebugTransition(event.session.id, {
+    kind: "stopped",
+    reason: typeof body.reason === "string" ? body.reason : undefined,
+    threadId: typeof body.threadId === "number" ? body.threadId : undefined,
+  });
+});
+vscode.debug.onDidTerminateDebugSession((session) => {
+  applyDebugTransition(session.id, { kind: "terminated" });
+});
+
+/** Reads the first workspace folder's launch.json through workspace.fs.
+ * A missing file is an empty list; anything unreadable is typed. */
+async function readLaunchConfigurations(): Promise<LaunchConfiguration[]> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder === undefined) {
+    throw Object.assign(new Error("No workspace folder is open."), {
+      code: "ide_invalid_arguments",
+    });
+  }
+  const uri = vscode.Uri.joinPath(folder.uri, ".vscode", "launch.json");
+  let text: string;
+  try {
+    text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "FileNotFound") return [];
+    throw localFsError(error);
+  }
+  return parseLaunchConfigurations(text);
+}
+
+function debugStateAnswer(sessionId: string, session: TrackedDebugSession): unknown {
+  return {
+    sessionId,
+    version: session.version,
+    state: session.state,
+    ...(session.reason === undefined ? {} : { reason: session.reason }),
+    ...(session.threadId === undefined ? {} : { threadId: session.threadId }),
+  };
+}
+
+/** Waits for the session's next state transition, bounded; the current state
+ * answers immediately when it is not running (nothing to wait for). */
+function waitForDebugState(sessionId: string, waitSeconds: number): Promise<TrackedDebugSession> {
+  const current = debugSessions.get(sessionId);
+  if (current === undefined) {
+    throw Object.assign(new Error("debug_no_session: no such debug session is tracked."), {
+      code: "debug_no_session",
+    });
+  }
+  if (current.state !== "running" || waitSeconds <= 0) {
+    return Promise.resolve(current);
+  }
+  return new Promise((resolve) => {
+    const list = debugWatchers.get(sessionId) ?? [];
+    const onTransition = (session: TrackedDebugSession): void => {
+      clearTimeout(timer);
+      resolve(session);
+    };
+    const timer = setTimeout(() => {
+      debugWatchers.set(
+        sessionId,
+        (debugWatchers.get(sessionId) ?? []).filter((watcher) => watcher !== onTransition),
+      );
+      resolve(debugSessions.get(sessionId) ?? current);
+    }, waitSeconds * 1000);
+    list.push(onTransition);
+    debugWatchers.set(sessionId, list);
+  });
+}
+
+async function executeIdeDebug(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  const fail = (code: string, message: string): Error =>
+    Object.assign(new Error(message), { code });
+
+  switch (method) {
+    case "maieutics/debug/configurations": {
+      const configs = await readLaunchConfigurations();
+      return {
+        configs: configs.map((config) => ({
+          name: config.name,
+          type: config.type,
+          request: config.request,
+        })),
+      };
+    }
+
+    case "maieutics/debug/start": {
+      const launchName = typeof params.launchName === "string" ? params.launchName : undefined;
+      const inline = (params.configuration ?? undefined) as Record<string, unknown> | undefined;
+      if ((launchName === undefined) === (inline === undefined)) {
+        throw fail(
+          "ide_invalid_arguments",
+          "Provide exactly one of 'launchName' or 'configuration'.",
+        );
+      }
+      let config: vscode.DebugConfiguration;
+      if (launchName !== undefined) {
+        const configs = await readLaunchConfigurations();
+        const found = configs.find((entry) => entry.name === launchName);
+        if (found === undefined) {
+          throw fail(
+            "debug_config_unknown",
+            "No launch configuration named '" + launchName + "' (available: " +
+              (configs.map((entry) => entry.name).join(", ") || "none") + ").",
+          );
+        }
+        config = {
+          type: found.type,
+          request: found.request,
+          name: found.name,
+          ...found.configuration,
+        };
+      } else {
+        if (
+          typeof inline !== "object" || inline === null ||
+          typeof inline.type !== "string" || typeof inline.request !== "string"
+        ) {
+          throw fail(
+            "ide_invalid_arguments",
+            "'configuration' must be a debug configuration object with string 'type' and 'request'.",
+          );
+        }
+        config = { ...inline } as vscode.DebugConfiguration;
+      }
+      if (params.stopOnEntry === true) config.stopOnEntry = true;
+
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      // The start event may carry the id of a session the user was already
+      // debugging — only a session that is NEW since this call answers.
+      const before = new Set(debugSessions.keys());
+      const started = await vscode.debug.startDebugging(folder, config);
+      if (!started) {
+        throw fail("debug_start_failed", "The debug start was canceled or rejected.");
+      }
+      const fresh = [...debugSessions.keys()].find((id) => !before.has(id));
+      const sessionId = fresh ??
+        (await new Promise<string>((resolve, reject) => {
+          const disposable = vscode.debug.onDidStartDebugSession((session) => {
+            if (before.has(session.id)) return;
+            clearTimeout(timer);
+            disposable.dispose();
+            resolve(session.id);
+          });
+          const timer = setTimeout(() => {
+            disposable.dispose();
+            reject(
+              fail("debug_start_timeout", "The debug session did not start within 10 seconds."),
+            );
+          }, 10_000);
+        }));
+      return { sessionId, state: debugSessions.get(sessionId)?.state ?? "running" };
+    }
+
+    case "maieutics/debug/state": {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      if (sessionId.length === 0) throw fail("ide_invalid_arguments", "sessionId is required.");
+      const waitSeconds =
+        typeof params.waitSeconds === "number" && Number.isFinite(params.waitSeconds)
+          ? Math.max(0, Math.min(20, Math.floor(params.waitSeconds)))
+          : 0;
+      const session = await waitForDebugState(sessionId, waitSeconds);
+      return debugStateAnswer(sessionId, session);
+    }
+
+    case "maieutics/debug/stack": {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      const session = debugObjects.get(sessionId);
+      if (session === undefined) throw fail("debug_no_session", "No such debug session is live.");
+      const threadId = typeof params.threadId === "number" ? params.threadId : undefined;
+      const stack = await session.customRequest("stackTrace", {
+        ...(threadId === undefined ? {} : { threadId }),
+      }) as { stackFrames?: Array<Record<string, unknown>> };
+      return { stackFrames: stack.stackFrames ?? [] };
+    }
+
+    case "maieutics/debug/variables": {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      const session = debugObjects.get(sessionId);
+      if (session === undefined) throw fail("debug_no_session", "No such debug session is live.");
+      const variablesReference = typeof params.variablesReference === "number"
+        ? params.variablesReference
+        : undefined;
+      const frameId = typeof params.frameId === "number" ? params.frameId : undefined;
+      if (variablesReference !== undefined) {
+        const children = await session.customRequest("variables", { variablesReference }) as {
+          variables?: Array<Record<string, unknown>>;
+        };
+        return { variables: children.variables ?? [] };
+      }
+      if (frameId === undefined) {
+        throw fail(
+          "ide_invalid_arguments",
+          "Provide either 'frameId' (flattened scopes) or 'variablesReference' (direct children).",
+        );
+      }
+      const scopes = await session.customRequest("scopes", { frameId }) as {
+        scopes?: Array<{ name?: string; variablesReference?: number }>;
+      };
+      const named = await Promise.all((scopes.scopes ?? []).map(async (scope) => {
+        if (typeof scope.variablesReference !== "number") {
+          return { name: scope.name ?? "", variables: [] };
+        }
+        const children = await session.customRequest("variables", {
+          variablesReference: scope.variablesReference,
+        }) as { variables?: Array<Record<string, unknown>> };
+        return { name: scope.name ?? "", variables: children.variables ?? [] };
+      }));
+      return { scopes: named };
+    }
+
+    case "maieutics/debug/evaluate": {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      const session = debugObjects.get(sessionId);
+      if (session === undefined) throw fail("debug_no_session", "No such debug session is live.");
+      const expression = typeof params.expression === "string" ? params.expression : "";
+      if (expression.length === 0) throw fail("ide_invalid_arguments", "expression is required.");
+      const frameId = typeof params.frameId === "number" ? params.frameId : undefined;
+      return await session.customRequest("evaluate", {
+        expression,
+        context: "repl",
+        ...(frameId === undefined ? {} : { frameId }),
+      });
+    }
+
+    case "maieutics/debug/breakpoints": {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      const session = debugObjects.get(sessionId);
+      if (session === undefined) throw fail("debug_no_session", "No such debug session is live.");
+      const uriText = typeof params.uri === "string" ? params.uri : "";
+      if (!uriText.startsWith("file:")) {
+        throw fail("ide_invalid_arguments", "'uri' must be a file:// source path.");
+      }
+      const lines = Array.isArray(params.lines)
+        ? (params.lines as unknown[]).filter((v): v is number => typeof v === "number" && v >= 1)
+        : [];
+      // The kernel contract is 1-based; DAP is 0-based — the bridge converts
+      // both ways so the model's breakpoint lines match the source view.
+      const result = await session.customRequest("setBreakpoints", {
+        source: { path: vscode.Uri.parse(uriText, true) },
+        breakpoints: lines.map((line) => ({ line: line - 1 })),
+      }) as { breakpoints?: Array<{ line?: number; verified?: boolean }> };
+      return {
+        breakpoints: (result.breakpoints ?? []).map((breakpoint) => ({
+          ...breakpoint,
+          ...(typeof breakpoint.line === "number" ? { line: breakpoint.line + 1 } : {}),
+        })),
+      };
+    }
+
+    case "maieutics/debug/control": {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+      const action = typeof params.action === "string" ? params.action : "";
+      const threadId = typeof params.threadId === "number" ? params.threadId : undefined;
+      const session = debugObjects.get(sessionId);
+      if (session === undefined) throw fail("debug_no_session", "No such debug session is live.");
+      if (action === "terminate") {
+        await vscode.debug.stopDebugging(session);
+        applyDebugTransition(sessionId, { kind: "terminated" });
+        return debugStateAnswer(sessionId, debugSessions.get(sessionId)!);
+      }
+      const thread = threadId ?? debugSessions.get(sessionId)?.threadId;
+      switch (action) {
+        case "continue":
+          await session.customRequest("continue", { threadId: thread ?? 0 });
+          break;
+        case "stepOver":
+          await session.customRequest("next", { threadId: thread ?? 0 });
+          break;
+        case "stepIn":
+          await session.customRequest("stepIn", { threadId: thread ?? 0 });
+          break;
+        case "stepOut":
+          await session.customRequest("stepOut", { threadId: thread ?? 0 });
+          break;
+        default:
+          throw fail(
+            "ide_invalid_arguments",
+            "action must be one of: continue, stepOver, stepIn, stepOut, terminate.",
+          );
+      }
+      applyDebugTransition(sessionId, { kind: "resumed" });
+      return debugStateAnswer(sessionId, debugSessions.get(sessionId)!);
+    }
+
+    default:
+      throw fail("ide_method_unsupported", "The method '" + method + "' is not supported.");
+  }
+}
+
 export async function executeIdeMethod(
   method: string,
   params: Record<string, unknown>,
 ): Promise<unknown> {
+  if (method.startsWith("maieutics/debug/")) {
+    return await executeIdeDebug(method, params);
+  }
   if (method === "maieutics/problems") {
     const wanted = typeof params.uri === "string" ? vscode.Uri.parse(params.uri) : undefined;
     const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);

@@ -210,3 +210,158 @@ export interface IdeFacade {
 
 /** The default facade over the module's default REPL client. */
 export const ide: IdeFacade = createIde((tool, args) => tools.invoke(tool, args));
+
+// ---------- the debug facade (ADR 0042 decision 13) ----------
+
+/** One launch configuration entry (from the workspace's launch.json). */
+export interface DebugConfigurationEntry {
+  readonly name: string;
+  readonly type: string;
+  readonly request: string;
+}
+
+/** DAP-native stack frame: 0-based line/column, exactly as the adapter
+ * reports — the facade passes debug shapes through without shifting. */
+export interface DebugStackFrame {
+  readonly id: number;
+  readonly name: string;
+  readonly source?: { readonly name?: string; readonly path?: string };
+  readonly line: number;
+  readonly column: number;
+}
+
+/** The debug session's lifecycle state, mirroring the kernel's answer. */
+export type DebugSessionStateValue = "running" | "paused" | "terminated";
+
+export interface DebugSessionStateAnswer {
+  readonly sessionId: string;
+  readonly version: number;
+  readonly state: DebugSessionStateValue;
+  readonly reason?: string;
+  readonly threadId?: number;
+}
+
+/** DAP scope with its members flattened (one level). */
+export interface DebugScope {
+  readonly name: string;
+  readonly variables: Array<Record<string, unknown>>;
+}
+
+/** Options for {@link IdeDebugFacade.start}: exactly one of `launchName` or
+ * `configuration` must be present. */
+export interface DebugStartOptions {
+  readonly launchName?: string;
+  readonly configuration?: Record<string, unknown>;
+  readonly stopOnEntry?: boolean;
+}
+
+/** Options for {@link IdeDebugFacade.variables}. */
+export type DebugVariablesTarget =
+  | { readonly frameId: number }
+  | { readonly variablesReference: number };
+
+/** One breakpoint address. `line` is 0-based (converted to the kernel's
+ * 1-based contract); `anchor` quotes unique context lines (1-based file
+ * positions survive line drift); `patch` is a V4A/git diff whose context
+ * locates the position. Exactly one form per entry. */
+export type DebugBreakpointSelector =
+  | { readonly line: number }
+  | { readonly anchor: readonly string[]; readonly occurrence?: number }
+  | { readonly patch: string };
+
+/** The debug slice: start the project under the user's debugger, wait for
+ * stops, inspect, and step. Sessions are visible in the debug UI by design.
+ * DAP shapes pass through 0-based; the only conversion is breakpoints, which
+ * the facade takes and returns 0-based like every line here while the kernel
+ * contract is 1-based. Note the control-bus answer timeout (5s): keep
+ * `state` waits at ≤4s and poll. */
+export interface IdeDebugFacade {
+  configurations(): Promise<{ configs: DebugConfigurationEntry[] }>;
+  start(
+    options: DebugStartOptions,
+  ): Promise<{ sessionId: string; state: DebugSessionStateValue }>;
+  state(
+    sessionId: string,
+    waitSeconds?: number,
+  ): Promise<DebugSessionStateAnswer>;
+  stack(
+    sessionId: string,
+    threadId?: number,
+  ): Promise<{ stackFrames: DebugStackFrame[] }>;
+  variables(
+    sessionId: string,
+    target: DebugVariablesTarget,
+  ): Promise<{ scopes?: DebugScope[]; variables?: Array<Record<string, unknown>> }>;
+  evaluate(
+    sessionId: string,
+    expression: string,
+    frameId?: number,
+  ): Promise<{ result: string; type?: string; variablesReference?: number }>;
+  breakpoints(
+    sessionId: string,
+    uri: string,
+    points: readonly (number | DebugBreakpointSelector)[],
+  ): Promise<{ breakpoints: Array<{ line?: number; verified?: boolean }> }>;
+  control(
+    sessionId: string,
+    action: "continue" | "stepOver" | "stepIn" | "stepOut" | "terminate",
+    threadId?: number,
+  ): Promise<DebugSessionStateAnswer>;
+}
+
+/** Creates the debug facade over an injected invoke — for tests and hosts
+ * that already hold a client. */
+export function createIdeDebug(
+  invoke: (tool: string, args?: Record<string, unknown>) => Promise<unknown>,
+): IdeDebugFacade {
+  const call = <T>(tool: string, args: Record<string, unknown>) =>
+    invokeReadTool<T>(invoke, tool, args) as Promise<T>;
+  return {
+    configurations: () => call("ide_debug_configurations", {}),
+    start: (options) =>
+      call("ide_debug_start", {
+        ...(options.launchName === undefined ? {} : { launchName: options.launchName }),
+        ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
+        ...(options.stopOnEntry === undefined ? {} : { stopOnEntry: options.stopOnEntry }),
+      }),
+    state: (sessionId, waitSeconds) =>
+      call(
+        "ide_debug_state",
+        waitSeconds === undefined ? { sessionId } : { sessionId, waitSeconds },
+      ),
+    stack: (sessionId, threadId) =>
+      call(
+        "ide_debug_stack",
+        threadId === undefined ? { sessionId } : { sessionId, threadId },
+      ),
+    variables: (sessionId, target) => call("ide_debug_variables", { sessionId, ...target }),
+    evaluate: (sessionId, expression, frameId) =>
+      call(
+        "ide_debug_evaluate",
+        frameId === undefined ? { sessionId, expression } : { sessionId, expression, frameId },
+      ),
+    breakpoints: (sessionId, uri, points) =>
+      call("ide_debug_breakpoints", {
+        sessionId,
+        uri,
+        points: points.map((point) => typeof point === "number" ? { line: point + 1 } : point),
+      })
+        .then((result) => {
+          const shaped = result as { breakpoints?: Array<{ line?: number; verified?: boolean }> };
+          return {
+            breakpoints: (shaped.breakpoints ?? []).map((breakpoint) => ({
+              ...breakpoint,
+              ...(typeof breakpoint.line === "number" ? { line: breakpoint.line - 1 } : {}),
+            })),
+          };
+        }),
+    control: (sessionId, action, threadId) =>
+      call(
+        "ide_debug_control",
+        threadId === undefined ? { sessionId, action } : { sessionId, action, threadId },
+      ),
+  };
+}
+
+/** The default debug facade over the module's default REPL client. */
+export const ideDebug: IdeDebugFacade = createIdeDebug((tool, args) => tools.invoke(tool, args));

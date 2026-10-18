@@ -16,11 +16,13 @@ import {
   mapLocalFsErrorCode,
   normalizedHoverAnswer,
   normalizeHoverContents,
+  parseLaunchConfigurations,
   parseRgMatchEvent,
   passesSearchFilters,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
+  transitionDebugSession,
 } from "./ide.ts";
 
 const progressFrame = (value: unknown) => ({
@@ -512,4 +514,59 @@ Deno.test("passesSearchFilters applies the gitignore naming rule", () => {
   assertEquals(passesSearchFilters("a/modules/x.js", name), true);
 
   assertEquals(passesSearchFilters("anything.go", {}), true, "no filters passes everything");
+});
+
+Deno.test("stripJsonComments survives strings and trailing commas", () => {
+  const jsonc = `{
+    // launch config
+    "version": "0.2.0",
+    "configurations": [
+      { "name": "launch: http://x", "type": "node", "request": "launch", /* inline */ },
+      { "name": "attach", "type": "node", "request": "attach", },
+    ],
+  }`;
+  const configs = parseLaunchConfigurations(jsonc);
+  assertEquals(configs.length, 2);
+  assertEquals(configs[0].name, "launch: http://x", "a `//` inside a string survives");
+  assertEquals(configs[1].request, "attach");
+  assertEquals(configs[0].configuration.type, "node", "the full object rides along");
+});
+
+Deno.test("parseLaunchConfigurations degrades to empty on garbage", () => {
+  assertEquals(parseLaunchConfigurations("not json {"), []);
+  assertEquals(parseLaunchConfigurations('{"version": "0.2.0"}'), []);
+  assertEquals(
+    parseLaunchConfigurations('{"configurations": [{"name": 1}]}'),
+    [],
+    "entries missing the required string fields drop",
+  );
+});
+
+Deno.test("transitionDebugSession follows the debug state machine", () => {
+  let session = transitionDebugSession(undefined, { kind: "start" });
+  assertEquals(session.state, "running");
+  const runningVersion = session.version;
+
+  session = transitionDebugSession(session, {
+    kind: "stopped",
+    reason: "breakpoint",
+    threadId: 7,
+  });
+  assertEquals(session.state, "paused");
+  assertEquals(session.reason, "breakpoint");
+  assertEquals(session.threadId, 7);
+  if (session.version <= runningVersion) throw new Error("version must advance");
+
+  session = transitionDebugSession(session, { kind: "resumed" });
+  assertEquals(session.state, "running");
+
+  session = transitionDebugSession(session, { kind: "terminated" });
+  assertEquals(session.state, "terminated");
+
+  const first = transitionDebugSession(undefined, { kind: "start" });
+  assertEquals(
+    transitionDebugSession(first, { kind: "resumed" as never }).version,
+    first.version + 1,
+    "every transition bumps the version so waits wake",
+  );
 });

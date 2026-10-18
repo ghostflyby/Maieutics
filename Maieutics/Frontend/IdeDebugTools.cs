@@ -429,10 +429,6 @@ internal sealed class IdeDebugTools
         return null;
     }
 
-    private static JsonElement Empty()
-    {
-        return JsonSerializer.SerializeToElement(new { }, SerializerOptions);
-    }
 }
 
 internal sealed record DebugStartParams(

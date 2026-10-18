@@ -1600,8 +1600,13 @@ function debugStateAnswer(sessionId: string, session: TrackedDebugSession): unkn
  * answers immediately when it is not running (nothing to wait for). */
 function waitForDebugState(sessionId: string, waitSeconds: number): Promise<TrackedDebugSession> {
   const current = debugSessions.get(sessionId);
-  if (current === undefined || current.state !== "running" || waitSeconds <= 0) {
-    return Promise.resolve(current ?? { version: 0, state: "terminated" });
+  if (current === undefined) {
+    throw Object.assign(new Error("debug_no_session: no such debug session is tracked."), {
+      code: "debug_no_session",
+    });
+  }
+  if (current.state !== "running" || waitSeconds <= 0) {
+    return Promise.resolve(current);
   }
   return new Promise((resolve) => {
     const list = debugWatchers.get(sessionId) ?? [];
@@ -1681,25 +1686,29 @@ async function executeIdeDebug(
       if (params.stopOnEntry === true) config.stopOnEntry = true;
 
       const folder = vscode.workspace.workspaceFolders?.[0];
+      // The start event may carry the id of a session the user was already
+      // debugging — only a session that is NEW since this call answers.
+      const before = new Set(debugSessions.keys());
       const started = await vscode.debug.startDebugging(folder, config);
       if (!started) {
         throw fail("debug_start_failed", "The debug start was canceled or rejected.");
       }
-      // The session id arrives on the start event, which the module-level
-      // listener has already processed by the time the promise above resolved.
-      const known = [...debugSessions.entries()].find(([, session]) => session.state === "running");
-      if (known !== undefined) return { sessionId: known[0], state: known[1].state };
-      const sessionId = await new Promise<string>((resolve, reject) => {
-        const disposable = vscode.debug.onDidStartDebugSession((session) => {
-          clearTimeout(timer);
-          disposable.dispose();
-          resolve(session.id);
-        });
-        const timer = setTimeout(() => {
-          disposable.dispose();
-          reject(fail("debug_start_timeout", "The debug session did not start within 10 seconds."));
-        }, 10_000);
-      });
+      const fresh = [...debugSessions.keys()].find((id) => !before.has(id));
+      const sessionId = fresh ??
+        (await new Promise<string>((resolve, reject) => {
+          const disposable = vscode.debug.onDidStartDebugSession((session) => {
+            if (before.has(session.id)) return;
+            clearTimeout(timer);
+            disposable.dispose();
+            resolve(session.id);
+          });
+          const timer = setTimeout(() => {
+            disposable.dispose();
+            reject(
+              fail("debug_start_timeout", "The debug session did not start within 10 seconds."),
+            );
+          }, 10_000);
+        }));
       return { sessionId, state: debugSessions.get(sessionId)?.state ?? "running" };
     }
 

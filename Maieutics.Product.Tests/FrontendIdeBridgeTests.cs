@@ -20,7 +20,7 @@ namespace Maieutics.Product.Tests;
 ///     per-socket capability announcement that gates the family.
 /// </summary>
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendIdeBridgeTests
+public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromMilliseconds(500);
 
@@ -1150,6 +1150,83 @@ public sealed class FrontendIdeBridgeTests
             cancellationToken);
         failure.Failure.Should().NotBeNull();
         failure.Failure!.Code.Should().Be("ide_invalid_arguments");
+    }
+
+    /// <summary>The composed-host integration the debug tools need: the
+    /// IdeToolFamily's concat must actually put the debug tools into a run
+    /// profile (a broken registration would leave every unit round trip green
+    /// while the model never sees the tools), and the frame/answer loop must
+    /// carry the debug methods like any other family member.</summary>
+    [Fact(Timeout = 120_000)]
+    public async Task RunLoopServesIdeDebugToolsThroughTheBridge()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var provider = new FakeOpenAiServer(
+            OpenAiApiFlavor.ChatCompletions,
+            toolFlow: true,
+            toolName: "ide_debug_configurations",
+            toolArgumentsJson: "{}",
+            expectedToolResultText: "probe launch");
+        await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
+            cancellationToken,
+            provider,
+            hanging: false);
+
+        var sessionId = await harness.GetSessionIdAsync(cancellationToken);
+        await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
+        await WaitForAsync(() => harness.IdeGate.IsIdeFrontendConnected(sessionId), cancellationToken);
+
+        var runId = await harness.SubmitTurnAsync(sessionId, "list launch configs", cancellationToken);
+
+        // A run-context call announces inside a sequenced tool.progress content
+        // item (decision 1) — not the standalone frame the context-less path uses.
+        using var collectDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        collectDeadline.CancelAfter(TimeSpan.FromSeconds(45));
+        var seen = new List<string>();
+        string? requestId = null;
+        try
+        {
+            while (requestId is null)
+            {
+                var frame = await events.ReceiveFrameAsync(collectDeadline.Token).ConfigureAwait(true);
+                var type = frame.GetProperty("type").GetString();
+                string? described = type;
+                if (frame.TryGetProperty("content", out var content) &&
+                    content.TryGetProperty("value", out var value) &&
+                    value.TryGetProperty("ideRequest", out var request))
+                {
+                    described = $"{type}:{request.GetProperty("method").GetString()}";
+                    if (request.GetProperty("method").GetString() == "maieutics/debug/configurations")
+                    {
+                        requestId = request.GetProperty("requestId").GetString();
+                    }
+                }
+
+                seen.Add(described ?? type ?? "?");
+                if (type == "run.failed") {
+                    output.WriteLine("run.failed frame: " + frame.GetRawText());
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            output.WriteLine("debug e2e frames seen: " + string.Join(" | ", seen.TakeLast(40)));
+            throw;
+        }
+
+        output.WriteLine("debug e2e matched the configurations request");
+        var answered = await harness.Client.PostAsJsonAsync(
+            $"/v1/agent/ide/{requestId}",
+            new { value = new { configs = new[] { new { name = "probe launch", type = "node", request = "launch" } } } },
+            cancellationToken);
+        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await harness.WaitForTurnCommittedAsync(sessionId, cancellationToken, runId);
+        var trailing = await events.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.status" &&
+                     frame.GetProperty("state").GetString() == "idle",
+            cancellationToken);
+        trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
     }
 
     // ---------- endpoint + announcement (harness) ----------

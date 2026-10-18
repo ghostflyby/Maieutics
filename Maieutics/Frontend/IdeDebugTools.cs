@@ -24,6 +24,24 @@ internal sealed class IdeDebugTools
 {
     private static readonly JsonSerializerOptions SerializerOptions = IdeFunctionJsonContext.Default.Options;
 
+    /// <summary>A cached empty JSON object for parameter-less requests: source-gen
+    /// contexts cannot serialize anonymous types, and `SerializeToElement(new {})`
+    /// would throw NotSupportedException at invocation time.</summary>
+    private static readonly JsonElement EmptyObject = BuildEmptyObject();
+
+    private static JsonElement BuildEmptyObject()
+    {
+        var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteEndObject();
+        }
+
+        buffer.Position = 0;
+        return JsonDocument.Parse(buffer).RootElement.Clone();
+    }
+
     private readonly IdeRequestRegistry requests;
     private readonly IIdeFrontendGate gate;
     private readonly FrontendIdeSockets sockets;
@@ -218,9 +236,9 @@ internal sealed class IdeDebugTools
         var answer = await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/configurations",
-            JsonSerializer.SerializeToElement(new { }, SerializerOptions),
+            EmptyObject,
             cancellationToken).ConfigureAwait(false);
-        return answer.ValueKind == JsonValueKind.Object ? answer : Empty();
+        return answer.ValueKind == JsonValueKind.Object ? answer : EmptyObject;
     }
 
     [Description("Starts a debug session by launch name or inline configuration.")]

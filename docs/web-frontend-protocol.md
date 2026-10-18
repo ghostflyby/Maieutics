@@ -360,6 +360,21 @@ buffer. An operation that loses its target mid-call fails typed
   the `idefs://` family as `maieutics/fs/search`
   (`{folderId, segments, …}`, matches relative to the searched folder).
 
+### Debug bridge (`maieutics/debug/*`, ADR 0042 decision 13)
+
+The kernel drives the user's debugger through a bounded slice: list launch
+configurations (`maieutics/debug/configurations` — launch.json parsed
+extension-side, JSONC tolerated), start by name or inline configuration
+(`…/start`, optional `stopOnEntry`; **the session is visible in the debug
+UI** — the stable API has no headless mode), wait for a transition from
+running (`…/state`, `waitSeconds` ≤ 20), inspect a paused session
+(`…/stack`, `…/variables` — a frame's scopes flattened, or a
+`variablesReference` expansion; `…/evaluate` in `repl` context), set or
+clear a file's breakpoints (`…/breakpoints`, kernel-translated
+`file://` source), and step/continue/terminate (`…/control`). State
+transitions ride the debug events; every request is one ide.request /
+answer pair, never a subscription.
+
 Kernel-side gates (instruction surface, bounds, the dirty gate over
 `maieutics/dirty`, unified diff) run before the bridge exactly as for the
 `idefs://` family. **Coverage**: the kernel forwards only paths under the

@@ -314,6 +314,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IIdeFrontendGate>(static services =>
             services.GetRequiredService<FrontendIdeSockets>());
         builder.Services.AddSingleton<IdeRequestRegistry>();
+        builder.Services.AddSingleton<IdeDebugTools>();
         builder.Services.AddSingleton<IdeFunctions>(static services => new IdeFunctions(
             services.GetRequiredService<Workspace>(),
             services.GetRequiredService<IdeRequestRegistry>(),
@@ -321,7 +322,9 @@ public static class MaieuticsHost
             services.GetRequiredService<WorkspaceEditFunctions>(),
             services.GetRequiredService<FrontendIdeSockets>()));
         builder.Services.AddSingleton(static services => new IdeToolFamily(
-            services.GetRequiredService<IdeFunctions>().Functions,
+            services.GetRequiredService<IdeFunctions>().Functions
+                .Concat(services.GetRequiredService<IdeDebugTools>().Functions)
+                .ToList(),
             services.GetRequiredService<IIdeFrontendGate>()));
         // The workspace file-system bridge (ADR 0042 stage F, decision 12): when an
         // announcing frontend is live, the workspace tools' I/O forwards to the elected
@@ -401,6 +404,7 @@ public static class MaieuticsHost
                     .. services.GetRequiredService<ResourceFunctions>().Functions,
                     .. services.GetRequiredService<TerminalFunctions>().Functions,
                     .. services.GetRequiredService<IdeFunctions>().Functions,
+                    .. services.GetRequiredService<IdeDebugTools>().Functions,
                     .. services.GetRequiredService<WorkspaceBridgeFunctions>().Functions
                 ],
                 pluginHosts: services.GetRequiredService<PluginHostManager>(),

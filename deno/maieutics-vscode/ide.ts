@@ -1099,3 +1099,123 @@ export function passesSearchFilters(
   }
   return true;
 }
+
+// ---------- stage G: the debug bridge (decision 13) ----------
+
+/** Strips JSONC noise (line/block comments, trailing commas) so launch.json —
+ * which is JSONC by contract — parses with plain JSON.parse. String-aware: a
+ * `//` inside a string literal survives. */
+export function stripJsonComments(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      out += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      out += character;
+      continue;
+    }
+    if (character === "/" && text[index + 1] === "/") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      out += "\n";
+      continue;
+    }
+    if (character === "/" && text[index + 1] === "*") {
+      index += 2;
+      while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) index += 1;
+      index += 1;
+      continue;
+    }
+    out += character;
+  }
+  // Trailing commas: `,` followed only by whitespace and a closing bracket.
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
+/** One launch configuration, flattened to what the bridge surfaces. */
+export interface LaunchConfiguration {
+  readonly name: string;
+  readonly type: string;
+  readonly request: string;
+  /** The full launch entry — starting by name re-sends this object so adapter
+   * options and variable resolution survive. */
+  readonly configuration: Record<string, unknown>;
+}
+
+/** Parses a launch.json body into its configurations (the `configurations`
+ * array; `version` is not surfaced). Returns an empty list for unparseable
+ * bodies — the caller answers typed, with the raw text out of the picture. */
+export function parseLaunchConfigurations(jsoncText: string): LaunchConfiguration[] {
+  let parsed: { configurations?: unknown };
+  try {
+    parsed = JSON.parse(stripJsonComments(jsoncText));
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object" || !Array.isArray(parsed.configurations)) {
+    return [];
+  }
+  const configs: LaunchConfiguration[] = [];
+  for (const entry of parsed.configurations) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (
+      typeof record.name !== "string" || typeof record.type !== "string" ||
+      typeof record.request !== "string"
+    ) {
+      continue;
+    }
+    configs.push({
+      name: record.name,
+      type: record.type,
+      request: record.request,
+      configuration: record,
+    });
+  }
+  return configs;
+}
+
+/** The debug session states the bridge surfaces: running (executing), paused
+ * (stopped at a breakpoint/entry/step — the inspectable state), or terminated
+ * (the session ended; terminal). */
+export type DebugSessionState = "running" | "paused" | "terminated";
+
+/** One tracked debug session: a monotonic version (each transition bumps it,
+ * which is what the kernel's wait compares), the state, and the stop details
+ * of the most recent pause. */
+export interface TrackedDebugSession {
+  readonly version: number;
+  readonly state: DebugSessionState;
+  readonly reason?: string;
+  readonly threadId?: number;
+}
+
+/** The transition rules: start begins running; a DAP `stopped` event pauses;
+ * `continue`/step returns to running; terminate is terminal. Unknown events
+ * are ignored (they never bump the version, so waits do not wake spuriously). */
+export function transitionDebugSession(
+  session: TrackedDebugSession | undefined,
+  event: { kind: "start" } | { kind: "stopped"; reason?: string; threadId?: number } | {
+    kind: "resumed";
+  } | { kind: "terminated" },
+): TrackedDebugSession {
+  const version = (session?.version ?? 0) + 1;
+  switch (event.kind) {
+    case "start":
+      return { version, state: "running" };
+    case "stopped":
+      return { version, state: "paused", reason: event.reason, threadId: event.threadId };
+    case "resumed":
+      return { version, state: "running" };
+    case "terminated":
+      return { version, state: "terminated" };
+  }
+}

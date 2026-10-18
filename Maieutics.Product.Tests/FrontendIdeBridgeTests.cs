@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
@@ -10,7 +9,6 @@ using Maieutics.Execution;
 using Maieutics.Frontend;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
-using Xunit;
 
 namespace Maieutics.Product.Tests;
 
@@ -30,7 +28,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -68,7 +66,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var navigate = Function(functions.Functions, "ide_navigate");
         var physical = new Uri(Path.Combine(workspace.Path, "b.cs")).AbsoluteUri;
@@ -96,7 +94,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path, TestTimeout);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path, TestTimeout);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -123,7 +121,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -154,7 +152,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        var (functions, _, _, _) = CreateFunctions(workspace.Path);
         var symbols = Function(functions.Functions, "ide_document_symbols");
 
         var invocation = await InvokeAsync(
@@ -174,7 +172,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path, TestTimeout);
+        var (functions, _, gate, _) = CreateFunctions(workspace.Path, TestTimeout);
         gate.Connected = true;
         var escape = Function(functions.Functions, "ide_request");
 
@@ -216,7 +214,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var diagnostics = Function(functions.Functions, "ide_diagnostics");
         var physical = new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri;
@@ -339,7 +337,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         File.WriteAllText(
             Path.Combine(workspace.Path, "a.cs"),
             "alpha\nbeta\ngamma\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -386,7 +384,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "dup\nkeep\ndup\nkeep\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
 
@@ -428,7 +426,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\nmiddle\nend\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
         const string patch = "*** Begin Patch\n*** Update File: a.cs\n@@\n-middle\n+middle updated\n*** End Patch";
@@ -450,7 +448,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "start\nmiddle\nend\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
         const string patch = "--- a/a.cs\n+++ b/a.cs\n@@ -1,3 +1,3 @@\n start\n-middle\n+middle updated\n end";
@@ -569,7 +567,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\ntwo\n");
         File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var apply = Function(functions.Functions, "ide_apply_edit");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -607,7 +605,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "one\n");
         File.WriteAllText(Path.Combine(workspace.Path, "b.cs"), "x\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var apply = Function(functions.Functions, "ide_apply_edit");
 
@@ -635,7 +633,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         }
 
         failure.Should().NotBeNull();
-        failure!.Code.Should().Be("ide_document_dirty");
+        failure.Code.Should().Be("ide_document_dirty");
         File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("one\n", "nothing changed");
         File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("x\n");
     }
@@ -671,7 +669,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "  x\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var format = Function(functions.Functions, "ide_format_document");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -708,7 +706,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "x\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var actions = Function(functions.Functions, "ide_code_actions");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -748,7 +746,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "symbol\n");
-        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var rename = Function(functions.Functions, "ide_rename");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -798,7 +796,6 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var hover = Function(functions.Functions, "ide_hover");
-        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
 
         var frames = new List<FrontendEventFrame>();
         var registration = sockets.Announce(
@@ -1034,7 +1031,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
     {
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
-        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        var (_, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var debugRegistry = new IdeRequestRegistry();
         var debugSockets = new FrontendIdeSockets();
@@ -1067,7 +1064,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
     {
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        var (_, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var debugSockets = new FrontendIdeSockets();
         var debugFunctions = new IdeDebugTools(
@@ -1076,7 +1073,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             debugSockets,
             Workspace.Create(workspace.Path, workspace.Path));
         var start = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_start");
-        var debugRegistration = debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
+        debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
 
         var invocation = await InvokeWithAnswerAsync(
             start,
@@ -1098,7 +1095,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
     {
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path, TestTimeout);
+        var (_, registry, gate, _) = CreateFunctions(workspace.Path, TestTimeout);
         gate.Connected = true;
         var debugSockets = new FrontendIdeSockets();
         var debugFunctions = new IdeDebugTools(
@@ -1107,7 +1104,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             debugSockets,
             Workspace.Create(workspace.Path, workspace.Path));
         var state = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_state");
-        var debugRegistration = debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
+        debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
         var control = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_control");
 
         var invocation = await InvokeWithAnswerAsync(
@@ -1133,7 +1130,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
     {
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
-        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        var (_, _, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var debugRegistry = new IdeRequestRegistry();
         var debugSockets = new FrontendIdeSockets();
@@ -1239,7 +1236,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             Path.Combine(workspace.Path, "src", "app.ts"),
             "const a = 1;\nconst b = 2;\nconst c = 3;\n",
             cancellationToken);
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        var (_, registry, gate, _) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var debugFunctions = new IdeDebugTools(
             registry,
@@ -1628,8 +1625,6 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         CancellationToken cancellationToken)
     {
         TaskCompletionSource<string> announcedPayload = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var lastPayloadJson = string.Empty;
-        var lastMethod = string.Empty;
         var invocation = function.InvokeAsync(
             ContextArguments(
                 argumentsJson,

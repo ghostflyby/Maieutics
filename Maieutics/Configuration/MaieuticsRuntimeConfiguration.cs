@@ -97,7 +97,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
         this.ideTools = ideTools;
 
-        var candidate = CreateCandidate();
+        CreateCandidate();
 
         logger.LogInformation(
             "Using Maieutics configuration file {ConfigurationPath} selected from {ConfigurationSource}.",

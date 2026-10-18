@@ -15,7 +15,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;
 
@@ -24,7 +23,7 @@ public sealed class FrontendApiIntegrationTests
 {
     private const string Answer = "streamed answer";
 
-    private const string DUAL_PROVIDER_CONFIG_TEMPLATE = """
+    private const string DualProviderConfigTemplate = """
         {
           "Maieutics": {
             "DefaultProfile": "openai-profile",
@@ -49,7 +48,7 @@ public sealed class FrontendApiIntegrationTests
         }
         """;
 
-    private const string ANTHROPIC_CONFIG_TEMPLATE = """
+    private const string AnthropicConfigTemplate = """
         {
           "Maieutics": {
             "DefaultProfile": "claude",
@@ -67,7 +66,7 @@ public sealed class FrontendApiIntegrationTests
         }
         """;
 
-    private const string CONFIGURATION_TEMPLATE = """
+    private const string ConfigurationTemplate = """
         {
           "Maieutics": {
             "Model": { "Provider": "OpenAI", "Name": "{{model}}" },
@@ -317,13 +316,14 @@ public sealed class FrontendApiIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         var target = new FakePresentationTarget();
-        await using var scope = harness.AttachPresentation(sessionId, target);
+        var scope = harness.AttachPresentation(sessionId, target);
         using var waitDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
         waitDeadline.CancelAfter(TimeSpan.FromSeconds(10));
         var wait = scope.Sink.RequestInputAsync("Name:", password: false, waitDeadline.Token);
 
         var published = target.Published.Single(entry => entry.Type == "input.request");
-        var requestId = published.Data.GetProperty("requestId").GetString()!;
+        var requestId = published.Data.GetProperty("requestId").GetString();
+        Assert.NotNull(requestId);
 
         var answer = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/{requestId}",
@@ -730,7 +730,7 @@ public sealed class FrontendApiIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
-        var dualConfig = DUAL_PROVIDER_CONFIG_TEMPLATE
+        var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
         await using var harness = await FrontendHarness.StartAsync(
@@ -787,7 +787,7 @@ public sealed class FrontendApiIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
-        var dualConfig = DUAL_PROVIDER_CONFIG_TEMPLATE
+        var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
         await using var harness = await FrontendHarness.StartAsync(
@@ -975,7 +975,7 @@ public sealed class FrontendApiIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", toolFlow: true);
         var anthropicEndpoint = provider.Endpoint.ToString();
-        var anthropicConfig = ANTHROPIC_CONFIG_TEMPLATE.Replace("{{endpoint}}", anthropicEndpoint);
+        var anthropicConfig = AnthropicConfigTemplate.Replace("{{endpoint}}", anthropicEndpoint);
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: builder =>
             {
@@ -1039,7 +1039,7 @@ public sealed class FrontendApiIntegrationTests
 
             await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
             await events.ReceiveFrameAsync(deadline.Token);
-            var runId = await harness.SubmitTurnAsync(sessionId, "apply the patch", deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "apply the patch", deadline.Token);
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.status" &&
                          frame.GetProperty("state").GetString() == "idle",
@@ -1097,7 +1097,7 @@ public sealed class FrontendApiIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(60));
         var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
-        var dualConfig = DUAL_PROVIDER_CONFIG_TEMPLATE
+        var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
         var harness = await FrontendHarness.StartAsync(
@@ -1158,7 +1158,6 @@ public sealed class FrontendApiIntegrationTests
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-mcp-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var configurationFile = Path.Combine(root, "maieutics.json");
-        var discoveryPath = Path.Combine(root, "discovery.json");
         // MCP configuration is a declared plugin data entrypoint now (ADR 0033): the
         // plugins root is redirected into the test sandbox and the root project (itself
         // a plugin) declares the data file.
@@ -1192,7 +1191,7 @@ public sealed class FrontendApiIntegrationTests
                 deadline.Token);
             await File.WriteAllTextAsync(
                 configurationFile,
-                CONFIGURATION_TEMPLATE
+                ConfigurationTemplate
                     .Replace("{{model}}", "test-model")
                     .Replace("{{endpoint}}", provider.Endpoint.ToString()),
                 deadline.Token);
@@ -1455,7 +1454,7 @@ public sealed class FrontendApiIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", webSearchFlow: true);
-        var config = ANTHROPIC_CONFIG_TEMPLATE.Replace("{{endpoint}}", provider.Endpoint.ToString());
+        var config = AnthropicConfigTemplate.Replace("{{endpoint}}", provider.Endpoint.ToString());
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
             transformConfiguration: _ => DeclareEndpointCapability(config, provider.Endpoint, "WebSearch"));
@@ -1587,8 +1586,8 @@ public sealed class FrontendApiIntegrationTests
 
         /// <summary>The content-addressed object store backing <c>/v1/objects</c>, so tests
         /// can ingest real objects without driving a full turn.</summary>
-        public Maieutics.Persistence.ObjectStore ObjectStore =>
-            host.Services.GetRequiredService<Maieutics.Persistence.ObjectStore>();
+        public Persistence.ObjectStore ObjectStore =>
+            host.Services.GetRequiredService<Persistence.ObjectStore>();
 
         public static async Task<FrontendHarness> StartAsync(
             CancellationToken cancellationToken,
@@ -1605,7 +1604,7 @@ public sealed class FrontendApiIntegrationTests
             // in-memory configuration) so the hot-reload test can rewrite them.
             var endpoint = (provider as FakeOpenAiServer)?.Endpoint.ToString()
                 ?? (provider as HangingOpenAiServer)?.Endpoint.ToString() ?? string.Empty;
-            var configurationFileBody = CONFIGURATION_TEMPLATE
+            var configurationFileBody = ConfigurationTemplate
                 .Replace("{{model}}", model)
                 .Replace("{{endpoint}}", endpoint);
             if (transformConfiguration is not null)
@@ -1679,7 +1678,7 @@ public sealed class FrontendApiIntegrationTests
         /// <summary>Registers the test process as the owning peer of a session so a raw
         /// child socket stub can pass the /comm handshake.</summary>
         public void RegisterControlPeer(string sessionId) =>
-            host.Services.GetRequiredService<Maieutics.Control.ReplControlSessionRegistry>()
+            host.Services.GetRequiredService<Control.ReplControlSessionRegistry>()
                 .Register(Environment.ProcessId, sessionId);
 
         /// <summary>The live frontend session service, for direct service-level tests
@@ -1689,8 +1688,8 @@ public sealed class FrontendApiIntegrationTests
 
         /// <summary>The live session manager, so tests can observe eviction-pin state
         /// that the server-side turn queue drives (ADR 0025).</summary>
-        public Maieutics.Commands.MaieuticsAgentSessionManager SessionManager =>
-            host.Services.GetRequiredService<Maieutics.Commands.MaieuticsAgentSessionManager>();
+        public Commands.MaieuticsAgentSessionManager SessionManager =>
+            host.Services.GetRequiredService<Commands.MaieuticsAgentSessionManager>();
 
         /// <summary>The live turn queue, so tests can arm its worker seams (the
         /// queue.updated liveness contract, ADR 0025).</summary>
@@ -1700,8 +1699,8 @@ public sealed class FrontendApiIntegrationTests
         /// <summary>The live runtime configuration, so tests can await hot-reload completion
         /// (each completed reload swaps a fresh completion task) instead of polling the
         /// status surface.</summary>
-        public Maieutics.Configuration.MaieuticsRuntimeConfiguration RuntimeConfiguration =>
-            host.Services.GetRequiredService<Maieutics.Configuration.MaieuticsRuntimeConfiguration>();
+        public Configuration.MaieuticsRuntimeConfiguration RuntimeConfiguration =>
+            host.Services.GetRequiredService<Configuration.MaieuticsRuntimeConfiguration>();
 
         /// <summary>The IDE request registry, so endpoint tests can place pending requests
         /// and complete them through the real answer route (ADR 0042).</summary>
@@ -1710,8 +1709,8 @@ public sealed class FrontendApiIntegrationTests
 
         /// <summary>The live IDE announcement gate, so tests observe the per-socket
         /// capability lifecycle without driving a run.</summary>
-        public Maieutics.Configuration.IIdeFrontendGate IdeGate =>
-            host.Services.GetRequiredService<Maieutics.Configuration.IIdeFrontendGate>();
+        public Configuration.IIdeFrontendGate IdeGate =>
+            host.Services.GetRequiredService<Configuration.IIdeFrontendGate>();
 
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real
@@ -1726,7 +1725,7 @@ public sealed class FrontendApiIntegrationTests
 
         /// <summary>The control host address (the Unix socket path on Unix).</summary>
         public string ControlAddress =>
-            host.Services.GetRequiredService<Maieutics.Control.ReplControlHost>().ControlAddress;
+            host.Services.GetRequiredService<Control.ReplControlHost>().ControlAddress;
 
         public HttpClient CreateClient(string? token = null)
         {
@@ -1838,8 +1837,8 @@ public sealed class FrontendApiIntegrationTests
             if (completion.Exception?.GetBaseException() is not { } cause)
                 return $"{outcome}, no failure recorded";
 
-            var code = cause is Maieutics.Agent.AgentException agentException
-                ? Maieutics.Frontend.FrontendErrors.MapAgentException(agentException)
+            var code = cause is AgentException agentException
+                ? FrontendErrors.MapAgentException(agentException)
                 : "agent_error";
             // A provider failure's interesting detail is its inner exception (the actual
             // HTTP/SSE/socket failure); without it the verdict names only the wrapper.

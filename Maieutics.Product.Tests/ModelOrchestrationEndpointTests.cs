@@ -11,7 +11,6 @@ using Maieutics.Permissions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
-using Xunit;
 
 namespace Maieutics.Product.Tests;
 

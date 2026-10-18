@@ -62,7 +62,7 @@ public sealed class FrontendUiModelTests
         var display = publisher.Published.Should().ContainSingle().Which;
         display.Type.Should().Be("repl.display");
         var announcement = display.Data.GetProperty("application/vnd.maieutics.view+json");
-        announcement.GetProperty("modelId").GetString().Should().Be(model!.CommId);
+        announcement.GetProperty("modelId").GetString().Should().Be(model.CommId);
         announcement.GetProperty("viewFamily").GetString().Should().Be("maieutics/form");
         announcement.GetProperty("version").GetString().Should().Be("1.0");
         announcement.GetProperty("state").GetProperty("title").GetString().Should().Be("Approve deployment?");
@@ -93,7 +93,7 @@ public sealed class FrontendUiModelTests
         await router.PushToReplAsync(
             session.ToString(),
             Uplink(
-                model!.CommId,
+                model.CommId,
                 new { method = "event", name = "submit", payload = new { values = new { note = "ship it" } } }),
             TestContext.Current.CancellationToken);
 

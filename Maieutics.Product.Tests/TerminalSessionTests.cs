@@ -163,7 +163,7 @@ public sealed class TerminalSessionTests
             new VariableTable(new EmptyVariableSource()));
     }
 
-    private sealed class EmptyVariableSource : Execution.IPermissionVariableSource
+    private sealed class EmptyVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

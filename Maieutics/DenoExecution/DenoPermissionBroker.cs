@@ -1,8 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
-using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.Permissions;

@@ -1,5 +1,3 @@
-using Microsoft.Extensions.AI;
-
 namespace Maieutics.Agent;
 
 /// <summary>

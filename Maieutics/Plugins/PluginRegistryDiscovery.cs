@@ -249,7 +249,7 @@ internal static class PluginRegistryDiscovery
         }
     }
 
-    /// <summary>Toolchain mediation: `deno info --json <url>` fetches the URL into the
+    /// <summary>Toolchain mediation: `deno info --json {url}` fetches the URL into the
     /// shared cache and reports its local path.</summary>
     public sealed record NpmPackageInfo(string Name, string Version, string LocalPath);
 

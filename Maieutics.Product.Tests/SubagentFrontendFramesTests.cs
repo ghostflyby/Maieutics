@@ -105,7 +105,7 @@ public sealed class SubagentFrontendFramesTests
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var taskWaitCalls = 0;
-        var probeTool = CreateSpawnTool("agent_probe", (arguments, token) =>
+        CreateSpawnTool("agent_probe", (arguments, token) =>
         {
             var handle = AgentSubagentContext.GetRequired(arguments)
                 .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)

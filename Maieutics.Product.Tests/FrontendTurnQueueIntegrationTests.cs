@@ -2,11 +2,9 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
-using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using Maieutics.Providers.OpenAI;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using EventsConnection = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendEventsConnection;
 
@@ -604,7 +602,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         var manager = harness.SessionManager;
-        var addressed = new Maieutics.Agent.AgentSessionId(Guid.ParseExact(sessionId, "N"));
+        var addressed = new Agent.AgentSessionId(Guid.ParseExact(sessionId, "N"));
 
         // No queue work: no pin. The lease is acquired synchronously with the enqueue
         // commit, so a session with queued work is pinned from that moment.

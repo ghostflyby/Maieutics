@@ -32,7 +32,7 @@ internal sealed class SkillsContributionDelivery(
     ContributionSlotTable table,
     ContributionCoordinator engine,
     Skills.SkillCatalog? skillCatalog,
-    Permissions.VariableTable? manifestVariables,
+    VariableTable? manifestVariables,
     Func<string?>? workspaceRootAccessor,
     ILogger logger) : IContributionDelivery
 {
@@ -276,7 +276,7 @@ internal sealed class SkillsContributionDelivery(
             {
                 expanded = manifestVariables is { } variables ? variables.Expand(pattern) : pattern;
             }
-            catch (Permissions.PermissionException exception)
+            catch (PermissionException exception)
             {
                 results.Add(InertSkill(pluginId, $"roots[{index}]", exception.Message));
                 index++;

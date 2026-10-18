@@ -357,7 +357,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
         return new PromptServerHarness(generation, access, lifetime, serverTask);
     }
 
-    private static string? Arg(ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.GetPromptRequestParams> request, string name)
+    private static string? Arg(RequestContext<GetPromptRequestParams> request, string name)
     {
         return request.Params?.Arguments is { } args && args.TryGetValue(name, out var value) ? value.ToString() : null;
     }

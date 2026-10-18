@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Maieutics.Execution;
 using Maieutics.Frontend;
 using Maieutics.Skills;
 using Microsoft.Extensions.AI;

@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Net.WebSockets;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Channels;
 using FluentAssertions;
 using Maieutics.Control;

@@ -1,7 +1,5 @@
-using System.Collections.Immutable;
 using FluentAssertions;
 using Maieutics.Execution;
-using Xunit;
 
 namespace Maieutics.Product.Tests;
 
@@ -145,16 +143,16 @@ public sealed class GitDiffParserTests
     [Fact]
     public void MalformedDiffsWithTypedFailures()
     {
-        FluentAssertions.FluentActions.Invoking(() => GitDiffParser.Parse("not a diff at all"))
+        FluentActions.Invoking(() => GitDiffParser.Parse("not a diff at all"))
             .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentAssertions.FluentActions.Invoking(() => GitDiffParser.Parse(
+        FluentActions.Invoking(() => GitDiffParser.Parse(
                 """
                 --- a/x.txt
                 @@ -1 +1 @@
                 -old
                 """))
             .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentAssertions.FluentActions.Invoking(() => GitDiffParser.Parse(
+        FluentActions.Invoking(() => GitDiffParser.Parse(
                 """
                 --- a/x.txt
                 +++ b/x.txt
@@ -162,7 +160,7 @@ public sealed class GitDiffParserTests
                 -old
                 """))
             .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentAssertions.FluentActions.Invoking(() => GitDiffParser.Parse(
+        FluentActions.Invoking(() => GitDiffParser.Parse(
                 """
                 --- a/x.txt
                 +++ b/x.txt
@@ -170,7 +168,7 @@ public sealed class GitDiffParserTests
                 -old
                 """))
             .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentAssertions.FluentActions.Invoking(() => GitDiffParser.Parse(string.Empty))
+        FluentActions.Invoking(() => GitDiffParser.Parse(string.Empty))
             .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
     }
 
@@ -179,7 +177,7 @@ public sealed class GitDiffParserTests
     {
         var lines = new System.Text.StringBuilder();
         for (var i = 0; i <= GitDiffParser.MaxDiffLines; i++) lines.AppendLine("decoration");
-        FluentAssertions.FluentActions.Invoking(() => GitDiffParser.Parse(lines.ToString()))
+        FluentActions.Invoking(() => GitDiffParser.Parse(lines.ToString()))
             .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_too_large");
     }
 

@@ -79,7 +79,7 @@ public sealed class ResourceUrlRegistryTests
 
         var provider = new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path));
 
-        ResourceRegistry.TryParseUri("workspace://local/a.txt", out var uri).Should().BeTrue();
+        ResourceRegistry.TryParseUri("workspace://local/a.txt", out _).Should().BeTrue();
         var read = await provider.ReadAsync(
             "workspace://local/a.txt",
             new ResourceReadRequest(1024),

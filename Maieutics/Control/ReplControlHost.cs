@@ -7,7 +7,6 @@ using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.AI;
@@ -31,7 +30,7 @@ internal sealed partial class ReplControlHost : IDisposable
     private readonly ILogger<ReplControlHost> logger;
     private readonly ReplControlCredentialRegistry? credentialRegistry;
     private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
-    private readonly Maieutics.Execution.ResourceRegistry? resources;
+    private readonly Execution.ResourceRegistry? resources;
 
     private readonly ReplOperationRegistry operations = new();
     private readonly PluginHostManager? pluginHosts;
@@ -49,7 +48,7 @@ internal sealed partial class ReplControlHost : IDisposable
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsPipeBootstrap = null,
         Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null,
-        Maieutics.Execution.ResourceRegistry? resources = null,
+        Execution.ResourceRegistry? resources = null,
         ModelOrchestrationSurface? orchestration = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
@@ -58,7 +57,7 @@ internal sealed partial class ReplControlHost : IDisposable
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.scriptTools = scriptTools ?? [];
         this.pluginHosts = pluginHosts;
-        this.credentialRegistry = credentials;
+        credentialRegistry = credentials;
         this.windowsPipeBootstrap = windowsPipeBootstrap;
         this.commFrontendSink = commFrontendSink;
         this.resources = resources;

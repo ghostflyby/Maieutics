@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
-using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Plugins;

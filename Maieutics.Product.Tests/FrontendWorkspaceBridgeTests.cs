@@ -6,7 +6,6 @@ using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Frontend;
 using Microsoft.Extensions.AI;
-using Xunit;
 
 namespace Maieutics.Product.Tests;
 
@@ -78,7 +77,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact]
     public void TheOwnerMappingTranslatesThePidVerifiedHelloIdentityForSessionGates()
     {
-        var registry = new Maieutics.Control.ReplControlSessionRegistry();
+        var registry = new Control.ReplControlSessionRegistry();
         var ownerSessionId = AgentSessionId.Create().Value.ToString("N");
         registry.Register(101, "repl-default");
         registry.RegisterOwner(101, ownerSessionId);

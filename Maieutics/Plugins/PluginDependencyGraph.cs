@@ -30,7 +30,6 @@ internal static class PluginDependencyGraph
     {
         ArgumentNullException.ThrowIfNull(plugins);
         var present = isPluginPresent ?? (id => plugins.Any(plugin => plugin.Id == id));
-        var byId = plugins.ToDictionary(plugin => plugin.Id, StringComparer.Ordinal);
 
         var excluded = new HashSet<string>(StringComparer.Ordinal);
         var exclusions = new List<PluginExclusion>();

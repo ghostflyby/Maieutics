@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Maieutics.Execution;
 using Maieutics.Mcp;
 
 namespace Maieutics.Product.Tests;
@@ -34,7 +33,7 @@ public sealed class McpResourceCatalogTests
     {
         var claim = McpResourceTemplateMatcher.TryGetClaim(template);
         claim.Should().NotBeNull();
-        claim!.Scheme.Should().Be(scheme);
+        claim.Scheme.Should().Be(scheme);
         claim.Authority.Should().Be(authority);
     }
 

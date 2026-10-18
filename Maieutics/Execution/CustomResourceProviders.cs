@@ -84,7 +84,7 @@ internal sealed class CustomResourceProviderOptions
             throw new ArgumentException(
                 $"The custom resource provider '{Name}' requires an absolute http(s) endpoint.");
 
-        if (TimeoutSeconds is { } timeout and (< 1 or > 120))
+        if (TimeoutSeconds is { } and (< 1 or > 120))
             throw new ArgumentException(
                 $"The custom resource provider '{Name}' timeoutSeconds must be between 1 and 120.");
     }

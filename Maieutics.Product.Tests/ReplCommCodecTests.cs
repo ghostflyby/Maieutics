@@ -1,5 +1,4 @@
 using Maieutics.DenoRepl;
-using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Control;

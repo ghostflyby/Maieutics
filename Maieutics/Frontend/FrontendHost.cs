@@ -6,7 +6,6 @@ using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Mcp;
-using System.Buffers.Binary;
 using Maieutics.Commands;
 using Maieutics.DenoRepl;
 using Maieutics.Persistence;
@@ -47,7 +46,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly FrontendCommRouter? commRouter;
     private readonly IFrontendPluginSurface? pluginSurface;
     private readonly Skills.SkillCatalog? skillCatalog;
-    private readonly Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor;
+    private readonly Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor;
     private readonly IdeRequestRegistry? ideRequests;
     private readonly FrontendIdeSockets? ideSockets;
     private readonly ILogger<FrontendHost> logger;
@@ -65,7 +64,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendCommRouter? commRouter = null,
         IFrontendPluginSurface? pluginSurface = null,
         Skills.SkillCatalog? skillCatalog = null,
-        Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor = null,
+        Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null,
         IdeRequestRegistry? ideRequests = null,
         FrontendIdeSockets? ideSockets = null)
     {
@@ -238,7 +237,6 @@ internal sealed class FrontendHost : IAsyncDisposable
                 FrontendJsonContext.Default.FrontendPluginsResponse);
         }
 
-        var gateway = pluginSurface.GetHttpGateway();
         var surfaces = pluginSurface.GetPluginSurfaces();
         var plugins = surfaces.Select(surface => new FrontendPluginInfo(
             surface.Id,
@@ -328,8 +326,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                             argument.Description,
                             argument.Required))
                         .ToArray(),
-                    Mcp.McpPromptReferenceGrammar.IsValidServerIdSegment(server.Id) &&
-                    Mcp.McpPromptReferenceGrammar.IsValidPromptName(prompt.Name));
+                    McpPromptReferenceGrammar.IsValidServerIdSegment(server.Id) &&
+                    McpPromptReferenceGrammar.IsValidPromptName(prompt.Name));
             })
             .ToArray();
         return Results.Json(
@@ -1204,7 +1202,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
             lifetime.Token);
-        using var sendGate = new System.Threading.SemaphoreSlim(1, 1);
+        using var sendGate = new SemaphoreSlim(1, 1);
         async Task SendAsync(Func<Task> write)
         {
             await sendGate.WaitAsync(peer.Token).ConfigureAwait(false);

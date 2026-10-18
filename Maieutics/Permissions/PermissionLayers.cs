@@ -1,5 +1,3 @@
-using Maieutics.Execution;
-
 namespace Maieutics.Permissions;
 
 /// <summary>Computes the effective permission for a scope by overlaying layers in order.

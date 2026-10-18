@@ -24,7 +24,7 @@ public sealed class WorkspaceLinkIdentityTests
             .Records.Should().ContainSingle().Which;
         var identity = record.Identity;
         identity.Should().NotBeNull("the open captured the directory's file identity");
-        identity!.Inode.Should().NotBe(0);
+        identity.Inode.Should().NotBe(0);
 
         var persisted = WorkspaceLinkRegistry.Load(home.HomePath).Entries().Should().ContainSingle().Which;
         persisted.Identity.Should().NotBeNull("the fingerprint survives persistence");
@@ -32,13 +32,13 @@ public sealed class WorkspaceLinkIdentityTests
 
         if (!OperatingSystem.IsLinux())
         {
-            identity!.BirthTimeUtc.Should().NotBeNull("macOS and Windows report a creation time");
-            identity!.BirthTimeUtc.Should().BeOnOrBefore(DateTimeOffset.UtcNow.AddMinutes(1));
+            identity.BirthTimeUtc.Should().NotBeNull("macOS and Windows report a creation time");
+            identity.BirthTimeUtc.Should().BeOnOrBefore(DateTimeOffset.UtcNow.AddMinutes(1));
         }
 
         var recaptured = WorkspaceFileIdentityReader.TryRead(project);
         recaptured.Should().NotBeNull();
-        identity!.Matches(recaptured).Should().BeTrue("recapturing the same directory is stable");
+        identity.Matches(recaptured).Should().BeTrue("recapturing the same directory is stable");
     }
 
     [Fact(Timeout = 30_000)]
@@ -96,7 +96,7 @@ public sealed class WorkspaceLinkIdentityTests
         var resolved = context.Capture().Resolve("workspace://local/projects/project/marker.txt", false);
         resolved.FullPath.Should().Be(Path.Combine(movedPath, "marker.txt"));
 
-        var executor = new Maieutics.Commands.MaieuticsCommandExecutor(null, null, context, null, null);
+        var executor = new Commands.MaieuticsCommandExecutor(null, null, context, null, null);
         var rendered = await executor.ExecuteAsync(
             "%workspace current",
             null,
@@ -217,7 +217,7 @@ public sealed class WorkspaceLinkIdentityTests
             File.ReadAllText(registryPath),
             WorkspaceLinkJsonContext.Default.WorkspaceLinkRegistryState);
         state.Should().NotBeNull();
-        var stateLinks = state!.Links ?? throw new InvalidOperationException("missing links");
+        var stateLinks = state.Links ?? throw new InvalidOperationException("missing links");
         stateLinks.Should().ContainSingle().Which.Identity.Should().NotBeNull();
         File.WriteAllText(
             registryPath,
@@ -347,7 +347,7 @@ public sealed class WorkspaceLinkIdentityTests
         Directory.Move(replacementSource, project);
 
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
-        var executor = new Maieutics.Commands.MaieuticsCommandExecutor(
+        var executor = new Commands.MaieuticsCommandExecutor(
             null,
             null,
             Workspace.Create(remounted),

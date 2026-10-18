@@ -100,8 +100,8 @@ internal sealed record ReplCommMessage(
 ///     bundle (invariant 26).
 /// </summary>
 internal sealed record ReplDisplayObjectReference(
-    [property: System.Text.Json.Serialization.JsonPropertyName("$object")] string Url,
-    [property: System.Text.Json.Serialization.JsonPropertyName("byteLength")] long ByteLength);
+    [property: JsonPropertyName("$object")] string Url,
+    [property: JsonPropertyName("byteLength")] long ByteLength);
 
 /// <summary>Source-generated JSON binding for REPL display and comm payloads.</summary>
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

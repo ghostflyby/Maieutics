@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
-using Maieutics.Permissions;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;

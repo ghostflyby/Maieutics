@@ -1,7 +1,6 @@
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Permissions;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
 
@@ -17,7 +16,7 @@ namespace Maieutics.Control;
 /// deadlock class (the published-binary smoke catches it; sample the hung process to see the
 /// re-entrant resolution chain).</summary>
 internal sealed record ModelOrchestrationSurface(
-    Func<Maieutics.Commands.MaieuticsAgentSessionManager> AgentSessions,
+    Func<Commands.MaieuticsAgentSessionManager> AgentSessions,
     Func<string, AgentSessionId?> ResolveOwnerSession,
     Func<AgentSessionOptions?> BaseSessionOptions,
     Func<IReadOnlyList<AIFunction>> Tools,
@@ -346,14 +345,14 @@ internal sealed partial class ReplControlHost
         return owner;
     }
 
-    private Maieutics.Agent.AgentSession? ResolveAgentSession(HttpContext context, AgentSessionId ownerSessionId)
+    private AgentSession? ResolveAgentSession(HttpContext context, AgentSessionId ownerSessionId)
     {
-        Maieutics.Agent.AgentSession? session;
+        AgentSession? session;
         try
         {
-            session = orchestration!.AgentSessions().Resolve(ownerSessionId) as Maieutics.Agent.AgentSession;
+            session = orchestration!.AgentSessions().Resolve(ownerSessionId) as AgentSession;
         }
-        catch (Maieutics.Agent.AgentSessionNotFoundException)
+        catch (AgentSessionNotFoundException)
         {
             session = null;
         }

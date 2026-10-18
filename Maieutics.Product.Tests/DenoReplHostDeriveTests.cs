@@ -145,7 +145,7 @@ public sealed class DenoReplHostDeriveTests
         var shell = DenoPermissionRenderer.BuildHostReplPermissions(policy);
 
         shell.Should().NotBeNull();
-        shell!.Read.Should().NotBeNull();
+        shell.Read.Should().NotBeNull();
         shell.Read!.Value.ValueKind.Should().Be(JsonValueKind.Array);
         shell.Read.Value.EnumerateArray().Select(static item => item.GetString()).Should()
             .Equal("/tmp/modules", "/tmp/ws");
@@ -836,13 +836,13 @@ public sealed class DenoReplHostDeriveTests
         }
         else if (lengthValue <= ushort.MaxValue)
         {
-            header.Add((byte)(0x80 | 126));
+            header.Add(0x80 | 126);
             header.Add((byte)(lengthValue >> 8));
             header.Add((byte)(lengthValue & 0xFF));
         }
         else
         {
-            header.Add((byte)(0x80 | 127));
+            header.Add(0x80 | 127);
             var length = (ulong)lengthValue;
             for (var shift = 56; shift >= 0; shift -= 8) header.Add((byte)(length >> shift));
         }

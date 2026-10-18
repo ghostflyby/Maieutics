@@ -360,7 +360,7 @@ public sealed class ReplControlHostTests
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
-        var ownerSessionId = Maieutics.Agent.AgentSessionId.Create().Value.ToString("N");
+        var ownerSessionId = Agent.AgentSessionId.Create().Value.ToString("N");
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "repl-default");
         registry.RegisterOwner(Environment.ProcessId, ownerSessionId);
@@ -369,7 +369,7 @@ public sealed class ReplControlHostTests
         var probe = AIFunctionFactory.Create(
             (AIFunctionArguments arguments) =>
             {
-                captured = Maieutics.Agent.ScriptInvocationContext.TryGet(arguments)?.SessionId;
+                captured = Agent.ScriptInvocationContext.TryGet(arguments)?.SessionId;
                 return JsonSerializer.SerializeToElement(new { ok = true });
             },
             new AIFunctionFactoryOptions { Name = "probe_session", Description = "Captures the bound session." });

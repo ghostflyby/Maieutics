@@ -2,7 +2,7 @@ namespace Maieutics.Permissions;
 
 using System.Text.Json;
 
-using Maieutics.Control;
+using Control;
 
 /// <summary>Renders an <see cref="EffectivePolicy"/> to the exact <c>--allow-*</c> / <c>--deny-*</c>
 /// argument set Deno 2.x accepts (verified locally against Deno 2.9.5; ADR 0018 §6). The renderer

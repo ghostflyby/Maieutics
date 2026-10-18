@@ -348,8 +348,8 @@ internal sealed record FrontendPromptList(
 [JsonSerializable(typeof(FrontendEventFrame))]
 [JsonSerializable(typeof(FrontendDiscoveryFile))]
 [JsonSerializable(typeof(FrontendStoredSession[]))]
-[JsonSerializable(typeof(System.Collections.Generic.Dictionary<string, object?>))]
-[JsonSerializable(typeof(System.Collections.Generic.IReadOnlyDictionary<string, System.Text.Json.JsonElement>))]
+[JsonSerializable(typeof(Dictionary<string, object?>))]
+[JsonSerializable(typeof(IReadOnlyDictionary<string, JsonElement>))]
 internal sealed partial class FrontendJsonContext : JsonSerializerContext;
 
 /// <summary>One plugin's entry on the plugins surface (ADR 0038 stage 4).</summary>

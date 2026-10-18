@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Maieutics.Control;
 
 namespace Maieutics.DenoRepl;
 

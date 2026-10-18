@@ -4,7 +4,6 @@ using FluentAssertions;
 using Maieutics.Execution;
 using Maieutics.Mcp;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -219,8 +218,8 @@ public sealed class McpResourceIntegrationTests
                                 [
                                     new TextResourceContents
                                     {
-                                        Uri = request.Params!.Uri!,
-                                        Text = request.Params.Uri!.StartsWith("test://users/", StringComparison.Ordinal)
+                                        Uri = request.Params.Uri,
+                                        Text = request.Params.Uri.StartsWith("test://users/", StringComparison.Ordinal)
                                             ? $"user {request.Params.Uri["test://users/".Length..]}"
                                             : "hello content",
                                         MimeType = "text/plain"

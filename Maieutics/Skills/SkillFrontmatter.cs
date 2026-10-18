@@ -1,5 +1,3 @@
-using System;
-
 namespace Maieutics.Skills;
 
 /// <summary>Parses the restricted <c>SKILL.md</c> frontmatter: one leading <c>---</c>-fenced

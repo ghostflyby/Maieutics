@@ -5,7 +5,6 @@ using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Persistence;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;

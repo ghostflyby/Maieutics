@@ -1,11 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using FluentAssertions;
-using Maieutics.Agent;
 using Maieutics.Execution;
-using Microsoft.Extensions.AI;
 using static Maieutics.Product.Tests.WorkspaceToolInvocations;
 
 namespace Maieutics.Product.Tests;
@@ -242,7 +238,7 @@ public sealed class WorkspaceLinksTests
         using var workspace = TemporaryWorkspace.Create();
         var project = Directory.CreateDirectory(Path.Combine(workspace.ParentPath, "cli project")).FullName;
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
-        var executor = new Maieutics.Commands.MaieuticsCommandExecutor(
+        var executor = new Commands.MaieuticsCommandExecutor(
             null,
             null,
             Workspace.Create(home),
@@ -271,7 +267,7 @@ public sealed class WorkspaceLinksTests
                 "%workspace use somewhere",
                 null,
                 TestContext.Current.CancellationToken))
-            .Should().ThrowAsync<Maieutics.Commands.MaieuticsCommandException>();
+            .Should().ThrowAsync<Commands.MaieuticsCommandException>();
     }
 
     private static string TargetHash(string canonicalTarget, int characters)

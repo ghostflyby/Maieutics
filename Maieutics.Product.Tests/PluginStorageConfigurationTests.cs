@@ -1,6 +1,5 @@
 using System.Text.Json;
 using FluentAssertions;
-using Maieutics;
 using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
@@ -22,7 +21,7 @@ public sealed class PluginStorageConfigurationTests
         "/home/u/.local/share/Maieutics")]
     public void ResolvesThePlatformDataRoot(
         bool isWindows,
-        bool isMacOS,
+        bool isMacOs,
         string localApplicationData,
         string applicationData,
         string? xdgDataHome,
@@ -31,7 +30,7 @@ public sealed class PluginStorageConfigurationTests
     {
         var root = ApplicationPaths.ResolveDataRoot(
             isWindows,
-            isMacOS,
+            isMacOs,
             localApplicationData,
             applicationData,
             xdgDataHome,
@@ -64,7 +63,7 @@ public sealed class PluginStorageConfigurationTests
         "/home/u/.cache/Maieutics")]
     public void ResolvesThePlatformCacheRoot(
         bool isWindows,
-        bool isMacOS,
+        bool isMacOs,
         string localApplicationData,
         string? xdgCacheHome,
         string userProfile,
@@ -72,7 +71,7 @@ public sealed class PluginStorageConfigurationTests
     {
         var root = ApplicationPaths.ResolveCacheRoot(
             isWindows,
-            isMacOS,
+            isMacOs,
             localApplicationData,
             xdgCacheHome,
             userProfile);
@@ -232,7 +231,7 @@ public sealed class PluginStorageConfigurationTests
             """;
         var config = JsonSerializer.Deserialize(json, PluginHostJsonContext.Default.PluginHostConfigFile);
         config.Should().NotBeNull();
-        config!.Plugins.Should().HaveCount(1);
+        config.Plugins.Should().HaveCount(1);
         config.Plugins[0].Storage.Should().BeNull();
     }
 }

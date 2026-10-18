@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Maieutics.Execution;
 using Maieutics.Permissions;
 
 namespace Maieutics.Product.Tests;

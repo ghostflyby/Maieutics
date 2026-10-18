@@ -4,7 +4,6 @@ using Maieutics.Mcp;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
-using Microsoft.Extensions.Time.Testing;
 
 namespace Maieutics.Product.Tests;
 
@@ -537,7 +536,7 @@ public sealed class PluginManifestTests
         {
             if (!PluginManifest.TryLoad(
                     directory,
-                    new Maieutics.Permissions.VariableTable(new ManifestVariableSource()),
+                    new VariableTable(new ManifestVariableSource()),
                     out var descriptor,
                     out var error))
                 throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
@@ -591,7 +590,7 @@ public sealed class PluginManifestTests
         error2.Should().Contain("5 fields");
     }
 
-    private sealed class ManifestVariableSource : Maieutics.Execution.IPermissionVariableSource
+    private sealed class ManifestVariableSource : Execution.IPermissionVariableSource
     {
         public string? GetVariable(string name) =>
             name == "env.MAIEUTICS_TEST_HOME" ? "/Users/tester" : null;

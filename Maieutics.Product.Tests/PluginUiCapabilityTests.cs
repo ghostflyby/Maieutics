@@ -2,7 +2,6 @@ using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
-using Maieutics.DenoRepl;
 using Maieutics.Frontend;
 using Maieutics.Plugins;
 

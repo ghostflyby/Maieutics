@@ -1,5 +1,3 @@
-using System.Text;
-using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Providers.Anthropic;

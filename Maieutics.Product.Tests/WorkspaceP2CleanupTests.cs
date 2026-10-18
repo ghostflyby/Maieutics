@@ -1,7 +1,5 @@
 using FluentAssertions;
-using Maieutics.Agent;
 using Maieutics.Execution;
-using Microsoft.Extensions.AI;
 using static Maieutics.Product.Tests.WorkspaceToolInvocations;
 
 namespace Maieutics.Product.Tests;

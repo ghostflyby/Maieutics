@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
 using Maieutics.Configuration;
 
 namespace Maieutics.Frontend;
@@ -132,7 +131,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
                 }
             }
             catch (Exception exception) when (exception is OperationCanceledException or
-                InvalidOperationException or System.IO.IOException)
+                InvalidOperationException or IOException)
             {
                 // The socket died mid-hand-off; its own drain loop withdraws the
                 // registration. One dead announcer must not block the others.
@@ -164,7 +163,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
                 registration.SendGate.Release();
             }
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.IO.IOException)
+        catch (Exception exception) when (exception is InvalidOperationException or IOException)
         {
             Withdraw(registration.SessionId, registrationId);
             return false;

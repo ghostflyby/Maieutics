@@ -227,7 +227,7 @@ internal static class PluginManifest
 
     public static bool TryLoad(
         string directory,
-        Maieutics.Permissions.VariableTable? triggerVariables,
+        Permissions.VariableTable? triggerVariables,
         [NotNullWhen(true)] out PluginDescriptor? descriptor,
         out string error)
     {
@@ -243,7 +243,7 @@ internal static class PluginManifest
         string directory,
         [NotNullWhen(true)] out PluginDescriptor? descriptor,
         out string error,
-        Maieutics.Permissions.VariableTable? variables)
+        Permissions.VariableTable? variables)
     {
         descriptor = null;
         var pluginConfigPath = Path.Combine(directory, "maieutics.json");
@@ -363,7 +363,7 @@ internal static class PluginManifest
                 pluginManifest.Triggers,
                 variables ?? EmptyVariables());
         }
-        catch (Exception exception) when (exception is JsonException or InvalidOperationException or Maieutics.Permissions.PermissionException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or Permissions.PermissionException)
         {
             error = exception.Message;
             return false;
@@ -409,7 +409,7 @@ internal static class PluginManifest
         IReadOnlyList<PluginWorkerDescriptor> Workers,
         IReadOnlyList<PluginDataEntry> DataEntries,
         IReadOnlyList<string> Diagnostics)
-        ReadEntrypoints(JsonElement? entrypoints, string directory, Maieutics.Permissions.VariableTable? variables)
+        ReadEntrypoints(JsonElement? entrypoints, string directory, Permissions.VariableTable? variables)
     {
         var workers = new List<PluginWorkerDescriptor>();
         var dataEntries = new List<PluginDataEntry>();
@@ -506,13 +506,13 @@ internal static class PluginManifest
         return new PluginWorkerDescriptor(entry.Name, new Uri(fullPath).AbsoluteUri);
     }
 
-    private static Maieutics.Permissions.VariableTable EmptyVariables()
+    private static Permissions.VariableTable EmptyVariables()
     {
-        return new Maieutics.Permissions.VariableTable(
+        return new Permissions.VariableTable(
             new EmptyTriggerVariableSource());
     }
 
-    private sealed class EmptyTriggerVariableSource : Maieutics.Execution.IPermissionVariableSource
+    private sealed class EmptyTriggerVariableSource : Execution.IPermissionVariableSource
     {
         public string? GetVariable(string name) => null;
     }
@@ -530,14 +530,14 @@ internal static class PluginManifest
         string root,
         string name,
         string relativePath,
-        Maieutics.Permissions.VariableTable? variables)
+        Permissions.VariableTable? variables)
     {
         string expandedPath;
         try
         {
             expandedPath = variables is { } table ? table.Expand(relativePath) : relativePath;
         }
-        catch (Maieutics.Permissions.PermissionException exception)
+        catch (Permissions.PermissionException exception)
         {
             return new PluginDataEntry(
                 name,

@@ -57,7 +57,7 @@ public sealed class ResponsesApplyPatchAdapterTests
             $$"""{"type":"create_file","path":"docs/new.txt","diff":"+one\n+two\n"}""");
         var patch = ApplyPatchText.Render(operation);
 
-        var document = Maieutics.Execution.ApplyPatchParser.Parse(patch);
+        var document = Execution.ApplyPatchParser.Parse(patch);
 
         document.Files.Should().ContainSingle();
         document.Files[0].Kind.Should().Be("create_file");

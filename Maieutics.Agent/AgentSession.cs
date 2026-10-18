@@ -711,8 +711,6 @@ public sealed class AgentSession : IAgentSession
                     "application/json");
             }
 
-            var resultContent = new FunctionResultContent(record.ProviderCallId, envelope);
-
             intermediateMessages.Add(new ChatMessage(
                 ChatRole.Tool,
                 [

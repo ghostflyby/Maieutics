@@ -218,7 +218,7 @@ public static class MaieuticsHost
         // resolves null and /v1/prompts answers empty while every prompt reference fails
         // with agent_configuration_error — the resource face avoids the trap by resolving
         // the concrete type; the seam gets the explicit registration.
-        builder.Services.AddSingleton<Mcp.IMcpPromptServerSource>(static services =>
+        builder.Services.AddSingleton<IMcpPromptServerSource>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton(Workspace.Create(workspaceHome));
         builder.Services.AddSingleton<IMcpWorkspaceRootsSource>(static services =>
@@ -495,15 +495,15 @@ public static class MaieuticsHost
                 // writes to AGENTS.md/.agents would inherit the legacy containment-only posture.
                 acquirer: services.GetRequiredService<PermissionPolicyAcquirer>(),
                 bridge: services.GetRequiredService<IWorkspaceIoBridge>()));
-        builder.Services.AddSingleton<Frontend.SubagentEventBuffer>();
+        builder.Services.AddSingleton<SubagentEventBuffer>();
         // The task-plane tools share the built-in task:// provider instance that the resource
         // registry composes; the concrete type is not otherwise registered.
-        builder.Services.AddSingleton<Execution.TaskResourceProvider>(static services =>
-            (Execution.TaskResourceProvider)services.GetRequiredService<ResourceRegistry>()
-                .Providers.Single(provider => provider.Id == Execution.TaskResourceProvider.Scheme));
+        builder.Services.AddSingleton<TaskResourceProvider>(static services =>
+            (TaskResourceProvider)services.GetRequiredService<ResourceRegistry>()
+                .Providers.Single(provider => provider.Id == TaskResourceProvider.Scheme));
         builder.Services.AddSingleton(static services =>
             new AgentSubagentFunctions(
-                services.GetRequiredService<Execution.TaskResourceProvider>(),
+                services.GetRequiredService<TaskResourceProvider>(),
                 services.GetRequiredService<PermissionOverrideRegistry>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
@@ -564,12 +564,12 @@ public static class MaieuticsHost
     /// expands trigger and skill-root patterns against: env from the process, var.* from
     /// the fixed data/plugins roots plus the live workspace source. Built once for the
     /// plugin host manager; plugins never build their own table.</summary>
-    private static Permissions.VariableTable BuildPluginManifestVariables(
+    private static VariableTable BuildPluginManifestVariables(
         IServiceProvider services,
         string pluginsRoot)
     {
         var paths = services.GetRequiredService<ApplicationPaths>();
-        return new Permissions.VariableTable(
+        return new VariableTable(
             services.GetRequiredService<IPermissionVariableSource>(),
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -583,16 +583,16 @@ public static class MaieuticsHost
     /// config-declared bridges, then the MCP resource provider whose catalog source resolves
     /// lazily (the runtime configuration is still being built when this registration runs;
     /// ADR 0026).</summary>
-    private static IReadOnlyList<Execution.IResourceProvider> BuildResourceProviders(IServiceProvider services)
+    private static IReadOnlyList<IResourceProvider> BuildResourceProviders(IServiceProvider services)
     {
         var options = services.GetRequiredService<ResourceProviderOptions>();
         var client = services.GetRequiredService<HttpClient>();
-        var providers = new List<Execution.IResourceProvider>
+        var providers = new List<IResourceProvider>
         {
             new WorkspaceResourceProvider(services.GetRequiredService<Workspace>()),
-            new Execution.TaskResourceProvider(
+            new TaskResourceProvider(
             [
-                new Execution.TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>()),
+                new TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>()),
                 CreateAgentTaskResourceSource(services)
             ]),
             new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>()),
@@ -638,9 +638,9 @@ public static class MaieuticsHost
     /// re-enter the container while the resource registry is still being constructed (the
     /// manager's own registration resolves the same manager), deadlocking startup. A session
     /// evicted between listing and resolution reads as absent.</summary>
-    private static Execution.AgentTaskResourceSource CreateAgentTaskResourceSource(IServiceProvider services)
+    private static AgentTaskResourceSource CreateAgentTaskResourceSource(IServiceProvider services)
     {
-        return new Execution.AgentTaskResourceSource(
+        return new AgentTaskResourceSource(
             sessionId =>
             {
                 var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
@@ -667,9 +667,9 @@ public static class MaieuticsHost
             runtimeConfiguration,
             services.GetRequiredService<MaieuticsStatusProvider>(),
             workspace is null ? null : () => workspace.RootPath,
-            services.GetRequiredService<Frontend.SubagentEventBuffer>(),
+            services.GetRequiredService<SubagentEventBuffer>(),
             services.GetService<Skills.SkillCatalog>(),
-            () => services.GetService<Mcp.IMcpPromptServerSource>()?.GetPromptServers() ?? []);
+            () => services.GetService<IMcpPromptServerSource>()?.GetPromptServers() ?? []);
     }
 
     private static MaieuticsAgentSessionManager CreateAgentSessionManager(IServiceProvider services)
@@ -724,7 +724,7 @@ public static class MaieuticsHost
             MaxChildrenPerTurn = Math.Max(
                 1,
                 ReadIntSetting(configuration, "Maieutics:Agent:Subagents:MaxChildrenPerTurn") ?? 4),
-            EventSink = services.GetRequiredService<Frontend.SubagentEventBuffer>()
+            EventSink = services.GetRequiredService<SubagentEventBuffer>()
         };
     }
 
@@ -738,7 +738,7 @@ public static class MaieuticsHost
             ?? new AgentSubagentOptions
             {
                 MaxDepth = 1,
-                EventSink = services.GetRequiredService<Frontend.SubagentEventBuffer>()
+                EventSink = services.GetRequiredService<SubagentEventBuffer>()
             };
         // Everything resolves lazily at request time: eager resolution here re-enters the
         // container mid-composition (the startup-deadlock class this file has seen).
@@ -750,7 +750,7 @@ public static class MaieuticsHost
             () => services.GetRequiredService<IReadOnlyList<AIFunction>>(),
             () => services.GetService<PermissionOverrideRegistry>())
         {
-            TaskResources = () => services.GetRequiredService<Execution.TaskResourceProvider>()
+            TaskResources = () => services.GetRequiredService<TaskResourceProvider>()
         };
     }
 
@@ -896,7 +896,7 @@ public static class MaieuticsHost
         if (!framePublisher.TryPublishPresentation(
                 sessionId,
                 "repl.display",
-                System.Text.Json.JsonSerializer.SerializeToElement(
+                JsonSerializer.SerializeToElement(
                     announcement,
                     FrontendJsonContext.Default.DictionaryStringObject)))
         {
@@ -940,7 +940,7 @@ public static class MaieuticsHost
                     pluginId,
                     exportName,
                     ReplExtensionPointName.UiEvent,
-                    System.Text.Json.JsonSerializer.SerializeToElement(
+                    JsonSerializer.SerializeToElement(
                         request,
                         ReplControlJsonContext.Default.DictionaryStringJsonElement),
                     cancellationToken).ConfigureAwait(false);
@@ -1013,5 +1013,5 @@ internal sealed class FrontendPluginSurfaceAdapter(PluginHostManager manager) : 
 /// takes effect at the server's next query.</summary>
 internal sealed class WorkspaceRootsSource(Workspace workspace) : IMcpWorkspaceRootsSource
 {
-    public string? GetRootPath() => workspace.Capture().RootPath;
+    public string GetRootPath() => workspace.Capture().RootPath;
 }

@@ -69,11 +69,11 @@ public sealed class PluginSkillsContributionTests : IDisposable
         return root;
     }
 
-    private static Skills.SkillCatalog CreateCatalog(string workspaceRoot) =>
+    private static SkillCatalog CreateCatalog(string workspaceRoot) =>
         SkillCatalog.Create(
             [(SkillSource.Workspace, workspaceRoot)],
             new FakeTimeProvider(),
-            NullLogger<Skills.SkillCatalog>.Instance);
+            NullLogger<SkillCatalog>.Instance);
 
     private static VariableTable CreateVariables(Dictionary<string, string> environment) =>
         new(
@@ -84,7 +84,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
     private static PluginHostManager CreateManager(
         string root,
         TimeProvider clock,
-        Skills.SkillCatalog catalog,
+        SkillCatalog catalog,
         VariableTable variables,
         string? approvalsPath)
     {
@@ -105,7 +105,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
     }
 
     private static async Task AwaitCatalogAsync(
-        Skills.SkillCatalog catalog,
+        SkillCatalog catalog,
         Func<SkillCatalogSnapshot, bool> predicate,
         CancellationToken cancellationToken)
     {
@@ -357,7 +357,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             var provider = new SkillResourceProvider(catalog);
             var result = await provider.ReadAsync(
                 "skill://gen-skill",
-                new Execution.ResourceReadRequest(long.MaxValue),
+                new ResourceReadRequest(long.MaxValue),
                 TestContext.Current.CancellationToken);
             using var reader = new StreamReader(result.Content);
             (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Contain("# Generated");

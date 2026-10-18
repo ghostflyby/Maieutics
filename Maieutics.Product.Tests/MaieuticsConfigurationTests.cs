@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using Maieutics.Agent;
@@ -11,8 +10,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-
-using System.Threading;
 
 namespace Maieutics.Product.Tests;
 

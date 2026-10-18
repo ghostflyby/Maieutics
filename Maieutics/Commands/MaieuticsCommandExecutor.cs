@@ -613,7 +613,7 @@ internal sealed class MaieuticsCommandExecutor(
         var oneLine = string.Join(' ', raw.Split(new[] { '\r', '\n' },
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         var escaped = oneLine.Replace("|", "\\|", StringComparison.Ordinal);
-        if (session.ParentSessionId is { } parent && !escaped.Contains("branch @ turn", StringComparison.Ordinal))
+        if (session.ParentSessionId is not null && !escaped.Contains("branch @ turn", StringComparison.Ordinal))
         {
             var point = session.ForkPointSeq is { } seq ? $" · branch @ turn {seq + 1}" : " · branch";
             escaped += point;

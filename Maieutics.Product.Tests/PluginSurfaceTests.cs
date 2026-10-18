@@ -1,10 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
-using Maieutics.Agent;
-using Maieutics.Frontend;
 using Maieutics.Providers.OpenAI;
-using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
 
@@ -15,29 +12,6 @@ namespace Maieutics.Product.Tests;
 /// </summary>
 public sealed class PluginSurfaceTests
 {
-    private sealed class FakePublisher : IFrontendSessionFramePublisher
-    {
-        internal bool Publishable { get; set; } = true;
-
-        internal List<(AgentSessionId SessionId, string Type, JsonElement Data)> Published { get; } = [];
-
-        public bool TryPublishPresentation(AgentSessionId sessionId, string type, JsonElement data)
-        {
-            if (!Publishable) return false;
-            Published.Add((sessionId, type, data.Clone()));
-            return true;
-        }
-    }
-
-    private static PluginHostManager CreateManager()
-    {
-        // A manager without the control socket: the registry/approval machinery the
-        // surface reads is exercised through the simulated-host harness in the
-        // capability tests; here the manager is created only for its snapshot APIs.
-        return (PluginHostManager)System.Runtime.CompilerServices.RuntimeHelpers
-            .GetUninitializedObject(typeof(PluginHostManager));
-    }
-
     [Fact]
     public void AdapterTranslatesApprovalGatedPageUrlsAndForms()
     {

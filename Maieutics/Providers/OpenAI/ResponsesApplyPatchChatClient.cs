@@ -1,4 +1,3 @@
-using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Runtime.CompilerServices;
 using System.Text.Json;

@@ -2,7 +2,6 @@ using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
-using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 

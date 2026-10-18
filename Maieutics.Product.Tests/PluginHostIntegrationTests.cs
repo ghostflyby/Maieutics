@@ -1396,7 +1396,7 @@ public sealed class PluginHostIntegrationTests
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
         public void AddProvider(ILoggerProvider provider) { }
-        public ILogger CreateLogger(string categoryName) => (ILogger)this;
+        public ILogger CreateLogger(string categoryName) => this;
         public void Dispose() { }
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)

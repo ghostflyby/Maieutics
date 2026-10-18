@@ -136,7 +136,7 @@ public sealed class AgentTranscriptStoreTests
             }
         }
 
-        public AgentTranscript? LoadTranscript(AgentSessionId sessionId)
+        public AgentTranscript LoadTranscript(AgentSessionId sessionId)
         {
             throw new NotSupportedException();
         }

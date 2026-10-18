@@ -10,7 +10,6 @@ using Maieutics.Mcp;
 using Maieutics.Skills;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Frontend;
 
@@ -40,8 +39,8 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
     private readonly Func<string?>? workspaceRootAccessor;
     private readonly SubagentEventBuffer? subagentEvents;
-    private readonly Skills.SkillCatalog? skillCatalog;
-    private readonly Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor;
+    private readonly SkillCatalog? skillCatalog;
+    private readonly Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor;
     private readonly ILogger logger;
     private readonly ConcurrentDictionary<string, SessionRunHub> hubs = new(StringComparer.Ordinal);
 
@@ -54,8 +53,8 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         MaieuticsStatusProvider? statusProvider = null,
         Func<string?>? workspaceRootAccessor = null,
         SubagentEventBuffer? subagentEvents = null,
-        Skills.SkillCatalog? skillCatalog = null,
-        Func<IReadOnlyList<Mcp.McpPromptServerAccess>>? promptServersAccessor = null)
+        SkillCatalog? skillCatalog = null,
+        Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null)
     {
         this.sessionManager = sessionManager;
         this.commandExecutor = commandExecutor;
@@ -535,7 +534,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         if (skillCatalog is { } catalog)
         {
             var skillParts = await FrontendSkillExpansion.ExpandAsync(
-                new Skills.SkillResourceProvider(catalog),
+                new SkillResourceProvider(catalog),
                 skillSplit.Markers,
                 cancellationToken).ConfigureAwait(false);
             foreach (var part in skillParts)

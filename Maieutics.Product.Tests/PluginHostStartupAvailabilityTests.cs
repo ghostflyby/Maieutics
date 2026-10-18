@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using FluentAssertions;
 using Maieutics.Control;
-using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 

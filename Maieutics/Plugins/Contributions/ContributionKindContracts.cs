@@ -34,9 +34,9 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
 
     public override string KindName => ExtensionKind;
 
-    public override string? DataEntryName => DataEntry;
+    public override string DataEntryName => DataEntry;
 
-    public override string? ExtensionPointName => ExtensionKind;
+    public override string ExtensionPointName => ExtensionKind;
 
     public override bool HasComputeForm => true;
 
@@ -123,7 +123,7 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
     public static bool TryToDefinition(
         string pluginId,
         JsonElement discovery,
-        Permissions.VariableTable? variables,
+        VariableTable? variables,
         [NotNullWhen(true)] out McpServerDefinition? definition)
     {
         definition = null;
@@ -230,7 +230,7 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
     /// all-or-nothing granularity turns that into the sticky last-good path.</summary>
     private static bool TryExpandTransport(
         JsonElement transport,
-        Permissions.VariableTable? variables,
+        VariableTable? variables,
         out JsonElement expanded)
     {
         expanded = transport;
@@ -246,7 +246,7 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
             expanded = JsonDocument.Parse(stream.ToArray()).RootElement.Clone();
             return true;
         }
-        catch (Permissions.PermissionException)
+        catch (PermissionException)
         {
             return false;
         }
@@ -255,7 +255,7 @@ internal sealed class McpDiscoverContributionKind : ContributionKindContract
     private static void WriteExpanded(
         Utf8JsonWriter writer,
         JsonElement element,
-        Permissions.VariableTable variables)
+        VariableTable variables)
     {
         switch (element.ValueKind)
         {
@@ -352,13 +352,13 @@ internal sealed class SkillsContributionKind : ContributionKindContract
 
     public override string? DataEntryName => null;
 
-    public override string? ExtensionPointName => ExtensionKind;
+    public override string ExtensionPointName => ExtensionKind;
 
     public override bool HasComputeForm => true;
 
     public override bool HasPublishForm => true;
 
-    public override string? PublishCapability => PublishCapabilityName;
+    public override string PublishCapability => PublishCapabilityName;
 
     /// <summary>The former skills constants (32 roots per entry, 256 computed entries)
     /// as metadata: the delivery reads them instead of private constants, so the kind's
@@ -390,7 +390,7 @@ internal sealed class UiContributionKind : ContributionKindContract
 
     public override string KindName => DataEntry;
 
-    public override string? DataEntryName => DataEntry;
+    public override string DataEntryName => DataEntry;
 
     public override string? ExtensionPointName => null;
 

@@ -1,10 +1,7 @@
-using System.Text;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using XTerm;
-using XTerm.Input;
-using XTerm.Options;
 
 namespace Maieutics.Product.Tests;
 

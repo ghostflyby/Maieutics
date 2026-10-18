@@ -1,4 +1,3 @@
-using System.Text.Json;
 using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
@@ -664,7 +663,6 @@ public sealed class PluginDeclarativeExtensionsTests
               }
             }
             """);
-        var pluginName = Path.GetFileName(root);
         var clock = new FakeTimeProvider();
         var manager = CreateManager(root, clock);
 
@@ -727,7 +725,6 @@ public sealed class PluginDeclarativeExtensionsTests
             """
             { "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }
             """);
-        var pluginName = Path.GetFileName(root);
         var clock = new FakeTimeProvider();
         var manager = CreateManager(root, clock);
 

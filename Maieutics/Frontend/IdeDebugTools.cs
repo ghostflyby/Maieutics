@@ -47,13 +47,13 @@ internal sealed class IdeDebugTools
     private readonly IdeRequestRegistry requests;
     private readonly IIdeFrontendGate gate;
     private readonly FrontendIdeSockets sockets;
-    private readonly Maieutics.Execution.Workspace workspace;
+    private readonly Workspace workspace;
 
     public IdeDebugTools(
         IdeRequestRegistry requests,
         IIdeFrontendGate gate,
         FrontendIdeSockets sockets,
-        Maieutics.Execution.Workspace workspace)
+        Workspace workspace)
     {
         this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
         this.gate = gate ?? throw new ArgumentNullException(nameof(gate));
@@ -135,7 +135,7 @@ internal sealed class IdeDebugTools
         if (string.IsNullOrEmpty(sessionId))
             throw new AgentToolException("ide_invalid_arguments", "sessionId is required.");
 
-        return sessionId!;
+        return sessionId;
     }
 
     private async ValueTask<JsonElement> SendAsync(
@@ -256,7 +256,7 @@ internal sealed class IdeDebugTools
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
-        if ((launchName is null) == (configuration is null || configuration!.Value.ValueKind == JsonValueKind.Null))
+        if ((launchName is null) == (configuration is null || configuration.Value.ValueKind == JsonValueKind.Null))
             throw new AgentToolException(
                 "ide_invalid_arguments",
                 "Provide exactly one of 'launchName' or 'configuration'.");
@@ -386,7 +386,7 @@ internal sealed class IdeDebugTools
                 fullPath = workspace.Capture().ToPhysicalPath(logical.Segments);
                 uri = new Uri(fullPath).AbsoluteUri;
             }
-            catch (Maieutics.Execution.WorkspaceException exception)
+            catch (WorkspaceException exception)
             {
                 throw new AgentToolException(exception.Code, exception.Message);
             }

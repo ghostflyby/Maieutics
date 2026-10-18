@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using FluentAssertions;
-using Maieutics.DenoExecution;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging;
 
@@ -68,7 +67,7 @@ public sealed class PluginHostProcessTests
     {
         internal ConcurrentQueue<LogMessage> Messages { get; } = new();
 
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
         {
             return NullScope.Instance;
         }

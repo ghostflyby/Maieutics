@@ -248,7 +248,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         using var reopened = new SqliteTranscriptStore(databasePath);
         var transcript = reopened.LoadTranscript(sessionId);
         transcript.Should().NotBeNull();
-        transcript!.SessionId.Should().Be(sessionId);
+        transcript.SessionId.Should().Be(sessionId);
         transcript.Turns.Should().HaveCount(2);
         transcript.Turns[0].RunId.Should().Be(first.RunId);
         transcript.Turns[0].ModelIdentity.Should().Be(identity);
@@ -285,7 +285,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         var loaded = store.LoadTranscript(sessionId);
 
         loaded.Should().NotBeNull();
-        var contents = loaded!.Turns[0].Messages[^1].Contents;
+        var contents = loaded.Turns[0].Messages[^1].Contents;
         contents.OfType<TextReasoningContent>().Should().ContainSingle().Which.Text.Should().Be("private reasoning summary");
         contents.OfType<TextContent>().Should().ContainSingle().Which.Text.Should().Be("public answer");
     }
@@ -317,7 +317,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         // The fork sees the prefix; the root keeps its whole history.
         var forkTranscript = store.LoadTranscript(fork);
         forkTranscript.Should().NotBeNull();
-        forkTranscript!.SessionId.Should().Be(fork);
+        forkTranscript.SessionId.Should().Be(fork);
         forkTranscript.Turns.Select(turn => turn.RunId).Should().HaveCount(2);
         forkTranscript.Turns[0].Messages[0].Text.Should().Be("Question one");
         forkTranscript.Turns[1].Messages[^1].Text.Should().Be("Answer two");
@@ -375,7 +375,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         var forkTranscript = store.LoadTranscript(freshFork);
         forkTranscript.Should().NotBeNull();
-        forkTranscript!.SessionId.Should().Be(freshFork);
+        forkTranscript.SessionId.Should().Be(freshFork);
         forkTranscript.Turns.Should().BeEmpty();
         store.LoadTranscript(renamed)!.Turns.Should().BeEmpty();
     }

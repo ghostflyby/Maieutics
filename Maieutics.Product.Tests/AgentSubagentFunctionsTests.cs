@@ -8,7 +8,6 @@ using Maieutics.Frontend;
 using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
-using Xunit;
 
 namespace Maieutics.Product.Tests;
 
@@ -55,7 +54,7 @@ public sealed class AgentSubagentFunctionsTests
         // After the turn the child is no longer on the plane (join-before-complete), and the
         // plane reports that as a typed miss rather than a stale snapshot.
         var gone = () => harness.Provider.WaitTaskAsync(
-            taskUri!, TimeSpan.FromSeconds(1), deadline.Token);
+            taskUri, TimeSpan.FromSeconds(1), deadline.Token);
         (await gone.Should().ThrowAsync<ResourceException>())
             .Which.Code.Should().Be("resource_not_found");
     }

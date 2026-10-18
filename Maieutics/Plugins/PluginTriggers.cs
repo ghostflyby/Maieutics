@@ -60,7 +60,7 @@ internal static class PluginTriggerReader
 
     public static IReadOnlyList<PluginTrigger> Read(
         JsonElement? section,
-        Maieutics.Permissions.VariableTable variables)
+        Permissions.VariableTable variables)
     {
         ArgumentNullException.ThrowIfNull(variables);
         var triggers = new List<PluginTrigger>();

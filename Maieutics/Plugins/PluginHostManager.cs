@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics.CodeAnalysis;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -8,7 +7,6 @@ using System.Threading.Channels;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
-using Maieutics.Execution;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
 using Microsoft.Extensions.Hosting;
@@ -136,7 +134,7 @@ internal sealed class PluginHostManager(
     DenoPermissionBroker? broker = null,
     string? pluginApprovalsPath = null,
     Skills.SkillCatalog? skillCatalog = null,
-    Permissions.VariableTable? manifestVariables = null,
+    VariableTable? manifestVariables = null,
     Func<string?>? workspaceRootAccessor = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
 {
@@ -1130,7 +1128,7 @@ internal sealed class PluginHostManager(
                 // removals cascade through the dependency graph's exclusion rules. Pure
                 // content changes leave the set unchanged and fall through to the in-process
                 // worker reload below.
-                if (LocalPluginSetDiffers(out var scan))
+                if (LocalPluginSetDiffers(out _))
                 {
                     logger.LogInformation(
                         "Watched change at '{Path}' changes the local plugin set; restarting the plugin host.",

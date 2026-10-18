@@ -31,14 +31,13 @@ public sealed class AgentObjectFunctionsTests : IDisposable
     public async Task FetchReturnsTheStoredJsonAsStructuredData()
     {
         var store = new ObjectStore(objectsRoot);
-        var functions = new AgentObjectFunctions(store);
         var ingested = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("""{"answer": 42}""")));
 
         var value = await AgentObjectFunctions.FetchAsync(
             store, ingested.Sha256, TestContext.Current.CancellationToken);
 
         value.Should().NotBeNull();
-        value!.Value.GetProperty("answer").GetInt32().Should().Be(42);
+        value.Value.GetProperty("answer").GetInt32().Should().Be(42);
     }
 
     [Fact(Timeout = 30_000)]

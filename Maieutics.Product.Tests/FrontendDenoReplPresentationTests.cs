@@ -120,7 +120,7 @@ public sealed class FrontendDenoReplPresentationTests
         var router = new FrontendDenoReplPresentationRouter();
         var target = new FakeTarget();
         var sessionId = AgentSessionId.Create();
-        await using var scope = router.Attach(sessionId, target);
+        var scope = router.Attach(sessionId, target);
         var sink = scope.Sink;
         var callId = AgentToolCallId.Create();
 

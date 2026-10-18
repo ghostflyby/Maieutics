@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Maieutics;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;

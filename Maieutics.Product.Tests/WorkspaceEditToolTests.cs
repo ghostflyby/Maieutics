@@ -4,7 +4,6 @@ using System.Text.Json.Serialization.Metadata;
 using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
-using Microsoft.Extensions.Logging.Abstractions;
 using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 
@@ -348,7 +347,7 @@ public sealed class WorkspaceEditToolTests
         }
         catch (AgentToolException exception)
         {
-            return new ToolInvocation((JsonElement?)null, exception);
+            return new ToolInvocation(null, exception);
         }
     }
 
@@ -372,9 +371,9 @@ public sealed class WorkspaceEditToolTests
     [Fact(Timeout = 30_000)]
     public async Task InstructionSurfacesRequireExplicitAllowWhileOrdinaryFilesDoNot()
     {
-        var root = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(), $"wsedit-instr-{Guid.NewGuid():N}");
-        System.IO.Directory.CreateDirectory(root);
+        var root = Path.Combine(
+            Path.GetTempPath(), $"wsedit-instr-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
         var workspace = Workspace.Create(root, root);
         var sessionId = AgentSessionId.Create();
         var registry = new PermissionOverrideRegistry();

@@ -267,13 +267,13 @@ public sealed class DenoPermissionBrokerTests
             new System.Net.Sockets.UnixDomainSocketEndPoint(broker.Address),
             cancellationToken);
 
-        var request = System.Text.Encoding.UTF8.GetBytes(
+        var request = Encoding.UTF8.GetBytes(
             $"{{\"v\":1,\"pid\":{Environment.ProcessId},\"id\":1,\"permission\":\"read\",\"value\":\"{path}\"}}\n");
         await socket.SendAsync(request, System.Net.Sockets.SocketFlags.None, cancellationToken);
 
         var buffer = new byte[1024];
         var read = await socket.ReceiveAsync(buffer, System.Net.Sockets.SocketFlags.None, cancellationToken);
-        var response = System.Text.Encoding.UTF8.GetString(buffer, 0, read);
+        var response = Encoding.UTF8.GetString(buffer, 0, read);
         using var document = JsonDocument.Parse(response.TrimEnd('\n'));
         return document.RootElement.GetProperty("result").GetString() ?? string.Empty;
     }
@@ -288,7 +288,10 @@ public sealed class DenoPermissionBrokerTests
     private static EffectivePolicy Build(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
     {
         return PermissionLayerStore.Build(
-            [new PermissionLayer { Kinds = kinds.ToDictionary(static entry => entry.Kind, static entry => entry.Rules) }],
+            [
+                new PermissionLayer
+                    { Kinds = kinds.ToDictionary(static entry => entry.Kind, static entry => entry.Rules) }
+            ],
             new VariableTable(new FakeVariableSource()));
     }
 

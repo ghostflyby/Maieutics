@@ -206,7 +206,7 @@ internal sealed class ReplOutputWebSocketHost(
         int peerProcessId,
         CancellationToken cancellationToken)
     {
-        var text = await Maieutics.Control.ReplControlMessageReader.ReadAsync(socket, cancellationToken)
+        var text = await ReplControlMessageReader.ReadAsync(socket, cancellationToken)
             .ConfigureAwait(false);
         if (text is null) return (null, 0);
 

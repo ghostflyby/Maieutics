@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Maieutics.Mcp;
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
 using Microsoft.Extensions.Logging.Abstractions;

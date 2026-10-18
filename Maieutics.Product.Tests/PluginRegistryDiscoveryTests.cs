@@ -39,7 +39,7 @@ public sealed class PluginRegistryDiscoveryTests
             []);
 
         descriptor.Should().NotBeNull();
-        descriptor!.Id.Should().Be("@acme/widget");
+        descriptor.Id.Should().Be("@acme/widget");
         descriptor.Name.Should().Be("@acme/widget");
         descriptor.Workers.Should().ContainSingle();
         descriptor.Workers[0].EntryUrl.Should().Be("https://jsr.io/@acme/widget/1.0.0/mod.ts");
@@ -60,7 +60,7 @@ public sealed class PluginRegistryDiscoveryTests
             "@acme/widget", "npm:@acme/widget@1.0.0", packageDir, []);
 
         descriptor.Should().NotBeNull();
-        descriptor!.Id.Should().Be("@acme/widget");
+        descriptor.Id.Should().Be("@acme/widget");
         descriptor.RootDirectory.Should().Be(packageDir);
         descriptor.Workers[0].EntryUrl.Should().StartWith("file://");
         descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");

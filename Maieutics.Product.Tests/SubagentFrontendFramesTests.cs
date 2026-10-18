@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Frontend;
@@ -40,26 +39,25 @@ public sealed class SubagentFrontendFramesTests
         var parentRunId = accepted.RunId;
         var childRunId = handle.RunId.Value.ToString("N");
 
-        initial.Should().Contain(frame => frame.Type == "run.started" && frame.RunId == parentRunId);
-        initial.Should().Contain(frame => frame.Type == "tool.finished" && frame.RunId == parentRunId);
-        initial.Should().Contain(frame => frame.Type == "run.started" && frame.RunId == childRunId);
-        initial.Should().Contain(frame => frame.Type == "text.delta" && frame.RunId == childRunId);
-        initial.Should().Contain(frame => frame.Type == "run.completed" && frame.RunId == childRunId, "frames: {0}", trace);
-        initial.Should().Contain(frame => frame.Type == "run.completed" && frame.RunId == parentRunId);
+        Assert.Contains(initial, frame => frame.Type == "run.started" && frame.RunId == parentRunId);
+        Assert.Contains(initial, frame => frame.Type == "tool.finished" && frame.RunId == parentRunId);
+        Assert.Contains(initial, frame => frame.Type == "run.started" && frame.RunId == childRunId);
+        Assert.Contains(initial, frame => frame.Type == "text.delta" && frame.RunId == childRunId);
+        Assert.Contains(initial, frame => frame.Type == "run.completed" && frame.RunId == childRunId);
+        Assert.Contains(initial, frame => frame.Type == "run.completed" && frame.RunId == parentRunId);
 
         // The child settled before the parent committed (join-before-complete), and the
         // wire order reflects it.
-        initial.FindIndex(frame => frame.Type == "run.completed" && frame.RunId == childRunId)
-            .Should().BeLessThan(initial.FindIndex(frame => frame.Type == "run.completed" && frame.RunId == parentRunId));
+        Assert.True(initial.FindIndex(frame => frame.Type == "run.completed" && frame.RunId == childRunId) < initial.FindIndex(frame => frame.Type == "run.completed" && frame.RunId == parentRunId));
 
         // A resuming subscriber with a past-the-end cursor receives the child's frames
         // (best-effort replay) plus the parent's terminal frames, but no parent sequenced
         // frames behind its cursor.
         var (resumedList, _) = stream.Subscribe(long.MaxValue);
         var resumed = resumedList.ToList();
-        resumed.Should().Contain(frame => frame.RunId == childRunId && frame.Type == "run.started");
-        resumed.Should().Contain(frame => frame.Type == "run.completed" && frame.RunId == parentRunId);
-        resumed.Should().NotContain(frame => frame.Type == "text.delta" && frame.RunId == parentRunId);
+        Assert.Contains(resumed, frame => frame.RunId == childRunId && frame.Type == "run.started");
+        Assert.Contains(resumed, frame => frame.Type == "run.completed" && frame.RunId == parentRunId);
+        Assert.DoesNotContain(resumed, frame => frame.Type == "text.delta" && frame.RunId == parentRunId);
     }
 
     [Fact(Timeout = 30_000)]
@@ -88,7 +86,7 @@ public sealed class SubagentFrontendFramesTests
         await harness.Service.CancelRunAsync(handle.RunId.Value.ToString("N"), deadline.Token);
 
         var result = await handle.Completion.WaitAsync(deadline.Token);
-        result.Status.Should().Be(AgentSubagentStatus.Cancelled);
+        Assert.Equal(AgentSubagentStatus.Cancelled, result.Status);
 
         // Release the parent; it returns "done" and the run completes normally.
         parentReleased.TrySetResult();

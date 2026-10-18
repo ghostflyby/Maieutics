@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.DenoExecution;
 using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
@@ -35,8 +34,8 @@ public sealed class DenoPermissionBrokerTests
 
             var output = await RunChildAsync(broker, CreatePolicy(root), scriptPath, deadline.Token);
 
-            output.Should().Contain("read OK");
-            output.Should().Contain("env DENIED: NotCapable");
+            Assert.Contains("read OK", output);
+            Assert.Contains("env DENIED: NotCapable", output);
         }
         finally
         {
@@ -65,7 +64,7 @@ public sealed class DenoPermissionBrokerTests
 
             var output = await RunChildAsync(broker, EffectivePolicy.Default, scriptPath, deadline.Token);
 
-            output.Should().Contain("read DENIED: NotCapable");
+            Assert.Contains("read DENIED: NotCapable", output);
         }
         finally
         {
@@ -108,10 +107,8 @@ public sealed class DenoPermissionBrokerTests
                 deadline.Token,
                 register: false);
 
-            output.Should().Contain("read DENIED: NotCapable");
-            broker.RegistrationCount.Should().Be(
-                0,
-                "a timed-out unknown pid must not leave a pending registration slot behind");
+            Assert.Contains("read DENIED: NotCapable", output);
+            Assert.Equal(0, broker.RegistrationCount);
         }
         finally
         {
@@ -128,8 +125,8 @@ public sealed class DenoPermissionBrokerTests
 
         var decision = DenoPermissionResolver.Resolve(policy, "read", "/tmp/secret/file.txt");
 
-        decision.IsAllowed.Should().BeFalse();
-        decision.Reason.Should().Contain("read access");
+        Assert.False(decision.IsAllowed);
+        Assert.Contains("read access", decision.Reason);
     }
 
     [Fact(Timeout = 10_000)]
@@ -139,9 +136,9 @@ public sealed class DenoPermissionBrokerTests
         var policy = Build(
             (PermissionKind.Env, new PermissionKindRules { Allow = ["HOME"] }));
 
-        DenoPermissionResolver.Resolve(policy, "env", "HOME").IsAllowed.Should().BeTrue();
-        DenoPermissionResolver.Resolve(policy, "env", "PATH").IsAllowed.Should().BeFalse();
-        DenoPermissionResolver.Resolve(policy, "unknown", "x").IsAllowed.Should().BeFalse();
+        Assert.True(DenoPermissionResolver.Resolve(policy, "env", "HOME").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "env", "PATH").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "unknown", "x").IsAllowed);
     }
 
     [Fact(Timeout = 10_000)]
@@ -152,10 +149,10 @@ public sealed class DenoPermissionBrokerTests
             (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp"] }));
 
         // Inside the granted directory: allowed; the grant root itself: allowed.
-        DenoPermissionResolver.Resolve(policy, "read", "/tmp/x").IsAllowed.Should().BeTrue();
-        DenoPermissionResolver.Resolve(policy, "read", "/tmp").IsAllowed.Should().BeTrue();
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/tmp/x").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/tmp").IsAllowed);
         // A sibling whose name merely starts with the pattern: not covered by the grant.
-        DenoPermissionResolver.Resolve(policy, "read", "/tmp-evil").IsAllowed.Should().BeFalse();
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/tmp-evil").IsAllowed);
     }
 
     [Fact(Timeout = 10_000)]
@@ -169,8 +166,8 @@ public sealed class DenoPermissionBrokerTests
                 Deny = ["/data/secret"]
             }));
 
-        DenoPermissionResolver.Resolve(policy, "read", "/data/secret/key").IsAllowed.Should().BeFalse();
-        DenoPermissionResolver.Resolve(policy, "read", "/data/secret-appended").IsAllowed.Should().BeTrue();
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/data/secret/key").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/data/secret-appended").IsAllowed);
     }
 
     [Fact(Timeout = 10_000)]
@@ -183,8 +180,8 @@ public sealed class DenoPermissionBrokerTests
 
         // env names and net hosts stay prefix-matched (Deno semantics); only filesystem path
         // kinds gain the directory-boundary rule.
-        DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed.Should().BeTrue();
-        DenoPermissionResolver.Resolve(policy, "net", "localhost:8080").IsAllowed.Should().BeTrue();
+        Assert.True(DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "net", "localhost:8080").IsAllowed);
     }
 
     /// <summary>A later registration for the same pid must replace an already-settled slot.
@@ -225,12 +222,8 @@ public sealed class DenoPermissionBrokerTests
                 pid,
                 Build((PermissionKind.Read, new PermissionKindRules { Allow = [firstPath] })));
 
-            (await AskAsync(broker, firstPath, cancellationToken)).Should().Be(
-                "allow",
-                "the first policy allows the first path");
-            (await AskAsync(broker, secondPath, cancellationToken)).Should().Be(
-                "deny",
-                "the first policy does not allow the second path");
+            Assert.Equal("allow", (await AskAsync(broker, firstPath, cancellationToken)));
+            Assert.Equal("deny", (await AskAsync(broker, secondPath, cancellationToken)));
 
             // Second registration for the same pid, without retiring the slot first: the state a
             // recycled pid would find. Only the replacement policy allows the second path.
@@ -238,10 +231,7 @@ public sealed class DenoPermissionBrokerTests
                 pid,
                 Build((PermissionKind.Read, new PermissionKindRules { Allow = [firstPath, secondPath] })));
 
-            (await AskAsync(broker, secondPath, cancellationToken)).Should().Be(
-                "allow",
-                "a later registration for the same pid must replace the settled one; a silently "
-                + "dropped registration would leave the request evaluated against the old policy");
+            Assert.Equal("allow", (await AskAsync(broker, secondPath, cancellationToken)));
 
             broker.UnregisterProcess(pid);
         }

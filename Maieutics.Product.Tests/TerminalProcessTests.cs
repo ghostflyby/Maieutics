@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 
 namespace Maieutics.Product.Tests;
@@ -18,8 +17,8 @@ public sealed class TerminalProcessTests
 
         var reaped = await AwaitReapedAsync(process, TestContext.Current.CancellationToken);
 
-        reaped.ExitCode.Should().Be(7);
-        reaped.TerminationSignal.Should().BeNull();
+        Assert.Equal(7, reaped.ExitCode);
+        Assert.Null(reaped.TerminationSignal);
     }
 
     [Fact(Timeout = 10_000)]
@@ -32,8 +31,8 @@ public sealed class TerminalProcessTests
 
         var reaped = await AwaitReapedAsync(process, TestContext.Current.CancellationToken);
 
-        reaped.TerminationSignal.Should().Be(9);
-        reaped.ExitCode.Should().BeNull();
+        Assert.Equal(9, reaped.TerminationSignal);
+        Assert.Null(reaped.ExitCode);
     }
 
     private static ITerminalProcess Start(IReadOnlyList<string> command)

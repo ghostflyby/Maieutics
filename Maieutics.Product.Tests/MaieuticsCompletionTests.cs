@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Commands;
 using Maieutics.Configuration;
 
@@ -16,78 +15,78 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionExpandsAnExactCommandAndHandlesPrefixes()
     {
         var exact = Complete("%maieutics");
-        exact.Matches.Should().Equal("%maieutics mcp", "%maieutics model", "%maieutics plugin", "%maieutics session", "%maieutics workspace");
-        exact.CursorStart.Should().Be(0);
-        exact.CursorEnd.Should().Be(10);
+        Assert.Equal(new string[] { "%maieutics mcp", "%maieutics model", "%maieutics plugin", "%maieutics session", "%maieutics workspace" }, exact.Matches);
+        Assert.Equal(0, exact.CursorStart);
+        Assert.Equal(10, exact.CursorEnd);
 
         var prefix = Complete("%mai");
-        prefix.Matches.Should().Equal("%maieutics");
-        prefix.CursorStart.Should().Be(0);
-        prefix.CursorEnd.Should().Be(4);
+        Assert.Equal(new string[] { "%maieutics" }, prefix.Matches);
+        Assert.Equal(0, prefix.CursorStart);
+        Assert.Equal(4, prefix.CursorEnd);
 
         var afterRoot = Complete("%maieutics ");
-        afterRoot.Matches.Should().Equal("mcp", "model", "plugin", "session", "workspace");
-        afterRoot.CursorStart.Should().Be(11);
-        afterRoot.CursorEnd.Should().Be(11);
+        Assert.Equal(new string[] { "mcp", "model", "plugin", "session", "workspace" }, afterRoot.Matches);
+        Assert.Equal(11, afterRoot.CursorStart);
+        Assert.Equal(11, afterRoot.CursorEnd);
     }
 
     [Fact]
     public void SessionSubcommandsCompleteAtBoundariesAndIgnoreCase()
     {
         var canonical = Complete("%session ");
-        canonical.Matches.Should().Equal("current", "fork", "gc", "list", "new", "rename", "repair", "resume");
-        canonical.CursorStart.Should().Be(9);
-        canonical.CursorEnd.Should().Be(9);
+        Assert.Equal(new string[] { "current", "fork", "gc", "list", "new", "rename", "repair", "resume" }, canonical.Matches);
+        Assert.Equal(9, canonical.CursorStart);
+        Assert.Equal(9, canonical.CursorEnd);
 
         var legacy = Complete("%maieutics session ");
-        legacy.Matches.Should().Equal("current", "fork", "gc", "list", "new", "rename", "repair", "resume");
+        Assert.Equal(new string[] { "current", "fork", "gc", "list", "new", "rename", "repair", "resume" }, legacy.Matches);
 
         var partial = Complete("%SESSION RES");
-        partial.Matches.Should().Equal("resume");
-        partial.CursorStart.Should().Be(9);
-        partial.CursorEnd.Should().Be(12);
+        Assert.Equal(new string[] { "resume" }, partial.Matches);
+        Assert.Equal(9, partial.CursorStart);
+        Assert.Equal(12, partial.CursorEnd);
     }
 
     [Fact]
     public void WorkspaceSubcommandsCompleteAtBoundariesAndIgnoreCase()
     {
         var commands = Complete("%maieutics workspace ");
-        commands.Matches.Should().Equal("close", "current", "open");
-        commands.CursorStart.Should().Be(21);
-        commands.CursorEnd.Should().Be(21);
+        Assert.Equal(new string[] { "close", "current", "open" }, commands.Matches);
+        Assert.Equal(21, commands.CursorStart);
+        Assert.Equal(21, commands.CursorEnd);
 
         var partial = Complete("%MAIEUTICS WORKSPACE O");
-        partial.Matches.Should().Equal("open");
-        partial.CursorStart.Should().Be(21);
-        partial.CursorEnd.Should().Be(22);
+        Assert.Equal(new string[] { "open" }, partial.Matches);
+        Assert.Equal(21, partial.CursorStart);
+        Assert.Equal(22, partial.CursorEnd);
     }
 
     [Fact]
     public void ModelSubcommandsCompleteAtBoundariesAndIgnoreCase()
     {
         var commands = Complete("%maieutics model ");
-        commands.Matches.Should().Equal("available", "current", "list", "reset", "use");
-        commands.CursorStart.Should().Be(17);
-        commands.CursorEnd.Should().Be(17);
+        Assert.Equal(new string[] { "available", "current", "list", "reset", "use" }, commands.Matches);
+        Assert.Equal(17, commands.CursorStart);
+        Assert.Equal(17, commands.CursorEnd);
 
         var partial = Complete("%MAIEUTICS MODEL U");
-        partial.Matches.Should().Equal("use");
-        partial.CursorStart.Should().Be(17);
-        partial.CursorEnd.Should().Be(18);
+        Assert.Equal(new string[] { "use" }, partial.Matches);
+        Assert.Equal(17, partial.CursorStart);
+        Assert.Equal(18, partial.CursorEnd);
     }
 
     [Fact]
     public void McpSubcommandsCompleteForCanonicalAndLegacyCommands()
     {
         var legacy = Complete("%maieutics mcp ");
-        legacy.Matches.Should().Equal("list");
-        legacy.CursorStart.Should().Be(15);
-        legacy.CursorEnd.Should().Be(15);
+        Assert.Equal(new string[] { "list" }, legacy.Matches);
+        Assert.Equal(15, legacy.CursorStart);
+        Assert.Equal(15, legacy.CursorEnd);
 
         var canonical = Complete("%MCP L");
-        canonical.Matches.Should().Equal("list");
-        canonical.CursorStart.Should().Be(5);
-        canonical.CursorEnd.Should().Be(6);
+        Assert.Equal(new string[] { "list" }, canonical.Matches);
+        Assert.Equal(5, canonical.CursorStart);
+        Assert.Equal(6, canonical.CursorEnd);
     }
 
     [Fact]
@@ -96,30 +95,30 @@ public sealed class MaieuticsCompletionTests
         var all = Complete(
             "%maieutics model available ",
             sourceIds: ["zeta", "vendor", "Vendor"]);
-        all.Matches.Should().Equal("--refresh", "vendor", "zeta");
-        all.CursorStart.Should().Be(27);
-        all.CursorEnd.Should().Be(27);
+        Assert.Equal(new string[] { "--refresh", "vendor", "zeta" }, all.Matches);
+        Assert.Equal(27, all.CursorStart);
+        Assert.Equal(27, all.CursorEnd);
 
         var partial = Complete(
             "%maieutics model available ven",
             sourceIds: ["vendor"]);
-        partial.Matches.Should().Equal("vendor");
-        partial.CursorStart.Should().Be(27);
-        partial.CursorEnd.Should().Be(30);
+        Assert.Equal(new string[] { "vendor" }, partial.Matches);
+        Assert.Equal(27, partial.CursorStart);
+        Assert.Equal(30, partial.CursorEnd);
     }
 
     [Fact]
     public void UseCompletesProfileIdsAndConfiguredModelIds()
     {
         var all = Complete("%maieutics model use ");
-        all.Matches.Should().Equal("claude", "claude-test", "gpt", "gpt-test");
-        all.CursorStart.Should().Be(21);
-        all.CursorEnd.Should().Be(21);
+        Assert.Equal(new string[] { "claude", "claude-test", "gpt", "gpt-test" }, all.Matches);
+        Assert.Equal(21, all.CursorStart);
+        Assert.Equal(21, all.CursorEnd);
 
         var partial = Complete("%maieutics model use cl");
-        partial.Matches.Should().Equal("claude", "claude-test");
-        partial.CursorStart.Should().Be(21);
-        partial.CursorEnd.Should().Be(23);
+        Assert.Equal(new string[] { "claude", "claude-test" }, partial.Matches);
+        Assert.Equal(21, partial.CursorStart);
+        Assert.Equal(23, partial.CursorEnd);
     }
 
     [Fact]
@@ -156,24 +155,24 @@ public sealed class MaieuticsCompletionTests
         var all = Complete(
             "%maieutics model use @",
             automaticProfiles: automaticProfiles);
-        all.Matches.Should().Equal("@other/model-alpha", "@vendor/model-alpha", "@vendor/model-beta");
+        Assert.Equal(new string[] { "@other/model-alpha", "@vendor/model-alpha", "@vendor/model-beta" }, all.Matches);
 
         var source = Complete(
             "%maieutics model use @ven",
             automaticProfiles: automaticProfiles);
-        source.Matches.Should().Equal("@vendor/model-alpha", "@vendor/model-beta");
+        Assert.Equal(new string[] { "@vendor/model-alpha", "@vendor/model-beta" }, source.Matches);
 
         var uniqueModel = Complete(
             "%maieutics model use model-",
             [],
             automaticProfiles);
-        uniqueModel.Matches.Should().Equal("model-beta");
+        Assert.Equal(new string[] { "model-beta" }, uniqueModel.Matches);
 
         var selectedAfterCacheExpiry = Complete(
             "%maieutics model use @ven",
             [automaticProfiles[2] with { IsSelected = true }],
             []);
-        selectedAfterCacheExpiry.Matches.Should().Equal("@vendor/model-beta");
+        Assert.Equal(new string[] { "@vendor/model-beta" }, selectedAfterCacheExpiry.Matches);
     }
 
     [Fact]
@@ -186,9 +185,9 @@ public sealed class MaieuticsCompletionTests
 
         var completion = MaieuticsCommandLanguage.Complete(code, cursorUtf16Index, Profiles, [], []);
 
-        completion.Matches.Should().Equal("claude", "claude-test");
-        completion.TokenStart.Should().Be(21);
-        completion.TokenEnd.Should().Be(code.Length);
+        Assert.Equal(new string[] { "claude", "claude-test" }, completion.Matches);
+        Assert.Equal(21, completion.TokenStart);
+        Assert.Equal(code.Length, completion.TokenEnd);
     }
 
     [Fact]
@@ -198,19 +197,19 @@ public sealed class MaieuticsCompletionTests
             "%maieutics model available v",
             [],
             sourceIds: ["vendor"]);
-        sourceOnly.Matches.Should().Equal("vendor");
+        Assert.Equal(new string[] { "vendor" }, sourceOnly.Matches);
 
         var commands = Complete(
             "%maieutics model ",
             [],
             sourceIds: []);
-        commands.Matches.Should().Equal("available", "current", "list", "reset", "use");
+        Assert.Equal(new string[] { "available", "current", "list", "reset", "use" }, commands.Matches);
 
         var use = Complete(
             "%maieutics model use ",
             [],
             sourceIds: ["vendor"]);
-        use.Matches.Should().BeEmpty();
+        Assert.Empty(use.Matches);
     }
 
     [Fact]
@@ -223,103 +222,103 @@ public sealed class MaieuticsCompletionTests
         ];
 
         var use = Complete("%maieutics model use ", profiles, []);
-        use.Matches.Should().Equal("a-profile", "shared", "Z-profile");
+        Assert.Equal(new string[] { "a-profile", "shared", "Z-profile" }, use.Matches);
 
         var unrelated = Complete("ordinary text", profiles, sourceIds: ["vendor"]);
-        unrelated.Matches.Should().BeEmpty();
+        Assert.Empty(unrelated.Matches);
     }
 
     [Fact]
     public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
     {
         var all = Complete("/");
-        all.Matches.Should().Equal("%mcp", "%model", "%plugin", "%session", "%status", "%workspace");
-        all.CursorStart.Should().Be(0);
-        all.CursorEnd.Should().Be(1);
+        Assert.Equal(new string[] { "%mcp", "%model", "%plugin", "%session", "%status", "%workspace" }, all.Matches);
+        Assert.Equal(0, all.CursorStart);
+        Assert.Equal(1, all.CursorEnd);
 
         var model = Complete("/m");
-        model.Matches.Should().Equal("%mcp", "%model");
-        model.CursorStart.Should().Be(0);
-        model.CursorEnd.Should().Be(2);
+        Assert.Equal(new string[] { "%mcp", "%model" }, model.Matches);
+        Assert.Equal(0, model.CursorStart);
+        Assert.Equal(2, model.CursorEnd);
 
         var workspace = Complete("/workspace");
-        workspace.Matches.Should().Equal("%workspace");
-        workspace.CursorStart.Should().Be(0);
-        workspace.CursorEnd.Should().Be(10);
+        Assert.Equal(new string[] { "%workspace" }, workspace.Matches);
+        Assert.Equal(0, workspace.CursorStart);
+        Assert.Equal(10, workspace.CursorEnd);
 
         var caseInsensitive = Complete("/MODEL");
-        caseInsensitive.Matches.Should().Equal("%model");
+        Assert.Equal(new string[] { "%model" }, caseInsensitive.Matches);
     }
 
     [Fact]
     public void SlashDiscoveryDoesNotHijackPathLikeInput()
     {
         var path = Complete("/Users/ghostflyby/repos");
-        path.Matches.Should().BeEmpty();
+        Assert.Empty(path.Matches);
 
         var device = Complete("/dev/null");
-        device.Matches.Should().BeEmpty();
+        Assert.Empty(device.Matches);
     }
 
     [Fact]
     public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
     {
         var all = Complete("%");
-        all.Matches.Should().Equal("%maieutics", "%mcp", "%model", "%plugin", "%session", "%status", "%workspace");
+        Assert.Equal(new string[] { "%maieutics", "%mcp", "%model", "%plugin", "%session", "%status", "%workspace" }, all.Matches);
 
         var sharedPrefix = Complete("%m");
-        sharedPrefix.Matches.Should().Equal("%maieutics", "%mcp", "%model");
+        Assert.Equal(new string[] { "%maieutics", "%mcp", "%model" }, sharedPrefix.Matches);
 
         var pluginPrefix = Complete("%p");
-        pluginPrefix.Matches.Should().Equal("%plugin");
+        Assert.Equal(new string[] { "%plugin" }, pluginPrefix.Matches);
     }
 
     [Fact]
     public void CanonicalCommandsCompleteSubcommandsAndBoundaries()
     {
         var mcp = Complete("%mcp ");
-        mcp.Matches.Should().Equal("list");
-        mcp.CursorStart.Should().Be(5);
-        mcp.CursorEnd.Should().Be(5);
+        Assert.Equal(new string[] { "list" }, mcp.Matches);
+        Assert.Equal(5, mcp.CursorStart);
+        Assert.Equal(5, mcp.CursorEnd);
 
         var plugin = Complete("%plugin ");
-        plugin.Matches.Should().Equal("approve", "list", "revoke");
-        plugin.CursorStart.Should().Be(8);
-        plugin.CursorEnd.Should().Be(8);
+        Assert.Equal(new string[] { "approve", "list", "revoke" }, plugin.Matches);
+        Assert.Equal(8, plugin.CursorStart);
+        Assert.Equal(8, plugin.CursorEnd);
 
         var model = Complete("%model ");
-        model.Matches.Should().Equal("available", "current", "list", "reset", "use");
-        model.CursorStart.Should().Be(7);
-        model.CursorEnd.Should().Be(7);
+        Assert.Equal(new string[] { "available", "current", "list", "reset", "use" }, model.Matches);
+        Assert.Equal(7, model.CursorStart);
+        Assert.Equal(7, model.CursorEnd);
 
         var partial = Complete("%MODEL U");
-        partial.Matches.Should().Equal("use");
-        partial.CursorStart.Should().Be(7);
-        partial.CursorEnd.Should().Be(8);
+        Assert.Equal(new string[] { "use" }, partial.Matches);
+        Assert.Equal(7, partial.CursorStart);
+        Assert.Equal(8, partial.CursorEnd);
 
         var workspace = Complete("%workspace ");
-        workspace.Matches.Should().Equal("close", "current", "open");
-        workspace.CursorStart.Should().Be(11);
-        workspace.CursorEnd.Should().Be(11);
+        Assert.Equal(new string[] { "close", "current", "open" }, workspace.Matches);
+        Assert.Equal(11, workspace.CursorStart);
+        Assert.Equal(11, workspace.CursorEnd);
 
         var status = Complete("%status ");
-        status.Matches.Should().BeEmpty();
-        status.CursorStart.Should().Be(8);
-        status.CursorEnd.Should().Be(8);
+        Assert.Empty(status.Matches);
+        Assert.Equal(8, status.CursorStart);
+        Assert.Equal(8, status.CursorEnd);
     }
 
     [Fact]
     public void CanonicalCommandsCompleteUseAndAvailable()
     {
         var use = Complete("%model use ");
-        use.Matches.Should().Equal("claude", "claude-test", "gpt", "gpt-test");
-        use.CursorStart.Should().Be(11);
-        use.CursorEnd.Should().Be(11);
+        Assert.Equal(new string[] { "claude", "claude-test", "gpt", "gpt-test" }, use.Matches);
+        Assert.Equal(11, use.CursorStart);
+        Assert.Equal(11, use.CursorEnd);
 
         var available = Complete("%model available ", sourceIds: ["zeta", "vendor"]);
-        available.Matches.Should().Equal("--refresh", "vendor", "zeta");
-        available.CursorStart.Should().Be(17);
-        available.CursorEnd.Should().Be(17);
+        Assert.Equal(new string[] { "--refresh", "vendor", "zeta" }, available.Matches);
+        Assert.Equal(17, available.CursorStart);
+        Assert.Equal(17, available.CursorEnd);
 
         MaieuticsModelProfileInfo[] automaticProfiles =
         [
@@ -350,7 +349,7 @@ public sealed class MaieuticsCompletionTests
         ];
 
         var qualified = Complete("%model use @", automaticProfiles: automaticProfiles);
-        qualified.Matches.Should().Equal("@other/model-alpha", "@vendor/model-alpha", "@vendor/model-beta");
+        Assert.Equal(new string[] { "@other/model-alpha", "@vendor/model-alpha", "@vendor/model-beta" }, qualified.Matches);
     }
 
     [Fact]
@@ -361,9 +360,9 @@ public sealed class MaieuticsCompletionTests
 
         var completion = MaieuticsCommandLanguage.Complete(code, cursorUtf16Index, Profiles, [], []);
 
-        completion.Matches.Should().Equal("claude", "claude-test");
-        completion.TokenStart.Should().Be(11);
-        completion.TokenEnd.Should().Be(code.Length);
+        Assert.Equal(new string[] { "claude", "claude-test" }, completion.Matches);
+        Assert.Equal(11, completion.TokenStart);
+        Assert.Equal(code.Length, completion.TokenEnd);
     }
 
     // CursorStart/CursorEnd preserve the assertion surface this file has always

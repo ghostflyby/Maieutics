@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Mcp;
@@ -45,14 +44,13 @@ public sealed class PluginDeclarativeExtensionsTests
             // The synthetic registration exists without any worker ever spawning:
             // the manifest snapshot is the discovery source.
             var registrations = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind);
-            var registration = registrations.Should().ContainSingle().Which;
-            registration.PluginId.Should().Be(pluginName);
-            registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
+            var registration = Assert.Single(registrations);
+            Assert.Equal(pluginName, registration.PluginId);
+            Assert.Equal(PluginHostManager.ManifestExportName, registration.ExportName);
 
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
-            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
-                .Be($"plugin:{pluginName}::npm:@maieutics/probe-server");
+            Assert.True(discovery.IsSuccess, discovery.Failure);
+            Assert.Equal($"plugin:{pluginName}::npm:@maieutics/probe-server", Assert.Single(discovery.Definitions).Id);
         }
         finally
         {
@@ -83,11 +81,11 @@ public sealed class PluginDeclarativeExtensionsTests
             // The known kind is registered; the unknown kind produced a diagnostic
             // and no registration of its own.
             var registrations = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind);
-            registrations.Should().ContainSingle().Which.PluginId.Should().Be(pluginName);
-            manager.GetRegistrations("FutureKind").Should().BeEmpty();
+            Assert.Equal(pluginName, Assert.Single(registrations).PluginId);
+            Assert.Empty(manager.GetRegistrations("FutureKind"));
             var discovery = manager.DiscoverManifestMcpAsync(
                 new PluginRegistration(pluginName, PluginHostManager.ManifestExportName, McpDiscoverContributionKind.ExtensionKind));
-            discovery.IsSuccess.Should().BeTrue();
+            Assert.True(discovery.IsSuccess);
         }
         finally
         {
@@ -177,7 +175,7 @@ public sealed class PluginDeclarativeExtensionsTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
 
             // Remove the section from the manifest and apply the reload: the synthetic
             // registration and the contribution must both disappear.
@@ -192,10 +190,10 @@ public sealed class PluginDeclarativeExtensionsTests
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
 
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             var discovery = manager.DiscoverManifestMcpAsync(
                 new PluginRegistration(pluginId, PluginHostManager.ManifestExportName, McpDiscoverContributionKind.ExtensionKind));
-            discovery.IsSuccess.Should().BeFalse(discovery.Failure);
+            Assert.False(discovery.IsSuccess, discovery.Failure);
         }
         finally
         {
@@ -237,7 +235,7 @@ public sealed class PluginDeclarativeExtensionsTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
 
             // Add the section and apply the reload (a workerless plugin never
             // triggers a host registry resend, so the manager republishes itself).
@@ -260,16 +258,15 @@ public sealed class PluginDeclarativeExtensionsTests
             // The added extensions section changed the declaration surface, so the
             // approval gate holds the contribution until the user approves it (ADR 0037);
             // approval then activates it without a restart.
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             await manager.ApproveAsync(Path.GetFileName(root), deadline.Token);
 
             var registrations = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind);
-            var registration = registrations.Should().ContainSingle().Which;
-            registration.PluginId.Should().Be(Path.GetFileName(root));
+            var registration = Assert.Single(registrations);
+            Assert.Equal(Path.GetFileName(root), registration.PluginId);
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
-            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
-                .Be($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server");
+            Assert.True(discovery.IsSuccess, discovery.Failure);
+            Assert.Equal($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server", Assert.Single(discovery.Definitions).Id);
         }
         finally
         {
@@ -300,17 +297,16 @@ public sealed class PluginDeclarativeExtensionsTests
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
 
-            var registration = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
-                .Should().ContainSingle().Which;
-            registration.PluginId.Should().Be(pluginId);
-            registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
+            var registration = Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(pluginId, registration.PluginId);
+            Assert.Equal(PluginHostManager.ManifestExportName, registration.ExportName);
 
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
-            var definition = discovery.Definitions.Should().ContainSingle().Which;
-            definition.Id.Should().Be($"plugin:{pluginId}::probe");
-            definition.Transport.Should().BeOfType<StdioMcpTransportDefinition>();
-            definition.RootsEnabled.Should().BeTrue();
+            Assert.True(discovery.IsSuccess, discovery.Failure);
+            var definition = Assert.Single(discovery.Definitions);
+            Assert.Equal($"plugin:{pluginId}::probe", definition.Id);
+            Assert.IsType<StdioMcpTransportDefinition>(definition.Transport);
+            Assert.True(definition.RootsEnabled);
         }
         finally
         {
@@ -342,7 +338,7 @@ public sealed class PluginDeclarativeExtensionsTests
                 PluginHostManager.ManifestExportName,
                 McpDiscoverContributionKind.ExtensionKind);
             var original = manager.DiscoverManifestMcpAsync(registration);
-            original.IsSuccess.Should().BeTrue(original.Failure);
+            Assert.True(original.IsSuccess, original.Failure);
 
             // Rewriting the data file with a different transport is a declarative-only
             // change, but it changes the declaration surface: the approval gate holds
@@ -360,14 +356,14 @@ public sealed class PluginDeclarativeExtensionsTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             await manager.ApproveAsync(pluginId, deadline.Token);
 
             var reloaded = manager.DiscoverManifestMcpAsync(registration);
-            reloaded.IsSuccess.Should().BeTrue(reloaded.Failure);
-            var definition = reloaded.Definitions.Should().ContainSingle().Which;
-            definition.Transport.Should().BeOfType<HttpMcpTransportDefinition>();
-            definition.GenerationKey.Should().NotBe(original.Definitions[0].GenerationKey);
+            Assert.True(reloaded.IsSuccess, reloaded.Failure);
+            var definition = Assert.Single(reloaded.Definitions);
+            Assert.IsType<HttpMcpTransportDefinition>(definition.Transport);
+            Assert.NotEqual(original.Definitions[0].GenerationKey, definition.GenerationKey);
         }
         finally
         {
@@ -399,7 +395,7 @@ public sealed class PluginDeclarativeExtensionsTests
                 PluginHostManager.ManifestExportName,
                 McpDiscoverContributionKind.ExtensionKind);
             var original = manager.DiscoverManifestMcpAsync(registration);
-            original.IsSuccess.Should().BeTrue(original.Failure);
+            Assert.True(original.IsSuccess, original.Failure);
 
             // The broken rewrite is a declaration-surface change the approval gate treats
             // fail-closed (ADR 0037): the contribution is withdrawn and the plugin goes
@@ -411,9 +407,8 @@ public sealed class PluginDeclarativeExtensionsTests
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
 
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
-            manager.ListPluginApprovals().Should().ContainSingle()
-                .Which.State.Should().Be(PluginApprovalState.PendingApproval);
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(PluginApprovalState.PendingApproval, Assert.Single(manager.ListPluginApprovals()).State);
 
             var repaired = CaptureReloadApplied(manager);
             WriteMcpDataFile(
@@ -427,11 +422,10 @@ public sealed class PluginDeclarativeExtensionsTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, repaired, deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
-                .Should().ContainSingle().Which.PluginId.Should().Be(pluginId);
+            Assert.Equal(pluginId, Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)).PluginId);
             var recovered = manager.DiscoverManifestMcpAsync(registration);
-            recovered.IsSuccess.Should().BeTrue(recovered.Failure);
-            recovered.Definitions[0].GenerationKey.Should().Be(original.Definitions[0].GenerationKey);
+            Assert.True(recovered.IsSuccess, recovered.Failure);
+            Assert.Equal(original.Definitions[0].GenerationKey, recovered.Definitions[0].GenerationKey);
         }
         finally
         {
@@ -482,8 +476,7 @@ public sealed class PluginDeclarativeExtensionsTests
                 clock,
                 applied,
                 canceled.Token);
-            (await wait.Should().ThrowAsync<OperationCanceledException>()).Which.Should().NotBeNull(
-                "a dead budget token must fail the wait immediately, not win the advance race forever");
+            Assert.NotNull((await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await wait.Invoke(); })));
         }
         finally
         {
@@ -674,11 +667,10 @@ public sealed class PluginDeclarativeExtensionsTests
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
 
-            var registration = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
-                .Should().ContainSingle().Which;
+            var registration = Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeFalse();
-            discovery.Failure.Should().Be("invalid_server_definition");
+            Assert.False(discovery.IsSuccess);
+            Assert.Equal("invalid_server_definition", discovery.Failure);
         }
         finally
         {
@@ -736,11 +728,10 @@ public sealed class PluginDeclarativeExtensionsTests
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
 
-            var registration = manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
-                .Should().ContainSingle().Which;
+            var registration = Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeFalse();
-            discovery.Failure.Should().Be("conflicting_server_definition");
+            Assert.False(discovery.IsSuccess);
+            Assert.Equal("conflicting_server_definition", discovery.Failure);
         }
         finally
         {

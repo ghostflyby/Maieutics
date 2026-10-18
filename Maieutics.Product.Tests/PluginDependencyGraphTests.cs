@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
@@ -39,12 +38,12 @@ public sealed class PluginDependencyGraphTests
         var graph = PluginDependencyGraph.Validate(
             [Plugin("c", "b"), Plugin("b", "a"), Plugin("a")]);
 
-        graph.Enabled.Select(static p => p.Id).Should().Contain(["a", "b", "c"]);
+        Assert.All(new[] { "a", "b", "c" }, item => Assert.Contains(item, graph.Enabled.Select(static p => p.Id)));
         var waveIds = graph.Waves
             .Select(static wave => string.Join(",", wave.Select(static p => p.Id)))
             .ToArray();
-        waveIds.Should().Equal("a", "b", "c");
-        graph.Exclusions.Should().BeEmpty();
+        Assert.Equal(new string[] { "a", "b", "c" }, waveIds);
+        Assert.Empty(graph.Exclusions);
     }
 
     [Fact]
@@ -53,9 +52,9 @@ public sealed class PluginDependencyGraphTests
         var graph = PluginDependencyGraph.Validate(
             [Plugin("x"), Plugin("y")]);
 
-        graph.Enabled.Should().HaveCount(2);
-        graph.Waves.Should().HaveCount(1);
-        graph.Waves[0].Select(static p => p.Id).Should().Contain(["x", "y"]);
+        Assert.Equal(2, graph.Enabled.Count());
+        Assert.Single(graph.Waves);
+        Assert.All(new[] { "x", "y" }, item => Assert.Contains(item, graph.Waves[0].Select(static p => p.Id)));
     }
 
     [Fact]
@@ -64,10 +63,9 @@ public sealed class PluginDependencyGraphTests
         var graph = PluginDependencyGraph.Validate(
             [Plugin("a", "missing"), Plugin("b", "a"), Plugin("independent")]);
 
-        graph.Enabled.Select(static p => p.Id).Should().Equal("independent");
-        graph.Exclusions.Select(static e => e.PluginId)
-            .Should().Contain(["a", "b"]);
-        graph.Exclusions.Should().Contain(e =>
+        Assert.Equal(new string[] { "independent" }, graph.Enabled.Select(static p => p.Id));
+        Assert.All(new[] { "a", "b" }, item => Assert.Contains(item, graph.Exclusions.Select(static e => e.PluginId)));
+        Assert.Contains(graph.Exclusions, e =>
             e.PluginId == "a" && e.Reason == PluginExclusionReason.MissingDependency);
     }
 
@@ -77,10 +75,9 @@ public sealed class PluginDependencyGraphTests
         var graph = PluginDependencyGraph.Validate(
             [Plugin("a", "b"), Plugin("b", "a"), Plugin("c", "a"), Plugin("ok")]);
 
-        graph.Enabled.Select(static p => p.Id).Should().Equal("ok");
-        graph.Exclusions.Select(static e => e.PluginId)
-            .Should().Contain(["a", "b", "c"]);
-        graph.Exclusions.Should().Contain(e =>
+        Assert.Equal(new string[] { "ok" }, graph.Enabled.Select(static p => p.Id));
+        Assert.All(new[] { "a", "b", "c" }, item => Assert.Contains(item, graph.Exclusions.Select(static e => e.PluginId)));
+        Assert.Contains(graph.Exclusions, e =>
             e.PluginId == "a" && e.Reason == PluginExclusionReason.DependencyCycle);
     }
 
@@ -89,7 +86,7 @@ public sealed class PluginDependencyGraphTests
     {
         var graph = PluginDependencyGraph.Validate([Plugin("a", "a")]);
 
-        graph.Enabled.Should().BeEmpty();
-        graph.Exclusions.Should().Contain(e => e.PluginId == "a");
+        Assert.Empty(graph.Enabled);
+        Assert.Contains(graph.Exclusions, e => e.PluginId == "a");
     }
 }

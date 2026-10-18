@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Microsoft.AspNetCore.Http;
@@ -14,20 +13,20 @@ public sealed class ReplOutputWebSocketTests
     [Fact]
     public void ProtocolExposesItsDomainPathAndCeiling()
     {
-        ReplOutputProtocol.Version.Should().Be(1);
-        ReplOutputProtocol.OutputPath.Should().Be("/v1/repl/output/ws");
-        ReplOutputProtocol.MaximumMessageBytes.Should().Be(64 * 1024 * 1024);
-        ReplOutputProtocol.MaximumMessageBytes.Should().BeGreaterThan(1024 * 1024);
+        Assert.Equal(1, ReplOutputProtocol.Version);
+        Assert.Equal("/v1/repl/output/ws", ReplOutputProtocol.OutputPath);
+        Assert.Equal(64 * 1024 * 1024, ReplOutputProtocol.MaximumMessageBytes);
+        Assert.True(ReplOutputProtocol.MaximumMessageBytes > 1024 * 1024);
     }
 
     [Fact]
     public void StdoutAndStderrFramesRoundTrip()
     {
         var stdout = ReplOutputFrameReader.Decode(Frame.Stdout(7, "execution-1", "hello\n"));
-        stdout.Should().Be(new ReplOutputConsoleFrame(7, "execution-1", "stdout", "hello\n"));
+        Assert.Equal(new ReplOutputConsoleFrame(7, "execution-1", "stdout", "hello\n"), stdout);
 
         var stderr = ReplOutputFrameReader.Decode(Frame.Stderr(8, "execution-2", "boom\n"));
-        stderr.Should().Be(new ReplOutputConsoleFrame(8, "execution-2", "stderr", "boom\n"));
+        Assert.Equal(new ReplOutputConsoleFrame(8, "execution-2", "stderr", "boom\n"), stderr);
     }
 
     [Fact]
@@ -41,16 +40,16 @@ public sealed class ReplOutputWebSocketTests
             "display-1",
             isUpdate: false));
 
-        var display = frame.Should().BeOfType<ReplOutputDisplayFrame>().Which;
-        display.Seq.Should().Be(3);
-        display.ExecutionId.Should().Be("execution-1");
-        display.Data["text/plain"].GetString().Should().Be("1 + 1 = 2");
-        display.Data["text/html"].GetString().Should().Be("<b>2</b>");
-        display.Data["application/vnd.vega.v5+json"].GetProperty("width").GetInt32().Should().Be(200);
-        display.Metadata["isolated"].GetBoolean().Should().BeFalse();
-        display.DisplayId.Should().Be("display-1");
-        display.IsUpdate.Should().BeFalse();
-        display.Buffers.Should().BeEmpty();
+        var display = Assert.IsType<ReplOutputDisplayFrame>(frame);
+        Assert.Equal(3, display.Seq);
+        Assert.Equal("execution-1", display.ExecutionId);
+        Assert.Equal("1 + 1 = 2", display.Data["text/plain"].GetString());
+        Assert.Equal("<b>2</b>", display.Data["text/html"].GetString());
+        Assert.Equal(200, display.Data["application/vnd.vega.v5+json"].GetProperty("width").GetInt32());
+        Assert.False(display.Metadata["isolated"].GetBoolean());
+        Assert.Equal("display-1", display.DisplayId);
+        Assert.False(display.IsUpdate);
+        Assert.Empty(display.Buffers);
     }
 
     [Fact]
@@ -68,15 +67,15 @@ public sealed class ReplOutputWebSocketTests
             png,
             jpeg));
 
-        var display = frame.Should().BeOfType<ReplOutputDisplayFrame>().Which;
-        display.IsUpdate.Should().BeTrue();
-        display.ExecutionId.Should().Be("execution-2");
-        display.Data["image/png"].GetProperty("$buffer").GetInt32().Should().Be(0);
-        display.Data["image/jpeg"].GetProperty("$buffer").GetInt32().Should().Be(1);
-        display.Data["text/plain"].GetString().Should().Be("two images");
-        display.Buffers.Should().HaveCount(2);
-        display.ResolveBuffer(0).Should().Equal(png);
-        display.ResolveBuffer(1).Should().Equal(jpeg);
+        var display = Assert.IsType<ReplOutputDisplayFrame>(frame);
+        Assert.True(display.IsUpdate);
+        Assert.Equal("execution-2", display.ExecutionId);
+        Assert.Equal(0, display.Data["image/png"].GetProperty("$buffer").GetInt32());
+        Assert.Equal(1, display.Data["image/jpeg"].GetProperty("$buffer").GetInt32());
+        Assert.Equal("two images", display.Data["text/plain"].GetString());
+        Assert.Equal(2, display.Buffers.Count());
+        Assert.Equal(png, display.ResolveBuffer(0));
+        Assert.Equal(jpeg, display.ResolveBuffer(1));
     }
 
     [Fact]
@@ -90,19 +89,17 @@ public sealed class ReplOutputWebSocketTests
             displayId: "",
             isUpdate: true));
 
-        var display = frame.Should().BeOfType<ReplOutputDisplayFrame>().Which;
-        display.DisplayId.Should().BeNull();
-        display.Metadata.Should().BeEmpty();
-        display.IsUpdate.Should().BeTrue();
+        var display = Assert.IsType<ReplOutputDisplayFrame>(frame);
+        Assert.Null(display.DisplayId);
+        Assert.Empty(display.Metadata);
+        Assert.True(display.IsUpdate);
     }
 
     [Fact]
     public void ClearOutputFramesRoundTripBothWaitValues()
     {
-        ReplOutputFrameReader.Decode(Frame.Clear(2, "execution-1", wait: true))
-            .Should().Be(new ReplOutputClearOutputFrame(2, "execution-1", true));
-        ReplOutputFrameReader.Decode(Frame.Clear(3, "execution-1", wait: false))
-            .Should().Be(new ReplOutputClearOutputFrame(3, "execution-1", false));
+        Assert.Equal(new ReplOutputClearOutputFrame(2, "execution-1", true), ReplOutputFrameReader.Decode(Frame.Clear(2, "execution-1", wait: true)));
+        Assert.Equal(new ReplOutputClearOutputFrame(3, "execution-1", false), ReplOutputFrameReader.Decode(Frame.Clear(3, "execution-1", wait: false)));
     }
 
     [Fact]
@@ -110,15 +107,13 @@ public sealed class ReplOutputWebSocketTests
     {
         var tooLarge = (long)(ReplOutputProtocol.MaximumSafeSequence + 1);
         foreach (var seq in new[] { 0L, -1L, tooLarge })
-            FluentActions.Invoking(() => ReplOutputFrameReader.Decode(Frame.Stdout(seq, "e", "x")))
-                .Should().Throw<ReplOutputProtocolException>().Which.Code.Should().Be("invalid_sequence");
+            Assert.Equal("invalid_sequence", Assert.ThrowsAny<ReplOutputProtocolException>(() => ReplOutputFrameReader.Decode(Frame.Stdout(seq, "e", "x"))).Code);
     }
 
     [Fact]
     public void TheFrameExecutionIdMustBeNonEmpty()
     {
-        FluentActions.Invoking(() => ReplOutputFrameReader.Decode(Frame.Stdout(1, "", "x")))
-            .Should().Throw<ReplOutputProtocolException>().Which.Code.Should().Be("invalid_execution_id");
+        Assert.Equal("invalid_execution_id", Assert.ThrowsAny<ReplOutputProtocolException>(() => ReplOutputFrameReader.Decode(Frame.Stdout(1, "", "x"))).Code);
     }
 
     [Fact]
@@ -126,8 +121,7 @@ public sealed class ReplOutputWebSocketTests
     {
         var frame = Frame.Stdout(1, "e", "x");
         frame[0] = 4;
-        FluentActions.Invoking(() => ReplOutputFrameReader.Decode(frame))
-            .Should().Throw<ReplOutputProtocolException>().Which.Code.Should().Be("unknown_frame_type");
+        Assert.Equal("unknown_frame_type", Assert.ThrowsAny<ReplOutputProtocolException>(() => ReplOutputFrameReader.Decode(frame)).Code);
     }
 
     [Fact]
@@ -144,8 +138,7 @@ public sealed class ReplOutputWebSocketTests
         foreach (var length in new[] { 0, 10, frame.Length - 1 })
         {
             var truncated = frame.AsSpan(0, length).ToArray();
-            FluentActions.Invoking(() => ReplOutputFrameReader.Decode(truncated))
-                .Should().Throw<ReplOutputProtocolException>().Which.Code.Should().Be("invalid_frame");
+            Assert.Equal("invalid_frame", Assert.ThrowsAny<ReplOutputProtocolException>(() => ReplOutputFrameReader.Decode(truncated)).Code);
         }
     }
 
@@ -188,9 +181,8 @@ public sealed class ReplOutputWebSocketTests
 
         // The decode itself keeps the placeholder; the out-of-range reference is only observable
         // when a consumer resolves it (the collector's rebuild path).
-        var display = ReplOutputFrameReader.Decode(frame).Should().BeOfType<ReplOutputDisplayFrame>().Which;
-        FluentActions.Invoking(() => display.ResolveBuffer(1))
-            .Should().Throw<ReplOutputProtocolException>().Which.Code.Should().Be("invalid_buffer_reference");
+        var display = Assert.IsType<ReplOutputDisplayFrame>(ReplOutputFrameReader.Decode(frame));
+        Assert.Equal("invalid_buffer_reference", Assert.ThrowsAny<ReplOutputProtocolException>(() => display.ResolveBuffer(1)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -209,14 +201,12 @@ public sealed class ReplOutputWebSocketTests
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "first"));
             socket.QueueBinary(Frame.Stdout(2, "execution-1", "second"));
             await using var events = connection.Events.GetAsyncEnumerator(deadline.Token);
-            (await events.MoveNextAsync()).Should().BeTrue();
-            (await events.MoveNextAsync()).Should().BeTrue();
+            Assert.True((await events.MoveNextAsync()));
+            Assert.True((await events.MoveNextAsync()));
 
             // A skipped sequence (3 -> 5) for the same execution terminates the connection.
             socket.QueueBinary(Frame.Stdout(5, "execution-1", "skip"));
-            (await connection.Completion.Awaiting(static task => task).Should()
-                    .ThrowAsync<ReplOutputProtocolException>())
-                .Which.Code.Should().Be("sequence_mismatch");
+            Assert.Equal("sequence_mismatch", (await Assert.ThrowsAnyAsync<ReplOutputProtocolException>(async () => { await ((connection.Completion)); })).Code);
             await attached.WaitAsync(deadline.Token);
             socket.Dispose();
         }
@@ -246,7 +236,7 @@ public sealed class ReplOutputWebSocketTests
             var seen = new List<ReplOutputFrame>();
             await foreach (var frame in connection.Events.WithCancellation(deadline.Token))
                 seen.Add(frame);
-            seen.Select(static frame => frame.Seq).Should().Equal(1, 1, 2, 2);
+            Assert.Equal(new long[] { 1, 1, 2, 2 }, seen.Select(static frame => frame.Seq));
             await attached.WaitAsync(deadline.Token);
             socket.Dispose();
         }
@@ -265,11 +255,11 @@ public sealed class ReplOutputWebSocketTests
             var attached = host.AttachAsync(socket, 41, context, deadline.Token);
 
             var connection = await connectionWait;
-            connection.Should().NotBeNull();
+            Assert.NotNull(connection);
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "alive"));
             await using (var events = connection.Events.GetAsyncEnumerator(deadline.Token))
             {
-                (await events.MoveNextAsync()).Should().BeTrue();
+                Assert.True((await events.MoveNextAsync()));
             }
 
             await host.DisposeAsync();
@@ -290,7 +280,7 @@ public sealed class ReplOutputWebSocketTests
         var attached = host.AttachAsync(socket, 0, new DefaultHttpContext(), deadline.Token);
 
         await socket.Closed.WaitAsync(deadline.Token);
-        socket.CloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
         await attached.WaitAsync(deadline.Token);
         socket.Dispose();
     }

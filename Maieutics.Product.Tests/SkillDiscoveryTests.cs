@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Skills;
 
 namespace Maieutics.Product.Tests;
@@ -55,9 +54,9 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().HaveCount(2)
-            .And.Contain(skill => skill.Name == "my-skill")
-            .And.Contain(skill => skill.Name == "other-skill");
+        Assert.Equal(2, skills.Count());
+        Assert.Contains(skills, skill => skill.Name == "my-skill");
+        Assert.Contains(skills, skill => skill.Name == "other-skill");
     }
 
     [Fact]
@@ -73,7 +72,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.User);
 
-        skills.Should().ContainSingle(skill => skill.Name == "frontmatter-name");
+        Assert.Single(skills, skill => skill.Name == "frontmatter-name");
     }
 
     [Fact]
@@ -86,8 +85,7 @@ public sealed class SkillDiscoveryTests : IDisposable
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
         // The root SKILL.md claims the whole root: the resource subdirectory is not walked.
-        skills.Should().ContainSingle(skill => skill.Name == "my-skill")
-            .Which.BodyPath.Should().Be(Path.Combine(root, "SKILL.md"));
+        Assert.Equal(Path.Combine(root, "SKILL.md"), Assert.Single(skills, skill => skill.Name == "my-skill").BodyPath);
     }
 
     [Fact]
@@ -104,7 +102,7 @@ public sealed class SkillDiscoveryTests : IDisposable
         var name = Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar));
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.User);
 
-        skills.Should().ContainSingle(skill => skill.Name == name);
+        Assert.Single(skills, skill => skill.Name == name);
     }
 
     [Fact]
@@ -121,8 +119,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().ContainSingle(skill => skill.Source == SkillSource.Workspace)
-            .Which.Name.Should().Be("shallow-skill");
+        Assert.Equal("shallow-skill", Assert.Single(skills, skill => skill.Source == SkillSource.Workspace).Name);
     }
 
     [Fact]
@@ -131,7 +128,7 @@ public sealed class SkillDiscoveryTests : IDisposable
         WriteSkill("alpha", ValidFrontmatter, fileName: "skill.md");
         WriteSkill("beta", ValidFrontmatter, fileName: "Skill.md");
 
-        SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace).Should().BeEmpty();
+        Assert.Empty(SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace));
     }
 
     [Fact]
@@ -146,8 +143,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().ContainSingle()
-            .Which.Diagnostic.Should().Contain("no description");
+        Assert.Contains("no description", Assert.Single(skills).Diagnostic);
     }
 
     [Fact]
@@ -163,8 +159,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().ContainSingle()
-            .Which.Diagnostic.Should().Contain("not a valid catalog name");
+        Assert.Contains("not a valid catalog name", Assert.Single(skills).Diagnostic);
     }
 
     [Fact]
@@ -179,15 +174,13 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().ContainSingle()
-            .Which.Diagnostic.Should().Contain("not closed");
+        Assert.Contains("not closed", Assert.Single(skills).Diagnostic);
     }
 
     [Fact]
     public void MissingRootDiscoversNothing()
     {
-        SkillDirectoryDiscovery.Discover(Path.Combine(root, "absent"), SkillSource.Workspace)
-            .Should().BeEmpty();
+        Assert.Empty(SkillDirectoryDiscovery.Discover(Path.Combine(root, "absent"), SkillSource.Workspace));
     }
 
     [Fact]
@@ -201,8 +194,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().ContainSingle()
-            .Which.Diagnostic.Should().Contain("exceeds");
+        Assert.Contains("exceeds", Assert.Single(skills).Diagnostic);
     }
 
     [Fact]
@@ -222,8 +214,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
             var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-            skills.Should().ContainSingle()
-                .Which.Diagnostic.Should().Contain("links outside its root");
+            Assert.Contains("links outside its root", Assert.Single(skills).Diagnostic);
         }
         finally
         {
@@ -246,7 +237,7 @@ public sealed class SkillDiscoveryTests : IDisposable
             Directory.CreateDirectory(root);
             Directory.CreateSymbolicLink(Path.Combine(root, "linked"), outsideDirectory);
 
-            SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace).Should().BeEmpty();
+            Assert.Empty(SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace));
         }
         finally
         {
@@ -263,8 +254,7 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var skills = SkillDirectoryDiscovery.Discover(root, SkillSource.Workspace);
 
-        skills.Should().ContainSingle()
-            .Which.Diagnostic.Should().Contain("control characters");
+        Assert.Contains("control characters", Assert.Single(skills).Diagnostic);
     }
 
     [Fact]
@@ -280,11 +270,11 @@ public sealed class SkillDiscoveryTests : IDisposable
             .Take(1)
             .Single();
 
-        first.Name.Should().Be("my-skill");
+        Assert.Equal("my-skill", first.Name);
         // Root file probe + root directory listing + one child probe; the three untouched
         // siblings never appear. A buffered implementation (or a full rescan) would cost
         // six visits for this tree.
-        visits.Count.Should().Be(3);
+        Assert.Equal(3, visits.Count);
     }
 
     [Fact]
@@ -315,11 +305,11 @@ public sealed class SkillDiscoveryTests : IDisposable
         // directory, deeper has no SKILL.md so the walk descends to leaf), alpha outside
         // the region is never touched, and containment is judged against the declared
         // root, not the region.
-        skills.Should().HaveCount(2)
-            .And.Contain(skill => skill.Name == "inner-skill")
-            .And.Contain(skill => skill.Name == "leaf-skill");
-        skills.Should().OnlyContain(skill => skill.RootDirectory == Path.GetFullPath(root));
-        visits.Count.Should().Be(6);
+        Assert.Equal(2, skills.Count());
+        Assert.Contains(skills, skill => skill.Name == "inner-skill");
+        Assert.Contains(skills, skill => skill.Name == "leaf-skill");
+        Assert.All(skills, skill => Assert.True(skill.RootDirectory == Path.GetFullPath(root)));
+        Assert.Equal(6, visits.Count);
     }
 
     [Fact]
@@ -330,13 +320,13 @@ public sealed class SkillDiscoveryTests : IDisposable
 
         var fresh = SkillDirectoryDiscovery.RediscoverSkillDirectory(
             Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace);
-        fresh.Should().Match<SkillDescriptor>(skill => skill.Name == "my-skill");
+        Assert.NotNull(fresh);
+        Assert.Equal("my-skill", fresh.Name);
 
         File.Delete(Path.Combine(rootFullName, "alpha", "SKILL.md"));
 
-        SkillDirectoryDiscovery.RediscoverSkillDirectory(
-                Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace)
-            .Should().BeNull();
+        Assert.Null(SkillDirectoryDiscovery.RediscoverSkillDirectory(
+                Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace));
     }
 
     private static void WriteSkillTo(string directory, string name, string description)
@@ -368,10 +358,10 @@ public sealed class SkillFrontmatterTests
             out var description,
             out var error);
 
-        parsed.Should().BeTrue();
-        error.Should().BeNull();
-        name.Should().Be("the-name");
-        description.Should().Be("The description.");
+        Assert.True(parsed);
+        Assert.Null(error);
+        Assert.Equal("the-name", name);
+        Assert.Equal("The description.", description);
     }
 
     [Fact]
@@ -385,10 +375,10 @@ public sealed class SkillFrontmatterTests
             out var description,
             out var error);
 
-        parsed.Should().BeTrue();
-        error.Should().BeNull();
-        name.Should().Be("the-name");
-        description.Should().Be("The description.");
+        Assert.True(parsed);
+        Assert.Null(error);
+        Assert.Equal("the-name", name);
+        Assert.Equal("The description.", description);
     }
 
     [Fact]
@@ -396,10 +386,10 @@ public sealed class SkillFrontmatterTests
     {
         var parsed = SkillFrontmatter.TryRead("# Just a body\n", out var name, out var description, out var error);
 
-        parsed.Should().BeTrue();
-        error.Should().BeNull();
-        name.Should().BeNull();
-        description.Should().BeNull();
+        Assert.True(parsed);
+        Assert.Null(error);
+        Assert.Null(name);
+        Assert.Null(description);
     }
 
     [Fact]
@@ -411,17 +401,17 @@ public sealed class SkillFrontmatterTests
             out var description,
             out _);
 
-        description!.Length.Should().Be(SkillDescriptor.MaximumDescriptionLength);
+        Assert.Equal(SkillDescriptor.MaximumDescriptionLength, description!.Length);
     }
 
     [Fact]
     public void IsValidNameAcceptsLowercaseAlphanumericAndHyphensOnly()
     {
-        SkillDescriptor.IsValidName("a").Should().BeTrue();
-        SkillDescriptor.IsValidName("a-b-2").Should().BeTrue();
-        SkillDescriptor.IsValidName("-a").Should().BeFalse();
-        SkillDescriptor.IsValidName("A-b").Should().BeFalse();
-        SkillDescriptor.IsValidName("a_b").Should().BeFalse();
-        SkillDescriptor.IsValidName(new string('a', SkillDescriptor.MaximumNameLength + 1)).Should().BeFalse();
+        Assert.True(SkillDescriptor.IsValidName("a"));
+        Assert.True(SkillDescriptor.IsValidName("a-b-2"));
+        Assert.False(SkillDescriptor.IsValidName("-a"));
+        Assert.False(SkillDescriptor.IsValidName("A-b"));
+        Assert.False(SkillDescriptor.IsValidName("a_b"));
+        Assert.False(SkillDescriptor.IsValidName(new string('a', SkillDescriptor.MaximumNameLength + 1)));
     }
 }

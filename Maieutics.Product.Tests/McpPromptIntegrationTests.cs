@@ -1,5 +1,4 @@
 using System.IO.Pipelines;
-using FluentAssertions;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,15 +22,11 @@ public sealed class McpPromptIntegrationTests
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
         var catalog = harness.Generation.GetPromptCatalog();
-        catalog.Prompts.Should().HaveCount(4);
-        catalog.Prompts.Should().Contain(prompt => prompt.Name == "code_review" && prompt.Title == "Code review");
-        catalog.Prompts.Should().Contain(prompt => prompt.Name == "image_only");
+        Assert.Equal(4, catalog.Prompts.Count());
+        Assert.Contains(catalog.Prompts, prompt => prompt.Name == "code_review" && prompt.Title == "Code review");
+        Assert.Contains(catalog.Prompts, prompt => prompt.Name == "image_only");
         var review = catalog.Prompts.Single(prompt => prompt.Name == "code_review");
-        review.Arguments.Should().BeEquivalentTo(
-        [
-            new McpPromptArgumentDescriptor("language", "The language to review", false),
-            new McpPromptArgumentDescriptor("depth", null, true),
-        ]);
+        Assert.Equivalent(new[] { new McpPromptArgumentDescriptor("language", "The language to review", false), new McpPromptArgumentDescriptor("depth", null, true) }, review.Arguments);
     }
 
     [Fact(Timeout = 30_000)]
@@ -47,8 +42,7 @@ public sealed class McpPromptIntegrationTests
             FrontendSkillExpansion.MaximumTurnSkillBytes,
             deadline.Token);
 
-        (await act.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.McpPromptArgumentInvalid);
+        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -64,8 +58,7 @@ public sealed class McpPromptIntegrationTests
             FrontendSkillExpansion.MaximumTurnSkillBytes,
             deadline.Token);
 
-        (await act.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.McpPromptArgumentInvalid);
+        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -80,16 +73,14 @@ public sealed class McpPromptIntegrationTests
             [Marker("code_review", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
             deadline.Token);
-        (await unknownServer.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.McpPromptUnknown);
+        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await unknownServer.Invoke(); })).Code);
 
         var unknownPrompt = () => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("absent", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
             deadline.Token);
-        (await unknownPrompt.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.McpPromptUnknown);
+        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await unknownPrompt.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -106,12 +97,12 @@ public sealed class McpPromptIntegrationTests
             deadline.Token);
 
         var text = parts.Single().ToString();
-        text.Should().Contain("mcp-prompt://test-server/code_review");
-        text.Should().Contain("user explicitly selected this MCP prompt");
-        text.Should().Contain("── prompt part 1 · role: User ──");
-        text.Should().Contain("── prompt part 2 · role: Assistant ──");
+        Assert.Contains("mcp-prompt://test-server/code_review", text);
+        Assert.Contains("user explicitly selected this MCP prompt", text);
+        Assert.Contains("── prompt part 1 · role: User ──", text);
+        Assert.Contains("── prompt part 2 · role: Assistant ──", text);
         // The template body that starts with a forged frame header is escaped.
-        text.Should().NotContain("\n── prompt part 3");
+        Assert.DoesNotContain("\n── prompt part 3", text);
     }
 
     [Fact(Timeout = 30_000)]
@@ -130,7 +121,7 @@ public sealed class McpPromptIntegrationTests
             FrontendSkillExpansion.MaximumTurnSkillBytes,
             deadline.Token);
 
-        parts.Should().HaveCount(2);
+        Assert.Equal(2, parts.Count());
     }
 
     [Fact(Timeout = 30_000)]
@@ -146,8 +137,7 @@ public sealed class McpPromptIntegrationTests
             FrontendSkillExpansion.MaximumTurnSkillBytes,
             deadline.Token);
 
-        (await act.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.McpPromptResultInvalid);
+        Assert.Equal(FrontendErrors.McpPromptResultInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -164,8 +154,8 @@ public sealed class McpPromptIntegrationTests
             deadline.Token);
 
         var text = parts.Single().ToString();
-        text.Should().Contain("role: User");
-        text.Should().Contain("dropped: non-text block");
+        Assert.Contains("role: User", text);
+        Assert.Contains("dropped: non-text block", text);
     }
 
     private static FrontendPromptMarkers.Marker Marker(

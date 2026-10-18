@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent.Tests;
@@ -18,8 +17,8 @@ public sealed class AgentBlobContentTests
         var content = await AgentContentTriage.IngestAsync(
             store, new MemoryStream(Encoding.UTF8.GetBytes("hello")), "text/plain", cancellationToken: TestContext.Current.CancellationToken);
 
-        content.Should().BeOfType<TextContent>().Which.Text.Should().Be("hello");
-        store.Objects.Should().BeEmpty();
+        Assert.Equal("hello", Assert.IsType<TextContent>(content).Text);
+        Assert.Empty(store.Objects);
     }
 
     [Fact(Timeout = 30_000)]
@@ -31,15 +30,15 @@ public sealed class AgentBlobContentTests
         var content = await AgentContentTriage.IngestAsync(
             store, new MemoryStream(Encoding.UTF8.GetBytes(text)), "text/plain", "notes.txt", cancellationToken: TestContext.Current.CancellationToken);
 
-        var data = content.Should().BeOfType<DataContent>().Which;
-        data.MediaType.Should().Be(AgentBlobContent.MediaType);
-        AgentBlobContent.TryParse(content, out var descriptor).Should().BeTrue();
-        descriptor.Sha256.Should().HaveLength(64);
-        descriptor.Size.Should().Be(text.Length);
-        descriptor.MediaType.Should().Be("text/plain");
-        descriptor.Name.Should().Be("notes.txt");
-        store.Objects.Should().ContainKey(descriptor.Sha256);
-        Encoding.UTF8.GetString(store.Objects[descriptor.Sha256]).Should().Be(text);
+        var data = Assert.IsType<DataContent>(content);
+        Assert.Equal(AgentBlobContent.MediaType, data.MediaType);
+        Assert.True(AgentBlobContent.TryParse(content, out var descriptor));
+        Assert.Equal(64, descriptor.Sha256.Length);
+        Assert.Equal(text.Length, descriptor.Size);
+        Assert.Equal("text/plain", descriptor.MediaType);
+        Assert.Equal("notes.txt", descriptor.Name);
+        Assert.True(store.Objects.ContainsKey(descriptor.Sha256));
+        Assert.Equal(text, Encoding.UTF8.GetString(store.Objects[descriptor.Sha256]));
     }
 
     [Fact(Timeout = 30_000)]
@@ -51,8 +50,8 @@ public sealed class AgentBlobContentTests
         var content = await AgentContentTriage.IngestAsync(
             store, new MemoryStream(Encoding.UTF8.GetBytes(text)), "text/plain", cancellationToken: TestContext.Current.CancellationToken);
 
-        content.Should().BeOfType<TextContent>().Which.Text.Should().Be(text);
-        store.Objects.Should().BeEmpty();
+        Assert.Equal(text, Assert.IsType<TextContent>(content).Text);
+        Assert.Empty(store.Objects);
     }
 
     [Fact(Timeout = 30_000)]
@@ -64,9 +63,9 @@ public sealed class AgentBlobContentTests
         var content = await AgentContentTriage.IngestAsync(
             store, new MemoryStream(png), "image/png", "tiny.png", inlineThresholdBytes: 1024, cancellationToken: TestContext.Current.CancellationToken);
 
-        AgentBlobContent.TryParse(content, out var descriptor).Should().BeTrue();
-        descriptor.MediaType.Should().Be("image/png");
-        store.Objects.Should().ContainKey(descriptor.Sha256);
+        Assert.True(AgentBlobContent.TryParse(content, out var descriptor));
+        Assert.Equal("image/png", descriptor.MediaType);
+        Assert.True(store.Objects.ContainsKey(descriptor.Sha256));
     }
 
     [Fact(Timeout = 30_000)]
@@ -78,8 +77,8 @@ public sealed class AgentBlobContentTests
         var content = await AgentContentTriage.IngestAsync(
             store, new MemoryStream(bytes), "text/plain", inlineThresholdBytes: 1024, cancellationToken: TestContext.Current.CancellationToken);
 
-        AgentBlobContent.TryParse(content, out var descriptor).Should().BeTrue();
-        store.Objects.Should().ContainKey(descriptor.Sha256);
+        Assert.True(AgentBlobContent.TryParse(content, out var descriptor));
+        Assert.True(store.Objects.ContainsKey(descriptor.Sha256));
     }
 
     [Fact(Timeout = 30_000)]
@@ -95,13 +94,12 @@ public sealed class AgentBlobContentTests
         // The store received the content as a live non-seekable stream (a MemoryStream buffer
         // would be seekable), it observed the whole payload exactly once in order, and the
         // blob reference addresses the identical bytes.
-        store.CapturedStreamWasSeekable.Should().BeFalse();
-        store.CapturedBytes.Should().Equal(bytes);
-        AgentBlobContent.TryParse(content, out var descriptor).Should().BeTrue();
-        descriptor.Size.Should().Be(bytes.Length);
-        descriptor.Sha256.Should()
-            .Be(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
-        source.TotalBytesRead.Should().Be(bytes.Length);
+        Assert.False(store.CapturedStreamWasSeekable);
+        Assert.Equal(bytes, store.CapturedBytes);
+        Assert.True(AgentBlobContent.TryParse(content, out var descriptor));
+        Assert.Equal(bytes.Length, descriptor.Size);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), descriptor.Sha256);
+        Assert.Equal(bytes.Length, source.TotalBytesRead);
     }
 
     [Fact(Timeout = 30_000)]
@@ -112,12 +110,11 @@ public sealed class AgentBlobContentTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
-        await FluentActions.Awaiting(async () => await AgentContentTriage.IngestAsync(
-                store, source, "text/plain", cancellationToken: cancellation.Token))
-            .Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await AgentContentTriage.IngestAsync(
+                store, source, "text/plain", cancellationToken: cancellation.Token); });
 
-        store.CapturedBytes.Should().BeEmpty();
-        source.TotalBytesRead.Should().Be(0);
+        Assert.Empty(store.CapturedBytes);
+        Assert.Equal(0, source.TotalBytesRead);
     }
 
     [Fact(Timeout = 30_000)]
@@ -138,11 +135,11 @@ public sealed class AgentBlobContentTests
         await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var snapshot = session.GetTranscriptSnapshot();
-        snapshot.Turns.Should().HaveCount(1);
+        Assert.Single(snapshot.Turns);
         var inputMessage = snapshot.Turns[0].Messages[0];
-        inputMessage.Contents.Should().HaveCount(2);
-        AgentBlobContent.TryParse(inputMessage.Contents[1], out var descriptor).Should().BeTrue();
-        descriptor.Sha256.Should().HaveLength(64);
+        Assert.Equal(2, inputMessage.Contents.Count());
+        Assert.True(AgentBlobContent.TryParse(inputMessage.Contents[1], out var descriptor));
+        Assert.Equal(64, descriptor.Sha256.Length);
     }
 
     [Fact]
@@ -153,7 +150,7 @@ public sealed class AgentBlobContentTests
 
         var detach = () => AgentTranscriptCodec.DetachPrivateMessages([message]);
 
-        detach.Should().Throw<AgentUnsupportedResponseException>();
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => detach.Invoke());
     }
 
     [Fact(Timeout = 30_000)]
@@ -166,8 +163,8 @@ public sealed class AgentBlobContentTests
 
         var detached = AgentTranscriptCodec.DetachPrivateMessages([message]);
 
-        AgentBlobContent.TryParse(detached[0].Contents.Single(), out var descriptor).Should().BeTrue();
-        descriptor.MediaType.Should().Be("application/json");
+        Assert.True(AgentBlobContent.TryParse(detached[0].Contents.Single(), out var descriptor));
+        Assert.Equal("application/json", descriptor.MediaType);
     }
 
     [Fact(Timeout = 30_000)]
@@ -176,7 +173,7 @@ public sealed class AgentBlobContentTests
         var store = new InMemoryObjectStore();
         var reference = await AgentContentTriage.IngestAsync(
             store, new MemoryStream(Encoding.UTF8.GetBytes(new string('y', 70_000))), "text/plain", cancellationToken: TestContext.Current.CancellationToken);
-        AgentBlobContent.TryParse(reference, out var descriptor).Should().BeTrue();
+        Assert.True(AgentBlobContent.TryParse(reference, out var descriptor));
 
         var envelopeSha = new string('b', 64);
         var truncated = JsonSerializer.SerializeToElement(new
@@ -194,7 +191,7 @@ public sealed class AgentBlobContentTests
 
         var references = AgentTranscriptCodec.CollectObjectReferences(messages);
 
-        references.Should().BeEquivalentTo([descriptor.Sha256, envelopeSha]);
+        Assert.Equivalent(new[] { descriptor.Sha256, envelopeSha }, references);
     }
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(

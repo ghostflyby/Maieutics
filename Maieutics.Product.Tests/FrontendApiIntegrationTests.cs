@@ -6,7 +6,6 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Frontend;
 using Maieutics.Providers.OpenAI;
@@ -89,10 +88,10 @@ public sealed class FrontendApiIntegrationTests
         try
         {
             var discovery = harness.Discovery;
-            discovery.GetProperty("version").GetInt32().Should().Be(1);
-            discovery.GetProperty("url").GetString().Should().StartWith("http://127.0.0.1:");
-            discovery.GetProperty("token").GetString().Should().HaveLength(64);
-            discovery.GetProperty("pid").GetInt32().Should().BeGreaterThan(0);
+            Assert.Equal(1, discovery.GetProperty("version").GetInt32());
+            Assert.StartsWith("http://127.0.0.1:", (discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.Equal(64, (discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("the assertion subject is null")).Length);
+            Assert.True(discovery.GetProperty("pid").GetInt32() > 0);
         }
         finally
         {
@@ -101,7 +100,7 @@ public sealed class FrontendApiIntegrationTests
 
         // The discovery file must disappear with the process so a stale instance is never
         // rediscovered by a frontend.
-        File.Exists(harness.DiscoveryPath).Should().BeFalse();
+        Assert.False(File.Exists(harness.DiscoveryPath));
     }
 
     [Fact(Timeout = 60_000)]
@@ -115,7 +114,7 @@ public sealed class FrontendApiIntegrationTests
         if (!OperatingSystem.IsWindows())
         {
             var mode = File.GetUnixFileMode(harness.DiscoveryPath);
-            mode.Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
         }
     }
 
@@ -127,9 +126,9 @@ public sealed class FrontendApiIntegrationTests
         using var anonymous = new HttpClient { BaseAddress = new Uri(harness.Url) };
         using var forged = harness.CreateClient(token: "wrong");
 
-        (await anonymous.GetAsync("/v1/agent/session", deadline.Token)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        (await forged.GetAsync("/v1/agent/session", deadline.Token)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        (await anonymous.GetAsync("/v1/status", deadline.Token)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/agent/session", deadline.Token)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await forged.GetAsync("/v1/agent/session", deadline.Token)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/status", deadline.Token)).StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
@@ -140,15 +139,14 @@ public sealed class FrontendApiIntegrationTests
         using var client = harness.CreateClient();
 
         var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
-        capabilities.GetProperty("protocolVersion").GetInt32().Should().Be(1);
+        Assert.Equal(1, capabilities.GetProperty("protocolVersion").GetInt32());
         var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
-        capabilities.GetProperty("session").GetProperty("id").GetString().Should()
-            .Be(session.GetProperty("id").GetString())
-            .And.HaveLength(32);
-        session.GetProperty("turns").GetInt64().Should().Be(0);
+        Assert.Equal(session.GetProperty("id").GetString(), capabilities.GetProperty("session").GetProperty("id").GetString());
+        Assert.Equal(32, (capabilities.GetProperty("session").GetProperty("id").GetString() ?? throw new InvalidOperationException("the assertion subject is null")).Length);
+        Assert.Equal(0, session.GetProperty("turns").GetInt64());
         // The composition root wires the SQLite family store whenever ApplicationPaths
         // resolve, so the active session always reports persistence enabled.
-        session.GetProperty("persistenceEnabled").GetBoolean().Should().BeTrue();
+        Assert.True(session.GetProperty("persistenceEnabled").GetBoolean());
     }
 
     [Fact(Timeout = 60_000)]
@@ -160,8 +158,8 @@ public sealed class FrontendApiIntegrationTests
 
         await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
         var hello = await events.ReceiveFrameAsync(deadline.Token);
-        hello.GetProperty("type").GetString().Should().Be("hello");
-        hello.GetProperty("session").GetProperty("id").GetString().Should().Be(sessionId);
+        Assert.Equal("hello", hello.GetProperty("type").GetString());
+        Assert.Equal(sessionId, hello.GetProperty("session").GetProperty("id").GetString());
 
         var runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
         var frames = await events.CollectUntilAsync(
@@ -170,35 +168,33 @@ public sealed class FrontendApiIntegrationTests
             deadline.Token);
 
         var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
-        types.Should().StartWith(["run.started", "run.status"]);
-        types.Should().EndWith(["message.completed", "run.completed", "run.status"]);
-        types.Should().Contain("text.delta");
-        frames[^2].GetProperty("truncated").GetBoolean().Should().BeFalse();
+        Assert.Equal(new[] { "run.started", "run.status" }, types.Take(2));
+        Assert.Equal(new[] { "message.completed", "run.completed", "run.status" }, types.TakeLast(3));
+        Assert.Contains("text.delta", types);
+        Assert.False(frames[^2].GetProperty("truncated").GetBoolean());
         var statuses = frames
             .Where(frame => frame.GetProperty("type").GetString() == "run.status")
             .Select(frame => frame.GetProperty("state").GetString());
-        statuses.Should().Equal(["busy", "idle"]);
+        Assert.Equal(["busy", "idle"], statuses);
         var deltas = frames
             .Where(frame => frame.GetProperty("type").GetString() == "text.delta")
             .Select(frame => frame.GetProperty("text").GetString());
-        string.Concat(deltas).Should().Be(Answer);
-        frames.Select(frame => frame.TryGetProperty("sequence", out var sequence) ? sequence.GetInt64() : 0)
-            .Where(sequence => sequence > 0)
-            .Should().BeInAscendingOrder();
-        frames.Select(frame => frame.TryGetProperty("runId", out var run) ? run.GetString() : null)
-            .Where(value => value is not null)
-            .Should().OnlyContain(value => value == runId);
+        Assert.Equal(Answer, string.Concat(deltas));
+        Assert.True(frames.Select(frame => frame.TryGetProperty("sequence", out var sequence) ? sequence.GetInt64() : 0)
+            .Where(sequence => sequence > 0).SequenceEqual(frames.Select(frame => frame.TryGetProperty("sequence", out var sequence) ? sequence.GetInt64() : 0)
+            .Where(sequence => sequence > 0).OrderBy(static item => item)));
+        Assert.All(frames.Select(frame => frame.TryGetProperty("runId", out var run) ? run.GetString() : null)
+            .Where(value => value is not null), value => Assert.True(value == runId));
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript",
             deadline.Token);
-        transcript.GetProperty("turns").GetArrayLength().Should().Be(1);
+        Assert.Equal(1, transcript.GetProperty("turns").GetArrayLength());
         var turn = transcript.GetProperty("turns")[0];
-        turn.GetProperty("runId").GetString().Should().Be(runId);
-        turn.GetProperty("messages").EnumerateArray()
-            .Select(message => message.GetProperty("role").GetString())
-            .Should().Equal(["user", "assistant"]);
-        turn.GetProperty("messages")[1].GetProperty("parts")[0].GetProperty("text").GetString().Should().Be(Answer);
+        Assert.Equal(runId, turn.GetProperty("runId").GetString());
+        Assert.Equal(["user", "assistant"], turn.GetProperty("messages").EnumerateArray()
+            .Select(message => message.GetProperty("role").GetString()));
+        Assert.Equal(Answer, turn.GetProperty("messages")[1].GetProperty("parts")[0].GetProperty("text").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -220,7 +216,7 @@ public sealed class FrontendApiIntegrationTests
                 .Select(frame => frame.GetProperty("type").GetString()!));
         }
 
-        liveTypes.Should().Contain("text.delta");
+        Assert.Contains("text.delta", liveTypes);
 
         // A reconnecting frontend that observed sequence 1 resumes after it and receives the
         // retained remainder exactly once and in order (the trailing run.status idle frame
@@ -233,11 +229,9 @@ public sealed class FrontendApiIntegrationTests
         var replayed = await replay.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.completed",
             deadline.Token);
-        replayed.Select(frame => frame.GetProperty("type").GetString()).Should().Equal(
-            ["message.completed", "run.completed"]);
-        replayed.Select(frame => frame.TryGetProperty("runId", out var run) ? run.GetString() : null)
-            .Where(value => value is not null)
-            .Should().OnlyContain(value => value == runId);
+        Assert.Equal(["message.completed", "run.completed"], replayed.Select(frame => frame.GetProperty("type").GetString()));
+        Assert.All(replayed.Select(frame => frame.TryGetProperty("runId", out var run) ? run.GetString() : null)
+            .Where(value => value is not null), value => Assert.True(value == runId));
     }
 
     [Fact(Timeout = 60_000)]
@@ -252,9 +246,9 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "second" },
             deadline.Token);
-        second.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
         var error = await second.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("agent_busy");
+        Assert.Equal("agent_busy", error.GetProperty("code").GetString());
 
         // "busy" has two causes with different remedies: the first run holding the
         // session's single-run gate (what this test is about), or the previous run still
@@ -262,12 +256,11 @@ public sealed class FrontendApiIntegrationTests
         // the intended one — the first run must still be in flight against the hanging
         // provider. Without this, a race satisfies the assertion for the wrong reason and
         // the real failure lands later as an opaque wait timeout.
-        harness.SessionService.TryGetRun(first, out var firstStream).Should().BeTrue();
+        Assert.True(harness.SessionService.TryGetRun(first, out var firstStream));
         if (firstStream is null)
             throw new InvalidOperationException(
                 $"Run {first} is not retained; the busy rejection cannot be attributed to an in-flight run.");
-        firstStream.Completion.IsCompleted.Should().BeFalse(
-            "the first turn must still be running when the second submission is rejected as busy");
+        Assert.False(firstStream.Completion.IsCompleted, "the first turn must still be running when the second submission is rejected as busy");
 
         harness.ReleaseProvider();
         await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId: first);
@@ -288,7 +281,7 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/runs/{runId}/cancel",
             content: null,
             deadline.Token);
-        cancel.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
         harness.ReleaseProvider();
 
         var frames = await events.CollectUntilAsync(
@@ -296,16 +289,15 @@ public sealed class FrontendApiIntegrationTests
                      frame.GetProperty("state").GetString() == "idle",
             deadline.Token);
         var failure = frames.Single(frame => frame.GetProperty("type").GetString() == "run.failed");
-        failure.GetProperty("code").GetString().Should().Be("run_cancelled");
-        failure.GetProperty("runId").GetString().Should().Be(runId);
-        frames.Select(frame => frame.GetProperty("type").GetString()).Should().EndWith(
-            ["run.failed", "run.status"]);
+        Assert.Equal("run_cancelled", failure.GetProperty("code").GetString());
+        Assert.Equal(runId, failure.GetProperty("runId").GetString());
+        Assert.Equal(new[] { "run.failed", "run.status" }, frames.Select(frame => frame.GetProperty("type").GetString()).TakeLast(2));
 
         var missing = await harness.Client.PostAsync(
             $"/v1/agent/runs/{Guid.NewGuid():N}/cancel",
             content: null,
             deadline.Token);
-        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
@@ -329,39 +321,39 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/inputs/{requestId}",
             new { value = "ghost" },
             deadline.Token);
-        answer.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, answer.StatusCode);
 
-        (await wait).Should().Be("ghost");
+        Assert.Equal("ghost", (await wait));
 
         // A second answer for the same id is a typed 404, and so is an unknown id.
         var duplicate = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/{requestId}",
             new { value = "again" },
             deadline.Token);
-        duplicate.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, duplicate.StatusCode);
         var duplicateError = await duplicate.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        duplicateError.GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal("not_found", duplicateError.GetProperty("code").GetString());
 
         var unknown = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/input-{Guid.NewGuid():N}",
             new { value = "x" },
             deadline.Token);
-        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
 
         // A run ending (the presentation scope detaching) cancels pending requests
         // server-side, so the late answer for an outstanding id is a typed 404 too.
         var lateTask = scope.Sink.RequestInputAsync("late:", password: false, waitDeadline.Token);
-        target.Published.Should().Contain(entry => entry.Type == "input.request");
+        Assert.Contains(target.Published, entry => entry.Type == "input.request");
         await scope.DisposeAsync();
         var lateAct = async () => await lateTask;
-        await lateAct.Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await lateAct.Invoke(); });
         var lateId = target.Published.Last(entry => entry.Type == "input.request")
             .Data.GetProperty("requestId").GetString()!;
         var lateAnswer = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/{lateId}",
             new { value = "late" },
             deadline.Token);
-        lateAnswer.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, lateAnswer.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
@@ -374,13 +366,13 @@ public sealed class FrontendApiIntegrationTests
             "/v1/agent/inputs/input-unknown",
             content: null,
             deadline.Token);
-        empty.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
 
         var malformed = await harness.Client.PostAsync(
             "/v1/agent/inputs/input-unknown",
             new StringContent("not json", Encoding.UTF8, "application/json"),
             deadline.Token);
-        malformed.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
@@ -397,13 +389,13 @@ public sealed class FrontendApiIntegrationTests
             sessionId,
             "hello",
             new CancellationToken(canceled: true));
-        await act.Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await act.Invoke(); });
 
-        harness.SessionService.DescribeSession(sessionId).Turns.Should().Be(0);
+        Assert.Equal(0, harness.SessionService.DescribeSession(sessionId).Turns);
 
         // The session still accepts a normal turn afterwards.
         var runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
-        runId.Should().NotBeNullOrWhiteSpace();
+        Assert.False(string.IsNullOrWhiteSpace(runId));
         await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
     }
 
@@ -436,17 +428,18 @@ public sealed class FrontendApiIntegrationTests
                 deadline.Token);
 
             var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
-            types.Should().Contain("tool.started").And.Contain("tool.finished");
+            Assert.Contains("tool.started", types);
+            Assert.Contains("tool.finished", types);
             var started = frames.Single(frame => frame.GetProperty("type").GetString() == "tool.started");
-            started.GetProperty("tool").GetString().Should().Be("echo");
-            started.GetProperty("runId").GetString().Should().Be(runId);
-            frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
-                .GetProperty("text").GetString().Should().Be("tool-backed answer");
+            Assert.Equal("echo", started.GetProperty("tool").GetString());
+            Assert.Equal(runId, started.GetProperty("runId").GetString());
+            Assert.Equal("tool-backed answer", frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
+                .GetProperty("text").GetString());
 
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
                 deadline.Token);
-            transcript.GetProperty("turns").GetArrayLength().Should().Be(1);
+            Assert.Equal(1, transcript.GetProperty("turns").GetArrayLength());
         }
         finally
         {
@@ -465,22 +458,22 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "%status" },
             deadline.Token);
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        body.GetProperty("markdown").GetString().Should().Contain("### Maieutics status");
+        Assert.Contains("### Maieutics status", body.GetProperty("markdown").GetString());
         // Command answers always carry the active session so frontends can re-pin.
-        body.GetProperty("sessionId").GetString().Should().Be(sessionId);
+        Assert.Equal(sessionId, body.GetProperty("sessionId").GetString());
 
-        (await harness.Client.PostAsJsonAsync(
+        Assert.Equal(HttpStatusCode.OK, (await harness.Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text = "%session list" },
                 deadline.Token))
-            .StatusCode.Should().Be(HttpStatusCode.OK);
+            .StatusCode);
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript",
             deadline.Token);
-        transcript.GetProperty("turns").GetArrayLength().Should().Be(0);
+        Assert.Equal(0, transcript.GetProperty("turns").GetArrayLength());
     }
 
     [Fact(Timeout = 60_000)]
@@ -491,19 +484,19 @@ public sealed class FrontendApiIntegrationTests
         using var client = harness.CreateClient();
 
         var status = await client.GetFromJsonAsync<JsonElement>("/v1/status", deadline.Token);
-        status.GetProperty("markdown").GetString().Should().Contain("### Maieutics status");
+        Assert.Contains("### Maieutics status", status.GetProperty("markdown").GetString());
 
         var completion = await client.PostAsJsonAsync(
             "/v1/agent/complete",
             new { text = "%se", cursor = 3 },
             deadline.Token);
-        completion.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var matches = (await completion.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
             .GetProperty("matches").EnumerateArray().Select(value => value.GetString()).ToArray();
-        matches.Should().Contain("%session");
+        Assert.Contains("%session", matches);
 
         var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
-        stored.ValueKind.Should().Be(JsonValueKind.Array);
+        Assert.Equal(JsonValueKind.Array, stored.ValueKind);
 
         // Persistence is wired in the composition root, so an unknown stored session is a
         // typed not-found error.
@@ -511,15 +504,15 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{Guid.NewGuid():N}/resume",
             content: null,
             deadline.Token);
-        resume.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, resume.StatusCode);
         var resumeError = await resume.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        resumeError.GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal("not_found", resumeError.GetProperty("code").GetString());
 
         var previousSessionId = await harness.GetSessionIdAsync(deadline.Token);
         var newSession = await client.PostAsync("/v1/agent/sessions", content: null, deadline.Token);
-        newSession.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, newSession.StatusCode);
         var created = await newSession.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        created.GetProperty("id").GetString().Should().NotBe(previousSessionId);
+        Assert.NotEqual(previousSessionId, created.GetProperty("id").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -530,7 +523,7 @@ public sealed class FrontendApiIntegrationTests
         using var client = harness.CreateClient();
 
         var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
-        capabilities.GetProperty("workspaceRoot").GetString().Should().NotBeNullOrEmpty();
+        Assert.False(string.IsNullOrEmpty(capabilities.GetProperty("workspaceRoot").GetString()));
 
         // Renaming the active session before any turn creates its zero-turn row.
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -538,24 +531,24 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sessionId}/rename",
             new { title = "Design review" },
             deadline.Token);
-        rename.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, rename.StatusCode);
         var renamed = await rename.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        renamed.GetProperty("id").GetString().Should().Be(sessionId);
-        renamed.GetProperty("title").GetString().Should().Be("Design review");
+        Assert.Equal(sessionId, renamed.GetProperty("id").GetString());
+        Assert.Equal("Design review", renamed.GetProperty("title").GetString());
 
         // The active-session endpoint surfaces the stored title once set.
         var activeAfterRename = await client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/session",
             deadline.Token);
-        activeAfterRename.GetProperty("id").GetString().Should().Be(sessionId);
-        activeAfterRename.GetProperty("title").GetString().Should().Be("Design review");
+        Assert.Equal(sessionId, activeAfterRename.GetProperty("id").GetString());
+        Assert.Equal("Design review", activeAfterRename.GetProperty("title").GetString());
 
         var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
         var match = stored.EnumerateArray()
             .Single(session => session.GetProperty("id").GetString() == sessionId);
-        match.GetProperty("title").GetString().Should().Be("Design review");
-        match.GetProperty("turns").GetInt32().Should().Be(0);
-        match.GetProperty("workspaceRoot").GetString().Should().NotBeNullOrEmpty();
+        Assert.Equal("Design review", match.GetProperty("title").GetString());
+        Assert.Equal(0, match.GetProperty("turns").GetInt32());
+        Assert.False(string.IsNullOrEmpty(match.GetProperty("workspaceRoot").GetString()));
 
         // Renaming a never-seen session is not a 404: the row is created (family = itself).
         var fresh = Guid.NewGuid().ToString("N");
@@ -563,36 +556,36 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{fresh}/rename",
             new { title = "Named ahead of time" },
             deadline.Token);
-        create.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, create.StatusCode);
 
         // Over the cap is a typed invalid request; whitespace-only clears the title.
         var tooLong = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/rename",
             new { title = new string('x', 201) },
             deadline.Token);
-        tooLong.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, tooLong.StatusCode);
         var error = await tooLong.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal("invalid_request", error.GetProperty("code").GetString());
 
         var invalid = await client.PostAsJsonAsync(
             "/v1/agent/sessions/not-a-guid/rename",
             new { title = "x" },
             deadline.Token);
-        invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
 
         var clear = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/rename",
             new { title = "   " },
             deadline.Token);
-        clear.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, clear.StatusCode);
         var cleared = await clear.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         // Nulls are omitted on write (protocol convention), so a cleared title is absent.
-        cleared.TryGetProperty("title", out _).Should().BeFalse();
+        Assert.False(cleared.TryGetProperty("title", out _));
 
         // The active session endpoint carries no title once cleared.
         var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
-        active.GetProperty("id").GetString().Should().Be(sessionId);
-        active.TryGetProperty("title", out _).Should().BeFalse();
+        Assert.Equal(sessionId, active.GetProperty("id").GetString());
+        Assert.False(active.TryGetProperty("title", out _));
     }
 
     [Fact(Timeout = 60_000)]
@@ -621,63 +614,63 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sourceId}/fork",
             new { runId = firstRunId },
             deadline.Token);
-        byRun.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, byRun.StatusCode);
         var fork = await byRun.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var forkId = fork.GetProperty("id").GetString()!;
-        forkId.Should().NotBe(sourceId);
+        Assert.NotEqual(sourceId, forkId);
         // Auto-title from the source preview plus the branch point.
-        fork.GetProperty("title").GetString().Should().Be("first question · branch @ turn 1");
+        Assert.Equal("first question · branch @ turn 1", fork.GetProperty("title").GetString());
 
         // The fork is the active session and its history ends at the fork point.
         var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
-        active.GetProperty("id").GetString().Should().Be(forkId);
-        active.GetProperty("turns").GetInt32().Should().Be(0);
+        Assert.Equal(forkId, active.GetProperty("id").GetString());
+        Assert.Equal(0, active.GetProperty("turns").GetInt32());
         var forkTranscript = await client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{forkId}/transcript",
             deadline.Token);
-        forkTranscript.GetProperty("turns").GetArrayLength().Should().Be(0);
+        Assert.Equal(0, forkTranscript.GetProperty("turns").GetArrayLength());
 
         // The stored list carries the lineage.
         var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
         var head = stored.EnumerateArray().Single(session => session.GetProperty("id").GetString() == forkId);
-        head.GetProperty("parentSessionId").GetString().Should().Be(sourceId);
-        head.GetProperty("forkPointSeq").GetInt32().Should().Be(0);
+        Assert.Equal(sourceId, head.GetProperty("parentSessionId").GetString());
+        Assert.Equal(0, head.GetProperty("forkPointSeq").GetInt32());
 
         // Forking by seq keeps one committed turn and works for a non-active source too.
         var bySeq = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { seq = 1 },
             deadline.Token);
-        bySeq.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, bySeq.StatusCode);
         var second = await bySeq.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        second.GetProperty("title").GetString().Should().Be("first question · branch @ turn 2");
+        Assert.Equal("first question · branch @ turn 2", second.GetProperty("title").GetString());
 
         // Typed failures: an out-of-range seq, an unknown run, an unknown session.
         var outOfRange = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { seq = 99 },
             deadline.Token);
-        outOfRange.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, outOfRange.StatusCode);
         var rangeError = await outOfRange.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        rangeError.GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal("invalid_request", rangeError.GetProperty("code").GetString());
 
         var unknownRun = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { runId = Guid.NewGuid().ToString("N") },
             deadline.Token);
-        unknownRun.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, unknownRun.StatusCode);
 
         var noBody = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { },
             deadline.Token);
-        noBody.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, noBody.StatusCode);
 
         var unknownSource = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{Guid.NewGuid().ToString("N")}/fork",
             new { seq = 0 },
             deadline.Token);
-        unknownSource.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, unknownSource.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
@@ -702,12 +695,12 @@ public sealed class FrontendApiIntegrationTests
 
         var completed = frames.Single(frame => frame.GetProperty("type").GetString() == "run.completed");
         var usage = completed.GetProperty("usage");
-        usage.GetProperty("inputTokens").GetInt32().Should().Be(1);
-        usage.GetProperty("outputTokens").GetInt32().Should().Be(1);
-        usage.GetProperty("totalTokens").GetInt32().Should().Be(2);
+        Assert.Equal(1, usage.GetProperty("inputTokens").GetInt32());
+        Assert.Equal(1, usage.GetProperty("outputTokens").GetInt32());
+        Assert.Equal(2, usage.GetProperty("totalTokens").GetInt32());
         var model = completed.GetProperty("model");
-        model.GetProperty("provider").GetString().Should().Be("OpenAI");
-        model.GetProperty("model").GetString().Should().Be("test-model");
+        Assert.Equal("OpenAI", model.GetProperty("provider").GetString());
+        Assert.Equal("test-model", model.GetProperty("model").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -718,10 +711,9 @@ public sealed class FrontendApiIntegrationTests
         using var client = harness.CreateClient();
 
         var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
-        profiles.GetArrayLength().Should().BeGreaterThan(0);
-        profiles.EnumerateArray().Count(profile => profile.GetProperty("selected").GetBoolean())
-            .Should().Be(1);
-        profiles[0].GetProperty("provider").GetString().Should().Be("OpenAI");
+        Assert.True(profiles.GetArrayLength() > 0);
+        Assert.Equal(1, profiles.EnumerateArray().Count(profile => profile.GetProperty("selected").GetBoolean()));
+        Assert.Equal("OpenAI", profiles[0].GetProperty("provider").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -746,7 +738,7 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sessionId}/fork",
             new { seq = 0, profileId = "claude-profile" },
             deadline.Token);
-        fork.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, fork.StatusCode);
         var forkBody = await fork.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var forkId = forkBody.GetProperty("id").GetString()!;
 
@@ -757,28 +749,28 @@ public sealed class FrontendApiIntegrationTests
         var forkTranscript = await client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{forkId}/transcript",
             deadline.Token);
-        forkTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
-            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("anthropic answer");
+        Assert.Equal("anthropic answer", forkTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString());
 
         var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
-        profiles.EnumerateArray()
+        Assert.True(profiles.EnumerateArray()
             .Single(profile => profile.GetProperty("id").GetString() == "openai-profile")
-            .GetProperty("selected").GetBoolean().Should().BeTrue();
+            .GetProperty("selected").GetBoolean());
 
         var unknown = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/fork",
             new { seq = 0, profileId = "no-such-profile" },
             deadline.Token);
-        unknown.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
         var error = await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal("invalid_request", error.GetProperty("code").GetString());
 
         // A failed fork applies no model side effect: the process selection is
         // untouched after the rejected request (overrides are per session).
         var after = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
-        after.EnumerateArray()
+        Assert.True(after.EnumerateArray()
             .Single(profile => profile.GetProperty("id").GetString() == "openai-profile")
-            .GetProperty("selected").GetBoolean().Should().BeTrue();
+            .GetProperty("selected").GetBoolean());
     }
 
     [Fact(Timeout = 60_000)]
@@ -812,13 +804,13 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "%model use claude-profile" },
             deadline.Token);
-        use.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, use.StatusCode);
 
         await harness.SubmitTurnAsync(sessionId, "second turn", deadline.Token);
         var transcript = await WaitForTranscriptTurnsAsync(
             harness, sessionId, minimumTurns: 2, deadline.Token);
-        transcript.GetProperty("turns")[1].GetProperty("messages")[1]
-            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("anthropic answer");
+        Assert.Equal("anthropic answer", transcript.GetProperty("turns")[1].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -844,15 +836,15 @@ public sealed class FrontendApiIntegrationTests
         var allText = string.Concat(frames
             .Select(frame => frame.TryGetProperty("text", out var text) ? text.GetString() : null)
             .Where(value => value is not null));
-        allText.Should().NotContain("secret chain of thought");
+        Assert.DoesNotContain("secret chain of thought", allText);
         var completed = frames.Single(frame => frame.GetProperty("type").GetString() == "message.completed");
-        completed.GetProperty("agentMessage").GetRawText().Should().NotContain("secret chain of thought");
+        Assert.DoesNotContain("secret chain of thought", completed.GetProperty("agentMessage").GetRawText());
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript",
             deadline.Token);
-        transcript.GetRawText().Should().NotContain("secret chain of thought");
-        transcript.GetRawText().Should().Contain("public answer");
+        Assert.DoesNotContain("secret chain of thought", transcript.GetRawText());
+        Assert.Contains("public answer", transcript.GetRawText());
     }
 
     [Fact(Timeout = 60_000)]
@@ -874,8 +866,8 @@ public sealed class FrontendApiIntegrationTests
         await harness.SubmitTurnAsync(sessionId, "first", deadline.Token);
         var firstTranscript = await WaitForTranscriptTurnsAsync(
             harness, sessionId, minimumTurns: 1, deadline.Token);
-        firstTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
-            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("answer from model one");
+        Assert.Equal("answer from model one", firstTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString());
 
         // Rewrite the configuration file: the runtime hot reload picks the new endpoint up
         // and the next turn runs against the second provider. A reload commits the replacement
@@ -892,17 +884,16 @@ public sealed class FrontendApiIntegrationTests
         wait.CancelAfter(TimeSpan.FromSeconds(30));
         await runtimeConfiguration.WaitForVersionAsync(beforeVersion + 1, wait.Token);
         var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
-        status.GetProperty("markdown").GetString().Should().Contain("model-two");
+        Assert.Contains("model-two", status.GetProperty("markdown").GetString());
 
         await harness.SubmitTurnAsync(sessionId, "second", deadline.Token);
         var reloaded = await WaitForTranscriptTurnsAsync(
             harness, sessionId, minimumTurns: 2, deadline.Token);
-        reloaded.GetProperty("turns").GetArrayLength().Should().Be(2);
-        reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
-            .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("answer from model two");
-        reloaded.GetProperty("turns")[1].GetProperty("messages").EnumerateArray()
-            .Select(message => message.GetProperty("role").GetString())
-            .Should().Equal(["user", "assistant"]);
+        Assert.Equal(2, reloaded.GetProperty("turns").GetArrayLength());
+        Assert.Equal("answer from model two", reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString());
+        Assert.Equal(["user", "assistant"], reloaded.GetProperty("turns")[1].GetProperty("messages").EnumerateArray()
+            .Select(message => message.GetProperty("role").GetString()));
     }
 
     /// <summary>
@@ -995,18 +986,20 @@ public sealed class FrontendApiIntegrationTests
                 deadline.Token);
 
             var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
-            types.Should().Contain("tool.started").And.Contain("tool.finished");
-            frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
-                .GetProperty("text").GetString().Should().Be("tool-backed answer");
+            Assert.Contains("tool.started", types);
+            Assert.Contains("tool.finished", types);
+            Assert.Equal("tool-backed answer", frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
+                .GetProperty("text").GetString());
 
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
                 deadline.Token);
-            transcript.GetProperty("turns").GetArrayLength().Should().Be(1);
+            Assert.Equal(1, transcript.GetProperty("turns").GetArrayLength());
             // The second provider request carries the tool result envelope.
-            provider.RequestBodies.Should().HaveCount(2);
-            provider.RequestBodies.Last().GetRawText().Should()
-                .Contain("tool_result").And.Contain("status").And.Contain("ok");
+            Assert.Equal(2, provider.RequestBodies.Count());
+            Assert.Contains("tool_result", provider.RequestBodies.Last().GetRawText());
+            Assert.Contains("status", provider.RequestBodies.Last().GetRawText());
+            Assert.Contains("ok", provider.RequestBodies.Last().GetRawText());
         }
         finally
         {
@@ -1046,37 +1039,35 @@ public sealed class FrontendApiIntegrationTests
                 deadline.Token);
 
             var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
-            types.Should().Contain("tool.started").And.Contain("tool.finished");
-            frames.Single(frame => frame.GetProperty("type").GetString() == "tool.started")
-                .GetProperty("tool").GetString().Should().Be("apply_patch");
-            frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
-                .GetProperty("text").GetString().Should().Be("tool-backed answer");
+            Assert.Contains("tool.started", types);
+            Assert.Contains("tool.finished", types);
+            Assert.Equal("apply_patch", frames.Single(frame => frame.GetProperty("type").GetString() == "tool.started")
+                .GetProperty("tool").GetString());
+            Assert.Equal("tool-backed answer", frames.Single(frame => frame.GetProperty("type").GetString() == "text.delta")
+                .GetProperty("text").GetString());
 
             // The wire carries the built-in apply_patch tool and neither of the
             // general edit functions it replaces.
-            provider.RequestBodies.Should().HaveCount(2);
+            Assert.Equal(2, provider.RequestBodies.Count());
             var firstRequest = provider.RequestBodies.First();
             var toolTypes = firstRequest.GetProperty("tools").EnumerateArray()
                 .Select(tool => tool.TryGetProperty("type", out var type) ? type.GetString() : null)
                 .ToArray();
-            toolTypes.Should().Contain("apply_patch");
-            firstRequest.GetProperty("tools").EnumerateArray()
-                .Where(tool => tool.TryGetProperty("name", out _) &&
+            Assert.Contains("apply_patch", toolTypes);
+            Assert.DoesNotContain(firstRequest.GetProperty("tools").EnumerateArray(), tool => tool.TryGetProperty("name", out _) &&
                                (tool.GetProperty("name").GetString() == "write_text" ||
-                                tool.GetProperty("name").GetString() == "edit_text"))
-                .Should().BeEmpty();
+                                tool.GetProperty("name").GetString() == "edit_text"));
 
             // The follow-up request replays the call in its original structured
             // shape and carries the structured result envelope as its output.
             var secondRequest = provider.RequestBodies.Last();
-            secondRequest.GetRawText().Should()
-                .Contain("apply_patch_call").And.Contain("apply_patch_call_output")
-                .And.Contain("patched.txt");
+            Assert.Contains("apply_patch_call", secondRequest.GetRawText());
+            Assert.Contains("apply_patch_call_output", secondRequest.GetRawText());
+            Assert.Contains("patched.txt", secondRequest.GetRawText());
 
-            (await File.ReadAllTextAsync(
+            Assert.Equal("patched body\n", (await File.ReadAllTextAsync(
                     Path.Combine(workspace, "patched.txt"),
-                    deadline.Token))
-                .Should().Be("patched body\n");
+                    deadline.Token)));
         }
         finally
         {
@@ -1110,28 +1101,27 @@ public sealed class FrontendApiIntegrationTests
             await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
             var transcript = await WaitForTranscriptTurnsAsync(
                 harness, sessionId, minimumTurns: 1, deadline.Token);
-            transcript.GetProperty("turns")[0].GetProperty("messages")[1]
-                .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("openai answer");
+            Assert.Equal("openai answer", transcript.GetProperty("turns")[0].GetProperty("messages")[1]
+                .GetProperty("parts")[0].GetProperty("text").GetString());
 
             // Switch the model profile via a command cell; the next turn runs on Anthropic.
             var switchResponse = await harness.Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text = "%model use claude-profile" },
                 deadline.Token);
-            switchResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            Assert.Equal(HttpStatusCode.OK, switchResponse.StatusCode);
             var switchBody = await switchResponse.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-            switchBody.GetProperty("markdown").GetString().Should().Contain("claude-profile");
+            Assert.Contains("claude-profile", switchBody.GetProperty("markdown").GetString());
 
             await harness.SubmitTurnAsync(sessionId, "second turn", deadline.Token);
             var reloaded = await WaitForTranscriptTurnsAsync(
                 harness, sessionId, minimumTurns: 2, deadline.Token);
-            reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
-                .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("anthropic answer");
+            Assert.Equal("anthropic answer", reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
+                .GetProperty("parts")[0].GetProperty("text").GetString());
             // Canonical history: both turns committed in order with user→assistant shape.
-            reloaded.GetProperty("turns").EnumerateArray()
+            Assert.All(reloaded.GetProperty("turns").EnumerateArray()
                 .Select(turn => turn.GetProperty("messages").EnumerateArray()
-                    .Select(message => message.GetProperty("role").GetString()).ToArray())
-                .Should().OnlyContain(roles => roles.First() == "user" && roles.Last() == "assistant");
+                    .Select(message => message.GetProperty("role").GetString()).ToArray()), roles => Assert.True(roles.First() == "user" && roles.Last() == "assistant"));
         }
         finally
         {
@@ -1209,18 +1199,20 @@ public sealed class FrontendApiIntegrationTests
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text = "%mcp list" },
                 deadline.Token);
-            mcpList.StatusCode.Should().Be(HttpStatusCode.OK);
+            Assert.Equal(HttpStatusCode.OK, mcpList.StatusCode);
             var markdown = (await mcpList.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
                 .GetProperty("markdown").GetString()!;
-            markdown.Should().Contain("`echo` → `echo`").And.Contain("Connected");
+            Assert.Contains("`echo` → `echo`", markdown);
+            Assert.Contains("Connected", markdown);
 
             await harness.SubmitTurnAsync(sessionId, "call the MCP echo tool", deadline.Token);
             var transcript = await WaitForTranscriptTurnsAsync(
                 harness, sessionId, minimumTurns: 1, deadline.Token);
-            transcript.GetProperty("turns")[0].GetProperty("messages")[1]
-                .GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("tool-backed answer");
-            provider.RequestBodies.Last().GetRawText().Should()
-                .Contain("status").And.Contain("ok").And.Contain("native mcp value");
+            Assert.Equal("tool-backed answer", transcript.GetProperty("turns")[0].GetProperty("messages")[1]
+                .GetProperty("parts")[0].GetProperty("text").GetString());
+            Assert.Contains("status", provider.RequestBodies.Last().GetRawText());
+            Assert.Contains("ok", provider.RequestBodies.Last().GetRawText());
+            Assert.Contains("native mcp value", provider.RequestBodies.Last().GetRawText());
         }
         finally
         {
@@ -1260,7 +1252,7 @@ public sealed class FrontendApiIntegrationTests
         using var client = harness.CreateClient();
 
         var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
-        capabilities.GetProperty("multiSession").GetBoolean().Should().BeTrue();
+        Assert.True(capabilities.GetProperty("multiSession").GetBoolean());
 
         var bootId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -1268,7 +1260,7 @@ public sealed class FrontendApiIntegrationTests
         var missing = await client.GetAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/transcript",
             deadline.Token);
-        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
 
         // A stored session that is not the foreground is still served: it is
         // lazily resumed. Starting a new session moves the foreground alias.
@@ -1278,13 +1270,13 @@ public sealed class FrontendApiIntegrationTests
             deadline.Token);
         await client.PostAsync("/v1/agent/sessions", null, deadline.Token);
         var foreground = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
-        foreground.GetProperty("id").GetString().Should().NotBe(bootId);
+        Assert.NotEqual(bootId, foreground.GetProperty("id").GetString());
 
         var transcript = await client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{bootId}/transcript",
             deadline.Token);
-        transcript.GetProperty("sessionId").GetString().Should().Be(bootId);
-        transcript.GetProperty("turns").GetArrayLength().Should().Be(0);
+        Assert.Equal(bootId, transcript.GetProperty("sessionId").GetString());
+        Assert.Equal(0, transcript.GetProperty("turns").GetArrayLength());
     }
 
     [Fact(Timeout = 60_000)]
@@ -1315,10 +1307,10 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{first}/turns",
             new { text = "%session current" },
             deadline.Token);
-        command.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, command.StatusCode);
         var answered = await command.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        answered.GetProperty("sessionId").GetString().Should().Be(first);
-        answered.GetProperty("markdown").GetString().Should().Contain(first[..12]);
+        Assert.Equal(first, answered.GetProperty("sessionId").GetString());
+        Assert.Contains(first[..12], answered.GetProperty("markdown").GetString());
 
         // A session-switching command moves the foreground and the answer carries
         // the new session so the notebook re-pins.
@@ -1327,7 +1319,7 @@ public sealed class FrontendApiIntegrationTests
             new { text = "%session new" },
             deadline.Token);
         var switchedBody = await switched.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        switchedBody.GetProperty("sessionId").GetString().Should().NotBe(first);
+        Assert.NotEqual(first, switchedBody.GetProperty("sessionId").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -1354,20 +1346,20 @@ public sealed class FrontendApiIntegrationTests
         var payload = new byte[] { 1, 2, 3 };
         var sha256 = harness.ObjectStore.Ingest(new MemoryStream(payload)).Sha256;
         var served = await client.GetAsync($"/v1/objects/{sha256.ToUpperInvariant()}", deadline.Token);
-        served.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await served.Content.ReadAsByteArrayAsync(deadline.Token)).Should().Equal(payload);
+        Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+        Assert.Equal(payload, (await served.Content.ReadAsByteArrayAsync(deadline.Token)));
 
         // A well-formed but unknown id is a typed not_found, and a non-hex id is a typed
         // invalid_request — never an unhandled 500.
         var missing = await client.GetAsync($"/v1/objects/{new string('a', 63)}A", deadline.Token);
-        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         var missingError = await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        missingError.GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal("not_found", missingError.GetProperty("code").GetString());
 
         var invalid = await client.GetAsync($"/v1/objects/{new string('z', 64)}", deadline.Token);
-        invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
         var invalidError = await invalid.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        invalidError.GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal("invalid_request", invalidError.GetProperty("code").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -1393,22 +1385,20 @@ public sealed class FrontendApiIntegrationTests
                          frame.GetProperty("state").GetString() == "idle",
                 deadline.Token);
 
-            frames.Select(frame => frame.GetProperty("type").GetString())
-                .Should().Contain("run.completed");
+            Assert.Contains("run.completed", frames.Select(frame => frame.GetProperty("type").GetString()));
 
             // The request declares the provider's web search tool; it is server-executed, so no
             // local function is registered for it.
-            provider.RequestBodies.First().GetProperty("tools").EnumerateArray()
+            Assert.Contains("web_search", provider.RequestBodies.First().GetProperty("tools").EnumerateArray()
                 .Where(tool => tool.TryGetProperty("type", out _))
-                .Select(tool => tool.GetProperty("type").GetString())
-                .Should().Contain("web_search");
+                .Select(tool => tool.GetProperty("type").GetString()));
 
             // The canonical transcript records the cited answer.
             var transcript = (await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
                 deadline.Token)).GetRawText();
-            transcript.Should().Contain("Zhipu AI is a Chinese AI company.");
-            transcript.Should().Contain("https://example.com/zhipu");
+            Assert.Contains("Zhipu AI is a Chinese AI company.", transcript);
+            Assert.Contains("https://example.com/zhipu", transcript);
         }
         finally
         {
@@ -1441,7 +1431,7 @@ public sealed class FrontendApiIntegrationTests
 
             // The response surfaced two built-in searches against a per-request ceiling of one;
             // the OpenAI wire has no cap parameter, so the client enforces it and fails the turn.
-            frames.Last().GetProperty("code").GetString().Should().Be("agent_tool_limit_exceeded");
+            Assert.Equal("agent_tool_limit_exceeded", frames.Last().GetProperty("code").GetString());
         }
         finally
         {
@@ -1470,21 +1460,19 @@ public sealed class FrontendApiIntegrationTests
                          frame.GetProperty("state").GetString() == "idle",
                 deadline.Token);
 
-            frames.Select(frame => frame.GetProperty("type").GetString())
-                .Should().Contain("run.completed");
+            Assert.Contains("run.completed", frames.Select(frame => frame.GetProperty("type").GetString()));
 
             // The request declares Anthropic's server tool by its versioned type; function tools
             // carry no type field, so the projection skips them.
-            provider.RequestBodies.First().GetProperty("tools").EnumerateArray()
+            Assert.Contains("web_search_20250305", provider.RequestBodies.First().GetProperty("tools").EnumerateArray()
                 .Where(tool => tool.TryGetProperty("type", out _))
-                .Select(tool => tool.GetProperty("type").GetString())
-                .Should().Contain("web_search_20250305");
+                .Select(tool => tool.GetProperty("type").GetString()));
 
             var transcript = (await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
                 deadline.Token)).GetRawText();
-            transcript.Should().Contain("Zhipu AI is a Chinese AI company.");
-            transcript.Should().Contain("zhipu ai");
+            Assert.Contains("Zhipu AI is a Chinese AI company.", transcript);
+            Assert.Contains("zhipu ai", transcript);
         }
         finally
         {
@@ -1751,7 +1739,7 @@ public sealed class FrontendApiIntegrationTests
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text },
                 cancellationToken);
-            response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
             var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken)
                 ;
             return body.GetProperty("runId").GetString()!;

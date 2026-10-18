@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Providers;
 using Microsoft.Extensions.AI;
 
@@ -11,19 +10,19 @@ public sealed class HostedToolCatalogTests
     {
         var tools = HostedToolCatalog.Create(["ApplyPatch", "WebSearch", "CodeInterpreter", "Shell"]);
 
-        tools.Should().HaveCount(1);
-        tools[0].Should().BeOfType<HostedWebSearchTool>();
+        Assert.Single(tools);
+        Assert.IsType<HostedWebSearchTool>(tools[0]);
     }
 
     [Fact]
     public void CatalogIsEmptyForNoCapabilities() =>
-        HostedToolCatalog.Create([]).Should().BeEmpty();
+        Assert.Empty(HostedToolCatalog.Create([]));
 
     [Fact]
     public void CatalogDeduplicatesRepeatedCapabilityNames()
     {
         var tools = HostedToolCatalog.Create(["WebSearch", "websearch"]);
 
-        tools.Should().ContainSingle();
+        Assert.Single(tools);
     }
 }

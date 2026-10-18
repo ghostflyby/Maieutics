@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Execution;
 
 namespace Maieutics.Product.Tests;
@@ -20,25 +19,25 @@ public sealed class WorkspaceLinkIdentityTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var context = Workspace.Create(home);
 
-        var record = (context.OpenLink(project, null).Links ?? throw new InvalidOperationException("missing links"))
-            .Records.Should().ContainSingle().Which;
+        var record = Assert.Single((context.OpenLink(project, null).Links ?? throw new InvalidOperationException("missing links"))
+            .Records);
         var identity = record.Identity;
-        identity.Should().NotBeNull("the open captured the directory's file identity");
-        identity.Inode.Should().NotBe(0);
+        Assert.NotNull(identity);
+        Assert.NotEqual(0UL, identity.Inode);
 
-        var persisted = WorkspaceLinkRegistry.Load(home.HomePath).Entries().Should().ContainSingle().Which;
-        persisted.Identity.Should().NotBeNull("the fingerprint survives persistence");
-        persisted.Identity!.Matches(identity).Should().BeTrue();
+        var persisted = Assert.Single(WorkspaceLinkRegistry.Load(home.HomePath).Entries());
+        Assert.NotNull(persisted.Identity);
+        Assert.True(persisted.Identity!.Matches(identity));
 
         if (!OperatingSystem.IsLinux())
         {
-            identity.BirthTimeUtc.Should().NotBeNull("macOS and Windows report a creation time");
-            identity.BirthTimeUtc.Should().BeOnOrBefore(DateTimeOffset.UtcNow.AddMinutes(1));
+            Assert.NotNull(identity.BirthTimeUtc);
+            Assert.True(identity.BirthTimeUtc <= DateTimeOffset.UtcNow.AddMinutes(1));
         }
 
         var recaptured = WorkspaceFileIdentityReader.TryRead(project);
-        recaptured.Should().NotBeNull();
-        identity.Matches(recaptured).Should().BeTrue("recapturing the same directory is stable");
+        Assert.NotNull(recaptured);
+        Assert.True(identity.Matches(recaptured), "recapturing the same directory is stable");
     }
 
     [Fact(Timeout = 30_000)]
@@ -57,15 +56,13 @@ public sealed class WorkspaceLinkIdentityTests
 
         var movedPath = Path.Combine(workspace.ParentPath, "renamed");
         Directory.Move(project, movedPath);
-        context.OpenLink(movedPath, null).Should().NotBeNull();
+        Assert.NotNull(context.OpenLink(movedPath, null));
 
         var links = context.Capture().Links ?? throw new InvalidOperationException("missing links");
-        links.Records.Should().ContainSingle("the moved project is recognized as the same object")
-            .Which.Target.Should().Be(movedPath);
+        Assert.Equal(movedPath, Assert.Single(links.Records).Target);
 
         var resolved = context.Capture().Resolve("workspace://local/projects/project/marker.txt", false);
-        resolved.FullPath.Should().Be(Path.Combine(movedPath, "marker.txt"),
-            "the physical link follows the re-pointed record");
+        Assert.Equal(Path.Combine(movedPath, "marker.txt"), resolved.FullPath);
     }
 
     [Fact(Timeout = 30_000)]
@@ -87,22 +84,19 @@ public sealed class WorkspaceLinkIdentityTests
         var context = Workspace.Create(remounted);
         var links = context.Capture().Links ?? throw new InvalidOperationException("missing links");
 
-        links.Records.Should().ContainSingle().Which.Target.Should().Be(movedPath);
-        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.Relocated,
-            "detail: {0}", links.HealthByName["project"].Detail);
-        Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project"))
-            .Should().BeTrue("the physical link is repaired at the re-pointed target");
+        Assert.Equal(movedPath, Assert.Single(links.Records).Target);
+        Assert.Equal(WorkspaceLinkState.Relocated, links.HealthByName["project"].State);
+        Assert.True(Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project")), "the physical link is repaired at the re-pointed target");
 
         var resolved = context.Capture().Resolve("workspace://local/projects/project/marker.txt", false);
-        resolved.FullPath.Should().Be(Path.Combine(movedPath, "marker.txt"));
+        Assert.Equal(Path.Combine(movedPath, "marker.txt"), resolved.FullPath);
 
         var executor = new Commands.MaieuticsCommandExecutor(null, null, context, null, null);
         var rendered = await executor.ExecuteAsync(
             "%workspace current",
             null,
             TestContext.Current.CancellationToken);
-        rendered.Markdown.Should().Contain("relocated",
-            "the operator sees that the record followed the project");
+        Assert.Contains("relocated", rendered.Markdown);
     }
 
     [Fact(Timeout = 30_000)]
@@ -135,27 +129,22 @@ public sealed class WorkspaceLinkIdentityTests
         var context = Workspace.Create(remounted);
         var links = context.Capture().Links ?? throw new InvalidOperationException("missing links");
 
-        links.Records.Should().ContainSingle("the entry stays reserved for the registered object");
-        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.IdentityChanged,
-            "detail: {0}", links.HealthByName["project"].Detail);
-        Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project"))
-            .Should().BeFalse("the physical link is withheld so the wrong project is never read");
+        Assert.Single(links.Records);
+        Assert.Equal(WorkspaceLinkState.IdentityChanged, links.HealthByName["project"].State);
+        Assert.False(Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project")), "the physical link is withheld so the wrong project is never read");
 
-        context.Invoking(c => c.OpenLink(replacement, null))
-            .Should().Throw<InvalidOperationException>()
-            .WithMessage("*bound to a different project*");
+        var assertion41 = Assert.ThrowsAny<InvalidOperationException>(() => (context).OpenLink(replacement, null));
+        Assert.Matches("(?is)^.*bound\\ to\\ a\\ different\\ project.*$", assertion41.Message);
 
         // The explicit recovery path: close the stale binding and adopt the new directory,
         // which gets a fresh suffixed name because the retired name belongs to the old object.
         context.CloseLink("project");
         var reopened = context.OpenLink(replacement, null);
         var reopenedLinks = reopened.Links ?? throw new InvalidOperationException("missing links");
-        var adoptedName = reopenedLinks.Records.Should().ContainSingle().Which.Name;
-        adoptedName.Should().NotBe("project",
-            "the retired name belongs to the old object and is never reused for a new one");
+        var adoptedName = Assert.Single(reopenedLinks.Records).Name;
+        Assert.NotEqual("project", adoptedName);
 
-        context.Capture().Invoking(s => s.Resolve($"workspace://local/projects/{adoptedName}/marker.txt", false))
-            .Should().NotThrow();
+        context.Capture().Resolve($"workspace://local/projects/{adoptedName}/marker.txt", false);
     }
 
     [Fact(Timeout = 30_000)]
@@ -172,8 +161,8 @@ public sealed class WorkspaceLinkIdentityTests
         var links = Workspace.Create(remounted).Capture().Links
                     ?? throw new InvalidOperationException("missing links");
 
-        links.Records.Should().ContainSingle("a missing target keeps its registry entry");
-        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.TargetMissing);
+        Assert.Single(links.Records);
+        Assert.Equal(WorkspaceLinkState.TargetMissing, links.HealthByName["project"].State);
     }
 
     [Fact(Timeout = 30_000)]
@@ -194,9 +183,8 @@ public sealed class WorkspaceLinkIdentityTests
         var links = Workspace.Create(remounted).Capture().Links
                     ?? throw new InvalidOperationException("missing links");
 
-        links.Records.Should().ContainSingle().Which.Target.Should().Be(project);
-        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.TargetMissing,
-            "the bounded search covers the former parent only");
+        Assert.Equal(project, Assert.Single(links.Records).Target);
+        Assert.Equal(WorkspaceLinkState.TargetMissing, links.HealthByName["project"].State);
     }
 
     [Fact(Timeout = 30_000)]
@@ -216,9 +204,9 @@ public sealed class WorkspaceLinkIdentityTests
         var state = JsonSerializer.Deserialize(
             File.ReadAllText(registryPath),
             WorkspaceLinkJsonContext.Default.WorkspaceLinkRegistryState);
-        state.Should().NotBeNull();
+        Assert.NotNull(state);
         var stateLinks = state.Links ?? throw new InvalidOperationException("missing links");
-        stateLinks.Should().ContainSingle().Which.Identity.Should().NotBeNull();
+        Assert.NotNull(Assert.Single(stateLinks).Identity);
         File.WriteAllText(
             registryPath,
             JsonSerializer.Serialize(
@@ -231,11 +219,9 @@ public sealed class WorkspaceLinkIdentityTests
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var links = Workspace.Create(remounted).Capture().Links
                     ?? throw new InvalidOperationException("missing links");
-        links.Records.Should().ContainSingle().Which.Identity.Should().BeNull();
-        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.Verified,
-            "a fingerprint-less record is verified by path, as before the amendment");
-        Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project"))
-            .Should().BeTrue("path-only remount still repairs the physical link");
+        Assert.Null(Assert.Single(links.Records).Identity);
+        Assert.Equal(WorkspaceLinkState.Verified, links.HealthByName["project"].State);
+        Assert.True(Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project")), "path-only remount still repairs the physical link");
     }
 
     [Fact(Timeout = 30_000)]
@@ -257,13 +243,11 @@ public sealed class WorkspaceLinkIdentityTests
         Directory.Move(project, movedPath);
         var reopened = context.OpenLink(movedPath, null);
         var links = reopened.Links ?? throw new InvalidOperationException("missing links");
-        var record = links.Records.Should().ContainSingle().Which;
-        record.Name.Should().Be("project",
-            "the tombstone belongs to the same object, so the name its transcripts cite returns");
-        record.Target.Should().Be(movedPath);
+        var record = Assert.Single(links.Records);
+        Assert.Equal("project", record.Name);
+        Assert.Equal(movedPath, record.Target);
 
-        context.Capture().Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
-            .Should().NotThrow();
+        context.Capture().Resolve("workspace://local/projects/project/marker.txt", false);
     }
 
     [Fact(Timeout = 30_000)]
@@ -289,7 +273,7 @@ public sealed class WorkspaceLinkIdentityTests
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var links = Workspace.Create(remounted).Capture().Links
                     ?? throw new InvalidOperationException("missing links");
-        links.HealthByName["project"].State.Should().Be(WorkspaceLinkState.IdentityChanged);
+        Assert.Equal(WorkspaceLinkState.IdentityChanged, links.HealthByName["project"].State);
 
         Directory.Delete(project);
         Directory.Move(parked, project);
@@ -297,13 +281,9 @@ public sealed class WorkspaceLinkIdentityTests
         var recoveredLinks = Workspace.Create(recovered).Capture().Links
                              ?? throw new InvalidOperationException("missing links");
 
-        recoveredLinks.HealthByName["project"].State.Should().Be(WorkspaceLinkState.Verified,
-            "the registered object is back at the registered path");
-        Directory.Exists(Path.Combine(recovered.ProjectsRoot, "project"))
-            .Should().BeTrue("the withheld link is recreated once identity verifies again");
-        Workspace.Create(recovered).Capture()
-            .Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
-            .Should().NotThrow();
+        Assert.Equal(WorkspaceLinkState.Verified, recoveredLinks.HealthByName["project"].State);
+        Assert.True(Directory.Exists(Path.Combine(recovered.ProjectsRoot, "project")), "the withheld link is recreated once identity verifies again");
+        Workspace.Create(recovered).Capture().Resolve("workspace://local/projects/project/marker.txt", false);
     }
 
     [Fact(Timeout = 30_000)]
@@ -327,7 +307,7 @@ public sealed class WorkspaceLinkIdentityTests
             text.Insert(text.IndexOf('{') + 1, " \"futureField\": true,"));
 
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
-        remounted.LinksView().Records.Should().ContainSingle().Which.Target.Should().Be(project);
+        Assert.Equal(project, Assert.Single(remounted.LinksView().Records).Target);
     }
 
     [Fact(Timeout = 30_000)]
@@ -357,17 +337,17 @@ public sealed class WorkspaceLinkIdentityTests
             "%workspace current",
             null,
             TestContext.Current.CancellationToken);
-        rendered.Markdown.Should().Contain("identity changed");
+        Assert.Contains("identity changed", rendered.Markdown);
     }
 
     [Fact]
     public void NativeStatStructuresMatchTheirPlatformLayouts()
     {
         if (OperatingSystem.IsMacOS())
-            Marshal.SizeOf<WorkspaceFileIdentityReader.StatMacOS>().Should().Be(144);
+            Assert.Equal(144, Marshal.SizeOf<WorkspaceFileIdentityReader.StatMacOS>());
         else if (OperatingSystem.IsLinux())
-            Marshal.SizeOf<WorkspaceFileIdentityReader.StatLinux>().Should().Be(0x100);
+            Assert.Equal(0x100, Marshal.SizeOf<WorkspaceFileIdentityReader.StatLinux>());
         else if (OperatingSystem.IsWindows())
-            Marshal.SizeOf<WorkspaceFileIdentityReader.ByHandleFileInformation>().Should().Be(52);
+            Assert.Equal(52, Marshal.SizeOf<WorkspaceFileIdentityReader.ByHandleFileInformation>());
     }
 }

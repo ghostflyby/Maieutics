@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
@@ -20,9 +19,9 @@ public sealed class PluginImportMergerTests
             Plugin("z-plugin", imports: [Entry("@std/path", "jsr:@std/path@^1")]),
             Plugin("a-plugin", imports: [Entry("@std/bytes", "jsr:@std/bytes@1")]));
 
-        imports.Should().HaveCount(2);
-        imports[0].Key.Should().Be("@std/bytes");
-        imports[1].Key.Should().Be("@std/path");
+        Assert.Equal(2, imports.Count());
+        Assert.Equal("@std/bytes", imports[0].Key);
+        Assert.Equal("@std/path", imports[1].Key);
     }
 
     [Fact]
@@ -32,9 +31,9 @@ public sealed class PluginImportMergerTests
             Plugin("a", imports: [Entry("@std/path", "jsr:@std/path@^1")]),
             Plugin("b", imports: [Entry("@std/path", "jsr:@std/path@^1")]));
 
-        imports.Should().ContainSingle();
-        exclusions.Should().BeEmpty();
-        warnings.Should().BeEmpty();
+        Assert.Single(imports);
+        Assert.Empty(exclusions);
+        Assert.Empty(warnings);
     }
 
     [Fact]
@@ -45,8 +44,8 @@ public sealed class PluginImportMergerTests
             Plugin("b-plugin", imports: [Entry("@ui/lib", "jsr:@ui/lib@2")]));
 
         // The earlier plugin keeps its mapping and starts; the later id loses.
-        imports.Should().ContainSingle().Which.Value.Should().Be("jsr:@ui/lib@1");
-        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("b-plugin");
+        Assert.Equal("jsr:@ui/lib@1", Assert.Single(imports).Value);
+        Assert.Equal("b-plugin", Assert.Single(exclusions).PluginId);
     }
 
     [Fact]
@@ -59,9 +58,9 @@ public sealed class PluginImportMergerTests
                 Entry("../shared.ts", "../shared.ts"),
             ]));
 
-        imports.Should().HaveCount(2);
-        imports[0].Value.Should().Be(new Uri(Path.GetFullPath(Path.Combine(root, "../shared.ts"))).AbsoluteUri);
-        imports[1].Value.Should().Be(new Uri(Path.GetFullPath(Path.Combine(root, "util.ts"))).AbsoluteUri);
+        Assert.Equal(2, imports.Count());
+        Assert.Equal(new Uri(Path.GetFullPath(Path.Combine(root, "../shared.ts"))).AbsoluteUri, imports[0].Value);
+        Assert.Equal(new Uri(Path.GetFullPath(Path.Combine(root, "util.ts"))).AbsoluteUri, imports[1].Value);
     }
 
     [Fact]
@@ -70,9 +69,9 @@ public sealed class PluginImportMergerTests
         var (imports, exclusions, warnings) = Merge(
             Plugin("a", imports: [Entry("@maieutics/plugin-sdk", "jsr:@maieutics/plugin-sdk@^0.1")]));
 
-        imports.Should().BeEmpty();
-        exclusions.Should().BeEmpty();
-        warnings.Should().ContainSingle().Which.Should().Contain("reserved");
+        Assert.Empty(imports);
+        Assert.Empty(exclusions);
+        Assert.Contains("reserved", Assert.Single(warnings));
     }
 
     [Fact]
@@ -85,9 +84,10 @@ public sealed class PluginImportMergerTests
             ]),
             Plugin("@acme/widget", workers: [Worker("main")]));
 
-        imports.Should().BeEmpty();
-        exclusions.Should().BeEmpty();
-        warnings.Should().HaveCount(2).And.OnlyContain(warning => warning.Contains("load hook"));
+        Assert.Empty(imports);
+        Assert.Empty(exclusions);
+        Assert.Equal(2, warnings.Count());
+        Assert.All(warnings, warning => Assert.Contains("load hook", warning));
     }
 
     [Fact]
@@ -96,8 +96,8 @@ public sealed class PluginImportMergerTests
         var (imports, exclusions, _) = Merge(
             Plugin("a", imports: [Entry("bytes/", "jsr:@std/bytes@1/")]));
 
-        imports.Should().BeEmpty();
-        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("a");
+        Assert.Empty(imports);
+        Assert.Equal("a", Assert.Single(exclusions).PluginId);
     }
 
     [Fact]
@@ -106,8 +106,8 @@ public sealed class PluginImportMergerTests
         var (imports, exclusions, _) = Merge(
             Plugin("a", imports: [Entry("@std/path", "@std/path-full")]));
 
-        imports.Should().BeEmpty();
-        exclusions.Should().ContainSingle().Which.Detail.Should().Contain("@std/path-full");
+        Assert.Empty(imports);
+        Assert.Contains("@std/path-full", Assert.Single(exclusions).Detail);
     }
 
     [Fact]
@@ -116,9 +116,9 @@ public sealed class PluginImportMergerTests
         var (imports, exclusions, warnings) = Merge(
             Plugin("a", imports: [Entry("@std/bytes", "jsr:@std/bytes@1.0.1", wasArray: true)]));
 
-        imports.Should().ContainSingle().Which.Value.Should().Be("jsr:@std/bytes@1.0.1");
-        exclusions.Should().BeEmpty();
-        warnings.Should().ContainSingle().Which.Should().Contain("first value");
+        Assert.Equal("jsr:@std/bytes@1.0.1", Assert.Single(imports).Value);
+        Assert.Empty(exclusions);
+        Assert.Contains("first value", Assert.Single(warnings));
     }
 
     [Fact]
@@ -129,9 +129,10 @@ public sealed class PluginImportMergerTests
             Plugin("b", imports: [Entry("@ui/lib", "jsr:@ui/lib@1")]),
             Plugin("c", imports: [Entry("@ui/lib", "jsr:@ui/lib@2")]));
 
-        imports.Should().HaveCount(2).And.Contain(pair => pair.Key == "@std/path");
-        imports.Should().Contain(pair => pair.Key == "@ui/lib" && pair.Value == "jsr:@ui/lib@1");
-        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("c");
+        Assert.Equal(2, imports.Count());
+        Assert.Contains(imports, pair => pair.Key == "@std/path");
+        Assert.Contains(imports, pair => pair.Key == "@ui/lib" && pair.Value == "jsr:@ui/lib@1");
+        Assert.Equal("c", Assert.Single(exclusions).PluginId);
     }
 
     [Fact]
@@ -149,9 +150,9 @@ public sealed class PluginImportMergerTests
 
         // b conflicts on @std/path and is excluded; the deduped @std/bytes entry
         // belongs to a and must survive b's exclusion untouched.
-        imports.Should().HaveCount(2).And.Contain(
-            pair => pair.Key == "@std/bytes" && pair.Value == "jsr:@std/bytes@1");
-        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("b");
+        Assert.Equal(2, imports.Count());
+        Assert.Contains(imports, pair => pair.Key == "@std/bytes" && pair.Value == "jsr:@std/bytes@1");
+        Assert.Equal("b", Assert.Single(exclusions).PluginId);
     }
 
     [Fact]
@@ -166,35 +167,33 @@ public sealed class PluginImportMergerTests
 
         // a is excluded for the bare-chain value; its earlier entry must not occupy
         // @std/bytes, so b's healthy mapping stands and b is not dragged into exclusion.
-        imports.Should().ContainSingle().Which.Value.Should().Be("jsr:@std/bytes@2");
-        exclusions.Should().ContainSingle().Which.PluginId.Should().Be("a");
+        Assert.Equal("jsr:@std/bytes@2", Assert.Single(imports).Value);
+        Assert.Equal("a", Assert.Single(exclusions).PluginId);
     }
 
     [Fact]
     public void NormalizeSpecifierStripsJsrPrefixAndVersionSegment()
     {
-        PluginImportMerger.NormalizeSpecifier("jsr:@acme/widget@1.0/main").Should().Be("@acme/widget/main");
-        PluginImportMerger.NormalizeSpecifier("@acme/widget/main").Should().Be("@acme/widget/main");
-        PluginImportMerger.NormalizeSpecifier("@acme/widget").Should().Be("@acme/widget");
+        Assert.Equal("@acme/widget/main", PluginImportMerger.NormalizeSpecifier("jsr:@acme/widget@1.0/main"));
+        Assert.Equal("@acme/widget/main", PluginImportMerger.NormalizeSpecifier("@acme/widget/main"));
+        Assert.Equal("@acme/widget", PluginImportMerger.NormalizeSpecifier("@acme/widget"));
     }
 
     [Fact]
     public void SameMappingDetectsKeyAndValueChanges()
     {
         var baseMap = new[] { Entry("@std/bytes", "jsr:@std/bytes@1") };
-        PluginImportMerger.SameMapping(baseMap, baseMap).Should().BeTrue();
-        PluginImportMerger.SameMapping(
+        Assert.True(PluginImportMerger.SameMapping(baseMap, baseMap));
+        Assert.False(PluginImportMerger.SameMapping(
             baseMap,
-            new[] { Entry("@std/bytes", "jsr:@std/bytes@1.0.6") }).Should().BeFalse();
-        PluginImportMerger.SameMapping(
+            new[] { Entry("@std/bytes", "jsr:@std/bytes@1.0.6") }));
+        Assert.False(PluginImportMerger.SameMapping(
             baseMap,
-            new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") })
-            .Should().BeFalse();
+            new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") }));
         // Order and array-vs-string shape are not runtime-visible.
-        PluginImportMerger.SameMapping(
+        Assert.True(PluginImportMerger.SameMapping(
             new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") },
-            new[] { Entry("@std/path", "jsr:@std/path@^1"), Entry("@std/bytes", "jsr:@std/bytes@1", wasArray: true) })
-            .Should().BeTrue();
+            new[] { Entry("@std/path", "jsr:@std/path@^1"), Entry("@std/bytes", "jsr:@std/bytes@1", wasArray: true) }));
     }
 
     private static PluginImportEntry Entry(string key, string value, bool wasArray = false) =>

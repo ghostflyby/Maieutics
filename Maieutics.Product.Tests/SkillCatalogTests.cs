@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Execution;
@@ -76,9 +75,9 @@ public sealed class SkillCatalogTests : IDisposable
 
         var snapshot = catalog.Current;
 
-        snapshot.Skills.Should().HaveCount(2);
-        snapshot.Skills.Single(skill => skill.Name == "shared").Source.Should().Be(SkillSource.Workspace);
-        snapshot.Diagnostics.Should().Contain(diagnostic =>
+        Assert.Equal(2, snapshot.Skills.Count());
+        Assert.Equal(SkillSource.Workspace, snapshot.Skills.Single(skill => skill.Name == "shared").Source);
+        Assert.Contains(snapshot.Diagnostics, diagnostic =>
             diagnostic.Contains("shared") && diagnostic.Contains("shadowed"));
     }
 
@@ -95,9 +94,8 @@ public sealed class SkillCatalogTests : IDisposable
 
         var snapshot = catalog.Current;
 
-        snapshot.Skills.Should().ContainSingle(skill => skill.Name == "alpha")
-            .Which.Description.Should().Be("first");
-        snapshot.Diagnostics.Should().Contain(diagnostic =>
+        Assert.Equal("first", Assert.Single(snapshot.Skills, skill => skill.Name == "alpha").Description);
+        Assert.Contains(snapshot.Diagnostics, diagnostic =>
             diagnostic.Contains("alpha") && diagnostic.Contains("shadowed"));
     }
 
@@ -107,14 +105,14 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "initial", "the first skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "initial");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "initial");
 
         WriteSkill(workspaceRoot, "added", "arrived after start");
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
             snapshot.Skills.Any(skill => skill.Name == "added"));
 
-        catalog.Current.Skills.Should().HaveCount(2);
+        Assert.Equal(2, catalog.Current.Skills.Count());
     }
 
     [Fact]
@@ -134,8 +132,8 @@ public sealed class SkillCatalogTests : IDisposable
         // The burst coalesces: well below one rebuild per written file. The generous
         // bound keeps CI flake out while still failing if debouncing regresses to
         // per-event rescans.
-        (catalog.RebuildCount - rebuildsBefore).Should().BeInRange(1, 3);
-        catalog.Current.Skills.Should().HaveCount(6);
+        Assert.InRange((catalog.RebuildCount - rebuildsBefore), 1, 3);
+        Assert.Equal(6, catalog.Current.Skills.Count());
     }
 
     [Fact]
@@ -154,7 +152,7 @@ public sealed class SkillCatalogTests : IDisposable
             await Task.Delay(20, TestContext.Current.CancellationToken);
         }
 
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "initial");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "initial");
     }
 
     [Fact]
@@ -164,8 +162,7 @@ public sealed class SkillCatalogTests : IDisposable
         var catalog = CreateCatalog(new FakeTimeProvider(), userSource: false);
 
         await catalog.DisposeAsync();
-        var act = () => catalog.DisposeAsync();
-        await act.Should().NotThrowAsync();
+        await catalog.DisposeAsync();
     }
 
     /// <summary>Writes a skill into a nested directory of the workspace root (the flat
@@ -186,7 +183,7 @@ public sealed class SkillCatalogTests : IDisposable
             WriteSkill(workspaceRoot, $"skill-{index:D2}", $"skill {index}");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().HaveCount(12);
+        Assert.Equal(12, catalog.Current.Skills.Count());
 
         var visitsBefore = catalog.DirectoryVisits;
         File.WriteAllText(
@@ -199,7 +196,7 @@ public sealed class SkillCatalogTests : IDisposable
         // A full-tree walk of twelve skills costs fourteen directory visits (root file
         // probe, root listing, one probe per skill directory); the differential path
         // revalidates only the edited skill's directory, a handful of visits at most.
-        (catalog.DirectoryVisits - visitsBefore).Should().BeLessThan(10);
+        Assert.True((catalog.DirectoryVisits - visitsBefore) < 10);
     }
 
     [Fact]
@@ -208,7 +205,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkillAt(Path.Combine("category", "deep"), "deep-skill", "the deep skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "deep-skill");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "deep-skill");
 
         WriteSkillAt("category", "shallow-skill", "claims the whole category");
 
@@ -218,7 +215,7 @@ public sealed class SkillCatalogTests : IDisposable
 
         // The new boundary SKILL.md claims the category: the deeper old skill was a
         // resource the moment the boundary appeared and must leave the catalog.
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "shallow-skill");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "shallow-skill");
     }
 
     [Fact]
@@ -228,7 +225,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkillAt(Path.Combine("category", "deep"), "deep-skill", "the deep skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "shallow-skill");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "shallow-skill");
 
         File.Delete(Path.Combine(workspaceRoot, "category", "SKILL.md"));
 
@@ -236,7 +233,7 @@ public sealed class SkillCatalogTests : IDisposable
             snapshot.Skills.Any(skill => skill.Name == "deep-skill") &&
             snapshot.Skills.All(skill => skill.Name != "shallow-skill"));
 
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "deep-skill");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "deep-skill");
     }
 
     [Fact]
@@ -246,14 +243,14 @@ public sealed class SkillCatalogTests : IDisposable
         Directory.CreateDirectory(Path.Combine(workspaceRoot, "category"));
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "top-level");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "top-level");
 
         WriteSkillAt(Path.Combine("category", "nested"), "nested-skill", "arrived deep in the tree");
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
             snapshot.Skills.Any(skill => skill.Name == "nested-skill"));
 
-        catalog.Current.Skills.Should().HaveCount(2);
+        Assert.Equal(2, catalog.Current.Skills.Count());
     }
 
     [Fact]
@@ -263,14 +260,14 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "beta", "the surviving skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().HaveCount(2);
+        Assert.Equal(2, catalog.Current.Skills.Count());
 
         Directory.Delete(Path.Combine(workspaceRoot, "alpha"), recursive: true);
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
             snapshot.Skills.All(skill => skill.Name != "alpha"));
 
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "beta");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "beta");
     }
 
     [Fact]
@@ -279,7 +276,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "alpha", "the renamed skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha");
 
         Directory.Move(Path.Combine(workspaceRoot, "alpha"), Path.Combine(workspaceRoot, "beta"));
 
@@ -289,8 +286,7 @@ public sealed class SkillCatalogTests : IDisposable
                 skill.BodyPath == Path.Combine(workspaceRoot, "beta", "SKILL.md")));
 
         // The catalog name travels with the frontmatter; only the body location moves.
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha")
-            .Which.BodyPath.Should().Be(Path.Combine(workspaceRoot, "beta", "SKILL.md"));
+        Assert.Equal(Path.Combine(workspaceRoot, "beta", "SKILL.md"), Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha").BodyPath);
     }
 
     [Fact]
@@ -299,7 +295,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "alpha", "the moved skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha");
 
         // The Windows rename-out shape: the Renamed event reports the destination
         // outside the watched root. The out-of-root half holds no state of this root
@@ -319,8 +315,7 @@ public sealed class SkillCatalogTests : IDisposable
                 Path.Combine(outside, "moved"));
 
             await AwaitSkillsAsync(catalog, clock, snapshot => snapshot.Skills.IsEmpty);
-            catalog.Current.Diagnostics.Should().BeEmpty(
-                "an out-of-root rename half must not be walked as a region of this root");
+            Assert.Empty(catalog.Current.Diagnostics);
 
             // The rename-in shape is the mirror: only the half inside the root is
             // recorded, and the moved-in skill is discovered through it.
@@ -331,9 +326,8 @@ public sealed class SkillCatalogTests : IDisposable
 
             await AwaitSkillsAsync(catalog, clock, snapshot =>
                 snapshot.Skills.Any(skill => skill.Name == "alpha"));
-            catalog.Current.Diagnostics.Should().BeEmpty();
-            catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha")
-                .Which.BodyPath.Should().Be(Path.Combine(workspaceRoot, "beta", "SKILL.md"));
+            Assert.Empty(catalog.Current.Diagnostics);
+            Assert.Equal(Path.Combine(workspaceRoot, "beta", "SKILL.md"), Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha").BodyPath);
         }
         finally
         {
@@ -350,7 +344,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "alpha", "before the cased touch");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha");
 
         // A mutator touching the tree through a differently-cased spelling of the same
         // directory (case-insensitive volume): the event must match the known key and
@@ -362,8 +356,8 @@ public sealed class SkillCatalogTests : IDisposable
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
             snapshot.Skills.Any(skill => skill.Name == "alpha" && skill.Description == "the edited body"));
-        catalog.Current.Diagnostics.Should().BeEmpty("a cased event must resolve to the known skill directory");
-        catalog.Current.Skills.Should().ContainSingle();
+        Assert.Empty(catalog.Current.Diagnostics);
+        Assert.Single(catalog.Current.Skills);
     }
 
     [Fact]
@@ -383,23 +377,22 @@ public sealed class SkillCatalogTests : IDisposable
 
         // One commit per discovered skill directory: the catalog goes live skill by
         // skill during the initial scan, not only at its end.
-        commits.Should().HaveCount(4);
-        commits[0].Skills.Should().NotBeEmpty("the first commit already publishes a live state");
+        Assert.Equal(4, commits.Count());
+        Assert.NotEmpty(commits[0].Skills);
 
         // Every intermediate state is a valid merged snapshot and the active set only
         // grows (a later lower-source same-name entry arrives shadowed, never
         // unshadowed first): the higher-precedence root commits before the lower one,
         // so no transient ever shows the user's "shared" as the winner.
         for (var index = 1; index < commits.Count; index++)
-            commits[index - 1].Skills.Select(static skill => skill.Name)
-                .Should().BeSubsetOf(commits[index].Skills.Select(static skill => skill.Name));
+            Assert.Subset(commits[index].Skills.Select(static skill => skill.Name).ToHashSet(), commits[index - 1].Skills.Select(static skill => skill.Name).ToHashSet());
         foreach (var state in commits)
             if (state.Skills.Any(skill => skill.Name == "shared"))
-                state.Skills.Single(skill => skill.Name == "shared").Source.Should().Be(SkillSource.Workspace);
+                Assert.Equal(SkillSource.Workspace, state.Skills.Single(skill => skill.Name == "shared").Source);
 
-        commits[^1].Skills.Should().HaveCount(3);
-        catalog.Current.Skills.Should().HaveCount(3);
-        catalog.Current.Diagnostics.Should().ContainSingle(diagnostic =>
+        Assert.Equal(3, commits[^1].Skills.Count());
+        Assert.Equal(3, catalog.Current.Skills.Count());
+        Assert.Single(catalog.Current.Diagnostics, diagnostic =>
             diagnostic.Contains("shared") && diagnostic.Contains("shadowed"));
     }
 
@@ -409,7 +402,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "alpha", "the first skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
-        catalog.Current.Skills.Should().ContainSingle(skill => skill.Name == "alpha");
+        Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha");
 
         File.Move(
             Path.Combine(workspaceRoot, "alpha", "SKILL.md"),
@@ -417,7 +410,7 @@ public sealed class SkillCatalogTests : IDisposable
 
         await AwaitSkillsAsync(catalog, clock, snapshot => snapshot.Skills.IsEmpty);
 
-        catalog.Current.Skills.Should().BeEmpty();
+        Assert.Empty(catalog.Current.Skills);
     }
 }
 
@@ -426,7 +419,7 @@ public sealed class SkillPromptComposerTests
     [Fact]
     public void EmptyCatalogLeavesThePromptNull()
     {
-        SkillPromptComposer.Compose("base prompt", SkillCatalogSnapshot.Empty).Should().BeNull();
+        Assert.Null(SkillPromptComposer.Compose("base prompt", SkillCatalogSnapshot.Empty));
     }
 
     [Fact]
@@ -440,13 +433,12 @@ public sealed class SkillPromptComposerTests
 
         var composed = SkillPromptComposer.Compose("base prompt", snapshot);
 
-        composed.Should()
-            .StartWith("base prompt")
-            .And.Contain("## Skills")
-            .And.Contain("### Workspace skills")
-            .And.Contain("### User skills")
-            .And.Contain("- alpha: workspace skill (skill://alpha)")
-            .And.Contain("- beta: user skill (skill://beta)");
+        Assert.StartsWith("base prompt", (composed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.Contains("## Skills", composed);
+        Assert.Contains("### Workspace skills", composed);
+        Assert.Contains("### User skills", composed);
+        Assert.Contains("- alpha: workspace skill (skill://alpha)", composed);
+        Assert.Contains("- beta: user skill (skill://beta)", composed);
     }
 
     [Fact]
@@ -459,7 +451,7 @@ public sealed class SkillPromptComposerTests
 
         var composed = SkillPromptComposer.Compose(null, snapshot);
 
-        composed.Should().StartWith("## Skills");
+        Assert.StartsWith("## Skills", (composed ?? throw new InvalidOperationException("the assertion subject is null")));
     }
 
     [Fact]
@@ -476,11 +468,10 @@ public sealed class SkillPromptComposerTests
 
         var composed = SkillPromptComposer.Compose(null, snapshot);
 
-        composed.Should()
-            .Contain("- skill-0000: description (skill://skill-0000)")
-            .And.Contain("20 more skill(s) omitted")
-            .And.NotContain("skill-0147");
-        composed.Length.Should().BeLessThanOrEqualTo(SkillPromptComposer.MaximumComposedCharacters + 4096);
+        Assert.Contains("- skill-0000: description (skill://skill-0000)", composed);
+        Assert.Contains("20 more skill(s) omitted", composed);
+        Assert.DoesNotContain("skill-0147", composed);
+        Assert.True(composed is { } text && text.Length <= SkillPromptComposer.MaximumComposedCharacters + 4096);
     }
 }
 
@@ -524,8 +515,8 @@ public sealed class SkillResourceProviderTests : IDisposable
             TestContext.Current.CancellationToken);
 
         using var reader = new StreamReader(result.Content);
-        (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Contain("The body.");
-        result.MimeType.Should().Be("text/markdown");
+        Assert.Contains("The body.", (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)));
+        Assert.Equal("text/markdown", result.MimeType);
     }
 
     [Fact]
@@ -538,7 +529,7 @@ public sealed class SkillResourceProviderTests : IDisposable
                      { "skill://Alpha", "skill://alpha/extra", "skill://alpha#frag", "not-a-uri", "skill://" })
         {
             var act = () => provider.ReadAsync(uri, new ResourceReadRequest(long.MaxValue), TestContext.Current.CancellationToken);
-            (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_invalid_uri");
+            Assert.Equal("resource_invalid_uri", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
         }
     }
 
@@ -553,7 +544,7 @@ public sealed class SkillResourceProviderTests : IDisposable
             new ResourceReadRequest(long.MaxValue),
             TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
     }
 
     [Fact]
@@ -568,7 +559,7 @@ public sealed class SkillResourceProviderTests : IDisposable
             new ResourceReadRequest(long.MaxValue),
             TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
     }
 
     [Fact]
@@ -583,8 +574,7 @@ public sealed class SkillResourceProviderTests : IDisposable
 
         var entries = await provider.ListAsync(TestContext.Current.CancellationToken);
 
-        entries.Should().ContainSingle()
-            .Which.Uri.Should().Be("skill://alpha");
+        Assert.Equal("skill://alpha", Assert.Single(entries).Uri);
     }
 
     [Fact]
@@ -608,7 +598,7 @@ public sealed class SkillResourceProviderTests : IDisposable
                 new ResourceReadRequest(long.MaxValue),
                 TestContext.Current.CancellationToken);
 
-            (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_not_found");
+            Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
         }
         finally
         {
@@ -630,7 +620,7 @@ public sealed class SkillResourceProviderTests : IDisposable
             new ResourceReadRequest(1024),
             TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<ResourceException>()).Which.Code.Should().Be("resource_too_large");
+        Assert.Equal("resource_too_large", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
     }
 }
 
@@ -668,7 +658,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
 
         var profile = await AcquireAsync(provider);
 
-        profile.Options.SystemPrompt.Should().BeNull();
+        Assert.Null(profile.Options.SystemPrompt);
     }
 
     [Fact]
@@ -681,7 +671,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
             clock,
             NullLogger<SkillCatalog>.Instance);
         var provider = new SkillsProfileProvider(new FixedProfileProvider(), catalog);
-        (await AcquireAsync(provider)).Options.SystemPrompt.Should().BeNull();
+        Assert.Null((await AcquireAsync(provider)).Options.SystemPrompt);
 
         Directory.CreateDirectory(Path.Combine(root, "alpha"));
         File.WriteAllText(
@@ -696,7 +686,8 @@ public sealed class SkillsProfileProviderTests : IDisposable
 
         var composed = (await AcquireAsync(provider)).Options.SystemPrompt;
 
-        composed.Should().Contain("## Skills").And.Contain("skill://alpha");
+        Assert.Contains("## Skills", composed);
+        Assert.Contains("skill://alpha", composed);
     }
 
     [Fact]
@@ -714,7 +705,8 @@ public sealed class SkillsProfileProviderTests : IDisposable
 
         var composed = (await AcquireAsync(provider)).Options.SystemPrompt;
 
-        composed.Should().StartWith("base instructions").And.Contain("skill://alpha");
+        Assert.StartsWith("base instructions", (composed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.Contains("skill://alpha", composed);
     }
 
     private sealed class FixedProfileProvider(string? systemPrompt = null) : IAgentRunProfileProvider
@@ -763,17 +755,18 @@ public sealed class SkillsOptionsTests
     {
         var options = new SkillsOptions { WorkspaceRoot = "relative/path" };
         var act = () => options.Validate();
-        act.Should().Throw<InvalidOperationException>().WithMessage("*absolute*");
+        var assertion31 = Assert.ThrowsAny<InvalidOperationException>(() => act.Invoke());
+        Assert.Matches("(?is)^.*absolute.*$", assertion31.Message);
 
         var userOptions = new SkillsOptions { UserRoot = "relative/path" };
         var actUser = () => userOptions.Validate();
-        actUser.Should().Throw<InvalidOperationException>().WithMessage("*absolute*");
+        var assertion32 = Assert.ThrowsAny<InvalidOperationException>(() => actUser.Invoke());
+        Assert.Matches("(?is)^.*absolute.*$", assertion32.Message);
     }
 
     [Fact]
     public void DefaultsValidate()
     {
-        var act = () => new SkillsOptions().Validate();
-        act.Should().NotThrow();
+        new SkillsOptions().Validate();
     }
 }

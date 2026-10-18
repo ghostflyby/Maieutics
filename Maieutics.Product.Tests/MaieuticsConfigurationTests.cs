@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Plugins;
@@ -59,9 +58,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 applicationBase,
                 currentDirectory,
                 applicationData);
-            explicitFile.Path.Should().Be(Path.Combine(currentDirectory, "explicit.json"));
-            explicitFile.Required.Should().BeTrue();
-            explicitFile.Source.Should().Be("command line");
+            Assert.Equal(Path.Combine(currentDirectory, "explicit.json"), explicitFile.Path);
+            Assert.True(explicitFile.Required);
+            Assert.Equal("command line", explicitFile.Source);
 
             var environmentFile = MaieuticsConfigurationFile.Resolve(
                 [],
@@ -69,8 +68,8 @@ internal static void DeleteDirectoryWithRetry(string path)
                 applicationBase,
                 currentDirectory,
                 applicationData);
-            environmentFile.Path.Should().Be(Path.Combine(currentDirectory, "environment.json"));
-            environmentFile.Required.Should().BeTrue();
+            Assert.Equal(Path.Combine(currentDirectory, "environment.json"), environmentFile.Path);
+            Assert.True(environmentFile.Required);
 
             var portablePath = Path.Combine(applicationBase, "maieutics.json");
             File.WriteAllText(portablePath, "{}");
@@ -80,8 +79,8 @@ internal static void DeleteDirectoryWithRetry(string path)
                 applicationBase,
                 currentDirectory,
                 applicationData);
-            portableFile.Path.Should().Be(portablePath);
-            portableFile.Source.Should().Be("portable");
+            Assert.Equal(portablePath, portableFile.Path);
+            Assert.Equal("portable", portableFile.Source);
 
             File.Delete(portablePath);
             File.WriteAllText(Path.Combine(currentDirectory, "maieutics.json"), "{}");
@@ -91,9 +90,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 applicationBase,
                 currentDirectory,
                 applicationData);
-            userFile.Path.Should().Be(Path.Combine(applicationData, "Maieutics", "maieutics.json"));
-            userFile.Required.Should().BeFalse();
-            userFile.Source.Should().Be("user");
+            Assert.Equal(Path.Combine(applicationData, "Maieutics", "maieutics.json"), userFile.Path);
+            Assert.False(userFile.Required);
+            Assert.Equal("user", userFile.Source);
 
             var noFile = MaieuticsConfigurationFile.Resolve(
                 [],
@@ -101,9 +100,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 applicationBase,
                 currentDirectory,
                 string.Empty);
-            noFile.Path.Should().BeNull();
-            noFile.Required.Should().BeFalse();
-            noFile.Source.Should().Be("none");
+            Assert.Null(noFile.Path);
+            Assert.False(noFile.Required);
+            Assert.Equal("none", noFile.Source);
         }
         finally
         {
@@ -125,9 +124,9 @@ internal static void DeleteDirectoryWithRetry(string path)
             var host = builder.Build();
             var provider = host.Services.GetRequiredService<MaieuticsConfigurationFileProvider>();
 
-            provider.IsDisposed.Should().BeFalse();
+            Assert.False(provider.IsDisposed);
             ((IDisposable)host).Dispose();
-            provider.IsDisposed.Should().BeTrue();
+            Assert.True(provider.IsDisposed);
         }
         finally
         {
@@ -215,8 +214,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             await using var host = builder.Build();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            (await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token)).Should().BeEmpty();
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.Empty((await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token)));
         }
         finally
         {
@@ -252,13 +251,12 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
             var pluginHosts = host.Services.GetRequiredService<PluginHostManager>();
 
-            await runtime.Awaiting(r => r.InitializeAsync(pluginHosts, cancellation.Token))
-                .Should().ThrowAsync<OperationCanceledException>();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((runtime).InitializeAsync(pluginHosts, cancellation.Token)); });
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
+            Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -290,14 +288,13 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
             var pluginHosts = host.Services.GetRequiredService<PluginHostManager>();
 
-            await runtime.Awaiting(r => r.InitializeAsync(pluginHosts, deadline.Token))
-                .Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage("*provider creation failure*");
+            var assertion15 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((runtime).InitializeAsync(pluginHosts, deadline.Token)); });
+            Assert.Matches("(?is)^.*provider\\ creation\\ failure.*$", assertion15.Message);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
+            Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -325,34 +322,32 @@ internal static void DeleteDirectoryWithRetry(string path)
             await using var host = builder.Build();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            runtime.GetModelSourceIds().Should().Equal("vendor");
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.Equal(new string[] { "vendor" }, runtime.GetModelSourceIds());
             var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
-            groups.Should().ContainSingle().Which.Models.Should().HaveCount(2);
+            Assert.Equal(2, Assert.Single(groups).Models.Count());
 
-            runtime.GetCachedAutomaticModelProfiles().Select(static profile => profile.Id).Should().Equal(
-                "@vendor/model-alpha",
-                "@vendor/model-beta");
+            Assert.Equal(new string[] { "@vendor/model-alpha", "@vendor/model-beta" }, runtime.GetCachedAutomaticModelProfiles().Select(static profile => profile.Id));
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
             var selection = runtime.GetModelProfileSelection();
-            selection.SelectedProfileId.Should().Be("@vendor/model-alpha");
-            selection.HasSessionOverride.Should().BeTrue();
-            selection.Profiles.Should().ContainSingle().Which.IsAutomatic.Should().BeTrue();
+            Assert.Equal("@vendor/model-alpha", selection.SelectedProfileId);
+            Assert.True(selection.HasSessionOverride);
+            Assert.True(Assert.Single(selection.Profiles).IsAutomatic);
 
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            client.Model.Should().Be("model-alpha");
-            lease.Profile.ModelIdentity.Should().NotBeNull();
-            lease.Profile.ModelIdentity.Provider.Should().Be("Fake");
-            lease.Profile.ModelIdentity.Model.Should().Be("model-alpha");
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
+            Assert.Equal("model-alpha", client.Model);
+            Assert.NotNull(lease.Profile.ModelIdentity);
+            Assert.Equal("Fake", lease.Profile.ModelIdentity.Provider);
+            Assert.Equal("model-alpha", lease.Profile.ModelIdentity.Model);
 
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            factory.Clients.Should().ContainSingle();
+            Assert.Single(factory.Clients);
             runtime.ResetModelProfile();
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            client.Disposed.Should().BeFalse();
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.False(client.Disposed);
             await lease.DisposeAsync();
-            client.Disposed.Should().BeTrue();
+            Assert.True(client.Disposed);
         }
         finally
         {
@@ -389,17 +384,16 @@ internal static void DeleteDirectoryWithRetry(string path)
                 if (model == "model-alpha") cancellation.Cancel();
             };
 
-            await runtime.Awaiting(r => r
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((runtime)
                     .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
-                    .AsTask())
-                .Should().ThrowAsync<OperationCanceledException>();
+                    .AsTask()); });
 
-            runtime.GetModelProfileSelection().HasSessionOverride.Should().BeFalse();
+            Assert.False(runtime.GetModelProfileSelection().HasSessionOverride);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
+            Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -431,7 +425,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -440,15 +434,15 @@ internal static void DeleteDirectoryWithRetry(string path)
                 CreateSourceOnlyConfiguration(new NamedSource("vendor", "two")),
                 deadline.Token);
 
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            client.Disposed.Should().BeFalse();
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.False(client.Disposed);
             await lease.DisposeAsync();
-            client.Disposed.Should().BeTrue();
+            Assert.True(client.Disposed);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -487,8 +481,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
+            Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
             var shell = new JsonArray(new JsonObject
             {
@@ -504,15 +498,15 @@ internal static void DeleteDirectoryWithRetry(string path)
                     new NamedSource("vendor", "one", "https://api.example.com/v1")),
                 deadline.Token);
 
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            client.Disposed.Should().BeFalse();
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.False(client.Disposed);
             await lease.DisposeAsync();
-            client.Disposed.Should().BeTrue();
+            Assert.True(client.Disposed);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -554,16 +548,15 @@ internal static void DeleteDirectoryWithRetry(string path)
                 deadline.Token);
             factory.ReleaseAutomaticCreate.TrySetResult();
 
-            await FluentActions.Awaiting(() => selection)
-                .Should().ThrowAsync<ArgumentException>()
-                .WithMessage("*changed while the automatic profile was selected*");
-            runtime.GetModelProfileSelection().HasSessionOverride.Should().BeFalse();
+            var assertion16 = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await (selection); });
+            Assert.Matches("(?is)^.*changed\\ while\\ the\\ automatic\\ profile\\ was\\ selected.*$", assertion16.Message);
+            Assert.False(runtime.GetModelProfileSelection().HasSessionOverride);
         }
         finally
         {
             factory.ReleaseAutomaticCreate.TrySetResult();
             await host.DisposeAsync();
-            factory.Clients.Should().ContainSingle().Which.DisposalCount.Should().Be(1);
+            Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -595,17 +588,15 @@ internal static void DeleteDirectoryWithRetry(string path)
             await runtime.InitializeAsync(pluginHosts, deadline.Token);
 
             var acquisition = runtime.AcquireAsync(cancellation.Token);
-            acquisition.IsCompleted.Should().BeFalse();
+            Assert.False(acquisition.IsCompleted);
             cancellation.Cancel();
 
-            await acquisition
-                .Invoking(static task => task)
-                .Should().ThrowAsync<OperationCanceledException>();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((acquisition)); });
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().ContainSingle().Which.Disposed.Should().BeTrue();
+            Assert.True(Assert.Single(factory.Clients).Disposed);
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -649,15 +640,12 @@ internal static void DeleteDirectoryWithRetry(string path)
             var current = await runtime.GetDiscoveredModelsAsync(
                 refresh: true,
                 cancellationToken: deadline.Token);
-            current.Should().ContainSingle().Which.Models.Should().ContainSingle()
-                .Which.Id.Should().Be("model-two");
+            Assert.Equal("model-two", Assert.Single(Assert.Single(current).Models).Id);
 
             factory.ReleaseFirstDiscovery.TrySetResult();
             var stale = await staleDiscovery.WaitAsync(deadline.Token);
-            stale.Should().ContainSingle().Which.Models.Should().ContainSingle()
-                .Which.Id.Should().Be("model-one");
-            runtime.GetCachedAutomaticModelProfiles().Should().ContainSingle()
-                .Which.Id.Should().Be("@vendor/model-two");
+            Assert.Equal("model-one", Assert.Single(Assert.Single(stale).Models).Id);
+            Assert.Equal("@vendor/model-two", Assert.Single(runtime.GetCachedAutomaticModelProfiles()).Id);
         }
         finally
         {
@@ -697,15 +685,13 @@ internal static void DeleteDirectoryWithRetry(string path)
             await factory.FirstDiscoveryStarted.Task.WaitAsync(deadline.Token);
             await cancellation.CancelAsync();
 
-            await runtime.Awaiting(_ => cancelledDiscovery).Should()
-                .ThrowAsync<OperationCanceledException>();
-            factory.DiscoveryCount.Should().Be(1);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await (cancelledDiscovery); });
+            Assert.Equal(1, factory.DiscoveryCount);
 
             var recovered = await runtime.GetDiscoveredModelsAsync(
                 cancellationToken: deadline.Token);
-            recovered.Should().ContainSingle().Which.Models.Should().ContainSingle()
-                .Which.Id.Should().Be("model-one");
-            factory.DiscoveryCount.Should().Be(2, "the canceled attempt must not populate the discovery cache");
+            Assert.Equal("model-one", Assert.Single(Assert.Single(recovered).Models).Id);
+            Assert.Equal(2, factory.DiscoveryCount);
         }
         finally
         {
@@ -742,18 +728,17 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
-            await runtime.Awaiting(r => r.SelectModelProfileAsync("model-alpha", deadline.Token).AsTask())
-                .Should().ThrowAsync<ArgumentException>()
-                .WithMessage("*'@first/model-alpha'*'@second/model-alpha'*");
+            var assertion17 = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await ((runtime).SelectModelProfileAsync("model-alpha", deadline.Token).AsTask()); });
+            Assert.Matches("(?is)^.*'@first/model-alpha'.*'@second/model-alpha'.*$", assertion17.Message);
 
             await runtime.SelectModelProfileAsync("@second/model-alpha", deadline.Token);
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            lease.Profile.ModelIdentity?.Model.Should().Be("model-alpha");
+            Assert.Equal("model-alpha", lease.Profile.ModelIdentity?.Model);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -800,8 +785,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await initialization.WaitAsync(deadline.Token);
             await runtime.WaitForReloadCompletionAsync(0, deadline.Token);
 
-            (await AcquireClientAsync(runtime)).Model.Should().Be("two");
-            runtime.Version.Should().Be(2);
+            Assert.Equal("two", (await AcquireClientAsync(runtime)).Model);
+            Assert.Equal(2, runtime.Version);
         }
         finally
         {
@@ -855,15 +840,14 @@ internal static void DeleteDirectoryWithRetry(string path)
             await runtime.WaitForReloadCompletionAsync(previousRequest, deadline.Token);
 
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>()
-                .Which.Model.Should().Be("three");
-            runtime.Version.Should().Be(3);
+            Assert.Equal("three", Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient).Model);
+            Assert.Equal(3, runtime.Version);
         }
         finally
         {
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -896,9 +880,8 @@ internal static void DeleteDirectoryWithRetry(string path)
                 ["--config", configurationFile, "--model", "command-model"]);
             using var host = (IDisposable)builder.Build();
 
-            builder.Configuration["Maieutics:Model:Name"].Should().Be("command-model");
-            builder.Configuration["Maieutics:Sources:openai:ApiFlavor"].Should()
-                .Be(nameof(OpenAiApiFlavor.ChatCompletions));
+            Assert.Equal("command-model", builder.Configuration["Maieutics:Model:Name"]);
+            Assert.Equal(nameof(OpenAiApiFlavor.ChatCompletions), builder.Configuration["Maieutics:Sources:openai:ApiFlavor"]);
         }
         finally
         {
@@ -945,10 +928,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 ["--config", configurationFile, "--profile", "command-profile"]);
             using var host = (IDisposable)builder.Build();
 
-            builder.Configuration["Maieutics:DefaultProfile"].Should().Be("command-profile");
-            builder.Configuration["Maieutics:Sources:anthropic:ApiKey"].Should().Be("standard-key");
-            builder.Configuration["Maieutics:Sources:anthropic:Endpoint"].Should()
-                .Be("https://standard.example");
+            Assert.Equal("command-profile", builder.Configuration["Maieutics:DefaultProfile"]);
+            Assert.Equal("standard-key", builder.Configuration["Maieutics:Sources:anthropic:ApiKey"]);
+            Assert.Equal("https://standard.example", builder.Configuration["Maieutics:Sources:anthropic:Endpoint"]);
         }
         finally
         {
@@ -981,12 +963,11 @@ internal static void DeleteDirectoryWithRetry(string path)
             "source",
             CreateProviderSourceConfiguration(providerName, rotatedApiKey));
 
-        first.ClientGenerationKey.Should().Be(unchanged.ClientGenerationKey);
-        first.ClientGenerationKey.Should().NotBe(rotated.ClientGenerationKey);
-        first.ClientGenerationKey.ToString().Should()
-            .Contain("<redacted>")
-            .And.NotContain(firstApiKey);
-        rotated.ClientGenerationKey.ToString().Should().NotContain(rotatedApiKey);
+        Assert.Equal(unchanged.ClientGenerationKey, first.ClientGenerationKey);
+        Assert.NotEqual(rotated.ClientGenerationKey, first.ClientGenerationKey);
+        Assert.Contains("<redacted>", first.ClientGenerationKey.ToString());
+        Assert.DoesNotContain(firstApiKey, first.ClientGenerationKey.ToString());
+        Assert.DoesNotContain(rotatedApiKey, rotated.ClientGenerationKey.ToString());
     }
 
     [Theory(Timeout = 30_000)]
@@ -1031,9 +1012,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
 
-            host.Services.Invoking(services => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
-                .Should().Throw<InvalidOperationException>()
-                .WithMessage($"*{unknownField}*");
+            var assertion18 = Assert.ThrowsAny<InvalidOperationException>(() => (host.Services).GetRequiredService<MaieuticsRuntimeConfiguration>());
+            Assert.Contains(unknownField, assertion18.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -1067,7 +1047,7 @@ internal static void DeleteDirectoryWithRetry(string path)
                 host.Services,
                 TestContext.Current.CancellationToken);
             await using var lease = await runtime.AcquireAsync(TestContext.Current.CancellationToken);
-            lease.Profile.Options.MaxHistoryBytes.Should().Be(246_912);
+            Assert.Equal(246_912, lease.Profile.Options.MaxHistoryBytes);
         }
         finally
         {
@@ -1097,9 +1077,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
 
-            host.Services.Invoking(services => services.GetRequiredService<MaieuticsRuntimeConfiguration>())
-                .Should().Throw<InvalidOperationException>()
-                .WithMessage("*MaxHistoryBytes*MaxHistoryCharacters*");
+            var assertion19 = Assert.ThrowsAny<InvalidOperationException>(() => (host.Services).GetRequiredService<MaieuticsRuntimeConfiguration>());
+            Assert.Matches("(?is)^.*MaxHistoryBytes.*MaxHistoryCharacters.*$", assertion19.Message);
         }
         finally
         {
@@ -1131,18 +1110,16 @@ internal static void DeleteDirectoryWithRetry(string path)
             {
                 var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
                 await using var lease = await runtime.AcquireAsync(deadline.Token);
-                lease.Profile.Options.MaxTurnDuration.Should().Be(TimeSpan.FromSeconds(45));
+                Assert.Equal(TimeSpan.FromSeconds(45), lease.Profile.Options.MaxTurnDuration);
             }
             finally
             {
                 await host.DisposeAsync();
             }
 
-            FluentActions.Invoking(() =>
-                    new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate())
-                .Should().Throw<ArgumentOutOfRangeException>();
-            FluentActions.Invoking(() => new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.Zero }.Validate())
-                .Should().NotThrow();
+            Assert.ThrowsAny<ArgumentOutOfRangeException>(() =>
+                    new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate());
+            new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.Zero }.Validate();
         }
         finally
         {
@@ -1176,7 +1153,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
-                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_000);
+                Assert.Equal(1_000, lease.Profile.Options.MaxHistoryBytes);
             }
 
             await runtime.WaitForReloadCompletionAsync(0, deadline.Token);
@@ -1187,14 +1164,13 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "test-model", maxHistoryCharacters: 600),
                 deadline.Token);
-            runtime.Version.Should().Be(2);
-            runtime.GetStatus().LastReload.Should().Match<MaieuticsConfigurationReloadInfo>(reload =>
-                reload.Attempt == runtime.CompletedReloadAttempt &&
+            Assert.Equal(2, runtime.Version);
+            Assert.True(((Func<MaieuticsConfigurationReloadInfo, bool>)(reload => reload.Attempt == runtime.CompletedReloadAttempt &&
                 reload.Outcome == MaieuticsConfigurationReloadOutcome.Applied &&
-                reload.ActiveVersion == 2);
+                reload.ActiveVersion == 2))(runtime.GetStatus().LastReload));
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
-                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_200);
+                Assert.Equal(1_200, lease.Profile.Options.MaxHistoryBytes);
             }
 
             var acceptedVersion = runtime.Version;
@@ -1208,7 +1184,7 @@ internal static void DeleteDirectoryWithRetry(string path)
                     maxHistoryBytes: 1_400,
                     maxHistoryCharacters: 700),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
+            Assert.Equal(acceptedVersion, runtime.Version);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1216,11 +1192,11 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "test-model", maxHistoryCharacters: int.MaxValue),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
+            Assert.Equal(acceptedVersion, runtime.Version);
 
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
-                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_200);
+                Assert.Equal(1_200, lease.Profile.Options.MaxHistoryBytes);
             }
 
             await WriteAndWaitForReloadAsync(
@@ -1229,16 +1205,16 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "test-model", maxHistoryBytes: 1_400),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion + 1);
+            Assert.Equal(acceptedVersion + 1, runtime.Version);
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
-                lease.Profile.Options.MaxHistoryBytes.Should().Be(1_400);
+                Assert.Equal(1_400, lease.Profile.Options.MaxHistoryBytes);
             }
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -1268,9 +1244,9 @@ internal static void DeleteDirectoryWithRetry(string path)
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await using var firstLease = await runtime.AcquireAsync(deadline.Token);
-            var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            firstClient.Model.Should().Be("one");
-            firstLease.Profile.Options.SystemPrompt.Should().Be("first");
+            var firstClient = Assert.IsType<TrackingChatClient>(firstLease.Profile.ChatClient);
+            Assert.Equal("one", firstClient.Model);
+            Assert.Equal("first", firstLease.Profile.Options.SystemPrompt);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1278,18 +1254,18 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "two", systemPrompt: "second", maxInputCharacters: 200),
                 deadline.Token);
-            runtime.Version.Should().Be(2);
+            Assert.Equal(2, runtime.Version);
             await using (var secondLease = await runtime.AcquireAsync(deadline.Token))
             {
-                var secondClient = secondLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-                secondClient.Model.Should().Be("two");
-                secondLease.Profile.Options.SystemPrompt.Should().Be("second");
-                secondLease.Profile.Options.MaxInputCharacters.Should().Be(200);
-                firstClient.Disposed.Should().BeFalse();
+                var secondClient = Assert.IsType<TrackingChatClient>(secondLease.Profile.ChatClient);
+                Assert.Equal("two", secondClient.Model);
+                Assert.Equal("second", secondLease.Profile.Options.SystemPrompt);
+                Assert.Equal(200, secondLease.Profile.Options.MaxInputCharacters);
+                Assert.False(firstClient.Disposed);
             }
 
             await firstLease.DisposeAsync();
-            firstClient.Disposed.Should().BeTrue();
+            Assert.True(firstClient.Disposed);
 
             var acceptedVersion = runtime.Version;
             await WriteAndWaitForReloadAsync(
@@ -1298,9 +1274,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "invalid", maxInputCharacters: 0),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
-            runtime.GetStatus().LastReload.Outcome.Should().Be(MaieuticsConfigurationReloadOutcome.Rejected);
-            (await AcquireClientAsync(runtime)).Model.Should().Be("two");
+            Assert.Equal(acceptedVersion, runtime.Version);
+            Assert.Equal(MaieuticsConfigurationReloadOutcome.Rejected, runtime.GetStatus().LastReload.Outcome);
+            Assert.Equal("two", (await AcquireClientAsync(runtime)).Model);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1308,7 +1284,7 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 "{",
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
+            Assert.Equal(acceptedVersion, runtime.Version);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1316,9 +1292,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "three", systemPrompt: "repaired"),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion + 1);
-            runtime.GetStatus().LastReload.Outcome.Should().Be(MaieuticsConfigurationReloadOutcome.Applied);
-            (await AcquireClientAsync(runtime)).Model.Should().Be("three");
+            Assert.Equal(acceptedVersion + 1, runtime.Version);
+            Assert.Equal(MaieuticsConfigurationReloadOutcome.Applied, runtime.GetStatus().LastReload.Outcome);
+            Assert.Equal("three", (await AcquireClientAsync(runtime)).Model);
 
             acceptedVersion = runtime.Version;
             await WriteAndWaitForReloadAsync(
@@ -1327,15 +1303,15 @@ internal static void DeleteDirectoryWithRetry(string path)
                 configurationFile,
                 CreateConfiguration("Fake", "fail"),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
-            runtime.GetStatus().LastReload.Outcome.Should().Be(MaieuticsConfigurationReloadOutcome.Rejected);
-            (await AcquireClientAsync(runtime)).Model.Should().Be("three");
+            Assert.Equal(acceptedVersion, runtime.Version);
+            Assert.Equal(MaieuticsConfigurationReloadOutcome.Rejected, runtime.GetStatus().LastReload.Outcome);
+            Assert.Equal("three", (await AcquireClientAsync(runtime)).Model);
 
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -1368,19 +1344,19 @@ internal static void DeleteDirectoryWithRetry(string path)
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             var initialSelection = runtime.GetModelProfileSelection();
-            initialSelection.DefaultProfileId.Should().Be("one");
-            initialSelection.SelectedProfileId.Should().Be("one");
-            initialSelection.HasSessionOverride.Should().BeFalse();
+            Assert.Equal("one", initialSelection.DefaultProfileId);
+            Assert.Equal("one", initialSelection.SelectedProfileId);
+            Assert.False(initialSelection.HasSessionOverride);
 
             await using var firstLease = await runtime.AcquireAsync(deadline.Token);
-            var firstClient = firstLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            firstLease.Profile.ModelIdentity.Should().Be(new AgentModelIdentity(
-                new AgentModelProfileId("one"), "Fake", "model-one"));
+            var firstClient = Assert.IsType<TrackingChatClient>(firstLease.Profile.ChatClient);
+            Assert.Equal(new AgentModelIdentity(
+                new AgentModelProfileId("one"), "Fake", "model-one"), firstLease.Profile.ModelIdentity);
 
             await runtime.SelectModelProfileAsync("TWO", deadline.Token);
             await using var secondLease = await runtime.AcquireAsync(deadline.Token);
-            var secondClient = secondLease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            runtime.GetModelProfileSelection().HasSessionOverride.Should().BeTrue();
+            var secondClient = Assert.IsType<TrackingChatClient>(secondLease.Profile.ChatClient);
+            Assert.True(runtime.GetModelProfileSelection().HasSessionOverride);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1394,13 +1370,13 @@ internal static void DeleteDirectoryWithRetry(string path)
 
             await using (var reusedLease = await runtime.AcquireAsync(deadline.Token))
             {
-                reusedLease.Profile.ChatClient.Should().BeSameAs(secondClient);
-                reusedLease.Profile.ModelIdentity?.ProfileId.Value.Should().Be("two");
+                Assert.Same(secondClient, reusedLease.Profile.ChatClient);
+                Assert.Equal("two", reusedLease.Profile.ModelIdentity?.ProfileId.Value);
             }
 
-            firstClient.Disposed.Should().BeFalse();
+            Assert.False(firstClient.Disposed);
             await firstLease.DisposeAsync();
-            firstClient.Disposed.Should().BeTrue();
+            Assert.True(firstClient.Disposed);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1411,11 +1387,11 @@ internal static void DeleteDirectoryWithRetry(string path)
                     new NamedProfile("one", "primary", "model-one-v2", "primary-v2")),
                 deadline.Token);
             var fallback = runtime.GetModelProfileSelection();
-            fallback.SelectedProfileId.Should().Be("one");
-            fallback.HasSessionOverride.Should().BeFalse();
-            secondClient.Disposed.Should().BeFalse();
+            Assert.Equal("one", fallback.SelectedProfileId);
+            Assert.False(fallback.HasSessionOverride);
+            Assert.False(secondClient.Disposed);
             await secondLease.DisposeAsync();
-            secondClient.Disposed.Should().BeTrue();
+            Assert.True(secondClient.Disposed);
 
             var acceptedVersion = runtime.Version;
             await WriteAndWaitForReloadAsync(
@@ -1427,14 +1403,14 @@ internal static void DeleteDirectoryWithRetry(string path)
                     new NamedProfile("a-good", "primary", "replacement", "primary-v3"),
                     new NamedProfile("z-bad", "broken", "fail", "broken-v1")),
                 deadline.Token);
-            runtime.Version.Should().Be(acceptedVersion);
-            (await AcquireClientAsync(runtime)).Model.Should().Be("model-one-v2");
-            factory.Clients.Single(client => client.Model == "replacement").Disposed.Should().BeTrue();
+            Assert.Equal(acceptedVersion, runtime.Version);
+            Assert.Equal("model-one-v2", (await AcquireClientAsync(runtime)).Model);
+            Assert.True(factory.Clients.Single(client => client.Model == "replacement").Disposed);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -1466,10 +1442,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(new TrackingChatClientFactory());
             await using var host = builder.Build();
 
-            host.Services.Invoking(services =>
-                    services.GetRequiredService<MaieuticsRuntimeConfiguration>()).Should()
-                .Throw<InvalidOperationException>()
-                .WithMessage("*cannot be combined*");
+            var assertion20 = Assert.ThrowsAny<InvalidOperationException>(() => (host.Services).GetRequiredService<MaieuticsRuntimeConfiguration>());
+            Assert.Matches("(?is)^.*cannot\\ be\\ combined.*$", assertion20.Message);
         }
         finally
         {
@@ -1480,7 +1454,7 @@ internal static void DeleteDirectoryWithRetry(string path)
     private static async Task<TrackingChatClient> AcquireClientAsync(MaieuticsRuntimeConfiguration runtime)
     {
         await using var lease = await runtime.AcquireAsync(TestContext.Current.CancellationToken);
-        return lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
+        return Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
     }
 
     private static async Task<MaieuticsRuntimeConfiguration> InitializeRuntimeAsync(
@@ -1675,19 +1649,19 @@ internal static void DeleteDirectoryWithRetry(string path)
         var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
         var status = runtime.GetStatus();
-        var capabilityInfo = status.CapabilityProfiles.Should().ContainSingle().Subject;
-        capabilityInfo.SourceId.Should().Be("fake");
-        capabilityInfo.ModelId.Should().Be("test-model");
-        capabilityInfo.Matched.Should().BeTrue();
-        capabilityInfo.KnownVendor.Should().BeFalse();
-        capabilityInfo.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
-        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
-        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
+        var capabilityInfo = Assert.Single(status.CapabilityProfiles);
+        Assert.Equal("fake", capabilityInfo.SourceId);
+        Assert.Equal("test-model", capabilityInfo.ModelId);
+        Assert.True(capabilityInfo.Matched);
+        Assert.False(capabilityInfo.KnownVendor);
+        Assert.Equal(["FileSearch", "WebSearch"], capabilityInfo.HostedCapabilities);
+        Assert.True(capabilityInfo.Capabilities.HasFlag(AgentModelCapabilities.StreamingText));
+        Assert.True(capabilityInfo.Capabilities.HasFlag(AgentModelCapabilities.FunctionCalling));
 
         await using var lease = await runtime.AcquireAsync(deadline.Token);
-        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
-        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
-        lease.Profile.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
+        Assert.True(lease.Profile.Capabilities.HasFlag(AgentModelCapabilities.StreamingText));
+        Assert.True(lease.Profile.Capabilities.HasFlag(AgentModelCapabilities.FunctionCalling));
+        Assert.Equal(["FileSearch", "WebSearch"], lease.Profile.HostedCapabilities);
     }
 
     [Fact(Timeout = 40_000)]
@@ -1740,19 +1714,19 @@ internal static void DeleteDirectoryWithRetry(string path)
         var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
         var status = runtime.GetStatus();
-        var capabilityInfo = status.CapabilityProfiles.Should().ContainSingle().Subject;
-        capabilityInfo.SourceId.Should().Be("fake");
-        capabilityInfo.ModelId.Should().Be("test-model");
-        capabilityInfo.Matched.Should().BeFalse();
-        capabilityInfo.KnownVendor.Should().BeFalse();
-        capabilityInfo.HostedCapabilities.Should().BeEmpty();
-        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
-        capabilityInfo.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
+        var capabilityInfo = Assert.Single(status.CapabilityProfiles);
+        Assert.Equal("fake", capabilityInfo.SourceId);
+        Assert.Equal("test-model", capabilityInfo.ModelId);
+        Assert.False(capabilityInfo.Matched);
+        Assert.False(capabilityInfo.KnownVendor);
+        Assert.Empty(capabilityInfo.HostedCapabilities);
+        Assert.True(capabilityInfo.Capabilities.HasFlag(AgentModelCapabilities.StreamingText));
+        Assert.True(capabilityInfo.Capabilities.HasFlag(AgentModelCapabilities.FunctionCalling));
 
         await using var lease = await runtime.AcquireAsync(deadline.Token);
-        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.StreamingText);
-        lease.Profile.Capabilities.Should().HaveFlag(AgentModelCapabilities.FunctionCalling);
-        lease.Profile.HostedCapabilities.Should().BeEmpty();
+        Assert.True(lease.Profile.Capabilities.HasFlag(AgentModelCapabilities.StreamingText));
+        Assert.True(lease.Profile.Capabilities.HasFlag(AgentModelCapabilities.FunctionCalling));
+        Assert.Empty(lease.Profile.HostedCapabilities);
     }
 
     [Fact(Timeout = 40_000)]
@@ -1797,13 +1771,13 @@ internal static void DeleteDirectoryWithRetry(string path)
         var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
         var status = runtime.GetStatus();
-        var capabilityInfo = status.CapabilityProfiles.Should().ContainSingle().Subject;
-        capabilityInfo.KnownVendor.Should().BeTrue();
-        capabilityInfo.Matched.Should().BeFalse();
-        capabilityInfo.HostedCapabilities.Should().Equal(ResponsesFormatCapabilities);
+        var capabilityInfo = Assert.Single(status.CapabilityProfiles);
+        Assert.True(capabilityInfo.KnownVendor);
+        Assert.False(capabilityInfo.Matched);
+        Assert.Equal(ResponsesFormatCapabilities, capabilityInfo.HostedCapabilities);
 
         await using var lease = await runtime.AcquireAsync(deadline.Token);
-        lease.Profile.HostedCapabilities.Should().Equal(ResponsesFormatCapabilities);
+        Assert.Equal(ResponsesFormatCapabilities, lease.Profile.HostedCapabilities);
     }
 
     [Fact(Timeout = 40_000)]
@@ -1867,7 +1841,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
         await using var lease = await runtime.AcquireAsync(deadline.Token);
-        lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+        Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
     }
 
     [Fact(Timeout = 60_000)]
@@ -1897,11 +1871,11 @@ internal static void DeleteDirectoryWithRetry(string path)
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
+            Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
             // The active automatic override is reported alongside configured profiles.
-            runtime.GetStatus().CapabilityProfiles.Should().ContainSingle(profile =>
+            Assert.Single(runtime.GetStatus().CapabilityProfiles, profile =>
                 profile.SourceId == "vendor" &&
                 profile.ModelId == "model-alpha" &&
                 profile.KnownVendor &&
@@ -1914,15 +1888,15 @@ internal static void DeleteDirectoryWithRetry(string path)
                 CreateVendorCatalogConfiguration("Shell"),
                 deadline.Token);
 
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            client.Disposed.Should().BeFalse();
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.False(client.Disposed);
             await lease.DisposeAsync();
-            client.Disposed.Should().BeTrue();
+            Assert.True(client.Disposed);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -1954,8 +1928,8 @@ internal static void DeleteDirectoryWithRetry(string path)
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
             await using var lease = await runtime.AcquireAsync(deadline.Token);
-            var client = lease.Profile.ChatClient.Should().BeOfType<TrackingChatClient>().Subject;
-            lease.Profile.HostedCapabilities.Should().Equal(["WebSearch"]);
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
+            Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
             await WriteAndWaitForReloadAsync(
                 configuration,
@@ -1964,15 +1938,15 @@ internal static void DeleteDirectoryWithRetry(string path)
                 CreateVendorModelCatalogConfiguration("Shell"),
                 deadline.Token);
 
-            runtime.GetModelProfileSelection().Profiles.Should().BeEmpty();
-            client.Disposed.Should().BeFalse();
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.False(client.Disposed);
             await lease.DisposeAsync();
-            client.Disposed.Should().BeTrue();
+            Assert.True(client.Disposed);
         }
         finally
         {
             await host.DisposeAsync();
-            factory.Clients.Should().OnlyContain(static client => client.Disposed);
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
             DeleteDirectoryWithRetry(root);
         }
     }
@@ -2162,16 +2136,16 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
-            var group = groups.Should().ContainSingle().Subject;
-            group.SourceId.Should().Be("discovery-source");
-            group.Provider.Should().Be("Fake");
-            group.Failure.Should().BeNull();
-            group.Models.Should().HaveCount(2);
-            group.Models[0].Id.Should().Be("model-alpha");
-            group.Models[0].Provider.Should().Be("Fake");
-            group.Models[0].OwnedBy.Should().Be("test-org");
-            group.Models[1].Id.Should().Be("model-beta");
-            group.Models[1].Provider.Should().Be("Fake");
+            var group = Assert.Single(groups);
+            Assert.Equal("discovery-source", group.SourceId);
+            Assert.Equal("Fake", group.Provider);
+            Assert.Null(group.Failure);
+            Assert.Equal(2, group.Models.Count());
+            Assert.Equal("model-alpha", group.Models[0].Id);
+            Assert.Equal("Fake", group.Models[0].Provider);
+            Assert.Equal("test-org", group.Models[0].OwnedBy);
+            Assert.Equal("model-beta", group.Models[1].Id);
+            Assert.Equal("Fake", group.Models[1].Provider);
         }
         finally
         {
@@ -2208,15 +2182,15 @@ internal static void DeleteDirectoryWithRetry(string path)
 
             // First call populates cache
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
-            factory.DiscoveryCount.Should().Be(1);
+            Assert.Equal(1, factory.DiscoveryCount);
 
             // Second call within TTL uses cache
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
-            factory.DiscoveryCount.Should().Be(1);
+            Assert.Equal(1, factory.DiscoveryCount);
 
             // Third call with refresh=true bypasses cache
             await runtime.GetDiscoveredModelsAsync(refresh: true, cancellationToken: deadline.Token);
-            factory.DiscoveryCount.Should().Be(2);
+            Assert.Equal(2, factory.DiscoveryCount);
         }
         finally
         {
@@ -2251,7 +2225,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
-            groups.Should().BeEmpty();
+            Assert.Empty(groups);
         }
         finally
         {
@@ -2287,9 +2261,9 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
-            var group = groups.Should().ContainSingle().Subject;
-            group.Failure.Should().Be(ModelDiscoveryFailureKind.ProviderError);
-            group.Models.Should().BeEmpty();
+            var group = Assert.Single(groups);
+            Assert.Equal(ModelDiscoveryFailureKind.ProviderError, group.Failure);
+            Assert.Empty(group.Models);
         }
         finally
         {

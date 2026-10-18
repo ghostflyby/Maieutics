@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Mcp;
 
 namespace Maieutics.Product.Tests;
@@ -19,7 +18,7 @@ public sealed class McpResourceCatalogTests
         string candidate,
         bool expected)
     {
-        McpResourceTemplateMatcher.Matches(template, candidate).Should().Be(expected);
+        Assert.Equal(expected, McpResourceTemplateMatcher.Matches(template, candidate));
     }
 
     [Theory]
@@ -32,9 +31,9 @@ public sealed class McpResourceCatalogTests
         string? authority)
     {
         var claim = McpResourceTemplateMatcher.TryGetClaim(template);
-        claim.Should().NotBeNull();
-        claim.Scheme.Should().Be(scheme);
-        claim.Authority.Should().Be(authority);
+        Assert.NotNull(claim);
+        Assert.Equal(scheme, claim.Scheme);
+        Assert.Equal(authority, claim.Authority);
     }
 
     [Fact]
@@ -44,8 +43,8 @@ public sealed class McpResourceCatalogTests
             [new McpResourceDescriptor("test://static/hello", "hello", null, "text/plain")],
             [new McpResourceTemplateDescriptor("test://users/{id}", "users", null, null)]);
 
-        catalog.Contains("test://static/hello").Should().BeTrue();
-        catalog.Contains("test://users/42").Should().BeTrue();
-        catalog.Contains("test://absent").Should().BeFalse();
+        Assert.True(catalog.Contains("test://static/hello"));
+        Assert.True(catalog.Contains("test://users/42"));
+        Assert.False(catalog.Contains("test://absent"));
     }
 }

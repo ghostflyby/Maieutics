@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 
@@ -21,9 +20,9 @@ public sealed class AgentObjectResourceTests
             request,
             TestContext.Current.CancellationToken);
 
-        read.MimeType.Should().Be("application/json");
+        Assert.Equal("application/json", read.MimeType);
         using var reader = new StreamReader(read.Content, Encoding.UTF8);
-        reader.ReadToEnd().Should().Be("resurrect the instruction from the object store");
+        Assert.Equal("resurrect the instruction from the object store", reader.ReadToEnd());
     }
 
     [Fact]
@@ -32,9 +31,9 @@ public sealed class AgentObjectResourceTests
         var harness = new ObjectHarness();
         var provider = harness.Provider;
 
-        provider.Id.Should().Be("objects");
-        provider.Class.Should().Be(ResourceProviderClass.BuiltIn);
-        provider.Claims.Should().ContainSingle().Which.Should().Be(new ResourceClaim("objects"));
+        Assert.Equal("objects", provider.Id);
+        Assert.Equal(ResourceProviderClass.BuiltIn, provider.Class);
+        Assert.Equal(new ResourceClaim("objects"), Assert.Single(provider.Claims));
     }
 
     [Theory]
@@ -54,8 +53,7 @@ public sealed class AgentObjectResourceTests
             request,
             TestContext.Current.CancellationToken).AsTask();
 
-        (await read.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_invalid_uri");
+        Assert.Equal("resource_invalid_uri", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await read.Invoke(); })).Code);
     }
 
     [Fact]
@@ -69,8 +67,7 @@ public sealed class AgentObjectResourceTests
             request,
             TestContext.Current.CancellationToken).AsTask();
 
-        (await read.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await read.Invoke(); })).Code);
     }
 
     [Fact]
@@ -86,8 +83,7 @@ public sealed class AgentObjectResourceTests
             request,
             TestContext.Current.CancellationToken).AsTask();
 
-        (await read.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_too_large");
+        Assert.Equal("resource_too_large", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await read.Invoke(); })).Code);
     }
 
     private sealed class ObjectHarness

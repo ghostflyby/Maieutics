@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Commands;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
@@ -68,8 +67,7 @@ public sealed class PluginApprovalTests
               "capabilities": ["content.read", "tools.invoke"]
             }
             """);
-        PluginDeclarationFingerprint.Compute(first).Should()
-            .Be(PluginDeclarationFingerprint.Compute(second));
+        Assert.Equal(PluginDeclarationFingerprint.Compute(second), PluginDeclarationFingerprint.Compute(first));
     }
 
     [Fact]
@@ -88,8 +86,7 @@ public sealed class PluginApprovalTests
         var baselineFingerprint = PluginDeclarationFingerprint.Compute(baseline);
 
         Action<string, string> assertDiffers = (denoJson, maieuticsJson) =>
-            PluginDeclarationFingerprint.Compute(LoadManifest(denoJson, maieuticsJson)).Should()
-                .NotBe(baselineFingerprint, "the declaration change must revoke the approval");
+            Assert.NotEqual(baselineFingerprint, PluginDeclarationFingerprint.Compute(LoadManifest(denoJson, maieuticsJson)));
 
         assertDiffers(
             """
@@ -157,7 +154,7 @@ public sealed class PluginApprovalTests
             """
             { "entrypoints": {} }
             """);
-        PluginDeclarationFingerprint.IsApprovalExempt(empty).Should().BeTrue();
+        Assert.True(PluginDeclarationFingerprint.IsApprovalExempt(empty));
 
         var skeleton = LoadManifest(
             """
@@ -169,7 +166,7 @@ public sealed class PluginApprovalTests
             """
             { "isolation": "auto", "entrypoints": {} }
             """);
-        PluginDeclarationFingerprint.IsApprovalExempt(skeleton).Should().BeTrue();
+        Assert.True(PluginDeclarationFingerprint.IsApprovalExempt(skeleton));
 
         var grantsOnly = LoadManifest(
             """
@@ -178,7 +175,7 @@ public sealed class PluginApprovalTests
             """
             { "entrypoints": {} }
             """);
-        PluginDeclarationFingerprint.IsApprovalExempt(grantsOnly).Should().BeFalse();
+        Assert.False(PluginDeclarationFingerprint.IsApprovalExempt(grantsOnly));
     }
 
     // —— Approval store ——
@@ -188,8 +185,8 @@ public sealed class PluginApprovalTests
     {
         var path = Path.Combine(Path.GetTempPath(), $"approvals-{Guid.NewGuid():N}.json");
         var store = PluginApprovalStore.Load(path, out var loadError);
-        loadError.Should().BeNull();
-        store.TryGet("probe", out _).Should().BeFalse();
+        Assert.Null(loadError);
+        Assert.False(store.TryGet("probe", out _));
 
         var grants = new PluginPermissionGrants(
             new PluginPermissionGrant(false, ["A"]),
@@ -201,19 +198,19 @@ public sealed class PluginApprovalTests
             PluginPermissionGrant.None,
             PluginPermissionGrant.None);
         store.Set("probe", new PluginApprovalRecord("F1", "probe", DateTimeOffset.UtcNow, grants));
-        store.Remove("missing").Should().BeFalse();
+        Assert.False(store.Remove("missing"));
 
         // A fresh load of the same file observes the persisted record — the in-memory
         // view and the file never diverge.
         var reloaded = PluginApprovalStore.Load(path, out loadError);
-        loadError.Should().BeNull();
-        reloaded.TryGet("probe", out var record).Should().BeTrue();
+        Assert.Null(loadError);
+        Assert.True(reloaded.TryGet("probe", out var record));
         var persisted = record ?? throw new InvalidOperationException("The record is missing.");
-        persisted.Fingerprint.Should().Be("F1");
-        persisted.Grants.Env.Values.Should().Equal("A");
+        Assert.Equal("F1", persisted.Fingerprint);
+        Assert.Equal(new string[] { "A" }, persisted.Grants.Env.Values);
 
-        store.Remove("probe").Should().BeTrue();
-        PluginApprovalStore.Load(path, out _).TryGet("probe", out _).Should().BeFalse();
+        Assert.True(store.Remove("probe"));
+        Assert.False(PluginApprovalStore.Load(path, out _).TryGet("probe", out _));
     }
 
     [Fact]
@@ -222,14 +219,14 @@ public sealed class PluginApprovalTests
         var invalid = Path.Combine(Path.GetTempPath(), $"approvals-{Guid.NewGuid():N}.json");
         File.WriteAllText(invalid, "{ not json");
         var invalidStore = PluginApprovalStore.Load(invalid, out var invalidError);
-        invalidError.Should().NotBeNull();
-        invalidStore.TryGet("probe", out _).Should().BeFalse();
+        Assert.NotNull(invalidError);
+        Assert.False(invalidStore.TryGet("probe", out _));
 
         var newer = Path.Combine(Path.GetTempPath(), $"approvals-{Guid.NewGuid():N}.json");
         File.WriteAllText(newer, """{ "version": 2, "approvals": {} }""");
         var newerStore = PluginApprovalStore.Load(newer, out var newerError);
-        newerError.Should().NotBeNull();
-        newerStore.TryGet("probe", out _).Should().BeFalse();
+        Assert.NotNull(newerError);
+        Assert.False(newerStore.TryGet("probe", out _));
     }
 
     // —— Manager gate ——
@@ -253,32 +250,29 @@ public sealed class PluginApprovalTests
             // Fail-closed: no synthetic registration, pending in status, and an
             // extension-point invoke refuses with the typed error instead of waking
             // a worker (ADR 0035 would otherwise restart it on demand).
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
-            manager.GetStatus().PendingApprovals.Should().Be(1);
-            var approval = manager.ListPluginApprovals().Should().ContainSingle().Which;
-            approval.PluginId.Should().Be(pluginId);
-            approval.State.Should().Be(PluginApprovalState.PendingApproval);
-            approval.ApprovedGrants.Should().BeNull();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(1, manager.GetStatus().PendingApprovals);
+            var approval = Assert.Single(manager.ListPluginApprovals());
+            Assert.Equal(pluginId, approval.PluginId);
+            Assert.Equal(PluginApprovalState.PendingApproval, approval.State);
+            Assert.Null(approval.ApprovedGrants);
 
             var invoke = await manager.InvokeExtensionPointAsync(
                 pluginId, "./main", McpDiscoverContributionKind.ExtensionKind, null, TestContext.Current.CancellationToken);
-            invoke.IsError.Should().BeTrue();
-            invoke.Code.Should().Be("plugin_pending_approval");
+            Assert.True(invoke.IsError);
+            Assert.Equal("plugin_pending_approval", invoke.Code);
 
             // Approval persists the fingerprint and activates in-process: the
             // synthetic registration appears without a host restart.
-            (await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken)).Should()
-                .Contain("Approved");
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle()
-                .Which.PluginId.Should().Be(pluginId);
-            manager.GetStatus().PendingApprovals.Should().Be(0);
-            manager.ListPluginApprovals().Should().ContainSingle()
-                .Which.State.Should().Be(PluginApprovalState.Approved);
+            Assert.Contains("Approved", (await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken)));
+            Assert.Equal(pluginId, Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)).PluginId);
+            Assert.Equal(0, manager.GetStatus().PendingApprovals);
+            Assert.Equal(PluginApprovalState.Approved, Assert.Single(manager.ListPluginApprovals()).State);
 
             // Revocation returns the plugin to pending and withdraws the registration.
             await manager.RevokeAsync(pluginId, TestContext.Current.CancellationToken);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
-            manager.GetStatus().PendingApprovals.Should().Be(1);
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(1, manager.GetStatus().PendingApprovals);
         }
         finally
         {
@@ -304,8 +298,8 @@ public sealed class PluginApprovalTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
-            manager.GetStatus().PendingApprovals.Should().Be(0);
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(0, manager.GetStatus().PendingApprovals);
         }
         finally
         {
@@ -333,7 +327,7 @@ public sealed class PluginApprovalTests
             deadline.CancelAfter(Deadline);
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
 
             // Widen the declared read grant: the fingerprint no longer matches the
             // persisted approval, so the reload revokes instead of applying it.
@@ -348,11 +342,11 @@ public sealed class PluginApprovalTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
-            manager.GetStatus().PendingApprovals.Should().Be(1);
-            var approval = manager.ListPluginApprovals().Should().ContainSingle().Which;
-            approval.State.Should().Be(PluginApprovalState.PendingApproval);
-            approval.ApprovedGrants.Should().NotBeNull("the stale record stays for the diff");
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(1, manager.GetStatus().PendingApprovals);
+            var approval = Assert.Single(manager.ListPluginApprovals());
+            Assert.Equal(PluginApprovalState.PendingApproval, approval.State);
+            Assert.NotNull(approval.ApprovedGrants);
 
             // Reverting to the previously approved shape re-matches the still-stored
             // record: the manifest revert reactivates without a new approval.
@@ -367,8 +361,8 @@ public sealed class PluginApprovalTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, reverted, deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
-            manager.GetStatus().PendingApprovals.Should().Be(0);
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            Assert.Equal(0, manager.GetStatus().PendingApprovals);
 
             // Widening again revokes again, and this time the user re-approves the new
             // declarations explicitly.
@@ -383,9 +377,9 @@ public sealed class PluginApprovalTests
                 """);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, widened, deadline.Token);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
         }
         finally
         {
@@ -426,22 +420,18 @@ public sealed class PluginApprovalTests
         try
         {
             await StartAsync(manager);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
             var approvals = manager.ListPluginApprovals();
-            approvals.Should().HaveCount(3);
-            approvals.Single(approval => approval.PluginId == "dep").State
-                .Should().Be(PluginApprovalState.PendingApproval);
-            approvals.Single(approval => approval.PluginId == "consumer").State
-                .Should().Be(PluginApprovalState.BlockedByDependency);
+            Assert.Equal(3, approvals.Count());
+            Assert.Equal(PluginApprovalState.PendingApproval, approvals.Single(approval => approval.PluginId == "dep").State);
+            Assert.Equal(PluginApprovalState.BlockedByDependency, approvals.Single(approval => approval.PluginId == "consumer").State);
 
             // Approving the dependency unblocks the dependent: both contribute
             // without a restart.
             await manager.ApproveAsync("dep", TestContext.Current.CancellationToken);
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)
-                .Should().HaveCount(2)
-                .And.OnlyContain(registration =>
-                    registration.PluginId == "dep" || registration.PluginId == "consumer");
-            manager.GetStatus().PendingApprovals.Should().Be(0);
+            Assert.Equal(2, manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Count());
+            Assert.All(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind), registration => Assert.True(registration.PluginId == "dep" || registration.PluginId == "consumer"));
+            Assert.Equal(0, manager.GetStatus().PendingApprovals);
         }
         finally
         {
@@ -466,26 +456,26 @@ public sealed class PluginApprovalTests
         {
             await StartAsync(manager);
 
-            MaieuticsCommandLanguage.NormalizeCommandArguments(["%plugin", "list"]).Should()
-                .Equal("%maieutics", "plugin", "list");
-            MaieuticsCommandLanguage.IsCommandCell("%plugin approve x").Should().BeTrue();
+            Assert.Equal(new string[] { "%maieutics", "plugin", "list" }, MaieuticsCommandLanguage.NormalizeCommandArguments(["%plugin", "list"]));
+            Assert.True(MaieuticsCommandLanguage.IsCommandCell("%plugin approve x"));
 
             var list = await executor.ExecuteAsync("%plugin list", null, TestContext.Current.CancellationToken);
-            list.Markdown.Should().Contain(pluginId).And.Contain("pending approval");
+            Assert.Contains(pluginId, list.Markdown);
+            Assert.Contains("pending approval", list.Markdown);
 
             var approve = await executor.ExecuteAsync(
                 $"%plugin approve {pluginId}", null, TestContext.Current.CancellationToken);
-            approve.Markdown.Should().Contain("Approved");
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().ContainSingle();
+            Assert.Contains("Approved", approve.Markdown);
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
 
             var revoke = await executor.ExecuteAsync(
                 $"%plugin revoke {pluginId}", null, TestContext.Current.CancellationToken);
-            revoke.Markdown.Should().Contain("Revoked");
-            manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind).Should().BeEmpty();
+            Assert.Contains("Revoked", revoke.Markdown);
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
 
             var unknown = () => executor.ExecuteAsync(
                 "%plugin approve missing", null, TestContext.Current.CancellationToken);
-            await unknown.Should().ThrowAsync<MaieuticsCommandException>();
+            await Assert.ThrowsAnyAsync<MaieuticsCommandException>(async () => { await unknown.Invoke(); });
         }
         finally
         {
@@ -503,8 +493,7 @@ public sealed class PluginApprovalTests
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "deno.json"), denoJson);
         File.WriteAllText(Path.Combine(directory, "maieutics.json"), maieuticsJson);
-        PluginManifest.TryLoad(directory, out var descriptor, out var error).Should()
-            .BeTrue(error);
+        Assert.True(PluginManifest.TryLoad(directory, out var descriptor, out var error), error);
         return descriptor ?? throw new InvalidOperationException("The manifest did not load.");
     }
 

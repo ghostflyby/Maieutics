@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
@@ -101,7 +100,7 @@ public sealed class PluginStorageConfigurationTests
             userName);
         if (expected is null)
         {
-            root.Should().BeNull();
+            Assert.Null(root);
             return;
         }
 
@@ -114,7 +113,7 @@ public sealed class PluginStorageConfigurationTests
     /// code joins with the platform separator, so on Windows a POSIX-styled root produces mixed
     /// separators that only compare equal once normalized.</summary>
     private static void BeSamePath(string actual, string expected) =>
-        Normalize(actual).Should().Be(Normalize(expected));
+        Assert.Equal(Normalize(expected), Normalize(actual));
 
     // —— PluginStoragePaths (identity → directory naming) ——
 
@@ -129,20 +128,20 @@ public sealed class PluginStorageConfigurationTests
     {
         var directory = PluginStoragePaths.DirectoryFor("/data", "@maieutics/example");
         var fileName = Path.GetFileName(directory);
-        fileName.Should().StartWith(PluginStoragePaths.Sanitize("@maieutics/example") + "-");
-        fileName.Should().NotContain("@");
+        Assert.StartsWith(PluginStoragePaths.Sanitize("@maieutics/example") + "-", fileName);
+        Assert.DoesNotContain("@", fileName);
         // Recomputing for the same identity is deterministic, and a distinct
         // identity never lands on the same directory name.
-        PluginStoragePaths.DirectoryFor("/data", "@maieutics/example").Should().Be(directory);
-        PluginStoragePaths.DirectoryFor("/data", "@maieutics/other").Should().NotBe(directory);
+        Assert.Equal(directory, PluginStoragePaths.DirectoryFor("/data", "@maieutics/example"));
+        Assert.NotEqual(directory, PluginStoragePaths.DirectoryFor("/data", "@maieutics/other"));
     }
 
     [Fact]
     public void SanitizeCollapsesUnsupportedCharacters()
     {
-        PluginStoragePaths.Sanitize("@scope/name v2").Should().Be("_scope_name_v2");
-        PluginStoragePaths.Sanitize("..").Should().Be("plugin");
-        PluginStoragePaths.Sanitize("///").Should().Be("___");
+        Assert.Equal("_scope_name_v2", PluginStoragePaths.Sanitize("@scope/name v2"));
+        Assert.Equal("plugin", PluginStoragePaths.Sanitize(".."));
+        Assert.Equal("___", PluginStoragePaths.Sanitize("///"));
     }
 
     [Fact]
@@ -162,10 +161,10 @@ public sealed class PluginStorageConfigurationTests
         // candidates). The whole colliding group must start WITHOUT storage
         // instead of silently sharing one store.
         var (first, second) = FindDirectoryCollisionPair();
-        first.Should().NotBe(second);
+        Assert.NotEqual(second, first);
         var assignment = PluginStoragePaths.Assign("/data", [first, second]);
-        assignment[first].Should().BeNull();
-        assignment[second].Should().BeNull();
+        Assert.Null(assignment[first]);
+        Assert.Null(assignment[second]);
     }
 
     /// <summary>Brute-forces two distinct identities whose
@@ -218,7 +217,7 @@ public sealed class PluginStorageConfigurationTests
                 new PluginHostConfigStorage("/data/plugin-data/example")),
         ]);
         var json = JsonSerializer.Serialize(config, PluginHostJsonContext.Default.PluginHostConfigFile);
-        json.Should().Contain("\"storage\":{\"dataDir\":");
+        Assert.Contains("\"storage\":{\"dataDir\":", json);
     }
 
     [Fact]
@@ -230,8 +229,8 @@ public sealed class PluginStorageConfigurationTests
             {"env":[],"net":[],"read":[],"write":[],"run":[],"ffi":[],"sys":[],"import":[]},"dependencies":[]}]}
             """;
         var config = JsonSerializer.Deserialize(json, PluginHostJsonContext.Default.PluginHostConfigFile);
-        config.Should().NotBeNull();
-        config.Plugins.Should().HaveCount(1);
-        config.Plugins[0].Storage.Should().BeNull();
+        Assert.NotNull(config);
+        Assert.Single(config.Plugins);
+        Assert.Null(config.Plugins[0].Storage);
     }
 }

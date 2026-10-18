@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Product.Tests;
@@ -30,25 +29,25 @@ public sealed class FrontendObjectAttachmentTests
             $"/v1/agent/sessions/{sessionId}/objects?name=shot.png",
             new ByteArrayContent(payload),
             deadline.Token);
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var uploaded = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var sha256 = uploaded.GetProperty("sha256").GetString();
-        sha256.Should().MatchRegex("^[0-9a-f]{64}$");
-        uploaded.GetProperty("byteLength").GetInt64().Should().Be(payload.Length);
+        Assert.Matches("^[0-9a-f]{64}$", sha256);
+        Assert.Equal(payload.Length, uploaded.GetProperty("byteLength").GetInt64());
 
         // The content address is the same object store the display-bundle GET serves.
         var served = await client.GetAsync($"/v1/objects/{sha256}", deadline.Token);
-        served.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await served.Content.ReadAsByteArrayAsync(deadline.Token)).Should().Equal(payload);
+        Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+        Assert.Equal(payload, (await served.Content.ReadAsByteArrayAsync(deadline.Token)));
 
         // Content addressing: identical bytes deduplicate to the same address.
         var again = await client.PostAsync(
             $"/v1/agent/sessions/{sessionId}/objects",
             new ByteArrayContent(payload),
             deadline.Token);
-        again.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await again.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("sha256").GetString().Should().Be(sha256);
+        Assert.Equal(HttpStatusCode.OK, again.StatusCode);
+        Assert.Equal(sha256, (await again.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("sha256").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -63,9 +62,9 @@ public sealed class FrontendObjectAttachmentTests
             $"/v1/agent/sessions/{new string('e', 32)}/objects",
             new ByteArrayContent([1, 2, 3]),
             deadline.Token);
-        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        (await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+        Assert.Equal("not_found", (await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("code").GetString());
 
         // The ingest bound is a typed 400, not a transport-level abort; the declared
         // Content-Length alone is enough to reject before the body is read.
@@ -74,9 +73,9 @@ public sealed class FrontendObjectAttachmentTests
             "/v1/agent/sessions/anything/objects",
             new ByteArrayContent(new byte[9]),
             deadline.Token);
-        oversized.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await oversized.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
+        Assert.Equal("invalid_request", (await oversized.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("code").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -107,25 +106,25 @@ public sealed class FrontendObjectAttachmentTests
         var user = transcript
             .GetProperty("turns")[0]
             .GetProperty("messages")[0];
-        user.GetProperty("role").GetString().Should().Be("user");
+        Assert.Equal("user", user.GetProperty("role").GetString());
         var parts = user.GetProperty("parts");
-        parts.GetArrayLength().Should().Be(3);
+        Assert.Equal(3, parts.GetArrayLength());
 
-        parts[0].GetProperty("kind").GetString().Should().Be("text");
-        parts[0].GetProperty("text").GetString().Should().Be("Look\n\n");
+        Assert.Equal("text", parts[0].GetProperty("kind").GetString());
+        Assert.Equal("Look\n\n", parts[0].GetProperty("text").GetString());
 
-        parts[1].GetProperty("kind").GetString().Should().Be("data");
+        Assert.Equal("data", parts[1].GetProperty("kind").GetString());
         var firstValue = parts[1].GetProperty("value");
-        firstValue.GetProperty("sha256").GetString().Should().Be(first.Sha256);
-        firstValue.GetProperty("size").GetInt64().Should().Be(3);
-        firstValue.GetProperty("mediaType").GetString().Should().Be("image/png");
-        firstValue.GetProperty("name").GetString().Should().Be("shot.png");
+        Assert.Equal(first.Sha256, firstValue.GetProperty("sha256").GetString());
+        Assert.Equal(3, firstValue.GetProperty("size").GetInt64());
+        Assert.Equal("image/png", firstValue.GetProperty("mediaType").GetString());
+        Assert.Equal("shot.png", firstValue.GetProperty("name").GetString());
 
-        parts[2].GetProperty("kind").GetString().Should().Be("data");
+        Assert.Equal("data", parts[2].GetProperty("kind").GetString());
         var secondValue = parts[2].GetProperty("value");
-        secondValue.GetProperty("sha256").GetString().Should().Be(second.Sha256);
-        secondValue.GetProperty("mediaType").GetString().Should().Be("application/pdf");
-        secondValue.GetProperty("name").GetString().Should().Be("my \"shot\"\\v1.pdf");
+        Assert.Equal(second.Sha256, secondValue.GetProperty("sha256").GetString());
+        Assert.Equal("application/pdf", secondValue.GetProperty("mediaType").GetString());
+        Assert.Equal("my \"shot\"\\v1.pdf", secondValue.GetProperty("name").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -140,9 +139,9 @@ public sealed class FrontendObjectAttachmentTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = $"[[maieutics:object sha256={new string('a', 64)} mime=image/png name=\"gone.png\"]]" },
             deadline.Token);
-        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        (await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.Equal("not_found", (await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("code").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -167,9 +166,9 @@ public sealed class FrontendObjectAttachmentTests
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
         var parts = transcript.GetProperty("turns")[0].GetProperty("messages")[0].GetProperty("parts");
-        parts.GetArrayLength().Should().Be(1);
-        parts[0].GetProperty("kind").GetString().Should().Be("text");
-        parts[0].GetProperty("text").GetString().Should().Be(lookalike);
+        Assert.Equal(1, parts.GetArrayLength());
+        Assert.Equal("text", parts[0].GetProperty("kind").GetString());
+        Assert.Equal(lookalike, parts[0].GetProperty("text").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -190,7 +189,7 @@ public sealed class FrontendObjectAttachmentTests
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = new[] { new { text } } },
             deadline.Token);
-        enqueue.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        Assert.Equal(HttpStatusCode.Accepted, enqueue.StatusCode);
         await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
@@ -199,15 +198,15 @@ public sealed class FrontendObjectAttachmentTests
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
         var parts = transcript.GetProperty("turns")[0].GetProperty("messages")[0].GetProperty("parts");
-        parts.GetArrayLength().Should().Be(1);
-        parts[0].GetProperty("kind").GetString().Should().Be("data");
-        parts[0].GetProperty("value").GetProperty("sha256").GetString().Should().Be(referenced.Sha256);
+        Assert.Equal(1, parts.GetArrayLength());
+        Assert.Equal("data", parts[0].GetProperty("kind").GetString());
+        Assert.Equal(referenced.Sha256, parts[0].GetProperty("value").GetProperty("sha256").GetString());
 
         // The committed marker's blob reference is the object's live set: pruning with no
         // grace removes the unreferenced upload and keeps the referenced one.
-        harness.SessionManager.PruneObjects(TimeSpan.Zero).Should().BeGreaterThanOrEqualTo(1);
-        harness.ObjectStore.Exists(referenced.Sha256).Should().BeTrue();
-        harness.ObjectStore.Exists(unreferenced.Sha256).Should().BeFalse();
+        Assert.True(harness.SessionManager.PruneObjects(TimeSpan.Zero) >= 1);
+        Assert.True(harness.ObjectStore.Exists(referenced.Sha256));
+        Assert.False(harness.ObjectStore.Exists(unreferenced.Sha256));
     }
 
     private static Task<FrontendApiIntegrationTests.FrontendHarness> StartPersistenceHostAsync(

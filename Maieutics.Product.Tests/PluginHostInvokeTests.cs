@@ -2,7 +2,6 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
@@ -47,12 +46,12 @@ public sealed class PluginHostInvokeTests
                     ReplControlJsonContext.Default.HostInvokePayload)),
             ReplControlJsonContext.Default.ReplEnvelope);
 
-        json.Should().Contain("\"host.invoke\"");
-        json.Should().Contain("\"correlationId\":\"c-1\"");
-        json.Should().Contain("\"pluginId\":\"plugin-1\"");
-        json.Should().Contain("\"exportName\":\"./main\"");
-        json.Should().Contain("\"extensionPoint\":\"McpDiscover\"");
-        json.Should().Contain("\"request\":{\"reason\":\"registry_update\"}");
+        Assert.Contains("\"host.invoke\"", json);
+        Assert.Contains("\"correlationId\":\"c-1\"", json);
+        Assert.Contains("\"pluginId\":\"plugin-1\"", json);
+        Assert.Contains("\"exportName\":\"./main\"", json);
+        Assert.Contains("\"extensionPoint\":\"McpDiscover\"", json);
+        Assert.Contains("\"request\":{\"reason\":\"registry_update\"}", json);
     }
 
     [Fact(Timeout = 60_000)]
@@ -71,27 +70,27 @@ public sealed class PluginHostInvokeTests
             ReplExtensionPointName.McpDiscover,
             request: null,
             deadline.Token);
-        invoke.IsCompleted.Should().BeFalse("a pending invoke waits for the host response");
+        Assert.False(invoke.IsCompleted, "a pending invoke waits for the host response");
 
         var sent = await harness.Host!.ReadSentAsync(deadline.Token);
-        sent.Should().Contain("\"host.invoke\"");
+        Assert.Contains("\"host.invoke\"", sent);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-        envelope.CorrelationId.Should().NotBeNullOrWhiteSpace();
+        Assert.False(string.IsNullOrWhiteSpace(envelope.CorrelationId));
         var payload = JsonSerializer.Deserialize(
             envelope.Payload?.GetRawText() ?? string.Empty,
             ReplControlJsonContext.Default.HostInvokePayload)!;
-        payload.PluginId.Should().Be("plugin-1");
-        payload.ExportName.Should().Be("./main");
-        payload.ExtensionPoint.Should().Be(ReplExtensionPointName.McpDiscover);
+        Assert.Equal("plugin-1", payload.PluginId);
+        Assert.Equal("./main", payload.ExportName);
+        Assert.Equal(ReplExtensionPointName.McpDiscover, payload.ExtensionPoint);
 
         harness.Manager.HandleHostMessage(
             "{\"version\":1,\"type\":\"host.invokeResult\",\"correlationId\":\"" + envelope.CorrelationId +
             "\",\"payload\":{\"value\":[{\"module\":\"npm:@maieutics/probe-server\"}]}}");
 
         var outcome = await invoke;
-        outcome.IsError.Should().BeFalse(outcome.Message);
-        outcome.Value.Should().NotBeNull();
-        outcome.Value!.Value.GetArrayLength().Should().Be(1);
+        Assert.False(outcome.IsError, outcome.Message);
+        Assert.NotNull(outcome.Value);
+        Assert.Equal(1, outcome.Value!.Value.GetArrayLength());
     }
 
     [Fact(Timeout = 60_000)]
@@ -117,10 +116,10 @@ public sealed class PluginHostInvokeTests
             "\",\"payload\":{\"code\":\"extension_failed\",\"message\":\"boom\"}}");
 
         var outcome = await invoke;
-        outcome.IsError.Should().BeTrue();
-        outcome.Code.Should().Be("extension_failed");
-        outcome.Message.Should().Be("boom");
-        outcome.Value.Should().BeNull();
+        Assert.True(outcome.IsError);
+        Assert.Equal("extension_failed", outcome.Code);
+        Assert.Equal("boom", outcome.Message);
+        Assert.Null(outcome.Value);
     }
 
     [Fact(Timeout = 60_000)]
@@ -153,14 +152,14 @@ public sealed class PluginHostInvokeTests
         {
             var sent = await harness.Host!.ReadSentAsync(deadline.Token);
             var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-            envelope.Type.Should().Be("capability.result");
+            Assert.Equal("capability.result", envelope.Type);
             var payload = JsonSerializer.Deserialize(
                 envelope.Payload!.Value.GetRawText(),
                 ReplControlJsonContext.Default.CapabilityResultPayload)!;
             markers.Add(payload.Result.GetProperty("value").GetInt32());
         }
 
-        markers.Should().BeEquivalentTo(Enumerable.Range(0, 12));
+        Assert.Equivalent(Enumerable.Range(0, 12), markers);
     }
 
     [Fact(Timeout = 60_000)]
@@ -188,14 +187,14 @@ public sealed class PluginHostInvokeTests
 
         var sent = await harness.Host!.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-        envelope.Type.Should().Be("capability.result");
-        envelope.CorrelationId.Should().Be("cap-1");
+        Assert.Equal("capability.result", envelope.Type);
+        Assert.Equal("cap-1", envelope.CorrelationId);
         var payload = JsonSerializer.Deserialize(
             envelope.Payload!.Value.GetRawText(),
             ReplControlJsonContext.Default.CapabilityResultPayload)!;
-        payload.Result.GetProperty("status").GetString().Should().Be("ok");
-        payload.Result.GetProperty("value").GetString().Should().Be("ran:workspace_list");
-        executed.Should().ContainSingle().Which.Should().Be("workspace_list");
+        Assert.Equal("ok", payload.Result.GetProperty("status").GetString());
+        Assert.Equal("ran:workspace_list", payload.Result.GetProperty("value").GetString());
+        Assert.Equal("workspace_list", Assert.Single(executed));
     }
 
     [Fact(Timeout = 60_000)]
@@ -222,13 +221,13 @@ public sealed class PluginHostInvokeTests
 
         var sent = await harness.Host!.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-        envelope.Type.Should().Be("capability.error");
-        envelope.CorrelationId.Should().Be("cap-2");
+        Assert.Equal("capability.error", envelope.Type);
+        Assert.Equal("cap-2", envelope.CorrelationId);
         var payload = JsonSerializer.Deserialize(
             envelope.Payload!.Value.GetRawText(),
             ReplControlJsonContext.Default.BusErrorPayload)!;
-        payload.Code.Should().Be("capability_unknown");
-        executorRan.Should().BeFalse();
+        Assert.Equal("capability_unknown", payload.Code);
+        Assert.False(executorRan);
     }
 
     [Fact(Timeout = 60_000)]
@@ -251,11 +250,11 @@ public sealed class PluginHostInvokeTests
 
         var sent = await harness.Host!.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-        envelope.Type.Should().Be("capability.error");
+        Assert.Equal("capability.error", envelope.Type);
         var payload = JsonSerializer.Deserialize(
             envelope.Payload!.Value.GetRawText(),
             ReplControlJsonContext.Default.BusErrorPayload)!;
-        payload.Code.Should().Be("capability_denied");
+        Assert.Equal("capability_denied", payload.Code);
     }
 
     [Fact(Timeout = 60_000)]
@@ -276,11 +275,11 @@ public sealed class PluginHostInvokeTests
 
         var sent = await harness.Host!.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-        envelope.Type.Should().Be("capability.error");
+        Assert.Equal("capability.error", envelope.Type);
         var payload = JsonSerializer.Deserialize(
             envelope.Payload!.Value.GetRawText(),
             ReplControlJsonContext.Default.BusErrorPayload)!;
-        payload.Code.Should().Be("capability_unavailable");
+        Assert.Equal("capability_unavailable", payload.Code);
     }
 
     [Fact(Timeout = 60_000)]
@@ -303,9 +302,7 @@ public sealed class PluginHostInvokeTests
             deadline.Token);
         _ = await harness.Host!.ReadSentAsync(deadline.Token);
 
-        await invoke
-            .Invoking(static task => task)
-            .Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((invoke)); });
     }
 
     [Fact(Timeout = 60_000)]
@@ -328,9 +325,7 @@ public sealed class PluginHostInvokeTests
         _ = await harness.Host!.ReadSentAsync(deadline.Token);
 
         callCancellation.Cancel();
-        await invoke
-            .Invoking(static task => task)
-            .Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((invoke)); });
     }
 
     [Fact(Timeout = 60_000)]
@@ -356,9 +351,9 @@ public sealed class PluginHostInvokeTests
         harness.Host!.Dispose();
 
         var outcome = await invoke;
-        outcome.IsError.Should().BeTrue();
-        outcome.Code.Should().Be("host_disconnected");
-        outcome.Message.Should().Contain("closed");
+        Assert.True(outcome.IsError);
+        Assert.Equal("host_disconnected", outcome.Code);
+        Assert.Contains("closed", outcome.Message);
     }
 
     [Fact]
@@ -398,8 +393,8 @@ public sealed class PluginHostInvokeTests
         // overwrite the first socket's outbound queue and writer.
         var second = new FakeHostWebSocket();
         await harness.Manager.AttachHostAsync(second, deadline.Token);
-        second.CloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
-        second.State.Should().Be(WebSocketState.Closed);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, second.CloseStatus);
+        Assert.Equal(WebSocketState.Closed, second.State);
 
         // The first connection still owns the surface: a capability invoke is answered on it.
         harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
@@ -410,7 +405,7 @@ public sealed class PluginHostInvokeTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
             "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
         var stillFirst = await harness.Host!.ReadSentAsync(deadline.Token);
-        stillFirst.Should().Contain("cap-after-refusal");
+        Assert.Contains("cap-after-refusal", stillFirst);
 
         // After the live host detaches, a fresh attach is accepted again. The old detach finishes
         // asynchronously (the receive loop unwinds on its own path), so await the manager's
@@ -429,8 +424,8 @@ public sealed class PluginHostInvokeTests
         // attach closes the socket without touching the signal, so awaiting it proves the fresh
         // attach was accepted instead of probing a bounded window for the refusal.
         await thirdAttached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
-        third.CloseStatus.Should().BeNull("a fresh attach after the detach must not be refused");
-        harness.Manager.GetStatus().ControlConnected.Should().BeTrue();
+        Assert.Null(third.CloseStatus);
+        Assert.True(harness.Manager.GetStatus().ControlConnected);
         third.Dispose();
         await thirdAttach;
     }
@@ -467,7 +462,7 @@ public sealed class PluginHostInvokeTests
         // the socket, so the awaited task proves acceptance instead of inferring it from the
         // fake's first receive or polling GetStatus().ControlConnected.
         await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-        manager.GetStatus().ControlConnected.Should().BeTrue();
+        Assert.True(manager.GetStatus().ControlConnected);
 
         var harness = new HostHarness(fakeSocket, manager, fakeDenoPath);
         // Keep the attach loop referenced so the fake socket is read until the harness disposes it.
@@ -644,12 +639,12 @@ public sealed class PluginHostInvokeTests
 
     var sent = await harness.Host!.ReadSentAsync(deadline.Token);
     var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-    envelope.Type.Should().Be("capability.result");
+    Assert.Equal("capability.result", envelope.Type);
     var payload = JsonSerializer.Deserialize(
         envelope.Payload!.Value.GetRawText(),
         ReplControlJsonContext.Default.CapabilityResultPayload)!;
-    payload.Result.GetProperty("value").GetString().Should().Be("ide:ide_diagnostics");
-    executed.Should().ContainSingle().Which.Should().Be("ide_diagnostics");
+    Assert.Equal("ide:ide_diagnostics", payload.Result.GetProperty("value").GetString());
+    Assert.Equal("ide_diagnostics", Assert.Single(executed));
 }
 
     [Fact(Timeout = 60_000)]
@@ -676,12 +671,12 @@ public sealed class PluginHostInvokeTests
 
     var sent = await harness.Host!.ReadSentAsync(deadline.Token);
     var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-    envelope.Type.Should().Be("capability.error");
+    Assert.Equal("capability.error", envelope.Type);
     var payload = JsonSerializer.Deserialize(
         envelope.Payload!.Value.GetRawText(),
         ReplControlJsonContext.Default.BusErrorPayload)!;
-    payload.Code.Should().Be("invalid_capability_invoke");
-    executorRan.Should().BeFalse("write tools are unreachable through ide.query");
+    Assert.Equal("invalid_capability_invoke", payload.Code);
+    Assert.False(executorRan, "write tools are unreachable through ide.query");
 }
 
 }
@@ -695,12 +690,9 @@ public sealed class IdeQueryWhitelistSyncTests
     [Fact]
     public void IdeQueryWhitelistMatchesTheKernelReadGroup()
     {
-        PluginHostManager.IdeQueryToolNames.Should().BeEquivalentTo([
-            "ide_diagnostics", "ide_hover", "ide_navigate",
-            "ide_document_symbols", "ide_workspace_symbols", "ide_request",
-        ]);
-        PluginHostManager.IdeQueryToolNames.Should().NotIntersectWith([
+        Assert.Equivalent(new[] { "ide_diagnostics", "ide_hover", "ide_navigate", "ide_document_symbols", "ide_workspace_symbols", "ide_request" }, PluginHostManager.IdeQueryToolNames);
+        Assert.Empty(PluginHostManager.IdeQueryToolNames.Intersect([
             "ide_apply_edit", "ide_format_document", "ide_rename", "ide_code_actions",
-        ], "write tools are unreachable through ide.query");
+        ]));
     }
 }

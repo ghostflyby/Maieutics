@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 using Maieutics.Permissions;
 
@@ -11,8 +10,8 @@ public sealed class PermissionLayerTests
     {
         var policy = PermissionLayerStore.Build([], CreateVariables());
 
-        policy.Kinds.Should().BeEmpty();
-        policy.For(PermissionKind.Read).Should().Be(PermissionKindRules.Empty);
+        Assert.Empty(policy.Kinds);
+        Assert.Equal(PermissionKindRules.Empty, policy.For(PermissionKind.Read));
     }
 
     [Fact]
@@ -25,7 +24,7 @@ public sealed class PermissionLayerTests
 
         var policy = PermissionLayerStore.Build([baseline, session], CreateVariables(workspace: "/ws"));
 
-        policy.For(PermissionKind.Read).Allow.Should().Equal("/kernel", "/ws/cache");
+        Assert.Equal(new string[] { "/kernel", "/ws/cache" }, policy.For(PermissionKind.Read).Allow);
     }
 
     [Fact]
@@ -39,8 +38,8 @@ public sealed class PermissionLayerTests
         var policy = PermissionLayerStore.Build([baseline, session], CreateVariables());
 
         var read = policy.For(PermissionKind.Read);
-        read.AllowAll.Should().BeTrue();
-        read.Deny.Should().Equal("/kernel/secret", "/kernel/secret/gift");
+        Assert.True(read.AllowAll);
+        Assert.Equal(new string[] { "/kernel/secret", "/kernel/secret/gift" }, read.Deny);
     }
 
     [Fact]
@@ -54,8 +53,8 @@ public sealed class PermissionLayerTests
         var policy = PermissionLayerStore.Build([appDefaults, session], CreateVariables());
 
         var write = policy.For(PermissionKind.Write);
-        write.DenyAll.Should().BeTrue();
-        write.Allow.Should().Equal("/data");
+        Assert.True(write.DenyAll);
+        Assert.Equal(new string[] { "/data" }, write.Allow);
     }
 
     [Fact]
@@ -68,10 +67,10 @@ public sealed class PermissionLayerTests
 
         var policy = PermissionLayerStore.Build([layer], CreateVariables());
 
-        policy.For(PermissionKind.Net).Allow.Should().Equal("localhost:8080");
-        policy.For(PermissionKind.Sys).Allow.Should().Equal("hostname");
-        policy.For(PermissionKind.Env).Allow.Should().Equal("HOME");
-        policy.For(PermissionKind.Run).Should().Be(PermissionKindRules.Empty);
+        Assert.Equal(new string[] { "localhost:8080" }, policy.For(PermissionKind.Net).Allow);
+        Assert.Equal(new string[] { "hostname" }, policy.For(PermissionKind.Sys).Allow);
+        Assert.Equal(new string[] { "HOME" }, policy.For(PermissionKind.Env).Allow);
+        Assert.Equal(PermissionKindRules.Empty, policy.For(PermissionKind.Run));
     }
 
     [Fact]
@@ -82,7 +81,7 @@ public sealed class PermissionLayerTests
 
         var policy = PermissionLayerStore.Build([layer], CreateVariables(workspace: "/ws"));
 
-        policy.For(PermissionKind.Read).Allow.Should().Equal("/ws");
+        Assert.Equal(new string[] { "/ws" }, policy.For(PermissionKind.Read).Allow);
     }
 
     [Fact]
@@ -93,8 +92,7 @@ public sealed class PermissionLayerTests
 
         var build = () => PermissionLayerStore.Build([layer], CreateVariables());
 
-        build.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_variable_unknown");
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => build.Invoke()).Code);
     }
 
     [Fact]
@@ -107,8 +105,7 @@ public sealed class PermissionLayerTests
 
         var build = () => PermissionLayerStore.Build([layer], CreateVariables());
 
-        build.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_pattern_empty");
+        Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(() => build.Invoke()).Code);
     }
 
     [Fact]
@@ -120,8 +117,7 @@ public sealed class PermissionLayerTests
         // The variable resolves, but to an empty value: an empty pattern would match everything.
         var build = () => PermissionLayerStore.Build([layer], CreateVariables(workspace: string.Empty));
 
-        build.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_pattern_empty");
+        Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(() => build.Invoke()).Code);
     }
 
     private static PermissionLayer Layer(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)

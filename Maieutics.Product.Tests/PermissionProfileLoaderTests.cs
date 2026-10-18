@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Permissions;
 
 namespace Maieutics.Product.Tests;
@@ -10,7 +9,7 @@ public sealed class PermissionProfileLoaderTests
     {
         var layer = PermissionProfileLoader.Load("/nonexistent/permissions.json");
 
-        layer.Kinds.Should().BeEmpty();
+        Assert.Empty(layer.Kinds);
     }
 
     [Fact]
@@ -38,8 +37,8 @@ public sealed class PermissionProfileLoaderTests
             var layer = PermissionProfileLoader.Load(path);
 
             var read = layer.Kinds[PermissionKind.Read];
-            read.Allow.Should().Equal(Path.Combine(root, "src"), absolutePath);
-            read.Deny.Should().Equal(Path.Combine(root, "src", "secret"));
+            Assert.Equal(new string[] { Path.Combine(root, "src"), absolutePath }, read.Allow);
+            Assert.Equal(new string[] { Path.Combine(root, "src", "secret") }, read.Deny);
         }
         finally
         {
@@ -69,7 +68,7 @@ public sealed class PermissionProfileLoaderTests
 
             var layer = PermissionProfileLoader.Load(path, "strict");
 
-            layer.Kinds[PermissionKind.Env].Allow.Should().Equal(["PATH"]);
+            Assert.Equal(["PATH"], layer.Kinds[PermissionKind.Env].Allow);
         }
         finally
         {
@@ -89,8 +88,7 @@ public sealed class PermissionProfileLoaderTests
 
             var load = () => PermissionProfileLoader.Load(path);
 
-            load.Should().Throw<PermissionException>()
-                .Which.Code.Should().Be("permission_profile_invalid");
+            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(() => load.Invoke()).Code);
         }
         finally
         {
@@ -110,8 +108,7 @@ public sealed class PermissionProfileLoaderTests
 
             var load = () => PermissionProfileLoader.Load(path);
 
-            load.Should().Throw<PermissionException>()
-                .Which.Code.Should().Be("permission_profile_invalid");
+            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(() => load.Invoke()).Code);
         }
         finally
         {

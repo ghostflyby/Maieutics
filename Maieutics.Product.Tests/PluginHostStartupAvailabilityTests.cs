@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
@@ -53,20 +52,16 @@ public sealed class PluginHostStartupAvailabilityTests
 
             // The child is running, so discovery is in flight and cannot finish until this
             // test writes the release file below.
-            File.Exists(release).Should().BeFalse("the scan is still parked in its child process");
+            Assert.False(File.Exists(release), "the scan is still parked in its child process");
 
             var status = Task.Run(manager.GetStatus, deadline.Token);
             var settled = await Task.WhenAny(status, Task.Delay(TimeSpan.FromSeconds(15), deadline.Token));
 
-            settled.Should().BeSameAs(
-                status,
-                "the control plane must answer while registry discovery is still parked; "
-                + "holding the state gate across the scan stalls it for the whole scan");
-            File.Exists(release).Should().BeFalse(
-                "the scan had not been released, so status was answered without waiting for it");
+            Assert.Same(status, settled);
+            Assert.False(File.Exists(release), "the scan had not been released, so status was answered without waiting for it");
 
             var observed = await status;
-            observed.Should().NotBeNull();
+            Assert.NotNull(observed);
 
             // Let the scan finish so startup can proceed to its (irrelevant here) host launch.
             File.WriteAllText(release, string.Empty);

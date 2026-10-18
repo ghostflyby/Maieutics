@@ -2,7 +2,6 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent.Tests;
@@ -69,39 +68,29 @@ public sealed class AgentTranscriptCodecTests
             [new ChatMessage(ChatRole.User, "question"), assistant]);
         var state = new AgentTranscriptState(sessionId, 1, [detachedTurn]);
 
-        detachedTurn.MessageByteCount.Should().BePositive();
+        Assert.True(detachedTurn.MessageByteCount > 0);
         var privateAssistant = detachedTurn.Messages[1];
-        privateAssistant.MessageId.Should().Be("provider-message");
-        privateAssistant.RawRepresentation.Should().BeNull();
-        privateAssistant.AdditionalProperties.Should().ContainKey("provider_message");
-        privateAssistant.Contents.Select(static content => content.GetType()).Should().Equal(
-            typeof(TextContent),
-            typeof(TextReasoningContent),
-            typeof(FunctionCallContent),
-            typeof(FunctionResultContent),
-            typeof(UsageContent),
-            typeof(DataContent));
+        Assert.Equal("provider-message", privateAssistant.MessageId);
+        Assert.Null(privateAssistant.RawRepresentation);
+        Assert.True((privateAssistant.AdditionalProperties ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("provider_message"));
+        Assert.Equal(new Type[] { typeof(TextContent), typeof(TextReasoningContent), typeof(FunctionCallContent), typeof(FunctionResultContent), typeof(UsageContent), typeof(DataContent) }, privateAssistant.Contents.Select(static content => content.GetType()));
         var privateReasoning = privateAssistant.Contents.OfType<TextReasoningContent>().Single();
-        privateReasoning.Text.Should().Be("private reasoning");
-        privateReasoning.ProtectedData.Should().NotBeNull();
-        JsonSerializer.Serialize(privateReasoning.ProtectedData).Should().Contain("protected-token");
-        privateAssistant.Contents.OfType<FunctionCallContent>().Single().CallId.Should().Be("provider-call");
-        privateAssistant.Contents.OfType<FunctionResultContent>().Single().CallId.Should().Be("provider-call");
-        privateAssistant.Contents.OfType<UsageContent>().Single().Details.ReasoningTokenCount.Should().Be(3);
-        privateAssistant.Contents.OfType<DataContent>().Single().Data.ToArray().Should()
-            .Equal(Encoding.UTF8.GetBytes("{\"value\":1}"));
-        privateAssistant.Contents.OfType<TextContent>().Single().Annotations.Should()
-            .ContainSingle().Which.Should().BeOfType<CitationAnnotation>();
+        Assert.Equal("private reasoning", privateReasoning.Text);
+        Assert.NotNull(privateReasoning.ProtectedData);
+        Assert.Contains("protected-token", JsonSerializer.Serialize(privateReasoning.ProtectedData));
+        Assert.Equal("provider-call", privateAssistant.Contents.OfType<FunctionCallContent>().Single().CallId);
+        Assert.Equal("provider-call", privateAssistant.Contents.OfType<FunctionResultContent>().Single().CallId);
+        Assert.Equal(3, privateAssistant.Contents.OfType<UsageContent>().Single().Details.ReasoningTokenCount);
+        Assert.Equal(Encoding.UTF8.GetBytes("{\"value\":1}"), privateAssistant.Contents.OfType<DataContent>().Single().Data.ToArray());
+        Assert.IsType<CitationAnnotation>(Assert.Single((privateAssistant.Contents.OfType<TextContent>().Single().Annotations ?? throw new InvalidOperationException("the assertion subject is null"))));
 
         var publicTranscript = AgentTranscriptCodec.CreatePublicTranscript(state);
         var publicAssistant = publicTranscript.Turns.Single().Messages[1];
-        publicAssistant.Contents.Should().NotContain(static content => content is TextReasoningContent);
-        publicAssistant.RawRepresentation.Should().BeNull();
-        publicAssistant.AdditionalProperties.Should().BeNull();
-        publicAssistant.Contents.Should().OnlyContain(static content =>
-            content.RawRepresentation == null && content.AdditionalProperties == null);
-        publicAssistant.Contents.OfType<TextContent>().Single().Annotations.Should().ContainSingle()
-            .Which.AdditionalProperties.Should().BeNull();
+        Assert.DoesNotContain(publicAssistant.Contents, static content => content is TextReasoningContent);
+        Assert.Null(publicAssistant.RawRepresentation);
+        Assert.Null(publicAssistant.AdditionalProperties);
+        Assert.All(publicAssistant.Contents, static content => Assert.True(content.RawRepresentation == null && content.AdditionalProperties == null));
+        Assert.Null(Assert.Single((publicAssistant.Contents.OfType<TextContent>().Single().Annotations ?? throw new InvalidOperationException("the assertion subject is null"))).AdditionalProperties);
     }
 
     [Fact]
@@ -116,33 +105,31 @@ public sealed class AgentTranscriptCodecTests
         ];
 
         var truncated = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, true);
-        truncated.Truncated.Should().BeTrue();
+        Assert.True(truncated.Truncated);
         var publicTruncated = AgentTranscriptCodec.CreatePublicTranscript(
             new AgentTranscriptState(sessionId, 1, [truncated]));
-        publicTruncated.Turns.Single().Truncated.Should().BeTrue();
-        publicTruncated.Turns.Single().Messages.Select(static message => message.Text).Should().Equal(
-            "question", "answer");
+        Assert.True(publicTruncated.Turns.Single().Truncated);
+        Assert.Equal(new string[] { "question", "answer" }, publicTruncated.Turns.Single().Messages.Select(static message => message.Text));
 
         var complete = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, false);
-        complete.Truncated.Should().BeFalse();
-        AgentTranscriptCodec.CreatePublicTranscript(
-            new AgentTranscriptState(sessionId, 2, [complete])).Turns.Single().Truncated.Should().BeFalse();
+        Assert.False(complete.Truncated);
+        Assert.False(AgentTranscriptCodec.CreatePublicTranscript(
+            new AgentTranscriptState(sessionId, 2, [complete])).Turns.Single().Truncated);
     }
 
     [Fact]
     public void CustomContentProducesTypedCompatibilityFailure()
     {
-        var failure = FluentActions.Invoking(() => AgentTranscriptCodec.DetachPrivateTurn(
+        var failure = Assert.ThrowsAny<AgentContentCompatibilityException>(() => AgentTranscriptCodec.DetachPrivateTurn(
                 AgentRunId.Create(),
                 null,
                 [
                     new ChatMessage(ChatRole.User, "question"),
                     new ChatMessage(ChatRole.Assistant, [new TextContent("answer"), new CustomContent()])
-                ]))
-            .Should().Throw<AgentContentCompatibilityException>().Which;
+                ]));
 
-        failure.ContentType.Should().Contain(nameof(CustomContent));
-        failure.InnerException.Should().BeAssignableTo<Exception>();
+        Assert.Contains(nameof(CustomContent), failure.ContentType);
+        Assert.IsAssignableFrom<Exception>(failure.InnerException);
     }
 
     [Fact]
@@ -157,32 +144,32 @@ public sealed class AgentTranscriptCodecTests
             null,
             [new ChatMessage(ChatRole.User, "你你"), new ChatMessage(ChatRole.Assistant, "界界")]);
 
-        nonAscii.MessageByteCount.Should().BeGreaterThan(ascii.MessageByteCount);
+        Assert.True(nonAscii.MessageByteCount > ascii.MessageByteCount);
     }
 
     [Fact]
     public void DetachingTurnRejectsInlineBinaryContentAndBinaryMetadata()
     {
-        var direct = FluentActions.Invoking(() => DetachAssistant(
+        Func<AgentTranscriptStateTurn> direct = () => DetachAssistant(
             new TextContent("answer"),
-            new DataContent(new byte[] { 1, 2, 3 }, "image/png")));
+            new DataContent(new byte[] { 1, 2, 3 }, "image/png"));
         var nested = new ImageGenerationToolResultContent("image-call")
         {
             Outputs = [new DataContent(new byte[] { 4, 5, 6 }, "image/png")]
         };
-        var nestedAction = FluentActions.Invoking(() => DetachAssistant(new TextContent("answer"), nested));
+        Func<AgentTranscriptStateTurn> nestedAction = () => DetachAssistant(new TextContent("answer"), nested);
         var nestedResult = new FunctionResultContent(
             "result-call",
             new Dictionary<string, object?>
             {
                 ["nested"] = new object?[] { "text", new byte[] { 6, 7, 8 } }
             });
-        var nestedResultAction = FluentActions.Invoking(() => DetachAssistant(
+        Func<AgentTranscriptStateTurn> nestedResultAction = () => DetachAssistant(
             new TextContent("answer"),
-            nestedResult));
-        var invalidJsonAction = FluentActions.Invoking(() => DetachAssistant(
+            nestedResult);
+        Func<AgentTranscriptStateTurn> invalidJsonAction = () => DetachAssistant(
             new TextContent("answer"),
-            new DataContent(Encoding.UTF8.GetBytes("not-json"), "application/json")));
+            new DataContent(Encoding.UTF8.GetBytes("not-json"), "application/json"));
         var metadata = new TextContent("answer")
         {
             AdditionalProperties = new AdditionalPropertiesDictionary
@@ -190,7 +177,7 @@ public sealed class AgentTranscriptCodecTests
                 ["payload"] = new byte[] { 7, 8, 9 }
             }
         };
-        var metadataAction = FluentActions.Invoking(() => DetachAssistant(metadata));
+        Func<AgentTranscriptStateTurn> metadataAction = () => DetachAssistant(metadata);
         var binaryDataMetadata = new TextContent("answer")
         {
             AdditionalProperties = new AdditionalPropertiesDictionary
@@ -198,14 +185,14 @@ public sealed class AgentTranscriptCodecTests
                 ["payload"] = CreateBinaryDataLikeValue()
             }
         };
-        var binaryDataAction = FluentActions.Invoking(() => DetachAssistant(binaryDataMetadata));
+        Func<AgentTranscriptStateTurn> binaryDataAction = () => DetachAssistant(binaryDataMetadata);
 
-        direct.Should().Throw<AgentUnsupportedResponseException>();
-        nestedAction.Should().Throw<AgentUnsupportedResponseException>();
-        nestedResultAction.Should().Throw<AgentUnsupportedResponseException>();
-        invalidJsonAction.Should().Throw<AgentUnsupportedResponseException>();
-        metadataAction.Should().Throw<AgentUnsupportedResponseException>();
-        binaryDataAction.Should().Throw<AgentUnsupportedResponseException>();
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => direct.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => nestedAction.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => nestedResultAction.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => invalidJsonAction.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => metadataAction.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => binaryDataAction.Invoke());
     }
 
     [Fact]
@@ -216,9 +203,8 @@ public sealed class AgentTranscriptCodecTests
             new TextContent("answer"));
 
         var reasoning = detached.Messages.Single().Contents.OfType<TextReasoningContent>().Single();
-        JsonSerializer.Serialize(reasoning.ProtectedData).Should().Contain("AQID");
-        AgentTranscriptCodec.CreatePublicMessage(detached.Messages.Single()).Contents.Should()
-            .NotContain(static content => content is TextReasoningContent);
+        Assert.Contains("AQID", JsonSerializer.Serialize(reasoning.ProtectedData));
+        Assert.DoesNotContain(AgentTranscriptCodec.CreatePublicMessage(detached.Messages.Single()).Contents, static content => content is TextReasoningContent);
     }
 
     [Fact]
@@ -273,22 +259,20 @@ public sealed class AgentTranscriptCodecTests
             new AgentTranscriptState(AgentSessionId.Create(), 1, [turn]));
         var naive = AgentTranscriptCodec.CreatePublicMessages(turn.Messages);
 
-        cached.Turns.Should().ContainSingle();
-        cached.Turns[0].Messages.Should().BeEquivalentTo(naive, static options => options.WithStrictOrdering());
-        cached.Turns[0].Messages.Should().NotContain(static message =>
+        Assert.Single(cached.Turns);
+        Assert.Equivalent(naive, cached.Turns[0].Messages, strict: true);
+        Assert.DoesNotContain(cached.Turns[0].Messages, static message =>
             message.Contents.OfType<TextReasoningContent>().Any());
-        cached.Turns[0].Messages.SelectMany(static message => message.Contents)
-            .Should().OnlyContain(static content =>
-                content.RawRepresentation == null && content.AdditionalProperties == null);
+        Assert.All(cached.Turns[0].Messages.SelectMany(static message => message.Contents), static content => Assert.True(content.RawRepresentation == null && content.AdditionalProperties == null));
         var publicText = cached.Turns[0].Messages[1].Contents.OfType<TextContent>().Single();
-        publicText.Annotations.Should().ContainSingle().Which.AdditionalProperties.Should().BeNull();
-        publicText.Annotations.Should().ContainSingle().Which.RawRepresentation.Should().BeNull();
+        Assert.Null(Assert.Single((publicText.Annotations ?? throw new InvalidOperationException("the assertion subject is null"))).AdditionalProperties);
+        Assert.Null(Assert.Single(publicText.Annotations).RawRepresentation);
 
         // Re-projecting the cached state after mutating the first handout stays pristine.
         cached.Turns[0].Messages[1].Contents.OfType<TextContent>().Single().Text = "mutated";
         var second = AgentTranscriptCodec.CreatePublicTranscript(
             new AgentTranscriptState(AgentSessionId.Create(), 1, [turn]));
-        second.Turns[0].Messages.Should().BeEquivalentTo(naive, static options => options.WithStrictOrdering());
+        Assert.Equivalent(naive, second.Turns[0].Messages, strict: true);
     }
 
     private static AgentTranscriptStateTurn DetachAssistant(params AIContent[] contents)
@@ -333,20 +317,17 @@ public sealed class AgentTranscriptSessionTests
 
         var first = await CompleteTurnAsync(session, "question", deadline.Token);
 
-        first.Events.OfType<AgentTextDelta>().Select(static delta => delta.Text).Should().Equal("visible answer");
-        first.Events.OfType<AgentMessageCompleted>().Single().Message.Contents.Should()
-            .NotContain(static content => content is TextReasoningContent);
-        first.Result.AssistantMessage.Contents.Should()
-            .NotContain(static content => content is TextReasoningContent);
-        first.Result.Transcript.Turns.Single().Messages[1].Contents.Should()
-            .NotContain(static content => content is TextReasoningContent);
+        Assert.Equal(new string[] { "visible answer" }, first.Events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
+        Assert.DoesNotContain(first.Events.OfType<AgentMessageCompleted>().Single().Message.Contents, static content => content is TextReasoningContent);
+        Assert.DoesNotContain(first.Result.AssistantMessage.Contents, static content => content is TextReasoningContent);
+        Assert.DoesNotContain(first.Result.Transcript.Turns.Single().Messages[1].Contents, static content => content is TextReasoningContent);
 
         await CompleteTurnAsync(session, "continue", deadline.Token);
 
         var replayedAssistant = client.Requests[1].Single(static message => message.Role == ChatRole.Assistant);
         var replayedReasoning = replayedAssistant.Contents.OfType<TextReasoningContent>().Single();
-        replayedReasoning.Text.Should().Be("private chain");
-        JsonSerializer.Serialize(replayedReasoning.ProtectedData).Should().Contain("opaque-state");
+        Assert.Equal("private chain", replayedReasoning.Text);
+        Assert.Contains("opaque-state", JsonSerializer.Serialize(replayedReasoning.ProtectedData));
     }
 
     [Fact(Timeout = 30_000)]
@@ -360,13 +341,11 @@ public sealed class AgentTranscriptSessionTests
         await using (var run = await reasoningOnly.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token))
         {
             await ReadEventsAsync(run, deadline.Token);
-            await run.Completion.WaitAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<AgentUnsupportedResponseException>();
+            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
         }
 
-        reasoningOnly.GetTranscriptSnapshot().Version.Should().Be(0);
-        reasoningOnly.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Equal(0, reasoningOnly.GetTranscriptSnapshot().Version);
+        Assert.Empty(reasoningOnly.GetTranscriptSnapshot().Turns);
 
         var custom = new AgentSession(new RecordingClient((_, _) => StreamUpdatesAsync(new ChatResponseUpdate(
             ChatRole.Assistant,
@@ -374,13 +353,11 @@ public sealed class AgentTranscriptSessionTests
         await using (var run = await custom.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token))
         {
             await ReadEventsAsync(run, deadline.Token);
-            await run.Completion.WaitAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<AgentContentCompatibilityException>();
+            await Assert.ThrowsAnyAsync<AgentContentCompatibilityException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
         }
 
-        custom.GetTranscriptSnapshot().Version.Should().Be(0);
-        custom.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Equal(0, custom.GetTranscriptSnapshot().Version);
+        Assert.Empty(custom.GetTranscriptSnapshot().Turns);
     }
 
     [Fact(Timeout = 30_000)]
@@ -398,21 +375,19 @@ public sealed class AgentTranscriptSessionTests
         await using (var run = await session.StartTurnAsync(AgentTurn.FromText("image"), deadline.Token))
         {
             var events = await ReadEventsAsync(run, deadline.Token);
-            events.OfType<AgentTextDelta>().Select(static delta => delta.Text).Should().Equal("visible");
-            events.Should().NotContain(static agentEvent => agentEvent is AgentMessageCompleted);
-            await run.Completion.WaitAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<AgentUnsupportedResponseException>();
+            Assert.Equal(new string[] { "visible" }, events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
+            Assert.DoesNotContain(events, static agentEvent => agentEvent is AgentMessageCompleted);
+            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
         }
 
         var rolledBack = session.GetTranscriptSnapshot();
-        rolledBack.Version.Should().Be(0);
-        rolledBack.Turns.Should().BeEmpty();
+        Assert.Equal(0, rolledBack.Version);
+        Assert.Empty(rolledBack.Turns);
 
         var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
-        recovered.Result.AssistantMessage.Text.Should().Be("recovered");
-        recovered.Result.Transcript.Version.Should().Be(1);
-        recovered.Result.Transcript.Turns.Should().ContainSingle();
+        Assert.Equal("recovered", recovered.Result.AssistantMessage.Text);
+        Assert.Equal(1, recovered.Result.Transcript.Version);
+        Assert.Single(recovered.Result.Transcript.Turns);
     }
 
     [Fact(Timeout = 30_000)]
@@ -431,12 +406,8 @@ public sealed class AgentTranscriptSessionTests
 
         await CompleteTurnAsync(session, "second question", deadline.Token);
 
-        client.Requests[1].Select(static message => (message.Role, message.Text)).Should().Equal(
-            (ChatRole.User, "first question"),
-            (ChatRole.Assistant, "first answer"),
-            (ChatRole.User, "second question"));
-        session.GetTranscriptSnapshot().Turns[0].Messages.Select(static message => message.Text).Should()
-            .Equal("first question", "first answer");
+        Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, client.Requests[1].Select(static message => (message.Role, message.Text)));
+        Assert.Equal(new string[] { "first question", "first answer" }, session.GetTranscriptSnapshot().Turns[0].Messages.Select(static message => message.Text));
     }
 
     [Fact(Timeout = 30_000)]
@@ -458,9 +429,8 @@ public sealed class AgentTranscriptSessionTests
         await CompleteTurnAsync(session, "second question", deadline.Token);
         await CompleteTurnAsync(session, "third question", deadline.Token);
 
-        client.Requests[2].First(static message => message.Role == ChatRole.Assistant).Text.Should()
-            .Be("first answer");
-        session.GetTranscriptSnapshot().Turns[0].Messages[1].Text.Should().Be("first answer");
+        Assert.Equal("first answer", client.Requests[2].First(static message => message.Role == ChatRole.Assistant).Text);
+        Assert.Equal("first answer", session.GetTranscriptSnapshot().Turns[0].Messages[1].Text);
     }
 
     [Fact(Timeout = 30_000)]
@@ -480,9 +450,9 @@ public sealed class AgentTranscriptSessionTests
         await CompleteTurnAsync(session, "问题", deadline.Token);
 
         var transcript = session.GetTranscriptSnapshot();
-        transcript.Version.Should().Be(2);
-        transcript.Turns.Should().ContainSingle();
-        transcript.Turns.Single().Messages.Select(static message => message.Text).Should().Equal("问题", "答案");
+        Assert.Equal(2, transcript.Version);
+        Assert.Single(transcript.Turns);
+        Assert.Equal(new string[] { "问题", "答案" }, transcript.Turns.Single().Messages.Select(static message => message.Text));
     }
 
     private static async Task<(AgentRunResult Result, IReadOnlyList<AgentEvent> Events)> CompleteTurnAsync(

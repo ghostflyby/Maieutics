@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Execution;
@@ -30,33 +29,32 @@ public sealed class AgentSubagentFunctionsTests
         // The in-turn loop: agent_spawn(wait=false) returned the handle, task_wait addressed
         // the child through its task:// URI while the parent run was still live.
         var finishes = events.OfType<AgentToolFinished>().ToList();
-        finishes.Should().HaveCount(2);
+        Assert.Equal(2, finishes.Count());
         var spawnValue = finishes[0].Result.GetProperty("value");
         var taskUri = spawnValue.GetProperty("taskUri").GetString();
-        taskUri.Should().StartWith("task://agent/");
-        spawnValue.GetProperty("runId").GetString().Should().NotBeNullOrWhiteSpace();
-        finishes[1].Result.GetProperty("status").GetString().Should().Be("ok");
+        Assert.StartsWith("task://agent/", (taskUri ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.False(string.IsNullOrWhiteSpace(spawnValue.GetProperty("runId").GetString()));
+        Assert.Equal("ok", finishes[1].Result.GetProperty("status").GetString());
         var waitValue = finishes[1].Result.GetProperty("value");
-        waitValue.GetProperty("task").GetString().Should().Be(taskUri);
-        waitValue.GetProperty("status").GetString().Should().Be("complete");
-        waitValue.GetProperty("kind").GetString().Should().Be("agent");
-        waitValue.GetProperty("report").GetString().Should().Be("child report");
+        Assert.Equal(taskUri, waitValue.GetProperty("task").GetString());
+        Assert.Equal("complete", waitValue.GetProperty("status").GetString());
+        Assert.Equal("agent", waitValue.GetProperty("kind").GetString());
+        Assert.Equal("child report", waitValue.GetProperty("report").GetString());
         // The scripted provider reports no usage, so the snapshot carries "usage": null.
-        waitValue.TryGetProperty("usage", out var usage).Should().BeTrue();
-        usage.ValueKind.Should().Be(JsonValueKind.Null);
+        Assert.True(waitValue.TryGetProperty("usage", out var usage));
+        Assert.Equal(JsonValueKind.Null, usage.ValueKind);
 
         // The spawned child streamed its activity into the display-plane buffer, which
         // outlives the join: the parent run forgot the child at commit, and later turns
         // refetch the report from this envelope instead of the plane.
-        harness.Buffer.KnownChildren.Should().ContainSingle();
-        harness.Buffer.Read(harness.Buffer.KnownChildren[0]).Should().NotBeEmpty();
+        Assert.Single(harness.Buffer.KnownChildren);
+        Assert.NotEmpty(harness.Buffer.Read(harness.Buffer.KnownChildren[0]));
 
         // After the turn the child is no longer on the plane (join-before-complete), and the
         // plane reports that as a typed miss rather than a stale snapshot.
         var gone = () => harness.Provider.WaitTaskAsync(
             taskUri, TimeSpan.FromSeconds(1), deadline.Token);
-        (await gone.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await gone.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -100,9 +98,9 @@ public sealed class AgentSubagentFunctionsTests
 
         // The real agent_spawn adapter registered the child scope under the calling session
         // (ADR 0030 decision 3), so the child resolves through the parent's override.
-        overrides.ChildScopes.Should().ContainSingle();
-        overrides.ChildScopes[0].Parent.Should().Be(session.Id);
-        overrides.TryGet(overrides.ChildScopes[0].Child).Should().BeSameAs(parentLayer);
+        Assert.Single(overrides.ChildScopes);
+        Assert.Equal(session.Id, overrides.ChildScopes[0].Parent);
+        Assert.Same(parentLayer, overrides.TryGet(overrides.ChildScopes[0].Child));
     }
 
     [Fact(Timeout = 30_000)]
@@ -133,8 +131,8 @@ public sealed class AgentSubagentFunctionsTests
         await run.Completion.WaitAsync(deadline.Token);
 
         // The probe tool reports whether the spawn context was attached to its arguments.
-        events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
-            .GetProperty("status").GetString().Should().Be("attached");
+        Assert.Equal("attached", events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
+            .GetProperty("status").GetString());
     }
 
     private static Harness CreateHarness()

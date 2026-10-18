@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Permissions;
 
@@ -28,14 +27,15 @@ public sealed class PermissionPipelineIntegrationTests
             """;
             File.WriteAllText(profilePath, good);
             var first = PermissionProfileLoader.Load(profilePath);
-            first.Kinds.Keys.Should().Contain(PermissionKind.Read);
+            Assert.Contains(PermissionKind.Read, first.Kinds.Keys);
 
             // An invalid profile replaces the file on disk; the pipeline catches the typed
             // failure and the previously loaded layer stays the last-known-good contribution.
             File.WriteAllText(profilePath, "{ not json");
             var load = () => PermissionProfileLoader.Load(profilePath);
-            load.Should().Throw<PermissionException>().WithMessage("*not valid JSON*");
-            first.Kinds.Keys.Should().Contain(PermissionKind.Read);
+            var assertion29 = Assert.ThrowsAny<PermissionException>(() => load.Invoke());
+            Assert.Matches("(?is)^.*not\\ valid\\ JSON.*$", assertion29.Message);
+            Assert.Contains(PermissionKind.Read, first.Kinds.Keys);
         }
         finally
         {
@@ -73,16 +73,15 @@ public sealed class PermissionPipelineIntegrationTests
 
         var policy = acquirer.Acquire(baseline, null);
 
-        policy.For(PermissionKind.Run).Deny.Should().Contain("/bin/sh");
-        policy.For(PermissionKind.Read).Allow.Should().Contain("/workspace");
+        Assert.Contains("/bin/sh", policy.For(PermissionKind.Run).Deny);
+        Assert.Contains("/workspace", policy.For(PermissionKind.Read).Allow);
         // Relative profile paths resolve against the profile's directory; the composed deny
         // list carries the resolved absolute path for the enforcer.
         var denied = Path.Combine(Path.GetDirectoryName(
             Path.GetFullPath(Path.Combine(
                 Path.GetTempPath(), "mc-perm-overlay-x", "permissions.json")))!);
-        denied.Should().NotBeEmpty();
-        policy.For(PermissionKind.Read).Deny.Should().ContainSingle()
-            .Which.Should().EndWith(Path.Combine("src", "secret"));
+        Assert.NotEmpty(denied);
+        Assert.EndsWith(Path.Combine("src", "secret"), Assert.Single(policy.For(PermissionKind.Read).Deny));
     }
 
     private static string WriteProfile(string json)

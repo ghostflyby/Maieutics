@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
 
@@ -13,16 +12,15 @@ public sealed class FrontendPromptMarkersTests
     {
         var bare = FrontendPromptMarkers.Split(
             $"lead {Reference} tail");
-        bare.Markers.Should().ContainSingle().Which.Name.Should().Be("code_review");
-        bare.Markers[0].ServerId.Should().Be("plugin:demo::srv");
-        bare.Markers[0].Text.Should().Be("review");
-        bare.Markers[0].Arguments.Should().BeEmpty();
-        bare.Markers[0].DuplicateKeys.Should().BeFalse();
+        Assert.Equal("code_review", Assert.Single(bare.Markers).Name);
+        Assert.Equal("plugin:demo::srv", bare.Markers[0].ServerId);
+        Assert.Equal("review", bare.Markers[0].Text);
+        Assert.Empty(bare.Markers[0].Arguments);
+        Assert.False(bare.Markers[0].DuplicateKeys);
 
         var withArgs = FrontendPromptMarkers.Split(
             "[评审](mcp-prompt://plugin:demo::srv/code_review?language=rust&depth=deep)");
-        withArgs.Markers.Should().ContainSingle().Which.Arguments.Should().BeEquivalentTo(
-            new Dictionary<string, string> { ["language"] = "rust", ["depth"] = "deep" });
+        Assert.Equivalent(new Dictionary<string, string> { ["language"] = "rust", ["depth"] = "deep" }, Assert.Single(withArgs.Markers).Arguments);
     }
 
     [Fact]
@@ -31,8 +29,7 @@ public sealed class FrontendPromptMarkersTests
         var split = FrontendPromptMarkers.Split(
             "[x](mcp-prompt://s/prompt?q=a%20b%26c%3Dd)");
 
-        split.Markers.Should().ContainSingle()
-            .Which.Arguments["q"].Should().Be("a b&c=d");
+        Assert.Equal("a b&c=d", Assert.Single(split.Markers).Arguments["q"]);
     }
 
     [Fact]
@@ -47,7 +44,7 @@ public sealed class FrontendPromptMarkersTests
             title: [x](mcp-prompt://s/p "t")
             """;
 
-        FrontendPromptMarkers.Split(text).Markers.Should().BeEmpty();
+        Assert.Empty(FrontendPromptMarkers.Split(text).Markers);
     }
 
     [Fact]
@@ -56,9 +53,9 @@ public sealed class FrontendPromptMarkersTests
         var split = FrontendPromptMarkers.Split(
             $"mention: \\{Reference} and real: {Reference}");
 
-        split.Markers.Should().ContainSingle();
-        split.Remainder.Should().Contain(Reference)
-            .And.NotContain($"\\{Reference}");
+        Assert.Single(split.Markers);
+        Assert.Contains(Reference, split.Remainder);
+        Assert.DoesNotContain($"\\{Reference}", split.Remainder);
     }
 
     [Fact]
@@ -67,7 +64,7 @@ public sealed class FrontendPromptMarkersTests
         var split = FrontendPromptMarkers.Split(
             "[x](mcp-prompt://s/p?a=1&a=2)");
 
-        split.Markers.Should().ContainSingle().Which.DuplicateKeys.Should().BeTrue();
+        Assert.True(Assert.Single(split.Markers).DuplicateKeys);
     }
 
     [Fact]
@@ -75,8 +72,8 @@ public sealed class FrontendPromptMarkersTests
     {
         const string text = "$100 and [x](https://example.com) and mcp-prompt://bare";
         var split = FrontendPromptMarkers.Split(text);
-        split.Markers.Should().BeEmpty();
-        split.Remainder.Should().Be(text);
+        Assert.Empty(split.Markers);
+        Assert.Equal(text, split.Remainder);
     }
 }
 
@@ -93,7 +90,7 @@ public sealed class McpPromptReferenceGrammarTests
     [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false)]
     public void PromptNameReferencability(string name, bool expected)
     {
-        McpPromptReferenceGrammar.IsValidPromptName(name).Should().Be(expected);
+        Assert.Equal(expected, McpPromptReferenceGrammar.IsValidPromptName(name));
     }
 
     [Theory]
@@ -106,6 +103,6 @@ public sealed class McpPromptReferenceGrammarTests
     [InlineData("", false)]
     public void ServerIdSegmentReferencability(string serverId, bool expected)
     {
-        McpPromptReferenceGrammar.IsValidServerIdSegment(serverId).Should().Be(expected);
+        Assert.Equal(expected, McpPromptReferenceGrammar.IsValidServerIdSegment(serverId));
     }
 }

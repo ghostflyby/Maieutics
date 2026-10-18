@@ -3,7 +3,6 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.DenoRepl;
 using Maieutics.Frontend;
 using Maieutics.Providers.OpenAI;
@@ -30,8 +29,8 @@ public sealed class FrontendCommIntegrationTests
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",
             deadline.Token);
-        capabilities.GetProperty("comm").GetProperty("version").GetInt32().Should().Be(1);
-        capabilities.GetProperty("comm").GetProperty("maxMessageBytes").GetInt32().Should().Be(16 * 1024 * 1024);
+        Assert.Equal(1, capabilities.GetProperty("comm").GetProperty("version").GetInt32());
+        Assert.Equal(16 * 1024 * 1024, capabilities.GetProperty("comm").GetProperty("maxMessageBytes").GetInt32());
     }
 
     [Fact(Timeout = 60_000)]
@@ -54,21 +53,21 @@ public sealed class FrontendCommIntegrationTests
 
         using var comms = await ConnectCommsAsync(harness, sessionId, deadline.Token);
         var hello = await ReceiveHelloAsync(comms, deadline.Token);
-        hello.GetProperty("live").GetArrayLength().Should().Be(0);
-        hello.GetProperty("replayed").GetBoolean().Should().BeFalse();
-        hello.GetProperty("truncated").GetBoolean().Should().BeFalse();
+        Assert.Equal(0, hello.GetProperty("live").GetArrayLength());
+        Assert.False(hello.GetProperty("replayed").GetBoolean());
+        Assert.False(hello.GetProperty("truncated").GetBoolean());
 
         using var child = await CommChildSocketStub.ConnectAsync(harness.ControlAddress, sessionId, deadline.Token);
         await CommChildSocketStub.ExpectReadyAsync(child, deadline.Token);
         await CommChildSocketStub.SendAsync(child, Open("w1", "anywidget", new { ready = true }), deadline.Token);
 
         var (sequence, downlink) = await ReceiveCommAsync(comms, deadline.Token);
-        sequence.Should().Be(1);
-        downlink.Kind.Should().Be(ReplCommKind.Open);
-        downlink.CommId.Should().Be("w1");
-        downlink.TargetName.Should().Be("anywidget");
-        downlink.Data.Should().NotBeNull();
-        downlink.Data!.Value.GetProperty("ready").GetBoolean().Should().BeTrue();
+        Assert.Equal(1, sequence);
+        Assert.Equal(ReplCommKind.Open, downlink.Kind);
+        Assert.Equal("w1", downlink.CommId);
+        Assert.Equal("anywidget", downlink.TargetName);
+        Assert.NotNull(downlink.Data);
+        Assert.True(downlink.Data!.Value.GetProperty("ready").GetBoolean());
 
         await SendCommAsync(
             comms,
@@ -82,12 +81,12 @@ public sealed class FrontendCommIntegrationTests
             deadline.Token);
 
         var (opcode, payload) = await CommChildSocketStub.ReceiveFrameAsync(child, deadline.Token);
-        opcode.Should().Be(0x2);
+        Assert.Equal(0x2, opcode);
         var uplink = ReplCommCodec.Decode(payload);
-        uplink.Kind.Should().Be(ReplCommKind.Message);
-        uplink.CommId.Should().Be("w1");
-        uplink.Data!.Value.GetProperty("click").GetInt32().Should().Be(1);
-        uplink.Buffers.Should().ContainSingle().Which.Should().Equal(new byte[] { 0xEF });
+        Assert.Equal(ReplCommKind.Message, uplink.Kind);
+        Assert.Equal("w1", uplink.CommId);
+        Assert.Equal(1, uplink.Data!.Value.GetProperty("click").GetInt32());
+        Assert.Equal(new byte[] { 0xEF }, Assert.Single(uplink.Buffers));
     }
 
     [Fact(Timeout = 60_000)]
@@ -132,26 +131,25 @@ public sealed class FrontendCommIntegrationTests
 
         using var first = await ConnectCommsAsync(harness, sessionId, deadline.Token);
         firstHello = await ReceiveHelloAsync(first, deadline.Token);
-        firstHello.GetProperty("replayed").GetBoolean().Should().BeFalse();
-        firstHello.GetProperty("live").EnumerateArray().Select(entry => entry.GetProperty("commId").GetString())
-            .Should().Equal("w1", "w2");
+        Assert.False(firstHello.GetProperty("replayed").GetBoolean());
+        Assert.Equal(new string?[] { "w1", "w2" }, firstHello.GetProperty("live").EnumerateArray().Select(entry => entry.GetProperty("commId").GetString()));
         var (one, _) = await ReceiveCommAsync(first, deadline.Token);
         var (two, _) = await ReceiveCommAsync(first, deadline.Token);
-        one.Should().Be(1);
-        two.Should().Be(2);
+        Assert.Equal(1, one);
+        Assert.Equal(2, two);
 
         using var resumed = await ConnectCommsAsync(harness, sessionId, deadline.Token, sinceSeq: 1);
         var resumedHello = await ReceiveHelloAsync(resumed, deadline.Token);
-        resumedHello.GetProperty("replayed").GetBoolean().Should().BeTrue();
-        resumedHello.GetProperty("truncated").GetBoolean().Should().BeFalse();
+        Assert.True(resumedHello.GetProperty("replayed").GetBoolean());
+        Assert.False(resumedHello.GetProperty("truncated").GetBoolean());
         var (only, message) = await ReceiveCommAsync(resumed, deadline.Token);
-        only.Should().Be(2);
-        message.CommId.Should().Be("w2");
+        Assert.Equal(2, only);
+        Assert.Equal("w2", message.CommId);
 
         using var ahead = await ConnectCommsAsync(harness, sessionId, deadline.Token, sinceSeq: 5);
         var aheadHello = await ReceiveHelloAsync(ahead, deadline.Token);
         // The client claims a position that was never published: state is unknown.
-        aheadHello.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        Assert.True(aheadHello.GetProperty("truncated").GetBoolean());
     }
 
     [Fact(Timeout = 60_000)]
@@ -170,14 +168,14 @@ public sealed class FrontendCommIntegrationTests
         await SendCommAsync(comms, Message("ghost"), deadline.Token);
 
         var error = await ReceiveCommErrorAsync(comms, deadline.Token);
-        error.GetProperty("type").GetString().Should().Be("comm.error");
-        error.GetProperty("code").GetString().Should().Be("comm_not_found");
-        error.GetProperty("commId").GetString().Should().Be("ghost");
+        Assert.Equal("comm.error", error.GetProperty("type").GetString());
+        Assert.Equal("comm_not_found", error.GetProperty("code").GetString());
+        Assert.Equal("ghost", error.GetProperty("commId").GetString());
 
         // The socket stays open: a follow-up uplink still gets a typed answer.
         await SendCommAsync(comms, Message("phantom"), deadline.Token);
         var second = await ReceiveCommErrorAsync(comms, deadline.Token);
-        second.GetProperty("commId").GetString().Should().Be("phantom");
+        Assert.Equal("phantom", second.GetProperty("commId").GetString());
     }
 
     [Fact(Timeout = 60_000)]
@@ -196,8 +194,8 @@ public sealed class FrontendCommIntegrationTests
         await SendCommAsync(comms, Open("w1", "tw", null), deadline.Token);
 
         var result = await comms.ReceiveAsync(new byte[64], deadline.Token);
-        result.MessageType.Should().Be(WebSocketMessageType.Close);
-        comms.CloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
+        Assert.Equal(WebSocketMessageType.Close, result.MessageType);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, comms.CloseStatus);
     }
 
     [Fact(Timeout = 60_000)]
@@ -225,7 +223,7 @@ public sealed class FrontendCommIntegrationTests
         await CommChildSocketStub.ExpectReadyAsync(child, deadline.Token);
         await CommChildSocketStub.SendAsync(child, Open("w9", "tw9", null), deadline.Token);
         var (_, opened) = await ReceiveCommAsync(comms, deadline.Token);
-        opened.CommId.Should().Be("w9");
+        Assert.Equal("w9", opened.CommId);
 
         child.Dispose();
 
@@ -241,8 +239,8 @@ public sealed class FrontendCommIntegrationTests
             try
             {
                 var error = await ReceiveCommErrorAsync(comms, attempt.Token);
-                error.GetProperty("code").GetString().Should().Be("repl_unavailable");
-                error.GetProperty("commId").GetString().Should().Be("w9");
+                Assert.Equal("repl_unavailable", error.GetProperty("code").GetString());
+                Assert.Equal("w9", error.GetProperty("commId").GetString());
                 break;
             }
             catch (OperationCanceledException) when (!deadline.Token.IsCancellationRequested)
@@ -268,7 +266,7 @@ public sealed class FrontendCommIntegrationTests
             harness,
             Guid.NewGuid().ToString("N"),
             deadline.Token);
-        await unknown.Should().ThrowAsync<WebSocketException>();
+        await Assert.ThrowsAnyAsync<WebSocketException>(async () => { await unknown.Invoke(); });
 
         // ...while any known session's comms plane is served directly, whether
         // or not it is the foreground session.
@@ -368,7 +366,7 @@ public sealed class FrontendCommIntegrationTests
             if (result.EndOfMessage) break;
         }
 
-        type.Should().Be(WebSocketMessageType.Binary);
+        Assert.Equal(WebSocketMessageType.Binary, type);
         var sequence = (long)BinaryPrimitives.ReadUInt64BigEndian(payload.AsSpan(0, 8));
         return (sequence, ReplCommCodec.Decode(payload[8..offset]));
     }

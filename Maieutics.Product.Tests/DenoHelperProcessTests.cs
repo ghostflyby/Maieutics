@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using FluentAssertions;
 using Maieutics.DenoRepl;
 
 namespace Maieutics.Product.Tests;
@@ -56,8 +55,8 @@ public sealed class DenoHelperProcessTests
 
             // The helper must surface the cancellation promptly (not wait for the child)...
             var runDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            await run.Invoking(static task => task).Should().ThrowAsync<OperationCanceledException>();
-            DateTime.UtcNow.Should().BeBefore(runDeadline, "the helper must cancel within its budget");
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run)); });
+            Assert.True(DateTime.UtcNow < runDeadline);
 
             // ...and the child must actually be dead: the stamp stops advancing.
             var dead = false;
@@ -69,7 +68,7 @@ public sealed class DenoHelperProcessTests
                 dead = File.GetLastWriteTimeUtc(stampPath) == before;
             }
 
-            dead.Should().BeTrue("the cancelled helper child must be killed, not orphaned");
+            Assert.True(dead, "the cancelled helper child must be killed, not orphaned");
         }
         finally
         {
@@ -95,9 +94,9 @@ public sealed class DenoHelperProcessTests
 
         var run = await DenoHelperProcess.RunAsync(startInfo, "to drain streams.", deadline.Token);
 
-        run.ExitCode.Should().Be(0);
-        run.StandardOutput.Should().Contain("helper-out");
-        run.StandardError.Should().Contain("helper-err");
+        Assert.Equal(0, run.ExitCode);
+        Assert.Contains("helper-out", run.StandardOutput);
+        Assert.Contains("helper-err", run.StandardError);
     }
 
     private static void TryDelete(string path)

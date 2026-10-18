@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Frontend;
 using Microsoft.Extensions.AI;
@@ -31,10 +30,10 @@ public sealed class FrontendRunStreamTests
 
         var (frames, channel) = stream.Subscribe(sinceSequence: 0);
         var frame = frames.Single(entry => entry.Type == "input.request");
-        frame.RequestId.Should().Be("input-abc-1");
-        frame.Prompt.Should().Be("Name:");
-        frame.Password.Should().BeTrue();
-        frame.Data.Should().BeNull();
+        Assert.Equal("input-abc-1", frame.RequestId);
+        Assert.Equal("Name:", frame.Prompt);
+        Assert.True(frame.Password);
+        Assert.Null(frame.Data);
         stream.Unsubscribe(channel);
         await Task.CompletedTask;
     }
@@ -61,9 +60,9 @@ public sealed class FrontendRunStreamTests
 
         var (frames, channel) = stream.Subscribe(sinceSequence: 0);
         var frame = frames.Single(entry => entry.Type == "repl.display");
-        frame.DisplayId.Should().Be("display-1");
-        frame.Data.Should().NotBeNull();
-        frame.Data!.Value.GetProperty("text/plain").GetString().Should().Be("hi");
+        Assert.Equal("display-1", frame.DisplayId);
+        Assert.NotNull(frame.Data);
+        Assert.Equal("hi", frame.Data!.Value.GetProperty("text/plain").GetString());
         stream.Unsubscribe(channel);
         await Task.CompletedTask;
     }
@@ -84,15 +83,14 @@ public sealed class FrontendRunStreamTests
         stream.Start(null);
 
         var (initial, channel) = await WaitForCompletedReplayAsync(stream, sinceSequence: 0, TestContext.Current.CancellationToken);
-        channel.Reader.Completion.IsCompleted.Should().BeTrue();
+        Assert.True(channel.Reader.Completion.IsCompleted);
 
         // run.started + run.status(busy) + deltas + run.completed + run.status(idle).
-        initial.Count.Should().Be(deltas + 4);
-        initial.Count.Should().BeGreaterThan(FrontendRunStream.SubscriberQueueCapacity);
-        initial.Where(frame => frame.Sequence is { }).Select(frame => frame.Sequence!.Value)
-            .Should().Equal(Enumerable.Range(1, deltas).Select(index => (long)index));
-        initial[^2].Type.Should().Be("run.completed");
-        initial[^1].Type.Should().Be("run.status");
+        Assert.Equal(deltas + 4, initial.Count);
+        Assert.True(initial.Count > FrontendRunStream.SubscriberQueueCapacity);
+        Assert.Equal(Enumerable.Range(1, deltas).Select(index => (long)index), initial.Where(frame => frame.Sequence is { }).Select(frame => frame.Sequence!.Value));
+        Assert.Equal("run.completed", initial[^2].Type);
+        Assert.Equal("run.status", initial[^1].Type);
 
         await stream.DisposeAsync();
         await run.Completion;
@@ -114,21 +112,20 @@ public sealed class FrontendRunStreamTests
         stream.Start(null);
 
         var (initial, channel) = await WaitForCompletedReplayAsync(stream, sinceSequence: 5, TestContext.Current.CancellationToken);
-        channel.Reader.Completion.IsCompleted.Should().BeTrue();
+        Assert.True(channel.Reader.Completion.IsCompleted);
 
-        initial[0].Type.Should().Be("run.missing");
+        Assert.Equal("run.missing", initial[0].Type);
         // The buffer retains the last ReplayRetention frames overall; the terminal pair
         // (run.completed plus the trailing run.status) occupies two of those slots, so the
         // oldest retained delta is deltas - (ReplayRetention - 2) + 1. The trailing
         // run.status carries no sequence and is not replayable for a resuming subscriber.
         var retainedDeltas = FrontendRunStream.ReplayRetention - 2;
         var oldestRetainedDelta = deltas - retainedDeltas + 1;
-        initial.Count.Should().Be(1 + retainedDeltas + 1);
-        initial[1].Sequence.Should().Be(oldestRetainedDelta);
-        initial[^2].Sequence.Should().Be(deltas);
-        initial[^1].Type.Should().Be("run.completed");
-        initial.Where(frame => frame.Sequence is { }).Select(frame => frame.Sequence!.Value)
-            .Should().OnlyHaveUniqueItems();
+        Assert.Equal(1 + retainedDeltas + 1, initial.Count);
+        Assert.Equal(oldestRetainedDelta, initial[1].Sequence);
+        Assert.Equal(deltas, initial[^2].Sequence);
+        Assert.Equal("run.completed", initial[^1].Type);
+        Assert.Equal(initial.Where(frame => frame.Sequence is { }).Select(frame => frame.Sequence!.Value).Count(), initial.Where(frame => frame.Sequence is { }).Select(frame => frame.Sequence!.Value).Distinct().Count());
 
         await stream.DisposeAsync();
         await run.Completion;
@@ -168,11 +165,11 @@ public sealed class FrontendRunStreamTests
             await Task.Delay(10, TestContext.Current.CancellationToken);
         }
 
-        snapshot[0].Type.Should().Be("run.missing");
+        Assert.Equal("run.missing", snapshot[0].Type);
         // Mid-run the buffer holds the last ReplayRetention deltas; the run is held before
         // any terminal frame publishes, so the oldest retained delta is
         // deltas - ReplayRetention + 1.
-        snapshot[1].Sequence.Should().Be(deltas - FrontendRunStream.ReplayRetention + 1);
+        Assert.Equal(deltas - FrontendRunStream.ReplayRetention + 1, snapshot[1].Sequence);
 
         run.Release();
         await WaitForCompletedReplayAsync(stream, sinceSequence: 0, TestContext.Current.CancellationToken);
@@ -204,9 +201,9 @@ public sealed class FrontendRunStreamTests
         // run, so the pump never reached its disposal task. The pump must cancel and
         // dispose the run exactly once.
         await stream.DisposeAsync();
-        run.CancelCount.Should().Be(1);
-        run.DisposeCount.Should().Be(1);
-        run.Completion.IsCompleted.Should().BeTrue();
+        Assert.Equal(1, run.CancelCount);
+        Assert.Equal(1, run.DisposeCount);
+        Assert.True(run.Completion.IsCompleted);
         stream.Unsubscribe(channel);
     }
 
@@ -224,8 +221,8 @@ public sealed class FrontendRunStreamTests
 
         await stream.DisposeAsync();
         await stream.DisposeAsync();
-        run.DisposeCount.Should().Be(1);
-        run.CancelCount.Should().Be(0);
+        Assert.Equal(1, run.DisposeCount);
+        Assert.Equal(0, run.CancelCount);
         await run.Completion;
     }
 
@@ -273,12 +270,10 @@ public sealed class FrontendRunStreamTests
         await stream.DisposeAsync();
 
         var runId = run.Id.Value.ToString("N");
-        var record = logger.Records.Should()
-            .ContainSingle(entry => entry.Message.Contains("agent_unsupported_response", StringComparison.Ordinal))
-            .Subject;
-        record.Level.Should().Be(LogLevel.Warning);
-        record.Message.Should().Contain(runId);
-        record.Exception.Should().BeOfType<AgentContentCompatibilityException>();
+        var record = Assert.Single(logger.Records, entry => entry.Message.Contains("agent_unsupported_response", StringComparison.Ordinal));
+        Assert.Equal(LogLevel.Warning, record.Level);
+        Assert.Contains(runId, record.Message);
+        Assert.IsType<AgentContentCompatibilityException>(record.Exception);
     }
 
     /// <summary>
@@ -302,13 +297,13 @@ public sealed class FrontendRunStreamTests
         await stream.DisposeAsync();
 
         var runId = run.Id.Value.ToString("N");
-        logger.Records.Should().Contain(entry =>
+        Assert.Contains(logger.Records, entry =>
             entry.Level == LogLevel.Warning &&
             entry.Message.Contains(runId, StringComparison.Ordinal) &&
             entry.Message.Contains("still incomplete", StringComparison.Ordinal));
         // The settle line must state the outcome; the cancellation the sweep issues is what
         // the run's completion reports, so a reader can tell it apart from the run's own result.
-        logger.Records.Should().Contain(entry =>
+        Assert.Contains(logger.Records, entry =>
             entry.Message.Contains(runId, StringComparison.Ordinal) &&
             entry.Message.Contains("settled with outcome", StringComparison.Ordinal));
     }

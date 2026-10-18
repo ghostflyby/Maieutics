@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 using Maieutics.Permissions;
 using Maieutics.Processes;
@@ -21,9 +20,9 @@ public sealed class ProcessEnvironmentTests
 
         var environment = ProcessEnvironment.Capture(policy);
 
-        environment.Should().ContainKey("TERM").WhoseValue.Should().Be(ProcessEnvironment.TermName);
-        environment.Should().NotContainKey("MAIEUTICS_TEST_ONLY");
-        environment.Should().NotContainKey("MAIEUTICS_TEST_ALSO_ABSENT");
+        Assert.Equal(ProcessEnvironment.TermName, Assert.Contains("TERM", environment));
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_ONLY"));
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_ALSO_ABSENT"));
     }
 
     [Fact]
@@ -39,9 +38,9 @@ public sealed class ProcessEnvironmentTests
 
         var environment = ProcessEnvironment.Capture(policy);
 
-        environment.Should().ContainKey("MAIEUTICS_TEST_KEEP").WhoseValue.Should().Be("kept");
-        environment.Should().NotContainKey("MAIEUTICS_TEST_DROP");
-        environment.Should().ContainKey("TERM");
+        Assert.Equal("kept", Assert.Contains("MAIEUTICS_TEST_KEEP", environment));
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_DROP"));
+        Assert.True(environment.ContainsKey("TERM"));
     }
 
     [Fact]
@@ -57,8 +56,8 @@ public sealed class ProcessEnvironmentTests
 
         var environment = ProcessEnvironment.Capture(policy);
 
-        environment.Should().ContainKey("PATH").WhoseValue.Should().Be("/usr/bin");
-        environment.Should().NotContainKey("MAIEUTICS_TEST_DROP");
+        Assert.Equal("/usr/bin", Assert.Contains("PATH", environment));
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_DROP"));
     }
 
     [Fact]
@@ -94,8 +93,8 @@ public sealed class ProcessEnvironmentTests
 
         var environment = ProcessEnvironment.Capture(policy);
 
-        environment.Should().ContainKey("MAIEUTICS_TEST_KEEP").WhoseValue.Should().Be("kept");
-        environment.Should().NotContainKey("MAIEUTICS_TEST_DROP");
+        Assert.Equal("kept", Assert.Contains("MAIEUTICS_TEST_KEEP", environment));
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_DROP"));
     }
 
     [Fact]
@@ -117,9 +116,9 @@ public sealed class ProcessEnvironmentTests
 
         var environment = ProcessEnvironment.Capture(policy);
 
-        environment.Should().NotContainKey("MAIEUTICS_TEST_KEEP");
-        environment.Should().NotContainKey("MAIEUTICS_TEST_KEEP_TOO");
-        environment.Should().ContainKey("TERM");
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_KEEP"));
+        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_KEEP_TOO"));
+        Assert.True(environment.ContainsKey("TERM"));
     }
 
     [Fact]
@@ -135,10 +134,10 @@ public sealed class ProcessEnvironmentTests
 
         var environment = ProcessEnvironment.Capture(policy);
 
-        environment.Should().NotContainKey("PATH");
-        environment.Should().NotContainKey("HOME");
+        Assert.False(environment.ContainsKey("PATH"));
+        Assert.False(environment.ContainsKey("HOME"));
         // TERM stays pinned so the VT renderer keeps working regardless of the policy.
-        environment.Should().ContainKey("TERM").WhoseValue.Should().Be(ProcessEnvironment.TermName);
+        Assert.Equal(ProcessEnvironment.TermName, Assert.Contains("TERM", environment));
     }
 
     private static EffectivePolicy Build(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)

@@ -3,7 +3,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 
@@ -26,12 +25,12 @@ public sealed class ReplEvalWebSocketTests
             decoded,
             ReplEvalJsonContext.Default.ReplEvalExecutePayload);
 
-        decoded.Version.Should().Be(envelope.Version);
-        decoded.Type.Should().Be(envelope.Type);
-        decoded.CorrelationId.Should().Be(envelope.CorrelationId);
-        decoded.Payload?.GetRawText().Should().Be(envelope.Payload?.GetRawText());
-        decodedPayload.Should().Be(payload);
-        ReplEvalProtocol.WebSocketPath.Should().Be("/v1/repl/eval/ws");
+        Assert.Equal(envelope.Version, decoded.Version);
+        Assert.Equal(envelope.Type, decoded.Type);
+        Assert.Equal(envelope.CorrelationId, decoded.CorrelationId);
+        Assert.Equal(envelope.Payload?.GetRawText(), decoded.Payload?.GetRawText());
+        Assert.Equal(payload, decodedPayload);
+        Assert.Equal("/v1/repl/eval/ws", ReplEvalProtocol.WebSocketPath);
     }
 
     [Fact(Timeout = 30_000)]
@@ -52,14 +51,14 @@ public sealed class ReplEvalWebSocketTests
         var attached = host.AttachAsync(socket, 41, deadline.Token);
 
         var readyJson = await socket.ReadSentAsync(deadline.Token);
-        readyJson.Should().NotContain("\"credential\"");
+        Assert.DoesNotContain("\"credential\"", readyJson);
         var ready = ReplEvalProtocol.Deserialize(readyJson);
-        ready.Type.Should().Be(ReplEvalMessageType.Ready);
+        Assert.Equal(ReplEvalMessageType.Ready, ready.Type);
         var connection = await connectionWait;
         var execution = await connection.ExecuteAsync("console.log('hello')", deadline.Token);
         var execute = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
-        execute.Type.Should().Be(ReplEvalMessageType.Execute);
-        execute.CorrelationId.Should().Be(execution.ExecutionId);
+        Assert.Equal(ReplEvalMessageType.Execute, execute.Type);
+        Assert.Equal(execution.ExecutionId, execute.CorrelationId);
 
         await using var events = execution.Events.GetAsyncEnumerator(deadline.Token);
         var request = new ReplEvalInputRequestPayload(
@@ -73,12 +72,12 @@ public sealed class ReplEvalWebSocketTests
             request.RequestId,
             request,
             ReplEvalJsonContext.Default.ReplEvalInputRequestPayload));
-        (await events.MoveNextAsync()).Should().BeTrue();
-        var input = events.Current.Should().BeOfType<ReplEvalInputRequestEvent>().Which;
+        Assert.True((await events.MoveNextAsync()));
+        var input = Assert.IsType<ReplEvalInputRequestEvent>(events.Current);
         await connection.ReplyInputAsync(input, "Ada", deadline.Token);
         var reply = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
-        reply.Type.Should().Be(ReplEvalMessageType.InputReply);
-        reply.CorrelationId.Should().Be(request.RequestId);
+        Assert.Equal(ReplEvalMessageType.InputReply, reply.Type);
+        Assert.Equal(request.RequestId, reply.CorrelationId);
 
         using var resultDocument = JsonDocument.Parse("42");
         socket.QueueText(Envelope(
@@ -86,8 +85,8 @@ public sealed class ReplEvalWebSocketTests
             execution.ExecutionId,
             new ReplEvalResultPayload(execution.ExecutionId, resultDocument.RootElement.Clone()),
             ReplEvalJsonContext.Default.ReplEvalResultPayload));
-        (await execution.Completion.WaitAsync(deadline.Token)).Should().BeOfType<ReplEvalResultTerminal>();
-        (await events.MoveNextAsync()).Should().BeFalse();
+        Assert.IsType<ReplEvalResultTerminal>((await execution.Completion.WaitAsync(deadline.Token)));
+        Assert.False((await events.MoveNextAsync()));
 
         await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
     }
@@ -110,10 +109,10 @@ public sealed class ReplEvalWebSocketTests
         var attached = host.AttachAsync(socket, 0, deadline.Token);
 
         var readyJson = await socket.ReadSentAsync(deadline.Token);
-        readyJson.Should().NotContain("\"credential\"");
+        Assert.DoesNotContain("\"credential\"", readyJson);
         var ready = ReplEvalProtocol.Deserialize(readyJson);
         var identity = ReplEvalProtocol.ParsePayload(ready, ReplEvalJsonContext.Default.ReplEvalIdentity);
-        identity.Should().Be(new ReplEvalIdentity("session-1", 1));
+        Assert.Equal(new ReplEvalIdentity("session-1", 1), identity);
         var connection = await connectionWait;
 
         await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
@@ -136,7 +135,7 @@ public sealed class ReplEvalWebSocketTests
         await host.AttachAsync(socket, 0, deadline.Token);
         await socket.Closed.WaitAsync(deadline.Token);
 
-        socket.CloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
+        Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
     }
 
     [Fact(Timeout = 30_000)]
@@ -176,9 +175,7 @@ public sealed class ReplEvalWebSocketTests
                 })),
             ReplEvalJsonContext.Default.ReplEvalEnvelope);
         socket.QueueText(consoleJson);
-        (await connection.Completion.Awaiting(static task => task).Should()
-                .ThrowAsync<ReplEvalProtocolException>())
-            .Which.Code.Should().Be("unknown_message_type");
+        Assert.Equal("unknown_message_type", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await ((connection.Completion)); })).Code);
         await attached.WaitAsync(deadline.Token);
     }
 
@@ -211,9 +208,7 @@ public sealed class ReplEvalWebSocketTests
 
         socket.QueueText(result);
 
-        (await connection.Completion.Awaiting(static task => task).Should()
-                .ThrowAsync<ReplEvalProtocolException>())
-            .Which.Code.Should().Be("duplicate_terminal");
+        Assert.Equal("duplicate_terminal", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await ((connection.Completion)); })).Code);
         await attached.WaitAsync(deadline.Token);
     }
 
@@ -239,7 +234,7 @@ public sealed class ReplEvalWebSocketTests
 
         var cancel = connection.CancelAsync(execution.ExecutionId, deadline.Token);
         var cancelEnvelope = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
-        cancelEnvelope.Type.Should().Be(ReplEvalMessageType.Cancel);
+        Assert.Equal(ReplEvalMessageType.Cancel, cancelEnvelope.Type);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Cancelled,
             execution.ExecutionId,
@@ -247,7 +242,7 @@ public sealed class ReplEvalWebSocketTests
             ReplEvalJsonContext.Default.ReplEvalCancelledPayload));
 
         await cancel;
-        (await execution.Completion).Should().BeOfType<ReplEvalCancelledTerminal>();
+        Assert.IsType<ReplEvalCancelledTerminal>((await execution.Completion));
         await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
     }
 
@@ -259,11 +254,11 @@ public sealed class ReplEvalWebSocketTests
     {
         var shutdown = connection.ShutdownAsync(cancellationToken);
         var disposeJson = await socket.ReadSentAsync(cancellationToken);
-        disposeJson.Should().NotContain("\"credential\"");
+        Assert.DoesNotContain("\"credential\"", disposeJson);
         var dispose = ReplEvalProtocol.Deserialize(disposeJson);
-        dispose.Type.Should().Be(ReplEvalMessageType.Dispose);
+        Assert.Equal(ReplEvalMessageType.Dispose, dispose.Type);
         var identity = ReplEvalProtocol.ParsePayload(dispose, ReplEvalJsonContext.Default.ReplEvalIdentity);
-        identity.Credential.Should().BeNull();
+        Assert.Null(identity.Credential);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Result,
             dispose.CorrelationId,

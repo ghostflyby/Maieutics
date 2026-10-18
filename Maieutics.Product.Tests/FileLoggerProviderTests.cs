@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;
@@ -84,8 +83,8 @@ public sealed class FileLoggerProviderTests : IDisposable
             write: _ => logger.LogInformation("after disposal"),
             release: provider.Dispose);
 
-        var file = Directory.GetFiles(logDirectory, "maieutics-*.log").Should().ContainSingle().Which;
-        File.ReadAllText(file).Should().Contain("before disposal");
+        var file = Assert.Single(Directory.GetFiles(logDirectory, "maieutics-*.log"));
+        Assert.Contains("before disposal", File.ReadAllText(file));
     }
 
     /// <summary>Holds writers and the disposer at one start gate, then releases them together.</summary>

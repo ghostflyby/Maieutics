@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using System.Net.Http.Json;
@@ -54,19 +53,18 @@ public sealed class FrontendUiModelTests
             new FrontendFormHandlers(),
             TestContext.Current.CancellationToken);
 
-        model.Should().NotBeNull();
+        Assert.NotNull(model);
         var live = router.PlaneFor(session.ToString()).SnapshotLive();
-        live.Should().ContainSingle()
-            .Which.TargetName.Should().Be("maieutics.view/maieutics/form");
+        Assert.Equal("maieutics.view/maieutics/form", Assert.Single(live).TargetName);
 
-        var display = publisher.Published.Should().ContainSingle().Which;
-        display.Type.Should().Be("repl.display");
+        var display = Assert.Single(publisher.Published);
+        Assert.Equal("repl.display", display.Type);
         var announcement = display.Data.GetProperty("application/vnd.maieutics.view+json");
-        announcement.GetProperty("modelId").GetString().Should().Be(model.CommId);
-        announcement.GetProperty("viewFamily").GetString().Should().Be("maieutics/form");
-        announcement.GetProperty("version").GetString().Should().Be("1.0");
-        announcement.GetProperty("state").GetProperty("title").GetString().Should().Be("Approve deployment?");
-        display.Data.GetProperty("text/plain").GetString().Should().Be("Approve deployment?");
+        Assert.Equal(model.CommId, announcement.GetProperty("modelId").GetString());
+        Assert.Equal("maieutics/form", announcement.GetProperty("viewFamily").GetString());
+        Assert.Equal("1.0", announcement.GetProperty("version").GetString());
+        Assert.Equal("Approve deployment?", announcement.GetProperty("state").GetProperty("title").GetString());
+        Assert.Equal("Approve deployment?", display.Data.GetProperty("text/plain").GetString());
     }
 
     [Fact]
@@ -88,7 +86,7 @@ public sealed class FrontendUiModelTests
                     return ValueTask.CompletedTask;
                 }),
             TestContext.Current.CancellationToken);
-        model.Should().NotBeNull();
+        Assert.NotNull(model);
 
         await router.PushToReplAsync(
             session.ToString(),
@@ -97,9 +95,9 @@ public sealed class FrontendUiModelTests
                 new { method = "event", name = "submit", payload = new { values = new { note = "ship it" } } }),
             TestContext.Current.CancellationToken);
 
-        childPushes.Should().BeEmpty("kernel-owned uplink never travels to the child");
+        Assert.Empty(childPushes);
         var values = await submitted.Task.WaitAsync(TestContext.Current.CancellationToken);
-        values["note"].Should().Be("ship it");
+        Assert.Equal("ship it", values["note"]);
     }
 
     [Fact]
@@ -131,7 +129,7 @@ public sealed class FrontendUiModelTests
             session.ToString(),
             Uplink(model.CommId, null, ReplCommKind.Close),
             TestContext.Current.CancellationToken);
-        router.PlaneFor(session.ToString()).SnapshotLive().Should().BeEmpty();
+        Assert.Empty(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
     [Fact]
@@ -158,8 +156,8 @@ public sealed class FrontendUiModelTests
                 Uplink(model.CommId, "not-an-object"),
                 TestContext.Current.CancellationToken);
         };
-        await act.Should().NotThrowAsync();
-        router.PlaneFor(session.ToString()).SnapshotLive().Should().HaveCount(1);
+        await act.Invoke();
+        Assert.Single(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
     [Fact]
@@ -183,7 +181,7 @@ public sealed class FrontendUiModelTests
                 []),
             TestContext.Current.CancellationToken);
 
-        childPushes.Should().ContainSingle().Which.CommId.Should().Be("w1");
+        Assert.Equal("w1", Assert.Single(childPushes).CommId);
     }
 
     [Fact]
@@ -200,8 +198,8 @@ public sealed class FrontendUiModelTests
             new FrontendFormHandlers(),
             TestContext.Current.CancellationToken);
 
-        model.Should().BeNull();
-        router.PlaneFor(session.ToString()).SnapshotLive().Should().BeEmpty("the opened comm is closed again");
+        Assert.Null(model);
+        Assert.Empty(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
     [Fact(Timeout = 60_000)]
@@ -216,10 +214,9 @@ public sealed class FrontendUiModelTests
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",
             token);
-        capabilities.GetProperty("ui").GetProperty("version").GetInt32().Should().Be(1);
-        capabilities.GetProperty("ui").GetProperty("families")
-            .EnumerateArray().Select(family => family.GetString())
-            .Should().Contain("maieutics/form");
+        Assert.Equal(1, capabilities.GetProperty("ui").GetProperty("version").GetInt32());
+        Assert.Contains("maieutics/form", capabilities.GetProperty("ui").GetProperty("families")
+            .EnumerateArray().Select(family => family.GetString()));
     }
 
     [Fact]
@@ -247,17 +244,17 @@ public sealed class FrontendUiModelTests
 
         // Both presentations ride the run stream: the fallback input.request frame
         // and the native form announcement (ADR 0038 stage 2).
-        publisher.Published.Select(frame => frame.Type).Should().BeEquivalentTo(["input.request", "repl.display"]);
+        Assert.Equivalent(new[] { "input.request", "repl.display" }, publisher.Published.Select(frame => frame.Type));
         var announcement = publisher.Published
             .Single(frame => frame.Type == "repl.display")
             .Data.GetProperty("application/vnd.maieutics.view+json");
-        announcement.GetProperty("viewFamily").GetString().Should().Be("maieutics/form");
+        Assert.Equal("maieutics/form", announcement.GetProperty("viewFamily").GetString());
         var fields = announcement.GetProperty("state").GetProperty("fields");
-        fields.GetArrayLength().Should().Be(3);
-        fields[0].GetProperty("name").GetString().Should().Be("token");
-        fields[0].GetProperty("type").GetString().Should().Be("text");
-        fields[0].GetProperty("required").GetBoolean().Should().BeTrue();
-        fields[2].GetProperty("type").GetString().Should().Be("choice");
+        Assert.Equal(3, fields.GetArrayLength());
+        Assert.Equal("token", fields[0].GetProperty("name").GetString());
+        Assert.Equal("text", fields[0].GetProperty("type").GetString());
+        Assert.True(fields[0].GetProperty("required").GetBoolean());
+        Assert.Equal("choice", fields[2].GetProperty("type").GetString());
 
         // Submitting through the comm plane answers the elicitation directly.
         var modelId = announcement.GetProperty("modelId").GetString()!;
@@ -269,11 +266,10 @@ public sealed class FrontendUiModelTests
             deadline.Token);
 
         var answer = await wait;
-        answer.Action.Should().Be("accept");
-        answer.ContentJson.Should().Contain("t0k");
-        childPushes.Should().BeEmpty("the kernel-owned form never reaches the child");
-        router.PlaneFor(session.ToString()).SnapshotLive().Should().BeEmpty(
-            "answering the elicitation closes the form's comm");
+        Assert.Equal("accept", answer.Action);
+        Assert.Contains("t0k", answer.ContentJson);
+        Assert.Empty(childPushes);
+        Assert.Empty(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
     [Fact]
@@ -292,10 +288,10 @@ public sealed class FrontendUiModelTests
 
         // The comm_open's replayed data carries the native state payload.
         var plane = router.PlaneFor(session.ToString());
-        var open = plane.Subscribe(0).Initial.Should().ContainSingle().Which;
-        open.Message.TargetName.Should().Be("maieutics.view/maieutics/form");
-        open.Message.Data.Should().NotBeNull();
-        open.Message.Data!.Value.GetProperty("state").GetProperty("title").GetString().Should().Be("T");
+        var open = Assert.Single(plane.Subscribe(0).Initial);
+        Assert.Equal("maieutics.view/maieutics/form", open.Message.TargetName);
+        Assert.NotNull(open.Message.Data);
+        Assert.Equal("T", open.Message.Data!.Value.GetProperty("state").GetProperty("title").GetString());
 
         // Frontend close uplink and the owner's own dispose race in production;
         // the closed handler fires exactly once across both paths.
@@ -304,8 +300,8 @@ public sealed class FrontendUiModelTests
             Uplink(model!.CommId, null, ReplCommKind.Close),
             TestContext.Current.CancellationToken);
         await model.DisposeAsync();
-        closedCount.Should().Be(1);
-        plane.SnapshotLive().Should().BeEmpty();
+        Assert.Equal(1, closedCount);
+        Assert.Empty(plane.SnapshotLive());
     }
 
     private sealed class FakePublisher(bool publishable = true) : IFrontendSessionFramePublisher

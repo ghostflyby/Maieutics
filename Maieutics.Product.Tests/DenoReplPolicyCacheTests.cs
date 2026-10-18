@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -54,11 +53,11 @@ public sealed class DenoReplPolicyCacheTests
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "prepared-session", 1, process.Id)));
 
-            registry.IsOwnedBy(process.Id, "prepared-session").Should().BeTrue();
+            Assert.True(registry.IsOwnedBy(process.Id, "prepared-session"));
             var output = await outputTask;
-            output.Should().Contain("read OK");
-            output.Should().Contain("HOME denied");
-            output.Should().Contain("PATH denied");
+            Assert.Contains("read OK", output);
+            Assert.Contains("HOME denied", output);
+            Assert.Contains("PATH denied", output);
         }
         finally
         {
@@ -106,12 +105,12 @@ public sealed class DenoReplPolicyCacheTests
             var output = await outputTask;
             if (policy is not null)
             {
-                output.Should().Contain("read OK");
-                output.Should().Contain("HOME denied");
+                Assert.Contains("read OK", output);
+                Assert.Contains("HOME denied", output);
             }
             else
             {
-                output.Should().Contain("read denied");
+                Assert.Contains("read denied", output);
             }
         }
         finally
@@ -149,7 +148,7 @@ public sealed class DenoReplPolicyCacheTests
                 TestPermissionPolicies.Unconfigured(),
                 NullLogger.Instance,
                 deadline.Token);
-            policy.Should().BeNull();
+            Assert.Null(policy);
 
             using var process = StartProbe(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
@@ -157,7 +156,7 @@ public sealed class DenoReplPolicyCacheTests
                 "failed-session", 1, process.Id)));
 
             var output = await outputTask;
-            output.Should().Contain("read denied");
+            Assert.Contains("read denied", output);
         }
         finally
         {
@@ -187,7 +186,7 @@ public sealed class DenoReplPolicyCacheTests
                 "closed-session", 1, process.Id)));
 
             var output = await outputTask;
-            output.Should().Contain("read denied");
+            Assert.Contains("read denied", output);
         }
         finally
         {
@@ -226,8 +225,8 @@ public sealed class DenoReplPolicyCacheTests
                 "restarted-session", 2, process.Id)));
 
             var output = await outputTask;
-            output.Should().Contain("read OK");
-            output.Should().Contain("HOME denied");
+            Assert.Contains("read OK", output);
+            Assert.Contains("HOME denied", output);
         }
         finally
         {

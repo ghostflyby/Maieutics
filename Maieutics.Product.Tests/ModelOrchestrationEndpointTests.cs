@@ -1,7 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Control;
@@ -33,11 +32,11 @@ public sealed class ModelOrchestrationEndpointTests
                 "/v1/model/subagents?session=test-session",
                 """{"version":1,"input":"orchestrated task","sessionId":"test-session"}""",
                 deadline.Token);
-            spawn.StatusCode.Should().Be(200);
+            Assert.Equal(200, spawn.StatusCode);
             var handle = JsonDocument.Parse(spawn.Body).RootElement;
-            handle.GetProperty("childSessionId").GetString().Should().NotBeNullOrWhiteSpace();
-            handle.GetProperty("runId").GetString().Should().NotBeNullOrWhiteSpace();
-            handle.GetProperty("taskUri").GetString().Should().StartWith("task://agent/");
+            Assert.False(string.IsNullOrWhiteSpace(handle.GetProperty("childSessionId").GetString()));
+            Assert.False(string.IsNullOrWhiteSpace(handle.GetProperty("runId").GetString()));
+            Assert.StartsWith("task://agent/", (handle.GetProperty("taskUri").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
             var runId = handle.GetProperty("runId").GetString()!;
 
             var wait = await harness.SendJsonAsync(
@@ -45,10 +44,10 @@ public sealed class ModelOrchestrationEndpointTests
                 $"/v1/model/subagents/{runId}?session=test-session&timeoutMs=10000",
                 null,
                 deadline.Token);
-            wait.StatusCode.Should().Be(200);
+            Assert.Equal(200, wait.StatusCode);
             var result = JsonDocument.Parse(wait.Body).RootElement;
-            result.GetProperty("status").GetString().Should().Be("complete");
-            result.GetProperty("report").GetString().Should().Be("done");
+            Assert.Equal("complete", result.GetProperty("status").GetString());
+            Assert.Equal("done", result.GetProperty("report").GetString());
         }
     }
 
@@ -76,27 +75,26 @@ public sealed class ModelOrchestrationEndpointTests
                 $"/v1/tasks?uri={Uri.EscapeDataString(taskUri)}&timeoutMs=10000",
                 null,
                 deadline.Token);
-            wait.StatusCode.Should().Be(200);
+            Assert.Equal(200, wait.StatusCode);
             var snapshot = JsonDocument.Parse(wait.Body).RootElement;
-            snapshot.GetProperty("kind").GetString().Should().Be("agent");
-            snapshot.GetProperty("status").GetString().Should().Be("complete");
-            snapshot.GetProperty("agent").GetProperty("report").GetString().Should().Be("done");
+            Assert.Equal("agent", snapshot.GetProperty("kind").GetString());
+            Assert.Equal("complete", snapshot.GetProperty("status").GetString());
+            Assert.Equal("done", snapshot.GetProperty("agent").GetProperty("report").GetString());
 
             var cancel = await harness.SendJsonAsync(
                 "POST",
                 "/v1/tasks/cancel?session=test-session",
                 $$"""{"uri":"{{taskUri}}","sessionId":"test-session"}""",
                 deadline.Token);
-            cancel.StatusCode.Should().Be(200);
-            JsonDocument.Parse(cancel.Body).RootElement.GetProperty("status").GetString()
-                .Should().Be("complete");
+            Assert.Equal(200, cancel.StatusCode);
+            Assert.Equal("complete", JsonDocument.Parse(cancel.Body).RootElement.GetProperty("status").GetString());
 
             var unknown = await harness.SendJsonAsync(
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString($"task://agent/{owner}/{Guid.NewGuid():N}")}&timeoutMs=200",
                 null,
                 deadline.Token);
-            unknown.StatusCode.Should().Be(404);
+            Assert.Equal(404, unknown.StatusCode);
         }
     }
 
@@ -117,8 +115,8 @@ public sealed class ModelOrchestrationEndpointTests
                 TimeSpan.FromMilliseconds(200),
                 new TerminalSnapshotRequest(),
                 deadline.Token);
-            oneShot.Settled.Should().BeFalse();
-            oneShot.TaskUri.Should().StartWith("task://terminal/");
+            Assert.False(oneShot.Settled);
+            Assert.StartsWith("task://terminal/", (oneShot.TaskUri ?? throw new InvalidOperationException("the assertion subject is null")));
 
             // Waiting on a task that has not reached a terminal state times out at the
             // requested bound instead of returning a mid-flight snapshot.
@@ -127,22 +125,22 @@ public sealed class ModelOrchestrationEndpointTests
                 $"/v1/tasks?uri={Uri.EscapeDataString(oneShot.TaskUri!)}&timeoutMs=1",
                 null,
                 deadline.Token);
-            notSettled.StatusCode.Should().Be(408);
-            notSettled.Body.Should().Contain("task_wait_timeout");
+            Assert.Equal(408, notSettled.StatusCode);
+            Assert.Contains("task_wait_timeout", notSettled.Body);
 
             var invalidWait = await harness.SendJsonAsync(
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString("https://example.com/heap")}&timeoutMs=100",
                 null,
                 deadline.Token);
-            invalidWait.StatusCode.Should().Be(400);
+            Assert.Equal(400, invalidWait.StatusCode);
 
             var invalidCancel = await harness.SendJsonAsync(
                 "POST",
                 "/v1/tasks/cancel?session=test-session",
                 """{"uri":"file:///etc/hosts","sessionId":"test-session"}""",
                 deadline.Token);
-            invalidCancel.StatusCode.Should().Be(400);
+            Assert.Equal(400, invalidCancel.StatusCode);
 
             harness.Process.EndOfOutput();
             harness.Process.RaiseExited(0);
@@ -151,11 +149,11 @@ public sealed class ModelOrchestrationEndpointTests
                 $"/v1/tasks?uri={Uri.EscapeDataString(oneShot.TaskUri!)}&timeoutMs=10000",
                 null,
                 deadline.Token);
-            settled.StatusCode.Should().Be(200);
+            Assert.Equal(200, settled.StatusCode);
             var final = JsonDocument.Parse(settled.Body).RootElement;
-            final.GetProperty("kind").GetString().Should().Be("terminal");
-            final.GetProperty("status").GetString().Should().Be("complete");
-            final.GetProperty("terminal").GetProperty("exitCode").GetInt32().Should().Be(0);
+            Assert.Equal("terminal", final.GetProperty("kind").GetString());
+            Assert.Equal("complete", final.GetProperty("status").GetString());
+            Assert.Equal(0, final.GetProperty("terminal").GetProperty("exitCode").GetInt32());
         }
     }
 
@@ -175,15 +173,15 @@ public sealed class ModelOrchestrationEndpointTests
                 $"/v1/model/subagents/{unknown}?session=test-session&timeoutMs=200",
                 null,
                 deadline.Token);
-            wait.StatusCode.Should().Be(404);
-            wait.Body.Should().Contain("resource_not_found");
+            Assert.Equal(404, wait.StatusCode);
+            Assert.Contains("resource_not_found", wait.Body);
 
             var unowned = await harness.SendJsonAsync(
                 "POST",
                 $"/v1/model/subagents/{unknown}/cancel?session=not-registered",
                 null,
                 deadline.Token);
-            unowned.StatusCode.Should().Be(401);
+            Assert.Equal(401, unowned.StatusCode);
         }
     }
 

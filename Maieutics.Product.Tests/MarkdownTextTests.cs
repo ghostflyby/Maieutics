@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Commands;
 
 namespace Maieutics.Product.Tests;
@@ -29,7 +28,7 @@ public sealed class MarkdownTextTests
     [InlineData("a\u0007b", "`a\\u0007b`")]
     public void CodeSpanKeepsContentVerbatimInsideAParseableSpan(string value, string expected)
     {
-        MarkdownText.CodeSpan(value).Should().Be(expected);
+        Assert.Equal(expected, MarkdownText.CodeSpan(value));
     }
 
     [Fact]
@@ -37,7 +36,7 @@ public sealed class MarkdownTextTests
     {
         // Three embedded backticks demand a four-backtick delimiter; the span
         // stays unpadded because neither edge is a backtick or a space.
-        MarkdownText.CodeSpan("a```b").Should().Be("````a```b````");
+        Assert.Equal("````a```b````", MarkdownText.CodeSpan("a```b"));
     }
 
     [Theory]
@@ -58,15 +57,15 @@ public sealed class MarkdownTextTests
         string value,
         string expected)
     {
-        MarkdownText.PlainText(value).Should().Be(expected);
+        Assert.Equal(expected, MarkdownText.PlainText(value));
     }
 
     [Fact]
     public void PlainTextLeavesLettersDigitsSpacesAndNonAsciiPunctuationAlone()
     {
-        MarkdownText.PlainText("v10 ready").Should().Be("v10 ready");
+        Assert.Equal("v10 ready", MarkdownText.PlainText("v10 ready"));
         // Fullwidth punctuation is outside the ASCII guard on purpose: the
         // escape targets markdown structure characters, which are ASCII.
-        MarkdownText.PlainText("a，b").Should().Be("a，b");
+        Assert.Equal("a，b", MarkdownText.PlainText("a，b"));
     }
 }

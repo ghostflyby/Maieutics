@@ -1,6 +1,5 @@
 using System.ClientModel.Primitives;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -35,7 +34,7 @@ public sealed class ResponsesApplyPatchAdapterTests
 
         var patch = ApplyPatchText.Render(operation);
 
-        patch.Should().Be($"*** Begin Patch\n{expectedBody}*** End Patch\n");
+        Assert.Equal($"*** Begin Patch\n{expectedBody}*** End Patch\n", patch);
     }
 
     [Fact]
@@ -44,8 +43,7 @@ public sealed class ResponsesApplyPatchAdapterTests
         var operation = Read(
             """{"type":"update_file","path":"a.txt","move_to":"b.txt","diff":"@@ x\n-a\n+b\n"}""");
 
-        ApplyPatchText.Render(operation).Should().Be(
-            "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@ x\n-a\n+b\n*** End Patch\n");
+        Assert.Equal("*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@ x\n-a\n+b\n*** End Patch\n", ApplyPatchText.Render(operation));
     }
 
     [Fact]
@@ -59,10 +57,10 @@ public sealed class ResponsesApplyPatchAdapterTests
 
         var document = Execution.ApplyPatchParser.Parse(patch);
 
-        document.Files.Should().ContainSingle();
-        document.Files[0].Kind.Should().Be("create_file");
-        document.Files[0].Path.Should().Be("docs/new.txt");
-        document.Files[0].Diff.Should().Be("one\ntwo\n");
+        Assert.Single(document.Files);
+        Assert.Equal("create_file", document.Files[0].Kind);
+        Assert.Equal("docs/new.txt", document.Files[0].Path);
+        Assert.Equal("one\ntwo\n", document.Files[0].Diff);
     }
 
     [Fact]
@@ -87,16 +85,16 @@ public sealed class ResponsesApplyPatchAdapterTests
         var restored = JsonSerializer.Deserialize<ChatMessage[]>(json, options)!;
         var restoredCall = restored[0].Contents.OfType<FunctionCallContent>().Single();
 
-        restoredCall.Name.Should().Be(ApplyPatchFunctions.ToolName);
-        restoredCall.AdditionalProperties.Should().ContainKey(ResponsesApplyPatchChatClient.OperationProperty);
+        Assert.Equal(ApplyPatchFunctions.ToolName, restoredCall.Name);
+        Assert.True((restoredCall.AdditionalProperties ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey(ResponsesApplyPatchChatClient.OperationProperty));
         var operationJson = (JsonElement)restoredCall.AdditionalProperties![
             ResponsesApplyPatchChatClient.OperationProperty]!;
-        operationJson.GetProperty("type").GetString().Should().Be("create_file");
-        operationJson.GetProperty("diff").GetString().Should().Be("+one\n+two\n");
+        Assert.Equal("create_file", operationJson.GetProperty("type").GetString());
+        Assert.Equal("+one\n+two\n", operationJson.GetProperty("diff").GetString());
 
         // And it still rebuilds the SDK operation, which is what the outbound rewrite needs.
         var rebuilt = Read(operationJson.GetRawText());
-        rebuilt.Should().BeOfType<ApplyPatchCreateFileOperation>();
+        Assert.IsType<ApplyPatchCreateFileOperation>(rebuilt);
     }
 
     [Fact]
@@ -104,9 +102,9 @@ public sealed class ResponsesApplyPatchAdapterTests
     {
         // The Responses adapter needs the local apply_patch function declared so the runtime
         // executes the projected call; only the general edit tools are hidden there.
-        ApplyPatchFunctions.ResponsesHiddenToolNames.Should().Equal("write_text", "edit_text");
-        ApplyPatchFunctions.ResponsesHiddenToolNames.Should().NotContain(ApplyPatchFunctions.ToolName);
-        ApplyPatchFunctions.NonResponsesHiddenToolNames.Should().Equal(ApplyPatchFunctions.ToolName);
+        Assert.Equal(new string[] { "write_text", "edit_text" }, ApplyPatchFunctions.ResponsesHiddenToolNames);
+        Assert.DoesNotContain(ApplyPatchFunctions.ToolName, ApplyPatchFunctions.ResponsesHiddenToolNames);
+        Assert.Equal(new string[] { ApplyPatchFunctions.ToolName }, ApplyPatchFunctions.NonResponsesHiddenToolNames);
     }
 
     private static ApplyPatchOperation Read(string json)

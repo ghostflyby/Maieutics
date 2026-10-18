@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Text;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Persistence;
@@ -57,14 +56,14 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             NullLogger<MaieuticsAgentSessionManager>.Instance,
             reclaimer: objectStore);
 
-        manager.PruneObjects(TimeSpan.FromMinutes(30)).Should().Be(1);
-        objectStore.Exists(keep.Sha256).Should().BeTrue();
-        objectStore.Exists(freshOrphan.Sha256).Should().BeTrue();
-        objectStore.Exists(staleOrphan.Sha256).Should().BeFalse();
+        Assert.Equal(1, manager.PruneObjects(TimeSpan.FromMinutes(30)));
+        Assert.True(objectStore.Exists(keep.Sha256));
+        Assert.True(objectStore.Exists(freshOrphan.Sha256));
+        Assert.False(objectStore.Exists(staleOrphan.Sha256));
 
         // A zero grace period sweeps everything unreferenced.
-        manager.PruneObjects(TimeSpan.Zero).Should().Be(1);
-        objectStore.Exists(freshOrphan.Sha256).Should().BeFalse();
+        Assert.Equal(1, manager.PruneObjects(TimeSpan.Zero));
+        Assert.False(objectStore.Exists(freshOrphan.Sha256));
     }
 
     [Fact]
@@ -74,14 +73,14 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             new FixedProfileProvider(), familiesRoot: null, storeFactory: null,
             NullLogger<MaieuticsAgentSessionManager>.Instance);
 
-        manager.PersistenceEnabled.Should().BeFalse();
-        manager.ListStoredSessions().Should().BeEmpty();
-        manager.Invoking(m => m.Resume(AgentSessionId.Create()))
-            .Should().Throw<ArgumentException>().WithMessage("*persistence is disabled*");
+        Assert.False(manager.PersistenceEnabled);
+        Assert.Empty(manager.ListStoredSessions());
+        var assertion13 = Assert.ThrowsAny<ArgumentException>(() => (manager).Resume(AgentSessionId.Create()));
+        Assert.Matches("(?is)^.*persistence\\ is\\ disabled.*$", assertion13.Message);
 
         var before = manager.Id;
-        manager.StartNew().Should().NotBe(before);
-        manager.Id.Should().NotBe(before);
+        Assert.NotEqual(before, manager.StartNew());
+        Assert.NotEqual(before, manager.Id);
     }
 
     [Fact]
@@ -95,29 +94,29 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         }
 
         using var manager = CreateManager();
-        manager.Id.Should().NotBe(sessionId);
+        Assert.NotEqual(sessionId, manager.Id);
 
-        manager.Resume(sessionId).Should().Be(sessionId);
-        manager.Id.Should().Be(sessionId);
-        manager.GetTranscriptSnapshot().Turns.Should().HaveCount(2);
-        manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text.Should().Be("Question one");
-        manager.GetTranscriptSnapshot().Turns[1].Messages[^1].Text.Should().Be("Answer two");
+        Assert.Equal(sessionId, manager.Resume(sessionId));
+        Assert.Equal(sessionId, manager.Id);
+        Assert.Equal(2, manager.GetTranscriptSnapshot().Turns.Count());
+        Assert.Equal("Question one", manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text);
+        Assert.Equal("Answer two", manager.GetTranscriptSnapshot().Turns[1].Messages[^1].Text);
 
         var sessions = manager.ListStoredSessions();
-        sessions.Should().ContainSingle();
-        sessions[0].Id.Should().Be(sessionId);
-        sessions[0].TurnCount.Should().Be(2);
+        Assert.Single(sessions);
+        Assert.Equal(sessionId, sessions[0].Id);
+        Assert.Equal(2, sessions[0].TurnCount);
 
         var afterNew = manager.StartNew();
-        afterNew.Should().NotBe(sessionId);
-        manager.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.NotEqual(sessionId, afterNew);
+        Assert.Empty(manager.GetTranscriptSnapshot().Turns);
         // A fresh session has no committed turns, so it does not appear in the list.
-        manager.ListStoredSessions().Should().ContainSingle();
+        Assert.Single(manager.ListStoredSessions());
 
         manager.Resume(sessionId);
-        manager.Id.Should().Be(sessionId);
+        Assert.Equal(sessionId, manager.Id);
         // Resuming the already active identity is a no-op.
-        manager.Resume(sessionId).Should().Be(sessionId);
+        Assert.Equal(sessionId, manager.Resume(sessionId));
     }
 
     [Fact]
@@ -137,8 +136,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 
         using var manager = CreateManager();
         var sessions = manager.ListStoredSessions();
-        sessions.Select(session => session.Id).Should().Contain([older, newer]);
-        sessions.First().LastActivityAt.Should().BeOnOrAfter(sessions.Last().LastActivityAt);
+        Assert.All(new[] { older, newer }, item => Assert.Contains(item, sessions.Select(session => session.Id)));
+        Assert.True(sessions.First().LastActivityAt >= sessions.Last().LastActivityAt);
     }
 
     [Fact]
@@ -146,8 +145,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     {
         using var manager = CreateManager();
 
-        manager.Invoking(m => m.Resume(AgentSessionId.Create()))
-            .Should().Throw<AgentSessionNotFoundException>();
+        Assert.ThrowsAny<AgentSessionNotFoundException>(() => (manager).Resume(AgentSessionId.Create()));
     }
 
     [Fact]
@@ -165,21 +163,21 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         var forkId = manager.Fork(source, forkPointSeq: 1);
 
         // The fork is active and its history ends at the fork point.
-        manager.Id.Should().Be(forkId);
-        manager.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
-        manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text.Should().Be("Question one");
+        Assert.Equal(forkId, manager.Id);
+        Assert.Single(manager.GetTranscriptSnapshot().Turns);
+        Assert.Equal("Question one", manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text);
 
         // The head row lives in the source's family database with lineage and an
         // auto-derived title.
         var head = manager.FindDescriptor(forkId);
-        head.Should().NotBeNull();
-        head?.ParentSessionId.Should().Be(source);
-        head?.ForkPointSeq.Should().Be(1);
-        head?.Title.Should().Be("Question one · branch @ turn 2");
-        manager.LoadStoredTranscript(forkId)!.Turns.Should().HaveCount(1);
+        Assert.NotNull(head);
+        Assert.Equal(source, head?.ParentSessionId);
+        Assert.Equal(1, head?.ForkPointSeq);
+        Assert.Equal("Question one · branch @ turn 2", head?.Title);
+        Assert.Single(manager.LoadStoredTranscript(forkId)!.Turns);
 
         // The source session is untouched and still loadable.
-        manager.LoadStoredTranscript(source)!.Turns.Should().HaveCount(2);
+        Assert.Equal(2, manager.LoadStoredTranscript(source)!.Turns.Count());
     }
 
     [Fact]
@@ -192,25 +190,22 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         }
 
         using var manager = CreateManager();
-        manager.Invoking(m => m.Fork(source, 2))
-            .Should().Throw<ArgumentOutOfRangeException>();
-        manager.Invoking(m => m.Fork(source, -1))
-            .Should().Throw<ArgumentOutOfRangeException>();
-        manager.Invoking(m => m.Fork(AgentSessionId.Create(), 0))
-            .Should().Throw<AgentSessionNotFoundException>();
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => (manager).Fork(source, 2));
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => (manager).Fork(source, -1));
+        Assert.ThrowsAny<AgentSessionNotFoundException>(() => (manager).Fork(AgentSessionId.Create(), 0));
 
         // A rejected fork leaves no phantom head row behind.
-        manager.ListStoredSessions().Should().ContainSingle();
+        Assert.Single(manager.ListStoredSessions());
 
         // Creating a fork head over a missing parent fails typed and writes nothing.
         using (var store = new SqliteTranscriptStore(FamilyPath(source)))
         {
-            store.Invoking(s => s.CreateForkSession(
-                    AgentSessionId.Create(), AgentSessionId.Create(), 0, null))
-                .Should().Throw<InvalidOperationException>().WithMessage("*has no row*");
+            var assertion14 = Assert.ThrowsAny<InvalidOperationException>(() => (store).CreateForkSession(
+                    AgentSessionId.Create(), AgentSessionId.Create(), 0, null));
+            Assert.Matches("(?is)^.*has\\ no\\ row.*$", assertion14.Message);
         }
 
-        manager.ListStoredSessions().Should().ContainSingle();
+        Assert.Single(manager.ListStoredSessions());
     }
 
     [Fact(Timeout = 30_000)]
@@ -232,7 +227,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         var session = manager.Resolve(stored);
         var run = await session
             .StartTurnAsync(AgentTurn.FromText("hang"), TestContext.Current.CancellationToken);
-        session.IsRunInProgress.Should().BeTrue();
+        Assert.True(session.IsRunInProgress);
 
         // Churn the foreground past the capacity: the running session is never
         // an eviction candidate (a second instance for the same identity would
@@ -242,10 +237,10 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             manager.StartNew();
         }
 
-        manager.IsLive(stored).Should().BeTrue();
+        Assert.True(manager.IsLive(stored));
 
         await run.DisposeAsync();
-        session.IsRunInProgress.Should().BeFalse();
+        Assert.False(session.IsRunInProgress);
     }
 
     [Fact]
@@ -270,9 +265,9 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 
         // The boot session is unresumable (zero turns) and stays, but every
         // resumable session beyond the cap is evicted.
-        manager.LiveCount.Should().BeLessThanOrEqualTo(MaieuticsAgentSessionManager.LiveSessionCapacity + 1);
+        Assert.True(manager.LiveCount <= MaieuticsAgentSessionManager.LiveSessionCapacity + 1);
         // The most recently resolved session is still live and complete.
-        manager.Resolve(stored[^1]).GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        Assert.Single(manager.Resolve(stored[^1]).GetTranscriptSnapshot().Turns);
     }
 
     [Fact]
@@ -288,11 +283,11 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         var before = manager.Id;
 
         var resolved = manager.Resolve(stored);
-        resolved.Id.Should().Be(stored);
-        resolved.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        Assert.Equal(stored, resolved.Id);
+        Assert.Single(resolved.GetTranscriptSnapshot().Turns);
         // Addressing a session never moves the foreground.
-        manager.Id.Should().Be(before);
-        manager.LiveCount.Should().Be(2);
+        Assert.Equal(before, manager.Id);
+        Assert.Equal(2, manager.LiveCount);
     }
 
     [Fact]
@@ -315,11 +310,11 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         }
 
         var resolved = manager.Resolve(stored);
-        resolved.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        Assert.Single(resolved.GetTranscriptSnapshot().Turns);
         // The cap is soft by design: the zero-turn siblings cannot be evicted
         // (their state exists nowhere else), so only the overage above the
         // unresumable set is tolerated.
-        manager.LiveCount.Should().BeLessThanOrEqualTo(MaieuticsAgentSessionManager.LiveSessionCapacity + 2);
+        Assert.True(manager.LiveCount <= MaieuticsAgentSessionManager.LiveSessionCapacity + 2);
     }
 
     [Fact]
@@ -333,17 +328,17 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 
         using var manager = CreateManager();
         var forkId = manager.Fork(source, forkPointSeq: 0);
-        manager.Id.Should().Be(forkId);
-        manager.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Equal(forkId, manager.Id);
+        Assert.Empty(manager.GetTranscriptSnapshot().Turns);
 
         // A zero-turn fork stays resumable: the chain supplies the prefix.
         manager.StartNew();
-        manager.Resume(forkId).Should().Be(forkId);
-        manager.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Equal(forkId, manager.Resume(forkId));
+        Assert.Empty(manager.GetTranscriptSnapshot().Turns);
 
         // Resuming the fork's source still restores the full history.
         manager.Resume(source);
-        manager.GetTranscriptSnapshot().Turns.Should().HaveCount(1);
+        Assert.Single(manager.GetTranscriptSnapshot().Turns);
     }
 
     [Fact]
@@ -359,18 +354,18 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         manager.Resolve(stored);
 
         // An unknown session has no live entry to pin.
-        manager.TryPinSession(AgentSessionId.Create()).Should().BeNull();
+        Assert.Null(manager.TryPinSession(AgentSessionId.Create()));
 
         // A queued session holds one cooperative pin lease (ADR 0025): eviction skips the
         // pinned session both at candidacy and at the removal re-check.
         var lease = manager.TryPinSession(stored);
-        lease.Should().NotBeNull();
+        Assert.NotNull(lease);
         for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
         {
             manager.StartNew();
         }
 
-        manager.IsLive(stored).Should().BeTrue();
+        Assert.True(manager.IsLive(stored));
 
         // Disposing the lease twice releases the pin exactly once; the next eviction pass
         // may evict the session again (the lease is capacity management, not a lifetime
@@ -386,7 +381,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
             manager.StartNew();
         }
 
-        manager.IsLive(stored).Should().BeFalse();
+        Assert.False(manager.IsLive(stored));
     }
 
     private MaieuticsAgentSessionManager CreateManager()

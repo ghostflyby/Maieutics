@@ -3,7 +3,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Product.Tests;
@@ -54,7 +53,7 @@ public sealed class FrontendProcessSmokeTests
             {
                 var capabilities = await client.GetFromJsonAsync<JsonElement>(
                     "/v1/agent/capabilities", deadline.Token);
-                capabilities.GetProperty("protocolVersion").GetInt32().Should().Be(1);
+                Assert.Equal(1, capabilities.GetProperty("protocolVersion").GetInt32());
                 var session = await client.GetFromJsonAsync<JsonElement>(
                     "/v1/agent/session", deadline.Token);
                 var sessionId = session.GetProperty("id").GetString()!;
@@ -63,30 +62,30 @@ public sealed class FrontendProcessSmokeTests
                     $"/v1/agent/sessions/{sessionId}/turns",
                     new { text = "%status" },
                     deadline.Token);
-                response.StatusCode.Should().Be(HttpStatusCode.OK);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
                 var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-                body.GetProperty("markdown").GetString().Should().Contain("### Maieutics status");
+                Assert.Contains("### Maieutics status", body.GetProperty("markdown").GetString());
 
                 var turn = await client.PostAsJsonAsync(
                     $"/v1/agent/sessions/{sessionId}/turns",
                     new { text = "write the smoke file" },
                     deadline.Token);
-                turn.StatusCode.Should().Be(HttpStatusCode.Accepted);
+                Assert.Equal(HttpStatusCode.Accepted, turn.StatusCode);
                 var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
                     .GetProperty("runId").GetString()!;
 
                 var transcript = await WaitForTranscriptTurnAsync(client, sessionId, deadline.Token);
-                transcript.GetProperty("runId").GetString().Should().Be(runId);
+                Assert.Equal(runId, transcript.GetProperty("runId").GetString());
                 // The tool flow commits the intermediate tool-call messages, so
                 // the final assistant answer is the transcript's last message.
                 var messages = transcript.GetProperty("messages");
-                messages[messages.GetArrayLength() - 1].GetProperty("parts")[0]
-                    .GetProperty("text").GetString().Should().Be("tool-backed answer");
+                Assert.Equal("tool-backed answer", messages[messages.GetArrayLength() - 1].GetProperty("parts")[0]
+                    .GetProperty("text").GetString());
 
                 // The write_text tool result reached the model (the fake provider
                 // asserts "smoke.txt" rode in the follow-up request) and the
                 // canonical transcript records the structured result envelope.
-                transcript.GetRawText().Should().Contain("smoke.txt");
+                Assert.Contains("smoke.txt", transcript.GetRawText());
             }
             finally
             {

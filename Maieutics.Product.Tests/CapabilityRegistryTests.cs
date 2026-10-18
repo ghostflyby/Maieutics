@@ -1,5 +1,4 @@
 using System.Text;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Providers;
 using Microsoft.Extensions.AI;
@@ -19,11 +18,11 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.VendorId.Should().Be("openai");
-        resolution.Matched.Should().BeFalse();
-        resolution.Potential.Should().Equal(["WebSearch"]);
-        resolution.Effective.Should().Equal(resolution.Potential);
+        Assert.True(resolution.KnownVendor);
+        Assert.Equal("openai", resolution.VendorId);
+        Assert.False(resolution.Matched);
+        Assert.Equal(["WebSearch"], resolution.Potential);
+        Assert.Equal(resolution.Potential, resolution.Effective);
     }
 
     [Fact]
@@ -48,9 +47,9 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.Potential.Should().BeEquivalentTo(["FileSearch", "WebSearch"], options => options.WithStrictOrdering());
-        resolution.Effective.Should().Equal(resolution.Potential);
+        Assert.True(resolution.KnownVendor);
+        Assert.Equivalent(new[] { "FileSearch", "WebSearch" }, resolution.Potential, strict: true);
+        Assert.Equal(resolution.Potential, resolution.Effective);
     }
 
     [Fact]
@@ -76,11 +75,11 @@ public sealed class CapabilityRegistryTests
             format: ["WebSearch", "Shell"]);
 
         var narrowed = registry.Resolve(source, "gpt-5");
-        narrowed.Potential.Should().Equal(["WebSearch"]);
+        Assert.Equal(["WebSearch"], narrowed.Potential);
 
         // A model without a declaration falls back to the vendor aggregate.
         var aggregate = registry.Resolve(source, "gpt-4");
-        aggregate.Potential.Should().BeEquivalentTo(["Shell", "WebSearch"], options => options.WithStrictOrdering());
+        Assert.Equivalent(new[] { "Shell", "WebSearch" }, aggregate.Potential, strict: true);
     }
 
     [Fact]
@@ -104,9 +103,9 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "claude-sonnet");
 
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.Potential.Should().BeEmpty();
-        resolution.Effective.Should().BeEmpty();
+        Assert.True(resolution.KnownVendor);
+        Assert.Empty(resolution.Potential);
+        Assert.Empty(resolution.Effective);
     }
 
     [Fact]
@@ -117,9 +116,9 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.VendorId.Should().Be("openai");
-        resolution.Potential.Should().Equal(["WebSearch"]);
+        Assert.True(resolution.KnownVendor);
+        Assert.Equal("openai", resolution.VendorId);
+        Assert.Equal(["WebSearch"], resolution.Potential);
     }
 
     [Fact]
@@ -130,11 +129,11 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.KnownVendor.Should().BeFalse();
-        resolution.VendorId.Should().BeNull();
+        Assert.False(resolution.KnownVendor);
+        Assert.Null(resolution.VendorId);
         // The format still defines the potential ceiling; only the default is empty.
-        resolution.Potential.Should().Equal(["WebSearch"]);
-        resolution.Effective.Should().BeEmpty();
+        Assert.Equal(["WebSearch"], resolution.Potential);
+        Assert.Empty(resolution.Effective);
     }
 
     [Fact]
@@ -151,10 +150,10 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.Matched.Should().BeTrue();
-        resolution.KnownVendor.Should().BeFalse();
-        resolution.Potential.Should().Equal(["WebSearch"]);
-        resolution.Effective.Should().Equal(["WebSearch"]);
+        Assert.True(resolution.Matched);
+        Assert.False(resolution.KnownVendor);
+        Assert.Equal(["WebSearch"], resolution.Potential);
+        Assert.Equal(["WebSearch"], resolution.Effective);
     }
 
     [Fact]
@@ -179,9 +178,9 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.VendorId.Should().Be("opencode");
-        resolution.Potential.Should().BeEquivalentTo(["Shell", "WebSearch"], options => options.WithStrictOrdering());
+        Assert.True(resolution.KnownVendor);
+        Assert.Equal("opencode", resolution.VendorId);
+        Assert.Equivalent(new[] { "Shell", "WebSearch" }, resolution.Potential, strict: true);
     }
 
     [Fact]
@@ -201,9 +200,9 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.VendorId.Should().Be("opencode");
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.Potential.Should().Equal(["WebSearch"]);
+        Assert.Equal("opencode", resolution.VendorId);
+        Assert.True(resolution.KnownVendor);
+        Assert.Equal(["WebSearch"], resolution.Potential);
     }
 
     [Fact]
@@ -228,7 +227,7 @@ public sealed class CapabilityRegistryTests
         var resolution = registry.Resolve(source, "gpt-5");
 
         // Known names normalize to canonical spelling; unknown names keep the full configured spelling.
-        resolution.Potential.Should().Equal(["MyGateway.SuperTool", "WebSearch"]);
+        Assert.Equal(["MyGateway.SuperTool", "WebSearch"], resolution.Potential);
     }
 
     [Fact]
@@ -249,7 +248,7 @@ public sealed class CapabilityRegistryTests
             new FakeSource("OpenAI", "https://gateway.example.com/v1"),
             "gpt-5").Effective;
 
-        capabilities.Should().Equal(["MyGateway.SuperTool", "WebSearch"]);
+        Assert.Equal(["MyGateway.SuperTool", "WebSearch"], capabilities);
     }
 
     [Fact]
@@ -270,7 +269,7 @@ public sealed class CapabilityRegistryTests
             new FakeSource("OpenAI", "https://api.example.com/v1"),
             "gpt-5").Effective;
 
-        capabilities.Should().Equal(["FileSearch", "WebSearch"]);
+        Assert.Equal(["FileSearch", "WebSearch"], capabilities);
     }
 
     [Fact]
@@ -278,8 +277,8 @@ public sealed class CapabilityRegistryTests
     {
         var registry = CreateRegistry("{}");
 
-        registry.Resolve(new FakeSource("OpenAI", "https://api.example.com/v1"), "gpt-5")
-            .KnownVendor.Should().BeFalse();
+        Assert.False(registry.Resolve(new FakeSource("OpenAI", "https://api.example.com/v1"), "gpt-5")
+            .KnownVendor);
     }
 
     [Theory]
@@ -296,7 +295,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*configured more than once*");
+        var assertion2 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*configured\\ more\\ than\\ once.*$", assertion2.Message);
     }
 
     [Theory]
@@ -314,7 +314,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*HTTP or HTTPS*");
+        var assertion3 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*HTTP\\ or\\ HTTPS.*$", assertion3.Message);
     }
 
     [Fact]
@@ -328,7 +329,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*user information*");
+        var assertion4 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*user\\ information.*$", assertion4.Message);
     }
 
     [Fact]
@@ -342,7 +344,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*query or fragment*");
+        var assertion5 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*query\\ or\\ fragment.*$", assertion5.Message);
     }
 
     [Fact]
@@ -360,8 +363,8 @@ public sealed class CapabilityRegistryTests
             new FakeSource("OpenAI", "https://api.example.com/v1?tenant=one"),
             "gpt-5");
 
-        resolution.Matched.Should().BeFalse();
-        resolution.Effective.Should().BeEmpty();
+        Assert.False(resolution.Matched);
+        Assert.Empty(resolution.Effective);
     }
 
     [Theory]
@@ -380,7 +383,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*capability*");
+        var assertion6 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*capability.*$", assertion6.Message);
     }
 
     [Theory]
@@ -405,7 +409,7 @@ public sealed class CapabilityRegistryTests
             new FakeSource("OpenAI", "https://api.example.com/v1"),
             "gpt-5").Effective;
 
-        effective.Should().Equal([capability]);
+        Assert.Equal([capability], effective);
     }
 
     [Fact]
@@ -419,7 +423,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*at least 1*");
+        var assertion7 = Assert.ThrowsAny<ArgumentOutOfRangeException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*at\\ least\\ 1.*$", assertion7.Message);
     }
 
     [Fact]
@@ -437,12 +442,12 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        registry
+        Assert.Equal(3, registry
             .Resolve(new FakeSource("OpenAI", "https://api.example.com/v1"), "gpt-5")
-            .MaxBuiltinToolCalls.Should().Be(3);
-        registry
+            .MaxBuiltinToolCalls);
+        Assert.Null(registry
             .Resolve(new FakeSource("OpenAI", "https://other.example.com/v1"), "gpt-5")
-            .MaxBuiltinToolCalls.Should().BeNull();
+            .MaxBuiltinToolCalls);
     }
 
     [Fact]
@@ -456,7 +461,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*Url*");
+        var assertion8 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*Url.*$", assertion8.Message);
     }
 
     [Fact]
@@ -471,7 +477,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*claimed by both*");
+        var assertion9 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*claimed\\ by\\ both.*$", assertion9.Message);
     }
 
     [Fact]
@@ -485,7 +492,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*Vendor identifier*");
+        var assertion10 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*Vendor\\ identifier.*$", assertion10.Message);
     }
 
     [Fact]
@@ -499,7 +507,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*HTTP or HTTPS*");
+        var assertion11 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*HTTP\\ or\\ HTTPS.*$", assertion11.Message);
     }
 
     [Fact]
@@ -513,7 +522,8 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        action.Should().Throw<ArgumentException>().WithMessage("*model identifiers*");
+        var assertion12 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        Assert.Matches("(?is)^.*model\\ identifiers.*$", assertion12.Message);
     }
 
     [Fact]
@@ -541,9 +551,9 @@ public sealed class CapabilityRegistryTests
             vendor: "vendor-b",
             format: ["WebSearch", "Shell", "FileSearch"]);
 
-        registry.Resolve(sourceA, "gpt-5").Potential.Should().Equal(["Shell", "WebSearch"]);
+        Assert.Equal(["Shell", "WebSearch"], registry.Resolve(sourceA, "gpt-5").Potential);
         // vendor-b must not inherit vendor-a's model declaration.
-        registry.Resolve(sourceB, "gpt-5").Potential.Should().Equal(["FileSearch"]);
+        Assert.Equal(["FileSearch"], registry.Resolve(sourceB, "gpt-5").Potential);
     }
 
     [Fact]
@@ -558,11 +568,11 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.VendorId.Should().Be("opencode");
-        resolution.KnownVendor.Should().BeFalse();
+        Assert.Equal("opencode", resolution.VendorId);
+        Assert.False(resolution.KnownVendor);
         // The format still defines the potential ceiling; the default stays empty.
-        resolution.Potential.Should().Equal(["WebSearch"]);
-        resolution.Effective.Should().BeEmpty();
+        Assert.Equal(["WebSearch"], resolution.Potential);
+        Assert.Empty(resolution.Effective);
     }
 
     [Fact]
@@ -579,10 +589,10 @@ public sealed class CapabilityRegistryTests
 
         var resolution = registry.Resolve(source, "gpt-5");
 
-        resolution.KnownVendor.Should().BeTrue();
-        resolution.Potential.Should().Equal(["WebSearch"]);
+        Assert.True(resolution.KnownVendor);
+        Assert.Equal(["WebSearch"], resolution.Potential);
         // The explicit endpoint profile is added on top of the known-vendor default.
-        resolution.Effective.Should().Equal(["MyGateway.SuperTool", "WebSearch"]);
+        Assert.Equal(["MyGateway.SuperTool", "WebSearch"], resolution.Effective);
     }
 
     [Fact]
@@ -628,9 +638,9 @@ public sealed class CapabilityRegistryTests
         }
         """);
 
-        left.Equals(same).Should().BeTrue();
-        left.Equals(different).Should().BeFalse();
-        left.GetHashCode().Should().Be(same.GetHashCode());
+        Assert.True(left.Equals(same));
+        Assert.False(left.Equals(different));
+        Assert.Equal(same.GetHashCode(), left.GetHashCode());
     }
 
     private static CapabilityRegistry CreateRegistry(string json)

@@ -1,5 +1,4 @@
 using System.Text;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Persistence;
 
@@ -36,8 +35,8 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         var value = await AgentObjectFunctions.FetchAsync(
             store, ingested.Sha256, TestContext.Current.CancellationToken);
 
-        value.Should().NotBeNull();
-        value.Value.GetProperty("answer").GetInt32().Should().Be(42);
+        Assert.NotNull(value);
+        Assert.Equal(42, value.Value.GetProperty("answer").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -49,8 +48,8 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         var fetch = () => AgentObjectFunctions.FetchAsync(
             store, ingested.Sha256, TestContext.Current.CancellationToken);
 
-        var exception = (await fetch.Should().ThrowAsync<AgentToolException>()).And;
-        exception.Code.Should().Be("object_not_json");
+        var exception = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await fetch.Invoke(); });
+        Assert.Equal("object_not_json", exception.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -58,13 +57,13 @@ public sealed class AgentObjectFunctionsTests : IDisposable
     {
         var store = new ObjectStore(objectsRoot);
         var functions = new AgentObjectFunctions(store);
-        functions.Functions.Should().ContainSingle().Which.Name.Should().Be("object_fetch");
+        Assert.Equal("object_fetch", Assert.Single(functions.Functions).Name);
 
         var fetch = () => AgentObjectFunctions.FetchAsync(
             store, new string('a', 64), TestContext.Current.CancellationToken);
 
-        var exception = (await fetch.Should().ThrowAsync<AgentToolException>()).And;
-        exception.Code.Should().Be("object_not_found");
+        var exception = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await fetch.Invoke(); });
+        Assert.Equal("object_not_found", exception.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -75,6 +74,7 @@ public sealed class AgentObjectFunctionsTests : IDisposable
         var fetch = () => AgentObjectFunctions.FetchAsync(
             store, "not-a-digest", TestContext.Current.CancellationToken);
 
-        (await fetch.Should().ThrowAsync<ArgumentException>()).And.ParamName.Should().Be("sha256");
+        var failure = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await fetch.Invoke(); });
+        Assert.Equal("sha256", failure.ParamName);
     }
 }

@@ -3,7 +3,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -21,25 +20,21 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var functions = CreateFunctions(workspace.Path).Functions;
 
-        functions.Select(static function => function.Name)
-            .Should().Equal("list_directory", "read_text", "search_text");
-        functions.Should().OnlyContain(static function =>
-            function.JsonSchema.ValueKind == JsonValueKind.Object &&
-            function.JsonSchema.GetProperty("type").GetString() == "object");
+        Assert.Equal(new string[] { "list_directory", "read_text", "search_text" }, functions.Select(static function => function.Name));
+        Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
+            function.JsonSchema.GetProperty("type").GetString() == "object"));
 
         var list = functions.Single(static function => function.Name == "list_directory");
         var result = await list.InvokeAsync(
             Arguments("{}"),
             TestContext.Current.CancellationToken);
-        result.Should().BeOfType<JsonElement>();
+        Assert.IsType<JsonElement>(result);
 
-        await list.Awaiting(l => l.InvokeAsync(
+        var assertion44 = await Assert.ThrowsAnyAsync<Exception>(async () => { await ((list).InvokeAsync(
                 Arguments("""{"unexpected":true}"""),
-                TestContext.Current.CancellationToken).AsTask())
-            .Should().ThrowAsync<Exception>()
-            .Where(static exception =>
-                exception.GetType() == typeof(ArgumentException) ||
-                exception.GetType() == typeof(JsonException));
+                TestContext.Current.CancellationToken).AsTask()); });
+        Assert.True(((Func<Exception, bool>)(static exception => exception.GetType() == typeof(ArgumentException) ||
+                exception.GetType() == typeof(JsonException)))(assertion44));
     }
 
     [Fact(Timeout = 30_000)]
@@ -57,15 +52,15 @@ public sealed class WorkspaceToolsTests
             tool,
             """{"pageSize":2}"""), WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
 
-        first.Uri.Should().Be("workspace://local/");
-        first.Entries.Select(static entry => entry.Name).Should().Equal("a.txt", "b");
-        first.Entries[0].Should().BeEquivalentTo(new
+        Assert.Equal("workspace://local/", first.Uri);
+        Assert.Equal(new string[] { "a.txt", "b" }, first.Entries.Select(static entry => entry.Name));
+        Assert.Equivalent(new
         {
             Uri = "workspace://local/a.txt",
             Kind = "file",
             SizeBytes = 1L
-        });
-        first.NextCursor.Should().NotBeNull();
+        }, first.Entries[0]);
+        Assert.NotNull(first.NextCursor);
 
         Directory.Delete(Path.Combine(workspace.Path, "b"));
         Directory.CreateDirectory(Path.Combine(workspace.Path, "ab"));
@@ -74,12 +69,12 @@ public sealed class WorkspaceToolsTests
                 tool,
                 $$"""{"cursor":{{JsonSerializer.Serialize(first.NextCursor)}}}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        second.Entries.Select(static entry => entry.Name).Should().Equal("c.txt");
-        second.NextCursor.Should().BeNull();
+        Assert.Equal(new string[] { "c.txt" }, second.Entries.Select(static entry => entry.Name));
+        Assert.Null(second.NextCursor);
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "d.txt"), "d", TestContext.Current.CancellationToken);
         var failure = await InvokeAsync(tool, "{}");
-        ShouldFailure(failure).Code.Should().Be("workspace_directory_too_large");
+        Assert.Equal("workspace_directory_too_large", ShouldFailure(failure).Code);
     }
 
     [Theory]
@@ -101,9 +96,7 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
 
-        snapshot.Invoking(s => s.Resolve(uri))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_invalid_uri");
+        Assert.Equal("workspace_invalid_uri", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve(uri)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -120,10 +113,10 @@ public sealed class WorkspaceToolsTests
                 read,
                 """{"uri":"workspace://local/%252e%252e"}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        literal.Text.Should().Be("literal percent name");
+        Assert.Equal("literal percent name", literal.Text);
 
         var git = await InvokeAsync(read, """{"uri":"workspace://local/.git/config"}""");
-        ShouldFailure(git).Code.Should().Be("workspace_path_denied");
+        Assert.Equal("workspace_path_denied", ShouldFailure(git).Code);
 
         if (!OperatingSystem.IsWindows())
         {
@@ -140,17 +133,16 @@ public sealed class WorkspaceToolsTests
                     Function(functions, "list_directory"),
                     "{}"),
                 WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-            listed.Entries.Where(static entry => entry.Name.EndsWith("-link", StringComparison.Ordinal))
-                .Should().OnlyContain(static entry => entry.Kind == "symbolic_link");
+            Assert.All(listed.Entries.Where(static entry => entry.Name.EndsWith("-link", StringComparison.Ordinal)), static entry => Assert.True(entry.Kind == "symbolic_link"));
 
-            ShouldFailure(await InvokeAsync(
+            Assert.Equal("workspace_symbolic_link_not_allowed", ShouldFailure(await InvokeAsync(
                     read,
                     """{"uri":"workspace://local/final-link"}"""))
-                .Code.Should().Be("workspace_symbolic_link_not_allowed");
-            ShouldFailure(await InvokeAsync(
+                .Code);
+            Assert.Equal("workspace_symbolic_link_not_allowed", ShouldFailure(await InvokeAsync(
                     read,
                     """{"uri":"workspace://local/directory-link/nested.txt"}"""))
-                .Code.Should().Be("workspace_symbolic_link_not_allowed");
+                .Code);
         }
     }
 
@@ -172,15 +164,13 @@ public sealed class WorkspaceToolsTests
         File.Delete(file);
         File.CreateSymbolicLink(file, outside);
 
-        snapshot.Invoking(s => s.OpenVerifiedRead(resolved))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed");
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).OpenVerifiedRead(resolved)).Code);
 
         File.Delete(file);
         Directory.Delete(directory);
         Directory.CreateSymbolicLink(directory, workspace.ParentPath);
 
-        snapshot.Invoking(s => s.OpenVerifiedRead(resolved)).Should().Throw<IOException>();
+        Assert.ThrowsAny<IOException>(() => (snapshot).OpenVerifiedRead(resolved));
     }
 
     [Fact]
@@ -189,14 +179,14 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var child = Directory.CreateDirectory(Path.Combine(workspace.Path, "child")).FullName;
 
-        Workspace.Create("child", workspace.Path).Capture().RootPath.Should().Be(child);
-        workspace.Invoking(w => Workspace.Create(" ", w.Path)).Should().Throw<ArgumentException>();
+        Assert.Equal(child, Workspace.Create("child", workspace.Path).Capture().RootPath);
+        Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(" ", (workspace).Path));
 
         if (!OperatingSystem.IsWindows())
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            workspace.Invoking(w => Workspace.Create(link, w.ParentPath)).Should().Throw<ArgumentException>();
+            Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(link, (workspace).ParentPath));
         }
     }
 
@@ -212,7 +202,7 @@ public sealed class WorkspaceToolsTests
                 tool,
                 """{"uri":"workspace://local/lines.txt","startLine":2,"maxLines":2}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        page.Should().BeEquivalentTo(new
+        Assert.Equivalent(new
         {
             Uri = "workspace://local/lines.txt",
             StartLine = (int?)2,
@@ -220,14 +210,14 @@ public sealed class WorkspaceToolsTests
             Text = "one\ntwo",
             Truncated = true,
             NextStartLine = (int?)4
-        });
+        }, page);
 
         var continuation = Result<ReadTextResult>(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/lines.txt","startLine":4}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        continuation.Text.Should().Be("three");
-        continuation.Truncated.Should().BeFalse();
+        Assert.Equal("three", continuation.Text);
+        Assert.False(continuation.Truncated);
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "byte-pages.txt"),
             $"{new string('a', 40_000)}\n{new string('b', 40_000)}", new UTF8Encoding(false),
@@ -236,31 +226,31 @@ public sealed class WorkspaceToolsTests
                 tool,
                 """{"uri":"workspace://local/byte-pages.txt"}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        bytePage.Text.Should().HaveLength(40_000);
-        bytePage.NextStartLine.Should().Be(2);
+        Assert.Equal(40_000, bytePage.Text.Length);
+        Assert.Equal(2, bytePage.NextStartLine);
 
         await File.WriteAllBytesAsync(
             Path.Combine(workspace.Path, "invalid.txt"),
             [0xc3, 0x28],
             TestContext.Current.CancellationToken);
-        ShouldFailure(await InvokeAsync(
+        Assert.Equal("workspace_invalid_utf8", ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/invalid.txt"}"""))
-            .Code.Should().Be("workspace_invalid_utf8");
+            .Code);
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "binary.txt"), "text\0data",
             TestContext.Current.CancellationToken);
-        ShouldFailure(await InvokeAsync(
+        Assert.Equal("workspace_binary_file", ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/binary.txt"}"""))
-            .Code.Should().Be("workspace_binary_file");
+            .Code);
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "long-line.txt"), new string('x', 64 * 1_024 + 1),
             TestContext.Current.CancellationToken);
-        ShouldFailure(await InvokeAsync(
+        Assert.Equal("workspace_line_too_long", ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/long-line.txt"}"""))
-            .Code.Should().Be("workspace_line_too_long");
+            .Code);
 
         await using (var oversized = File.Create(Path.Combine(workspace.Path, "oversized.txt")))
         {
@@ -280,10 +270,10 @@ public sealed class WorkspaceToolsTests
             }
         }
 
-        ShouldFailure(await InvokeAsync(
+        Assert.Equal("workspace_file_too_large", ShouldFailure(await InvokeAsync(
                 tool,
                 """{"uri":"workspace://local/oversized.txt","startLine":5000000}"""))
-            .Code.Should().Be("workspace_file_too_large");
+            .Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -317,19 +307,19 @@ public sealed class WorkspaceToolsTests
                 """{"query":"Needle"}"""),
             WorkspaceJsonSerializerContext.Default.SearchTextResult);
 
-        result.Matches.Should().HaveCount(3);
-        result.SkippedBinaryFiles.Should().Be(1);
-        result.SkippedLargeFiles.Should().Be(1);
-        result.Matches.Should().OnlyContain(static match => match.Preview.Length <= 512);
-        result.Matches.Single(static match => match.Uri.EndsWith("preview.txt", StringComparison.Ordinal))
-            .Column.Should().Be(551);
-        if (!OperatingSystem.IsWindows()) result.SkippedSymbolicLinks.Should().Be(1);
+        Assert.Equal(3, result.Matches.Count());
+        Assert.Equal(1, result.SkippedBinaryFiles);
+        Assert.Equal(1, result.SkippedLargeFiles);
+        Assert.All(result.Matches, static match => Assert.True(match.Preview.Length <= 512));
+        Assert.Equal(551, result.Matches.Single(static match => match.Uri.EndsWith("preview.txt", StringComparison.Ordinal))
+            .Column);
+        if (!OperatingSystem.IsWindows()) Assert.Equal(1, result.SkippedSymbolicLinks);
 
         var regex = Result<SearchTextResult>(await InvokeAsync(
                 tool,
                 """{"query":"n[e]+dle","regex":true,"caseSensitive":false}"""),
             WorkspaceJsonSerializerContext.Default.SearchTextResult);
-        regex.Matches.Should().HaveCount(4);
+        Assert.Equal(4, regex.Matches.Count());
     }
 
     [Fact(Timeout = 30_000)]
@@ -347,14 +337,14 @@ public sealed class WorkspaceToolsTests
                 fileLimited,
                 """{"query":"target"}"""),
             WorkspaceJsonSerializerContext.Default.SearchTextResult);
-        limited.Matches.Should().BeEmpty();
-        limited.Truncated.Should().BeTrue();
+        Assert.Empty(limited.Matches);
+        Assert.True(limited.Truncated);
 
         var directoryLimited = Function(
             CreateFunctions(workspace.Path, 10, 1),
             "search_text");
-        ShouldFailure(await InvokeAsync(directoryLimited, """{"query":"target"}"""))
-            .Code.Should().Be("workspace_directory_too_large");
+        Assert.Equal("workspace_directory_too_large", ShouldFailure(await InvokeAsync(directoryLimited, """{"query":"target"}"""))
+            .Code);
 
         var invalidRegex = await InvokeAsync(
             Function(CreateFunctions(workspace.Path), "search_text"),
@@ -363,7 +353,7 @@ public sealed class WorkspaceToolsTests
                 query = new string('x', 513),
                 regex = true
             }));
-        ShouldFailure(invalidRegex).Code.Should().Be("workspace_invalid_arguments");
+        Assert.Equal("workspace_invalid_arguments", ShouldFailure(invalidRegex).Code);
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.txt"), "x", TestContext.Current.CancellationToken);
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "c.txt"), "x", TestContext.Current.CancellationToken);
@@ -377,17 +367,16 @@ public sealed class WorkspaceToolsTests
                 scanLimited,
                 """{"query":"x"}"""),
             WorkspaceJsonSerializerContext.Default.SearchTextResult);
-        scanResult.Matches.Should().ContainSingle().Which.Uri.Should().EndWith("/b.txt");
-        scanResult.ScannedBytes.Should().Be(5);
-        scanResult.Truncated.Should().BeTrue();
+        Assert.EndsWith("/b.txt", Assert.Single(scanResult.Matches).Uri);
+        Assert.Equal(5, scanResult.ScannedBytes);
+        Assert.True(scanResult.Truncated);
 
         using var canceled = new CancellationTokenSource();
         await canceled.CancelAsync();
         var token = canceled.Token;
-        await fileLimited.Awaiting(f => f.InvokeAsync(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((fileLimited).InvokeAsync(
                 Arguments("""{"query":"target"}"""),
-                token).AsTask())
-            .Should().ThrowAsync<OperationCanceledException>();
+                token).AsTask()); });
     }
 
     [Fact(Timeout = 10_000)]
@@ -405,18 +394,18 @@ public sealed class WorkspaceToolsTests
         }) ?? throw new InvalidOperationException("mkfifo did not start."))
         {
             await process.WaitForExitAsync(TestContext.Current.CancellationToken);
-            process.ExitCode.Should().Be(0);
+            Assert.Equal(0, process.ExitCode);
         }
 
         var functions = CreateFunctions(workspace.Path);
-        ShouldFailure(await InvokeAsync(
+        Assert.Equal("workspace_not_regular_file", ShouldFailure(await InvokeAsync(
                 Function(functions, "read_text"),
                 """{"uri":"workspace://local/input.fifo"}"""))
-            .Code.Should().Be("workspace_not_regular_file");
-        ShouldFailure(await InvokeAsync(
+            .Code);
+        Assert.Equal("workspace_not_regular_file", ShouldFailure(await InvokeAsync(
                 Function(functions, "search_text"),
                 """{"query":"value","uri":"workspace://local/input.fifo"}"""))
-            .Code.Should().Be("workspace_not_regular_file");
+            .Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -430,10 +419,10 @@ public sealed class WorkspaceToolsTests
             (_, _) => StreamUpdateAsync(ToolCallUpdate("list-call", "list_directory")),
             (messages, _) =>
             {
-                messages.SelectMany(static message => message.Contents)
+                Assert.Contains("note.txt", Assert.IsType<JsonElement>(messages.SelectMany(static message => message.Contents)
                     .OfType<FunctionResultContent>()
                     .Single(static result => result.CallId == "list-call")
-                    .Result.Should().BeOfType<JsonElement>().Which.GetRawText().Should().Contain("note.txt");
+                    .Result).GetRawText());
                 return StreamUpdateAsync(ToolCallUpdate(
                     "read-call",
                     "read_text",
@@ -441,10 +430,10 @@ public sealed class WorkspaceToolsTests
             },
             (messages, _) =>
             {
-                messages.SelectMany(static message => message.Contents)
+                Assert.Contains("workspace body", Assert.IsType<JsonElement>(messages.SelectMany(static message => message.Contents)
                     .OfType<FunctionResultContent>()
                     .Single(static result => result.CallId == "read-call")
-                    .Result.Should().BeOfType<JsonElement>().Which.GetRawText().Should().Contain("workspace body");
+                    .Result).GetRawText());
                 return StreamUpdateAsync(new ChatResponseUpdate(ChatRole.Assistant, "read workspace body"));
             });
         var session = new AgentSession(
@@ -459,12 +448,9 @@ public sealed class WorkspaceToolsTests
         }
 
         var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
-        result.AssistantMessage.Text.Should().Be("read workspace body");
-        result.Transcript.Turns.Should().ContainSingle().Which.Messages
-            .SelectMany(static message => message.Contents)
-            .OfType<FunctionResultContent>()
-            .Should().HaveCount(2);
-        client.Requests.Should().HaveCount(3);
+        Assert.Equal("read workspace body", result.AssistantMessage.Text);
+        Assert.Equal(2, Assert.Single(result.Transcript.Turns).Messages.SelectMany(static message => message.Contents).OfType<FunctionResultContent>().Count());
+        Assert.Equal(3, client.Requests.Count());
     }
 
     [Fact(Timeout = 30_000)]
@@ -485,40 +471,40 @@ public sealed class WorkspaceToolsTests
                 tool,
                 """{"pageSize":1}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        startup.Entries.Should().ContainSingle().Which.Name.Should().Be(".maieutics");
-        startup.NextCursor.Should().NotBeNull();
+        Assert.Equal(".maieutics", Assert.Single(startup.Entries).Name);
+        Assert.NotNull(startup.NextCursor);
 
         var opened = context.OpenLink(other, null);
-        opened.RootPath.Should().Be(workspace.Path);
+        Assert.Equal(workspace.Path, opened.RootPath);
         var links = opened.Links ?? throw new InvalidOperationException("The snapshot carried no links.");
-        links.Records.Should().ContainSingle().Which.Name.Should().Be("other workspace");
+        Assert.Equal("other workspace", Assert.Single(links.Records).Name);
 
         var staleCursor = await InvokeAsync(
             tool,
             $$"""{"cursor":{{JsonSerializer.Serialize(startup.NextCursor)}}}""");
-        ShouldFailure(staleCursor).Code.Should().Be("workspace_invalid_cursor");
+        Assert.Equal("workspace_invalid_cursor", ShouldFailure(staleCursor).Code);
 
         var linkUri = "workspace://local/projects/other%20workspace";
         var linked = Result<ListDirectoryResult>(await InvokeAsync(
                 tool,
                 $$"""{"uri":{{JsonSerializer.Serialize(linkUri)}}}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        linked.Uri.Should().Be(linkUri);
-        linked.Entries.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        Assert.Equal(linkUri, linked.Uri);
+        Assert.Equivalent(new
         {
             Name = "other.txt",
             Uri = $"{linkUri}/other.txt",
             Kind = "file",
             SizeBytes = 5L
-        });
+        }, Assert.Single(linked.Entries));
 
         var closed = context.CloseLink("other workspace");
-        (closed.Links ?? throw new InvalidOperationException("The snapshot carried no links."))
-            .Records.Should().BeEmpty();
+        Assert.Empty((closed.Links ?? throw new InvalidOperationException("The snapshot carried no links."))
+            .Records);
         var afterClose = await InvokeAsync(
             tool,
             $$"""{"uri":{{JsonSerializer.Serialize(linkUri)}}}""");
-        ShouldFailure(afterClose).Code.Should().Be("workspace_path_not_found");
+        Assert.Equal("workspace_path_not_found", ShouldFailure(afterClose).Code);
     }
 
     [Fact]
@@ -542,30 +528,14 @@ public sealed class WorkspaceToolsTests
         {
             var standardBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var standardHost = standardBuilder.Build();
-            standardHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(standardRoot);
+            Assert.Equal(standardRoot, standardHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
 
             var commandBuilder = MaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--workspace", commandRoot]);
             using var commandHost = commandBuilder.Build();
-            commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(commandRoot);
-            commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
-                .Select(static function => function.Name)
-                .Should().Equal(
-                    "list_directory",
-                    "read_text",
-                    "search_text",
-                    "write_text",
-                    "edit_text",
-                    "apply_patch",
-                    "list_resources",
-                    "repl_execute",
-                    "repl_create",
-                    "repl_list",
-                    "repl_restart",
-                    "repl_close",
-                    "agent_spawn",
-                    "task_wait",
-                    "task_cancel");
+            Assert.Equal(commandRoot, commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
+            Assert.Equal(new string[] { "list_directory", "read_text", "search_text", "write_text", "edit_text", "apply_patch", "list_resources", "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close", "agent_spawn", "task_wait", "task_cancel" }, commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
+                .Select(static function => function.Name));
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
@@ -577,7 +547,7 @@ public sealed class WorkspaceToolsTests
         {
             var aliasBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var aliasHost = aliasBuilder.Build();
-            aliasHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(aliasRoot);
+            Assert.Equal(aliasRoot, aliasHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
@@ -591,14 +561,13 @@ public sealed class WorkspaceToolsTests
             WriteWorkspaceConfiguration(configurationFile, reloadRoot);
             ((IConfigurationRoot)frozenBuilder.Configuration).Reload();
             using var frozenHost = frozenBuilder.Build();
-            frozenHost.Services.GetRequiredService<Workspace>().Capture().RootPath.Should().Be(jsonRoot);
+            Assert.Equal(jsonRoot, frozenHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
         }
 
         var path = workspace.Path;
 
-        FluentActions.Invoking(() => MaieuticsHost.CreateApplicationBuilder(
-                ["--config", configurationFile, "--workspace", Path.Combine(path, "missing")]))
-            .Should().Throw<DirectoryNotFoundException>();
+        Assert.ThrowsAny<DirectoryNotFoundException>(() => MaieuticsHost.CreateApplicationBuilder(
+                ["--config", configurationFile, "--workspace", Path.Combine(path, "missing")]));
     }
 
     [Fact]
@@ -607,14 +576,14 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var relative = Directory.CreateDirectory(Path.Combine(workspace.Path, "relative")).FullName;
 
-        Workspace.Create(null, workspace.Path).Capture().RootPath.Should().Be(workspace.Path);
-        Workspace.Create("relative", workspace.Path).Capture().RootPath.Should().Be(relative);
+        Assert.Equal(workspace.Path, Workspace.Create(null, workspace.Path).Capture().RootPath);
+        Assert.Equal(relative, Workspace.Create("relative", workspace.Path).Capture().RootPath);
 
         if (!OperatingSystem.IsWindows())
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            workspace.Invoking(w => Workspace.Create(link, w.ParentPath)).Should().Throw<ArgumentException>();
+            Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(link, (workspace).ParentPath));
         }
     }
 
@@ -685,13 +654,14 @@ public sealed class WorkspaceToolsTests
 
     private static AgentToolException ShouldFailure(ToolInvocation invocation)
     {
-        return invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
+        Assert.NotNull(invocation.Failure);
+        return Assert.IsType<AgentToolException>(invocation.Failure);
     }
 
     private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)
     {
-        invocation.Failure.Should().BeNull();
-        var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
+        Assert.Null(invocation.Failure);
+        var result = Assert.IsType<JsonElement>(invocation.Result);
         return result.Deserialize(jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }

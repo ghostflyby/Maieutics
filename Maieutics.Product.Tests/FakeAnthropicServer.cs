@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using FluentAssertions;
 using System.Text.Json;
 
 namespace Maieutics.Product.Tests;
@@ -85,12 +84,12 @@ internal sealed class FakeAnthropicServer : IAsyncDisposable
                 {
                     break; // client closed this connection; accept the next one
                 }
-                request.Method.Should().Be("POST");
-                request.Path.Should().Be("/v1/messages");
-                request.Body.GetProperty("model").GetString().Should().Be(model);
-                request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
+                Assert.Equal("POST", request.Method);
+                Assert.Equal("/v1/messages", request.Path);
+                Assert.Equal(model, request.Body.GetProperty("model").GetString());
+                Assert.True(request.Body.GetProperty("stream").GetBoolean());
                 RequestBodies.Enqueue(request.Body);
-                if (toolFlow) request.Body.GetRawText().Should().Contain("echo");
+                if (toolFlow) Assert.Contains("echo", request.Body.GetRawText());
 
                 var data = toolFlow && served == 0
                     ? CreateToolStream()

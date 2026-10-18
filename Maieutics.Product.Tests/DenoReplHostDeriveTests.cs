@@ -3,7 +3,6 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -57,20 +56,20 @@ public sealed class DenoReplHostDeriveTests
                 JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.HostReplDerivePayload)),
             ReplControlJsonContext.Default.ReplEnvelope);
 
-        json.Should().Contain("\"host.repl.derive\"");
-        json.Should().Contain("\"entryUrl\":\"file:///tmp/mc-repl-x/maieutics-deno-repl/process_main.ts\"");
-        json.Should().Contain("\"env\":{\"MAIEUTICS_REPL_SESSION\":\"session-1\"}");
+        Assert.Contains("\"host.repl.derive\"", json);
+        Assert.Contains("\"entryUrl\":\"file:///tmp/mc-repl-x/maieutics-deno-repl/process_main.ts\"", json);
+        Assert.Contains("\"env\":{\"MAIEUTICS_REPL_SESSION\":\"session-1\"}", json);
         // A string-array kind renders as a JSON array (the host parses boolean | string[]).
-        json.Should().Contain("\"read\":[\"/tmp/modules\",\"/tmp/ws\"]");
-        json.Should().Contain("\"report\":true");
+        Assert.Contains("\"read\":[\"/tmp/modules\",\"/tmp/ws\"]", json);
+        Assert.Contains("\"report\":true", json);
         // Null (denied) kinds are omitted entirely — the host's parser rejects a literal null.
-        json.Should().NotContain("\"write\"");
+        Assert.DoesNotContain("\"write\"", json);
 
         // The deriveFailed counterpart is registered in the same source-generated context.
         var failed = JsonSerializer.Serialize(
             new HostReplDeriveFailedPayload("session-1", 2, "boom"),
             ReplControlJsonContext.Default.HostReplDeriveFailedPayload);
-        failed.Should().Contain("\"message\":\"boom\"");
+        Assert.Contains("\"message\":\"boom\"", failed);
     }
 
     [Fact]
@@ -83,14 +82,13 @@ public sealed class DenoReplHostDeriveTests
             "file:///tmp/mod.ts",
             windowsPipeName: OperatingSystem.IsWindows() ? "mc-test-pipe" : null);
 
-        environment.Should().ContainKey(DenoReplEnvironment.IpcAddress);
-        environment.Should().ContainKey(DenoReplEnvironment.SessionId);
-        environment.Should().ContainKey(DenoReplEnvironment.Generation);
-        environment.Should().ContainKey(DenoReplEnvironment.ClientModule);
-        environment.Should().NotContainKey(DenoReplEnvironment.BrokerAddress,
-            "the host appends the broker path itself (B5a); the kernel env must not repeat it");
-        environment[DenoReplEnvironment.Generation].Should().Be("3");
-        environment[DenoReplEnvironment.SessionId].Should().Be("env-session");
+        Assert.True(environment.ContainsKey(DenoReplEnvironment.IpcAddress));
+        Assert.True(environment.ContainsKey(DenoReplEnvironment.SessionId));
+        Assert.True(environment.ContainsKey(DenoReplEnvironment.Generation));
+        Assert.True(environment.ContainsKey(DenoReplEnvironment.ClientModule));
+        Assert.False(environment.ContainsKey(DenoReplEnvironment.BrokerAddress));
+        Assert.Equal("3", environment[DenoReplEnvironment.Generation]);
+        Assert.Equal("env-session", environment[DenoReplEnvironment.SessionId]);
     }
 
     [Fact]
@@ -109,19 +107,19 @@ public sealed class DenoReplHostDeriveTests
 
         if (OperatingSystem.IsWindows())
         {
-            environment.Should().ContainKey(DenoReplEnvironment.PipeName);
-            environment[DenoReplEnvironment.PipeName].Should().Be("mc-test-pipe");
-            environment.Should().ContainKey("SystemRoot");
+            Assert.True(environment.ContainsKey(DenoReplEnvironment.PipeName));
+            Assert.Equal("mc-test-pipe", environment[DenoReplEnvironment.PipeName]);
+            Assert.True(environment.ContainsKey("SystemRoot"));
         }
         else
         {
-            environment.Should().NotContainKey(DenoReplEnvironment.PipeName);
-            environment.Should().NotContainKey("SystemRoot");
+            Assert.False(environment.ContainsKey(DenoReplEnvironment.PipeName));
+            Assert.False(environment.ContainsKey("SystemRoot"));
         }
 
         // Neither derivation path puts the broker path in the kernel env: the host forwards its own
         // MAIEUTICS_PERMISSION_BROKER as DENO_PERMISSION_BROKER_PATH for the REPL child it derives.
-        environment.Should().NotContainKey(DenoReplEnvironment.BrokerAddress);
+        Assert.False(environment.ContainsKey(DenoReplEnvironment.BrokerAddress));
     }
 
     [Fact]
@@ -144,19 +142,18 @@ public sealed class DenoReplHostDeriveTests
 
         var shell = DenoPermissionRenderer.BuildHostReplPermissions(policy);
 
-        shell.Should().NotBeNull();
-        shell.Read.Should().NotBeNull();
-        shell.Read!.Value.ValueKind.Should().Be(JsonValueKind.Array);
-        shell.Read.Value.EnumerateArray().Select(static item => item.GetString()).Should()
-            .Equal("/tmp/modules", "/tmp/ws");
-        shell.Env.Should().NotBeNull();
-        shell.Env!.Value.EnumerateArray().Single().GetString().Should().Be("HOME");
+        Assert.NotNull(shell);
+        Assert.NotNull(shell.Read);
+        Assert.Equal(JsonValueKind.Array, shell.Read!.Value.ValueKind);
+        Assert.Equal(new string?[] { "/tmp/modules", "/tmp/ws" }, shell.Read.Value.EnumerateArray().Select(static item => item.GetString()));
+        Assert.NotNull(shell.Env);
+        Assert.Equal("HOME", shell.Env!.Value.EnumerateArray().Single().GetString());
         // AllowAll renders as JSON true (worker-actor spawnProcess grants the kind fully).
-        shell.Net.Should().NotBeNull();
-        shell.Net!.Value.ValueKind.Should().Be(JsonValueKind.True);
+        Assert.NotNull(shell.Net);
+        Assert.Equal(JsonValueKind.True, shell.Net!.Value.ValueKind);
         // DenyAll (and absent kinds) render as null (deny-by-default).
-        shell.Write.Should().BeNull();
-        shell.Run.Should().BeNull();
+        Assert.Null(shell.Write);
+        Assert.Null(shell.Run);
     }
 
     [Fact]
@@ -164,7 +161,7 @@ public sealed class DenoReplHostDeriveTests
     {
         var shell = DenoPermissionRenderer.BuildHostReplPermissions(EffectivePolicy.Default);
 
-        shell.Should().BeNull();
+        Assert.Null(shell);
     }
 
     [Fact(Timeout = 60_000)]
@@ -180,14 +177,14 @@ public sealed class DenoReplHostDeriveTests
         var derive = harness.Manager.RequestReplDeriveAsync(
             new HostReplDerivePayload("failed-session", 1, "file:///proc/main.ts", new()),
             deadline.Token);
-        derive.IsCompleted.Should().BeFalse();
+        Assert.False(derive.IsCompleted);
 
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.deriveFailed","payload":{"sessionId":"failed-session","generation":1,"message":"the host rejected the derive"}}""");
 
         var outcome = await derive;
-        outcome.Failed.Should().BeTrue();
-        outcome.Message.Should().Be("the host rejected the derive");
+        Assert.True(outcome.Failed);
+        Assert.Equal("the host rejected the derive", outcome.Message);
     }
 
     [Fact(Timeout = 60_000)]
@@ -204,14 +201,14 @@ public sealed class DenoReplHostDeriveTests
         var derive = harness.Manager.RequestReplDeriveAsync(
             new HostReplDerivePayload("spawned-session", 1, "file:///proc/main.ts", new()),
             deadline.Token);
-        derive.IsCompleted.Should().BeFalse();
+        Assert.False(derive.IsCompleted);
 
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"spawned-session","generation":1,"pid":1234}}""");
 
         var outcome = await derive;
-        outcome.Failed.Should().BeFalse();
-        registry.IsOwnedBy(1234, "spawned-session").Should().BeTrue();
+        Assert.False(outcome.Failed);
+        Assert.True(registry.IsOwnedBy(1234, "spawned-session"));
     }
 
     [Fact(Timeout = 60_000)]
@@ -232,11 +229,11 @@ public sealed class DenoReplHostDeriveTests
             """{"version":1,"type":"host.repl.deriveFailed","payload":{"sessionId":"session-b","generation":0,"message":"x"}}""");
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"session-b","generation":0,"pid":42}}""");
-        derive.IsCompleted.Should().BeFalse();
+        Assert.False(derive.IsCompleted);
 
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"session-a","generation":0,"pid":43}}""");
-        (await derive).Failed.Should().BeFalse();
+        Assert.False((await derive).Failed);
     }
 
     [Fact(Timeout = 60_000)]
@@ -253,13 +250,12 @@ public sealed class DenoReplHostDeriveTests
             new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
             deadline.Token);
         // A duplicate derive for the same session/generation is rejected synchronously.
-        await harness.Manager.Invoking(manager => manager.RequestReplDeriveAsync(
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((harness.Manager).RequestReplDeriveAsync(
                 new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
-                deadline.Token))
-            .Should().ThrowAsync<InvalidOperationException>();
+                deadline.Token)); });
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"dup-session","generation":0,"pid":55}}""");
-        (await first).Failed.Should().BeFalse();
+        Assert.False((await first).Failed);
     }
 
     [Fact(Timeout = 120_000)]
@@ -299,15 +295,15 @@ public sealed class DenoReplHostDeriveTests
         // Simulated host: read the derive instruction from the attached socket, then report the
         // spawned pid (the kernel registers the session identity and broker policy for it).
         var deriveJson = await harness.Host!.ReadSentAsync(deadline.Token);
-        deriveJson.Should().Contain("\"host.repl.derive\"");
+        Assert.Contains("\"host.repl.derive\"", deriveJson);
         var envelope = JsonSerializer.Deserialize(deriveJson, ReplControlJsonContext.Default.ReplEnvelope)!;
         var payload = JsonSerializer.Deserialize(
             envelope.Payload?.GetRawText() ?? string.Empty,
             ReplControlJsonContext.Default.HostReplDerivePayload)!;
-        payload.SessionId.Should().Be("half-integration-session");
-        payload.EntryUrl.Should().Contain("process_main.ts");
-        payload.Env.Should().ContainKey("MAIEUTICS_REPL_SESSION");
-        payload.Env.Should().NotContainKey("DENO_PERMISSION_BROKER_PATH");
+        Assert.Equal("half-integration-session", payload.SessionId);
+        Assert.Contains("process_main.ts", payload.EntryUrl);
+        Assert.True(payload.Env.ContainsKey("MAIEUTICS_REPL_SESSION"));
+        Assert.False(payload.Env.ContainsKey("DENO_PERMISSION_BROKER_PATH"));
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"half-integration-session","generation":1,"pid":424242}}""");
 
@@ -321,8 +317,8 @@ public sealed class DenoReplHostDeriveTests
         var generation = await start;
         await using (generation)
         {
-            registry.IsOwnedBy(424242, "half-integration-session").Should().BeTrue();
-            generation.ExitCode.Should().BeNull();
+            Assert.True(registry.IsOwnedBy(424242, "half-integration-session"));
+            Assert.Null(generation.ExitCode);
             // A shutdown round-trips the dispose handshake through the eval channel.
             await generation.ShutdownAsync(deadline.Token);
         }
@@ -375,7 +371,7 @@ public sealed class DenoReplHostDeriveTests
         if (harness.Host is not { } simulatedHost)
             throw new InvalidOperationException("The factory harness must attach a simulated host.");
         var deriveJson = await simulatedHost.ReadSentAsync(deadline.Token);
-        deriveJson.Should().Contain("\"host.repl.derive\"");
+        Assert.Contains("\"host.repl.derive\"", deriveJson);
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.deriveFailed","payload":{"sessionId":"fallback-session","generation":1,"message":"no module graph"}}""");
 
@@ -404,14 +400,14 @@ public sealed class DenoReplHostDeriveTests
         {
             // The fallback produced a kernel-owned generation — a real kernel-derived REPL —
             // and it executes: one eval round-trip proves the child is live and serving.
-            kernelGeneration.Should().BeOfType<LocalDenoReplGeneration>();
+            Assert.IsType<LocalDenoReplGeneration>(kernelGeneration);
             var execution = await kernelGeneration.Connection.ExecuteAsync("1 + 1", deadline.Token);
             await foreach (var _ in execution.Events.WithCancellation(deadline.Token))
             {
             }
 
             var terminal = await execution.Completion.WaitAsync(deadline.Token);
-            terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetRawText().Should().Contain("2");
+            Assert.Contains("2", Assert.IsType<ReplEvalResultTerminal>(terminal).Value?.GetRawText());
             // Cleanup rides the awaited dispose (force-stop, no rethrow) like the other
             // kernel-derived-generation tests; graceful shutdown is covered elsewhere.
         }
@@ -475,11 +471,10 @@ public sealed class DenoReplHostDeriveTests
                 "1 + 1",
                 AgentToolCallId.Create(),
                 deadline.Token);
-            result.ExecutionStatus.Should().Be("ok");
-            result.Outputs
+            Assert.Equal("ok", result.ExecutionStatus);
+            Assert.Contains(2, result.Outputs
                 .Where(static item => item is { Kind: "result", Value: not null })
-                .Select(static item => item.Value?.GetInt32())
-                .Should().Contain(2);
+                .Select(static item => item.Value?.GetInt32()));
         }
     }
 
@@ -510,7 +505,7 @@ public sealed class DenoReplHostDeriveTests
         var attached = manager.HostConnectionAttached;
         await manager.StartAsync(cancellationToken);
         await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-        manager.GetStatus().ControlConnected.Should().BeTrue();
+        Assert.True(manager.GetStatus().ControlConnected);
 
         var harness = new HostHarness
         {
@@ -613,7 +608,7 @@ public sealed class DenoReplHostDeriveTests
         // the socket, so the awaited task proves acceptance instead of inferring it from the
         // fake's first receive or polling GetStatus().ControlConnected.
         await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-        manager.GetStatus().ControlConnected.Should().BeTrue();
+        Assert.True(manager.GetStatus().ControlConnected);
 
         var harness = new HostHarness
         {
@@ -786,7 +781,7 @@ public sealed class DenoReplHostDeriveTests
             "Sec-WebSocket-Version: 13\r\n\r\n";
         await socket.SendAsync(Encoding.ASCII.GetBytes(handshake), SocketFlags.None, ct);
         var response = await ReadUntilHeadersAsync(socket, ct);
-        response.Should().Contain("101");
+        Assert.Contains("101", response);
         return socket;
     }
 
@@ -798,7 +793,7 @@ public sealed class DenoReplHostDeriveTests
     private static async Task<string> ReceiveBusAsync(Socket socket, CancellationToken ct)
     {
         var (opcode, payload) = await ReceiveFrameAsync(socket, ct);
-        opcode.Should().Be(0x1);
+        Assert.Equal(0x1, opcode);
         return Encoding.UTF8.GetString(payload);
     }
 

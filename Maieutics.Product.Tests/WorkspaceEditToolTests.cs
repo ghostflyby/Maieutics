@@ -1,7 +1,6 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Permissions;
@@ -19,20 +18,16 @@ public sealed class WorkspaceEditToolTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var functions = CreateFunctions(workspace.Path).Functions;
 
-        functions.Select(static function => function.Name)
-            .Should().Equal("write_text", "edit_text", "apply_patch");
-        functions.Should().OnlyContain(static function =>
-            function.JsonSchema.ValueKind == JsonValueKind.Object &&
-            function.JsonSchema.GetProperty("type").GetString() == "object");
+        Assert.Equal(new string[] { "write_text", "edit_text", "apply_patch" }, functions.Select(static function => function.Name));
+        Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
+            function.JsonSchema.GetProperty("type").GetString() == "object"));
 
         var write = Function(functions, "write_text");
-        await write.Awaiting(w => w.InvokeAsync(
+        var assertion40 = await Assert.ThrowsAnyAsync<Exception>(async () => { await ((write).InvokeAsync(
                 Arguments("""{"uri":"workspace://local/a.txt","content":"x","extra":1}"""),
-                cancellationToken).AsTask())
-            .Should().ThrowAsync<Exception>()
-            .Where(static exception =>
-                exception.GetType() == typeof(ArgumentException) ||
-                exception.GetType() == typeof(JsonException));
+                cancellationToken).AsTask()); });
+        Assert.True(((Func<Exception, bool>)(static exception => exception.GetType() == typeof(ArgumentException) ||
+                exception.GetType() == typeof(JsonException)))(assertion40));
     }
 
     [Fact(Timeout = 30_000)]
@@ -48,20 +43,18 @@ public sealed class WorkspaceEditToolTests
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.WriteTextResult);
 
-        result.Uri.Should().Be("workspace://local/deep/nested/a.txt");
-        result.Operation.Should().Be("created");
-        result.BeforeBytes.Should().BeNull();
-        result.AfterBytes.Should().Be(8);
-        result.Diff.Should().NotBeNull();
-        result.Diff.Unified.Should().Be(
-            "--- a/deep/nested/a.txt\n+++ b/deep/nested/a.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n");
-        result.Diff.Additions.Should().Be(2);
-        result.Diff.Deletions.Should().Be(0);
-        result.Diff.Truncated.Should().BeFalse();
-        (await File.ReadAllTextAsync(
+        Assert.Equal("workspace://local/deep/nested/a.txt", result.Uri);
+        Assert.Equal("created", result.Operation);
+        Assert.Null(result.BeforeBytes);
+        Assert.Equal(8, result.AfterBytes);
+        Assert.NotNull(result.Diff);
+        Assert.Equal("--- a/deep/nested/a.txt\n+++ b/deep/nested/a.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n", result.Diff.Unified);
+        Assert.Equal(2, result.Diff.Additions);
+        Assert.Equal(0, result.Diff.Deletions);
+        Assert.False(result.Diff.Truncated);
+        Assert.Equal("one\ntwo\n", (await File.ReadAllTextAsync(
                 Path.Combine(workspace.Path, "deep", "nested", "a.txt"),
-                cancellationToken))
-            .Should().Be("one\ntwo\n");
+                cancellationToken)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -78,21 +71,20 @@ public sealed class WorkspaceEditToolTests
                 """{"uri":"workspace://local/a.txt","content":"alpha\ndelta\n"}""",
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.WriteTextResult);
-        updated.Operation.Should().Be("updated");
-        updated.BeforeBytes.Should().Be(11);
-        updated.Diff.Should().NotBeNull();
-        updated.Diff.Unified.Should().Be(
-            "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+delta\n");
-        updated.Diff.Deletions.Should().Be(1);
-        updated.Diff.Additions.Should().Be(1);
+        Assert.Equal("updated", updated.Operation);
+        Assert.Equal(11, updated.BeforeBytes);
+        Assert.NotNull(updated.Diff);
+        Assert.Equal("--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+delta\n", updated.Diff.Unified);
+        Assert.Equal(1, updated.Diff.Deletions);
+        Assert.Equal(1, updated.Diff.Additions);
 
         var unchanged = Result<WriteTextResult>(await InvokeAsync(
                 write,
                 """{"uri":"workspace://local/a.txt","content":"alpha\ndelta\n"}""",
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.WriteTextResult);
-        unchanged.Operation.Should().Be("unchanged");
-        unchanged.Diff.Should().BeNull();
+        Assert.Equal("unchanged", unchanged.Operation);
+        Assert.Null(unchanged.Diff);
     }
 
     [Fact(Timeout = 30_000)]
@@ -113,10 +105,9 @@ public sealed class WorkspaceEditToolTests
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.EditTextResult);
 
-        result.Replacements.Should().Be(1);
-        result.Diff.Unified.Should().Contain("-gamma\n+GAMMA\n");
-        (await File.ReadAllBytesAsync(marked, cancellationToken))
-            .Should().Equal([0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("alpha\nGAMMA\n")]);
+        Assert.Equal(1, result.Replacements);
+        Assert.Contains("-gamma\n+GAMMA\n", result.Diff.Unified);
+        Assert.Equal([0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("alpha\nGAMMA\n")], (await File.ReadAllBytesAsync(marked, cancellationToken)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -134,25 +125,25 @@ public sealed class WorkspaceEditToolTests
             cancellationToken);
         var edit = Function(CreateFunctions(workspace.Path).Functions, "edit_text");
 
-        (await ShouldFailAsync(edit,
+        Assert.Equal("workspace_edit_target_not_found", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/dupe.txt","oldText":"absent","newText":"new"}""",
-                cancellationToken)).Code.Should().Be("workspace_edit_target_not_found");
+                cancellationToken)).Code);
 
-        (await ShouldFailAsync(edit,
+        Assert.Equal("workspace_edit_target_not_unique", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"new"}""",
-                cancellationToken)).Code.Should().Be("workspace_edit_target_not_unique");
+                cancellationToken)).Code);
 
-        (await ShouldFailAsync(edit,
+        Assert.Equal("workspace_invalid_arguments", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"x"}""",
-                cancellationToken)).Code.Should().Be("workspace_invalid_arguments");
+                cancellationToken)).Code);
 
-        (await ShouldFailAsync(edit,
+        Assert.Equal("workspace_binary_file", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/bin.dat","oldText":"x","newText":"y"}""",
-                cancellationToken)).Code.Should().Be("workspace_binary_file");
+                cancellationToken)).Code);
 
-        (await ShouldFailAsync(edit,
+        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/missing.txt","oldText":"x","newText":"y"}""",
-                cancellationToken)).Code.Should().Be("workspace_path_not_found");
+                cancellationToken)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -170,8 +161,8 @@ public sealed class WorkspaceEditToolTests
                 """{"uri":"workspace://local/crlf.txt","oldText":"first\nsecond","newText":"FIRST\nSECOND"}""",
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.EditTextResult);
-        result.Replacements.Should().Be(1);
-        (await File.ReadAllTextAsync(crlf, cancellationToken)).Should().Be("FIRST\r\nSECOND\r\n");
+        Assert.Equal(1, result.Replacements);
+        Assert.Equal("FIRST\r\nSECOND\r\n", (await File.ReadAllTextAsync(crlf, cancellationToken)));
 
         await File.WriteAllTextAsync(
             workspace.Path + Path.DirectorySeparatorChar + "dupe.txt",
@@ -182,11 +173,10 @@ public sealed class WorkspaceEditToolTests
                 """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"z","replaceAll":true}""",
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.EditTextResult);
-        all.Replacements.Should().Be(2);
-        (await File.ReadAllTextAsync(
+        Assert.Equal(2, all.Replacements);
+        Assert.Equal("z\ny\nz\n", (await File.ReadAllTextAsync(
                 workspace.Path + Path.DirectorySeparatorChar + "dupe.txt",
-                cancellationToken))
-            .Should().Be("z\ny\nz\n");
+                cancellationToken)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -198,24 +188,24 @@ public sealed class WorkspaceEditToolTests
         var write = Function(CreateFunctions(workspace.Path, maximumWriteBytes: 8).Functions, "write_text");
         var edit = Function(CreateFunctions(workspace.Path, maximumWriteBytes: 8).Functions, "edit_text");
 
-        (await ShouldFailAsync(write,
+        Assert.Equal("workspace_path_denied", (await ShouldFailAsync(write,
                 """{"uri":"workspace://local/.git/config","content":"x"}""",
-                cancellationToken)).Code.Should().Be("workspace_path_denied");
-        (await ShouldFailAsync(write,
+                cancellationToken)).Code);
+        Assert.Equal("workspace_invalid_uri", (await ShouldFailAsync(write,
                 """{"uri":"workspace://local/","content":"x"}""",
-                cancellationToken)).Code.Should().Be("workspace_invalid_uri");
-        (await ShouldFailAsync(write,
+                cancellationToken)).Code);
+        Assert.Equal("workspace_not_regular_file", (await ShouldFailAsync(write,
                 """{"uri":"workspace://local/sub","content":"x"}""",
-                cancellationToken)).Code.Should().Be("workspace_not_regular_file");
-        (await ShouldFailAsync(write,
+                cancellationToken)).Code);
+        Assert.Equal("workspace_file_too_large", (await ShouldFailAsync(write,
                 """{"uri":"workspace://local/big.txt","content":"0123456789"}""",
-                cancellationToken)).Code.Should().Be("workspace_file_too_large");
-        (await ShouldFailAsync(edit,
+                cancellationToken)).Code);
+        Assert.Equal("workspace_not_regular_file", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/sub","oldText":"a","newText":"b"}""",
-                cancellationToken)).Code.Should().Be("workspace_not_regular_file");
-        (await ShouldFailAsync(edit,
+                cancellationToken)).Code);
+        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(edit,
                 """{"uri":"workspace://local/missing.txt","oldText":"a","newText":"b"}""",
-                cancellationToken)).Code.Should().Be("workspace_path_not_found");
+                cancellationToken)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -236,10 +226,10 @@ public sealed class WorkspaceEditToolTests
         var write = Function(functions.Functions, "write_text");
         var edit = Function(functions.Functions, "edit_text");
 
-        (await ShouldFailAsync(write, """{"uri":"workspace://local/link.txt","content":"y\n"}""", cancellationToken))
-            .Code.Should().Be("workspace_symbolic_link_not_allowed");
-        (await ShouldFailAsync(edit, """{"uri":"workspace://local/link.txt","oldText":"x","newText":"y"}""", cancellationToken))
-            .Code.Should().Be("workspace_symbolic_link_not_allowed");
+        Assert.Equal("workspace_symbolic_link_not_allowed", (await ShouldFailAsync(write, """{"uri":"workspace://local/link.txt","content":"y\n"}""", cancellationToken))
+            .Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", (await ShouldFailAsync(edit, """{"uri":"workspace://local/link.txt","oldText":"x","newText":"y"}""", cancellationToken))
+            .Code);
     }
 
     [Fact]
@@ -247,27 +237,25 @@ public sealed class WorkspaceEditToolTests
     {
         // Creation from nothing.
         var creation = UnifiedDiff.Create(null, "one\ntwo\n", "a.txt", 64 * 1_024, 400)!;
-        creation.Unified.Should().Be(
-            "--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n");
-        creation.Additions.Should().Be(2);
-        creation.Deletions.Should().Be(0);
+        Assert.Equal("--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n", creation.Unified);
+        Assert.Equal(2, creation.Additions);
+        Assert.Equal(0, creation.Deletions);
 
         // Deletion to nothing.
         var deletion = UnifiedDiff.Create("one\ntwo\n", "", "a.txt", 64 * 1_024, 400)!;
-        deletion.Unified.Should().Be(
-            "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +0,0 @@\n-one\n-two\n");
-        deletion.Deletions.Should().Be(2);
+        Assert.Equal("--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +0,0 @@\n-one\n-two\n", deletion.Unified);
+        Assert.Equal(2, deletion.Deletions);
 
         // Equal texts.
-        UnifiedDiff.Create("same\n", "same\n", "a.txt", 64 * 1_024, 400).Should().BeNull();
+        Assert.Null(UnifiedDiff.Create("same\n", "same\n", "a.txt", 64 * 1_024, 400));
 
         // A trailing-newline-only change still renders as a final-line edit.
         var marker = UnifiedDiff.Create("one\ntwo", "one\ntwo\n", "a.txt", 64 * 1_024, 400)!;
-        marker.Unified.Should().Contain("-two");
-        marker.Unified.Should().Contain("+two\n");
-        marker.Unified.Should().Contain(@"\ No newline at end of file");
-        marker.Additions.Should().Be(1);
-        marker.Deletions.Should().Be(1);
+        Assert.Contains("-two", marker.Unified);
+        Assert.Contains("+two\n", marker.Unified);
+        Assert.Contains(@"\ No newline at end of file", marker.Unified);
+        Assert.Equal(1, marker.Additions);
+        Assert.Equal(1, marker.Deletions);
     }
 
     [Fact]
@@ -276,19 +264,19 @@ public sealed class WorkspaceEditToolTests
         var before = string.Join("\n", Enumerable.Range(0, 20).Select(static i => $"line {i}")) + "\n";
         var after = before.Replace("line 2", "LINE 2").Replace("line 15", "LINE 15");
         var spread = UnifiedDiff.Create(before, after, "a.txt", 64 * 1_024, 400)!;
-        spread.Unified.Should().Contain("@@ -1,6 +1,6 @@");
-        spread.Unified.Should().Contain("@@ -13,7 +13,7 @@");
-        spread.Additions.Should().Be(2);
-        spread.Deletions.Should().Be(2);
-        spread.Truncated.Should().BeFalse();
+        Assert.Contains("@@ -1,6 +1,6 @@", spread.Unified);
+        Assert.Contains("@@ -13,7 +13,7 @@", spread.Unified);
+        Assert.Equal(2, spread.Additions);
+        Assert.Equal(2, spread.Deletions);
+        Assert.False(spread.Truncated);
 
         // Close changes merge into one hunk.
         var close = UnifiedDiff.Create("a\nb\nc\nd\ne\nf\ng\n", "a\nb\nC\nd\nE\nf\ng\n", "a.txt", 64 * 1_024, 400)!;
-        close.Unified.Should().Contain("@@ -1,7 +1,7 @@");
+        Assert.Contains("@@ -1,7 +1,7 @@", close.Unified);
 
         var bounded = UnifiedDiff.Create(before, after, "a.txt", 64 * 1_024, 5)!;
-        bounded.Truncated.Should().BeTrue();
-        bounded.Unified.Should().Contain("diff output bound reached");
+        Assert.True(bounded.Truncated);
+        Assert.Contains("diff output bound reached", bounded.Unified);
     }
 
     [Fact]
@@ -298,11 +286,11 @@ public sealed class WorkspaceEditToolTests
         var after = string.Join("\n", Enumerable.Range(0, 600).Select(static i => $"b {i}")) + "\n";
         var fallback = UnifiedDiff.Create(before, after, "a.txt", 4 * 1_024 * 1_024, 10_000)!;
 
-        fallback.Additions.Should().Be(600);
-        fallback.Deletions.Should().Be(600);
-        fallback.Truncated.Should().BeFalse();
-        fallback.Unified.Should().Contain("-a 0\n");
-        fallback.Unified.Should().Contain("+b 599\n");
+        Assert.Equal(600, fallback.Additions);
+        Assert.Equal(600, fallback.Deletions);
+        Assert.False(fallback.Truncated);
+        Assert.Contains("-a 0\n", fallback.Unified);
+        Assert.Contains("+b 599\n", fallback.Unified);
     }
 
     private static WorkspaceEditFunctions CreateFunctions(
@@ -357,13 +345,14 @@ public sealed class WorkspaceEditToolTests
         CancellationToken cancellationToken)
     {
         var invocation = await InvokeAsync(function, json, cancellationToken);
-        return invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
+        Assert.NotNull(invocation.Failure);
+        return Assert.IsType<AgentToolException>(invocation.Failure);
     }
 
     private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)
     {
-        invocation.Failure.Should().BeNull();
-        var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
+        Assert.Null(invocation.Failure);
+        var result = Assert.IsType<JsonElement>(invocation.Result);
         return result.Deserialize(jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }
@@ -394,17 +383,15 @@ public sealed class WorkspaceEditToolTests
         // file sits inside the workspace root (ADR 0032 decision 1).
         var gateForbidden = await Record.ExceptionAsync(
             () => invokeWrite("workspace://local/AGENTS.md"));
-        gateForbidden.Should().BeOfType<AgentToolException>().Which.Code
-            .Should().Be("instructions_write_forbidden");
+        Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbidden).Code);
 
         var gateForbiddenSkill = await Record.ExceptionAsync(
             () => invokeWrite("workspace://local/.agents/skills/x/SKILL.md"));
-        gateForbiddenSkill.Should().BeOfType<AgentToolException>().Which.Code
-            .Should().Be("instructions_write_forbidden");
+        Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbiddenSkill).Code);
 
         // Ordinary workspace files are unaffected by the instruction gate.
-        (await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/docs/notes.md"))).Should().BeNull();
+        Assert.Null((await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/docs/notes.md"))));
 
         // A session override allow admits the instruction path explicitly (the migration path).
         registry.Set(sessionId, new PermissionLayer
@@ -415,8 +402,8 @@ public sealed class WorkspaceEditToolTests
             }
         });
 
-        (await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/AGENTS.md"))).Should().BeNull();
+        Assert.Null((await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/AGENTS.md"))));
     }
 
     private sealed record ToolInvocation(JsonElement? Result, AgentToolException? Failure);

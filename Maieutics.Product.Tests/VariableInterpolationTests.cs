@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 using Maieutics.Permissions;
 
@@ -13,9 +12,9 @@ public sealed class VariableInterpolationTests
     {
         var table = CreateTable();
 
-        table.Expand("/etc/ssl/certs").Should().Be("/etc/ssl/certs");
-        table.Expand("localhost:8080").Should().Be("localhost:8080");
-        table.Expand("").Should().Be("");
+        Assert.Equal("/etc/ssl/certs", table.Expand("/etc/ssl/certs"));
+        Assert.Equal("localhost:8080", table.Expand("localhost:8080"));
+        Assert.Equal("", table.Expand(""));
     }
 
     [Fact]
@@ -27,7 +26,7 @@ public sealed class VariableInterpolationTests
         });
         var table = CreateTable();
 
-        table.Expand("${env.MAIEUTICS_TEST_CACHE}/esbuild").Should().Be("/tmp/maieutics-test-cache/esbuild");
+        Assert.Equal("/tmp/maieutics-test-cache/esbuild", table.Expand("${env.MAIEUTICS_TEST_CACHE}/esbuild"));
     }
 
     [Fact]
@@ -38,7 +37,7 @@ public sealed class VariableInterpolationTests
             ["dataDir"] = "/Library/Application Support/Maieutics"
         });
 
-        table.Expand("${var.dataDir}/maieutics.json").Should().Be("/Library/Application Support/Maieutics/maieutics.json");
+        Assert.Equal("/Library/Application Support/Maieutics/maieutics.json", table.Expand("${var.dataDir}/maieutics.json"));
     }
 
     [Fact]
@@ -46,7 +45,7 @@ public sealed class VariableInterpolationTests
     {
         var table = CreateTable(workspace: "/ws");
 
-        table.Expand("${var.workspace}/cache").Should().Be("/ws/cache");
+        Assert.Equal("/ws/cache", table.Expand("${var.workspace}/cache"));
     }
 
     [Fact]
@@ -58,7 +57,7 @@ public sealed class VariableInterpolationTests
         });
         var table = CreateTable(workspace: "/ws");
 
-        table.Expand("${var.workspace}${env.MAIEUTICS_TEST_TMP}/x").Should().Be("/ws/tmp/x");
+        Assert.Equal("/ws/tmp/x", table.Expand("${var.workspace}${env.MAIEUTICS_TEST_TMP}/x"));
     }
 
     [Fact]
@@ -68,8 +67,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${env.MAIEUTICS_VARIABLE_THAT_DOES_NOT_EXIST}");
 
-        expand.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_variable_unknown");
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
     }
 
     [Fact]
@@ -79,8 +77,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${var.missing}");
 
-        expand.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_variable_unknown");
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
     }
 
     [Fact]
@@ -90,8 +87,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${env.HOME");
 
-        expand.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_variable_malformed");
+        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
     }
 
     [Theory]
@@ -105,8 +101,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand(pattern);
 
-        expand.Should().Throw<PermissionException>()
-            .Which.Code.Should().Be("permission_variable_malformed");
+        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
     }
 
     private static VariableTable CreateTable(

@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text;
-using FluentAssertions;
 using Maieutics.DenoRepl;
 
 namespace Maieutics.Product.Tests;
@@ -27,7 +26,7 @@ internal static class CommChildSocketStub
             "Sec-WebSocket-Version: 13\r\n\r\n";
         await socket.SendAsync(Encoding.ASCII.GetBytes(handshake), SocketFlags.None, ct);
         var response = await ReadUntilHeadersAsync(socket, ct);
-        response.Should().Contain("101");
+        Assert.Contains("101", response);
         var json = $$"""{"sessionId":"{{sessionId}}"}""";
         await SendFrameAsync(socket, Encoding.UTF8.GetBytes(json), opcode: 0x1, ct);
         return socket;
@@ -36,8 +35,8 @@ internal static class CommChildSocketStub
     internal static async Task ExpectReadyAsync(Socket socket, CancellationToken ct)
     {
         var (opcode, payload) = await ReceiveFrameAsync(socket, ct);
-        opcode.Should().Be(0x1);
-        Encoding.UTF8.GetString(payload).Should().Contain("comm.ready");
+        Assert.Equal(0x1, opcode);
+        Assert.Contains("comm.ready", Encoding.UTF8.GetString(payload));
     }
 
     internal static async Task SendAsync(Socket socket, ReplCommMessage message, CancellationToken ct)

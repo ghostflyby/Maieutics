@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Providers.OpenAI;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 
@@ -44,13 +43,13 @@ public sealed class FrontendEventsSocketRunWaitTests
 
         await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
         var hello = await events.ReceiveFrameAsync(deadline.Token);
-        hello.GetProperty("type").GetString().Should().Be("hello");
+        Assert.Equal("hello", hello.GetProperty("type").GetString());
 
         // Queue two turns. The worker's dequeue/running/settled transitions publish queue
         // wakes while the events loop is waiting for a run, which is the window that left an
         // abandoned reader behind.
         var enqueued = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
-        enqueued.Should().HaveCount(2);
+        Assert.Equal(2, enqueued.Count());
 
         // Deterministic readiness: the queue snapshot can present "drained" (no running, no
         // pending) inside the worker's dequeue handshake — the head is dequeued and its run
@@ -86,12 +85,10 @@ public sealed class FrontendEventsSocketRunWaitTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "direct after drain" },
             deadline.Token);
-        response.StatusCode.Should().Be(
-            System.Net.HttpStatusCode.Accepted,
-            "the last queued run settled, so a direct turn is accepted rather than busy-rejected");
+        Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var runId = body.GetProperty("runId").GetString();
-        runId.Should().NotBeNullOrEmpty();
+        Assert.False(string.IsNullOrEmpty(runId));
 
         // The run must reach this socket. A parked loop delivers nothing further, so the
         // assertion is on the run's own terminal frame, not on elapsed time.
@@ -100,8 +97,8 @@ public sealed class FrontendEventsSocketRunWaitTests
                      && frame.TryGetProperty("runId", out var id) && id.GetString() == runId,
             deadline.Token);
         var terminal = frames.Last(frame => frame.GetProperty("type").GetString() is "run.completed" or "run.failed");
-        terminal.GetProperty("type").GetString().Should().Be("run.completed");
-        terminal.GetProperty("runId").GetString().Should().Be(runId);
+        Assert.Equal("run.completed", terminal.GetProperty("type").GetString());
+        Assert.Equal(runId, terminal.GetProperty("runId").GetString());
     }
 
 
@@ -116,7 +113,7 @@ public sealed class FrontendEventsSocketRunWaitTests
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = texts.Select(text => new { text }) },
             cancellationToken).ConfigureAwait(false);
-        response.StatusCode.Should().Be(System.Net.HttpStatusCode.Accepted);
+        Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
         return [.. body.GetProperty("items").EnumerateArray()
             .Select(item => item.GetProperty("id").GetString()!)
@@ -137,7 +134,7 @@ public sealed class FrontendEventsSocketRunWaitTests
             using var response = await harness.Client
                 .GetAsync($"/v1/agent/sessions/{sessionId}/queue", wait.Token)
                 .ConfigureAwait(false);
-            response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
             var queue = await response.Content.ReadFromJsonAsync<JsonElement>(wait.Token).ConfigureAwait(false);
             var pending = queue.GetProperty("items").GetArrayLength();
             if (queue.TryGetProperty("running", out var running))
@@ -163,7 +160,7 @@ public sealed class FrontendEventsSocketRunWaitTests
         using var response = await harness.Client
             .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
             .ConfigureAwait(false);
-        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         var queue = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
         return queue.GetProperty("items").GetArrayLength() == 0 &&
                !queue.TryGetProperty("running", out _);
@@ -180,7 +177,7 @@ public sealed class FrontendEventsSocketRunWaitTests
         using var response = await harness.Client
             .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
             .ConfigureAwait(false);
-        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         var queue = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
         return queue.TryGetProperty("running", out var running) &&
                running.GetProperty("runId").GetString() is { } runId &&

@@ -1,5 +1,4 @@
 using System.Text;
-using FluentAssertions;
 using Maieutics.Persistence;
 
 namespace Maieutics.Product.Tests;
@@ -50,16 +49,14 @@ public sealed class ObjectStoreConcurrencyTests : IDisposable
                 () => store.Ingest(new MemoryStream(payload)),
                 cancellationToken);
 
-            results.Select(result => result.Sha256).Distinct().Should().ContainSingle(
-                "identical bytes address the same object");
-            results.Should().AllSatisfy(result => result.Size.Should().Be(payload.Length));
+            Assert.Single(results.Select(result => result.Sha256).Distinct());
+            Assert.All(results, result => Assert.Equal(payload.Length, result.Size));
         }
 
         var staging = Path.Combine(objectsRoot, ".staging");
         if (Directory.Exists(staging))
         {
-            Directory.GetFiles(staging).Should().BeEmpty(
-                "every loser of the publication race must discard its own temporary");
+            Assert.Empty(Directory.GetFiles(staging));
         }
     }
 
@@ -80,12 +77,12 @@ public sealed class ObjectStoreConcurrencyTests : IDisposable
             index => store.Ingest(new MemoryStream(payloads[index])),
             cancellationToken);
 
-        results.Select(result => result.Sha256).Distinct().Should().HaveCount(racers);
+        Assert.Equal(racers, results.Select(result => result.Sha256).Distinct().Count());
         foreach (var result in results)
         {
-            store.Exists(result.Sha256).Should().BeTrue();
+            Assert.True(store.Exists(result.Sha256));
             using var read = store.Open(result.Sha256);
-            read.Length.Should().Be(result.Size);
+            Assert.Equal(result.Size, read.Length);
         }
     }
 

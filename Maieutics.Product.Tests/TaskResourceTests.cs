@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -14,9 +13,8 @@ public sealed class TaskResourceTests
     {
         var registry = new ResourceRegistry([new ClaimingProvider(new ResourceClaim("task"))]);
 
-        registry.Resolve(new Uri("task://terminal/a/b")).Should().BeNull();
-        registry.GetConflicts().Should().ContainSingle()
-            .Which.Reason.Should().Be("reserved_scheme");
+        Assert.Null(registry.Resolve(new Uri("task://terminal/a/b")));
+        Assert.Equal("reserved_scheme", Assert.Single(registry.GetConflicts()).Reason);
     }
 
     [Fact]
@@ -28,10 +26,10 @@ public sealed class TaskResourceTests
         ]);
 
         var provider = registry.Providers.Single(provider => provider.Id == "task");
-        provider.Class.Should().Be(ResourceProviderClass.BuiltIn);
-        provider.Claims.Should().ContainSingle().Which.Should().Be(new ResourceClaim("task", "terminal"));
-        registry.Resolve(new Uri("task://terminal/a/b")).Should().Be(provider);
-        registry.Resolve(new Uri("task://other/a/b")).Should().BeNull();
+        Assert.Equal(ResourceProviderClass.BuiltIn, provider.Class);
+        Assert.Equal(new ResourceClaim("task", "terminal"), Assert.Single(provider.Claims));
+        Assert.Equal(provider, registry.Resolve(new Uri("task://terminal/a/b")));
+        Assert.Null(registry.Resolve(new Uri("task://other/a/b")));
     }
 
     [Fact]
@@ -43,24 +41,21 @@ public sealed class TaskResourceTests
         var token = TestContext.Current.CancellationToken;
 
         var unknownAuthority = () => provider.ReadAsync("task://unknown/a/b", request, token).AsTask();
-        (await unknownAuthority.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await unknownAuthority.Invoke(); })).Code);
 
         var malformedPath = () => provider.ReadAsync(
                 $"task://terminal/{AgentSessionId.Create().Value.ToString("N")}/onlyonesegment",
                 request,
                 token)
             .AsTask();
-        (await malformedPath.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await malformedPath.Invoke(); })).Code);
 
         var unknownSession = () => provider.ReadAsync(
                 $"task://terminal/{AgentSessionId.Create().Value.ToString("N")}/{Guid.NewGuid().ToString("N")}",
                 request,
                 token)
             .AsTask();
-        (await unknownSession.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await unknownSession.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 15_000)]
@@ -77,35 +72,34 @@ public sealed class TaskResourceTests
             TestContext.Current.CancellationToken);
         var result = await runTask;
 
-        result.Settled.Should().BeFalse();
-        result.TaskUri.Should().Be($"task://terminal/{owner.Value.ToString("N")}/{result.SessionId}");
+        Assert.False(result.Settled);
+        Assert.Equal($"task://terminal/{owner.Value.ToString("N")}/{result.SessionId}", result.TaskUri);
 
         var snapshot = await ReadSnapshotAsync(harness, result.TaskUri!);
-        snapshot.GetProperty("uri").GetString().Should().Be(result.TaskUri);
-        snapshot.GetProperty("kind").GetString().Should().Be("terminal");
-        snapshot.GetProperty("status").GetString().Should().Be("working");
-        snapshot.GetProperty("terminal").GetProperty("agentSessionId").GetString()
-            .Should().Be(owner.Value.ToString("N"));
-        snapshot.GetProperty("terminal").GetProperty("sessionId").GetString().Should().Be(result.SessionId);
-        snapshot.GetProperty("terminal").TryGetProperty("exitCode", out _).Should().BeFalse();
+        Assert.Equal(result.TaskUri, snapshot.GetProperty("uri").GetString());
+        Assert.Equal("terminal", snapshot.GetProperty("kind").GetString());
+        Assert.Equal("working", snapshot.GetProperty("status").GetString());
+        Assert.Equal(owner.Value.ToString("N"), snapshot.GetProperty("terminal").GetProperty("agentSessionId").GetString());
+        Assert.Equal(result.SessionId, snapshot.GetProperty("terminal").GetProperty("sessionId").GetString());
+        Assert.False(snapshot.GetProperty("terminal").TryGetProperty("exitCode", out _));
 
         var catalog = await ListResourcesAsync(harness);
-        catalog.Resources.Should().ContainSingle().Which.Uri.Should().Be(result.TaskUri);
-        catalog.Resources.Single().Kind.Should().Be("task");
-        catalog.Conflicts.Should().BeEmpty();
+        Assert.Equal(result.TaskUri, Assert.Single(catalog.Resources).Uri);
+        Assert.Equal("task", catalog.Resources.Single().Kind);
+        Assert.Empty(catalog.Conflicts);
 
         // The child settles after the deadline: the next read reports completion.
         harness.Process.EndOfOutput();
         harness.Process.RaiseExited(0);
         var settled = await ReadSnapshotAsync(harness, result.TaskUri!);
-        settled.GetProperty("status").GetString().Should().Be("complete");
-        settled.GetProperty("terminal").GetProperty("exitCode").GetInt32().Should().Be(0);
+        Assert.Equal("complete", settled.GetProperty("status").GetString());
+        Assert.Equal(0, settled.GetProperty("terminal").GetProperty("exitCode").GetInt32());
 
         // Closing the session removes the task resource.
         await harness.Registry.CloseAsync(owner, result.SessionId, TestContext.Current.CancellationToken);
         var failure = await InvokeReadTextAsync(harness.WorkspaceFunctions, result.TaskUri!);
-        failure.IsFailure.Should().BeTrue();
-        failure.Code.Should().Be("resource_not_found");
+        Assert.True(failure.IsFailure);
+        Assert.Equal("resource_not_found", failure.Code);
     }
 
     [Fact(Timeout = 10_000)]
@@ -124,8 +118,8 @@ public sealed class TaskResourceTests
         harness.Process.RaiseExited(0);
         var result = await runTask;
 
-        result.Settled.Should().BeTrue();
-        result.TaskUri.Should().BeNull();
+        Assert.True(result.Settled);
+        Assert.Null(result.TaskUri);
     }
 
     [Fact(Timeout = 10_000)]
@@ -143,8 +137,8 @@ public sealed class TaskResourceTests
         harness.Process.RaiseExited(0);
         var snapshot = await wait;
 
-        snapshot.Status.Should().Be("complete");
-        snapshot.Terminal!.ExitCode.Should().Be(0);
+        Assert.Equal("complete", snapshot.Status);
+        Assert.Equal(0, snapshot.Terminal!.ExitCode);
     }
 
     [Fact(Timeout = 10_000)]
@@ -156,13 +150,12 @@ public sealed class TaskResourceTests
 
         var timeout = () => harness.Provider.WaitTaskAsync(
             result.TaskUri!, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
-        (await timeout.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("task_wait_timeout");
+        Assert.Equal("task_wait_timeout", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await timeout.Invoke(); })).Code);
 
         harness.Process.EndOfOutput();
         harness.Process.RaiseExited(0);
         var snapshot = await ReadSnapshotAsync(harness, result.TaskUri!);
-        snapshot.GetProperty("status").GetString().Should().Be("complete");
+        Assert.Equal("complete", snapshot.GetProperty("status").GetString());
     }
 
     [Fact(Timeout = 10_000)]
@@ -174,13 +167,12 @@ public sealed class TaskResourceTests
 
         var snapshot = await harness.Provider.CancelTaskAsync(
             result.TaskUri!, owner, TestContext.Current.CancellationToken);
-        snapshot.Status.Should().Be("cancel");
-        snapshot.Terminal!.State.Should().Be("closed");
+        Assert.Equal("cancel", snapshot.Status);
+        Assert.Equal("closed", snapshot.Terminal!.State);
 
         var gone = () => harness.Provider.ReadAsync(
             result.TaskUri!, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
-        (await gone.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("resource_not_found");
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await gone.Invoke(); })).Code);
     }
 
     [Fact(Timeout = 10_000)]
@@ -194,8 +186,8 @@ public sealed class TaskResourceTests
 
         var snapshot = await harness.Provider.CancelTaskAsync(
             result.TaskUri!, owner, TestContext.Current.CancellationToken);
-        snapshot.Status.Should().Be("complete");
-        snapshot.Terminal!.ExitCode.Should().Be(0);
+        Assert.Equal("complete", snapshot.Status);
+        Assert.Equal(0, snapshot.Terminal!.ExitCode);
     }
 
     [Fact(Timeout = 10_000)]
@@ -207,11 +199,10 @@ public sealed class TaskResourceTests
 
         var forbidden = () => harness.Provider.CancelTaskAsync(
             result.TaskUri!, AgentSessionId.Create(), TestContext.Current.CancellationToken);
-        (await forbidden.Should().ThrowAsync<ResourceException>())
-            .Which.Code.Should().Be("task_forbidden");
+        Assert.Equal("task_forbidden", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await forbidden.Invoke(); })).Code);
 
         var stillWorking = await ReadSnapshotAsync(harness, result.TaskUri!);
-        stillWorking.GetProperty("status").GetString().Should().Be("working");
+        Assert.Equal("working", stillWorking.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -225,8 +216,8 @@ public sealed class TaskResourceTests
         var read = await provider.ReadAsync(
             uri, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
         using var document = JsonDocument.Parse(read.Content);
-        document.RootElement.GetRawText().Should().Be("[1,2,3]");
-        read.MimeType.Should().Be("application/json");
+        Assert.Equal("[1,2,3]", document.RootElement.GetRawText());
+        Assert.Equal("application/json", read.MimeType);
 
         async Task ThrowMissing() => await provider.ReadAsync(
             $"objects://{new string('a', 64)}",
@@ -274,15 +265,15 @@ public sealed class TaskResourceTests
             TimeSpan.FromMilliseconds(200),
             new TerminalSnapshotRequest(),
             TestContext.Current.CancellationToken);
-        result.Settled.Should().BeFalse();
-        result.TaskUri.Should().NotBeNull();
+        Assert.False(result.Settled);
+        Assert.NotNull(result.TaskUri);
         return result;
     }
 
     private static async Task<JsonElement> ReadSnapshotAsync(TaskHarness harness, string taskUri)
     {
         var invocation = await InvokeReadTextAsync(harness.WorkspaceFunctions, taskUri);
-        invocation.IsFailure.Should().BeFalse();
+        Assert.False(invocation.IsFailure);
         var read = invocation.Result!.Value.Deserialize(WorkspaceJsonSerializerContext.Default.ReadTextResult)!;
         using var document = JsonDocument.Parse(read.Text);
         return document.RootElement.Clone();

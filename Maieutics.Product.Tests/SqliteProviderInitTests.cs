@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using FluentAssertions;
 using Maieutics.Persistence;
 using Microsoft.Data.Sqlite;
 using SQLitePCL;
@@ -45,7 +44,7 @@ public sealed class SqliteProviderInitTests
             connection.Open();
 
             var handle = ((sqlite3?)connection.Handle)?.DangerousGetHandle() ?? IntPtr.Zero;
-            handle.Should().NotBe(IntPtr.Zero, "an open connection exposes its native handle");
+            Assert.NotEqual(IntPtr.Zero, handle);
 
             // Which native library the process bound decides where to look the symbol up.
             var mutex = OperatingSystem.IsWindows()
@@ -61,10 +60,7 @@ public sealed class SqliteProviderInitTests
                 return;
             }
 
-            mutex.Should().NotBe(
-                IntPtr.Zero,
-                "a connection without a mutex lets two threads corrupt SQLite's heap under a "
-                + "multi-thread engine, which is what the serialized default prevents");
+            Assert.NotEqual(IntPtr.Zero, mutex);
         }
         finally
         {
@@ -81,7 +77,7 @@ public sealed class SqliteProviderInitTests
     // A multi-threaded engine stress test: 30s was lost once to a slow contended windows
     // runner even though the work itself completes in seconds locally.
     [Fact(Timeout = 60_000)]
-    public void ManyConnectionsAcrossThreadsDoNotCorruptTheEngine()
+    public async Task ManyConnectionsAcrossThreadsDoNotCorruptTheEngine()
     {
         // The reported symptom was a native SIGSEGV from the engine itself, so this exercises
         // the engine from many threads. Each thread uses its OWN connection — the pattern the
@@ -121,10 +117,9 @@ public sealed class SqliteProviderInitTests
             }, cancellationToken)).ToArray();
 
             // Reaching this point is the assertion: the engine did not take the process down.
-            FluentActions.Invoking(() => Task.WaitAll(workers, cancellationToken))
-                .Should().NotThrow();
+            await Task.WhenAll(workers).WaitAsync(cancellationToken);
 
-            failures.Should().OnlyContain(static exception => exception is SqliteException);
+            Assert.All(failures, static exception => Assert.True(exception is SqliteException));
         }
         finally
         {
@@ -165,7 +160,7 @@ public sealed class SqliteProviderInitTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT sqlite_version();";
-            command.ExecuteScalar().Should().NotBeNull();
+            Assert.NotNull(command.ExecuteScalar());
         }, cancellationToken)).ToArray();
 
         await ready.Task.WaitAsync(cancellationToken);

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using FluentAssertions;
 using Maieutics.Mcp;
 
 namespace Maieutics.Product.Tests;
@@ -44,22 +43,23 @@ public sealed class McpServerFileTests : IDisposable
 
         var definitions = McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::");
 
-        definitions.Should().HaveCount(2);
-        var stdio = definitions.Should().ContainSingle(d => d.Id == "plugin:demo::stdio").Subject;
-        var stdioTransport = stdio.Transport.Should().BeOfType<StdioMcpTransportDefinition>().Subject;
-        stdioTransport.Command.Should().Be("deno");
-        stdioTransport.Arguments.Should().Equal("run", "--help");
-        stdioTransport.EnvironmentVariables.Should().ContainKey("DENO_DIR");
-        stdioTransport.WorkingDirectory.Should().Be(Path.GetFullPath("./server", BaseDirectory));
-        stdio.RootsEnabled.Should().BeTrue();
-        stdio.ElicitationEnabled.Should().BeTrue();
+        Assert.Equal(2, definitions.Count());
+        var stdio = Assert.Single(definitions, d => d.Id == "plugin:demo::stdio");
+        var stdioTransport = Assert.IsType<StdioMcpTransportDefinition>(stdio.Transport);
+        Assert.Equal("deno", stdioTransport.Command);
+        Assert.Equal(new string[] { "run", "--help" }, stdioTransport.Arguments);
+        Assert.True((stdioTransport.EnvironmentVariables ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("DENO_DIR"));
+        Assert.Equal(Path.GetFullPath("./server", BaseDirectory), stdioTransport.WorkingDirectory);
+        Assert.True(stdio.RootsEnabled);
+        Assert.True(stdio.ElicitationEnabled);
 
-        var http = definitions.Should().ContainSingle(d => d.Id == "plugin:demo::remote").Subject;
-        var httpTransport = http.Transport.Should().BeOfType<HttpMcpTransportDefinition>().Subject;
-        httpTransport.Endpoint.Should().Be(new Uri("https://example.test/mcp"));
-        httpTransport.Headers.Should().Contain("Authorization", "Bearer t");
-        http.RootsEnabled.Should().BeFalse();
-        http.ElicitationEnabled.Should().BeFalse();
+        var http = Assert.Single(definitions, d => d.Id == "plugin:demo::remote");
+        var httpTransport = Assert.IsType<HttpMcpTransportDefinition>(http.Transport);
+        Assert.Equal(new Uri("https://example.test/mcp"), httpTransport.Endpoint);
+        var headers = httpTransport.Headers ?? throw new InvalidOperationException("the HTTP transport declares headers");
+        Assert.Equal("Bearer t", headers["Authorization"]);
+        Assert.False(http.RootsEnabled);
+        Assert.False(http.ElicitationEnabled);
     }
 
     [Fact]
@@ -73,8 +73,7 @@ public sealed class McpServerFileTests : IDisposable
             }
         });
 
-        McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::")
-            .Should().ContainSingle().Which.Id.Should().Be("plugin:demo::one");
+        Assert.Equal("plugin:demo::one", Assert.Single(McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::")).Id);
     }
 
     [Fact]
@@ -87,8 +86,7 @@ public sealed class McpServerFileTests : IDisposable
             { "mcpServers": { "one": { "command": "deno" } } }
             """);
 
-        McpServerFile.ReadJson(collected, BaseDirectory, "plugin:demo::")
-            .Should().ContainSingle().Which.Id.Should().Be("plugin:demo::one");
+        Assert.Equal("plugin:demo::one", Assert.Single(McpServerFile.ReadJson(collected, BaseDirectory, "plugin:demo::")).Id);
     }
 
     [Fact]
@@ -100,8 +98,8 @@ public sealed class McpServerFileTests : IDisposable
             ["servers"] = new JsonObject { ["two"] = StdioServer() }
         });
 
-        FluentActions.Invoking(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"))
-            .Should().Throw<InvalidOperationException>().WithMessage("*must not combine*");
+        var assertion21 = Assert.ThrowsAny<InvalidOperationException>(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"));
+        Assert.Matches("(?is)^.*must\\ not\\ combine.*$", assertion21.Message);
     }
 
     [Fact]
@@ -112,8 +110,8 @@ public sealed class McpServerFileTests : IDisposable
             ["remote"] = new JsonObject { ["url"] = "http://example.test/mcp" }
         });
 
-        FluentActions.Invoking(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"))
-            .Should().Throw<InvalidOperationException>().WithMessage("*must use HTTPS*");
+        var assertion22 = Assert.ThrowsAny<InvalidOperationException>(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"));
+        Assert.Matches("(?is)^.*must\\ use\\ HTTPS.*$", assertion22.Message);
     }
 
     [Fact]
@@ -124,8 +122,8 @@ public sealed class McpServerFileTests : IDisposable
             ["remote"] = new JsonObject { ["type"] = "sse", ["url"] = "https://example.test/sse" }
         });
 
-        FluentActions.Invoking(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"))
-            .Should().Throw<InvalidOperationException>().WithMessage("*unsupported 'sse'*");
+        var assertion23 = Assert.ThrowsAny<InvalidOperationException>(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"));
+        Assert.Matches("(?is)^.*unsupported\\ 'sse'.*$", assertion23.Message);
     }
 
     [Fact]
@@ -135,8 +133,8 @@ public sealed class McpServerFileTests : IDisposable
         server["Nope"] = true;
         var path = WriteFile(new JsonObject { ["stdio"] = server });
 
-        FluentActions.Invoking(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"))
-            .Should().Throw<InvalidOperationException>().WithMessage("*not valid for MCP server*");
+        var assertion24 = Assert.ThrowsAny<InvalidOperationException>(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"));
+        Assert.Matches("(?is)^.*not\\ valid\\ for\\ MCP\\ server.*$", assertion24.Message);
     }
 
     [Fact]
@@ -153,8 +151,7 @@ public sealed class McpServerFileTests : IDisposable
             ["live"] = StdioServer()
         });
 
-        McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::")
-            .Should().ContainSingle().Which.Id.Should().Be("plugin:demo::live");
+        Assert.Equal("plugin:demo::live", Assert.Single(McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::")).Id);
     }
 
     [Fact]
@@ -169,8 +166,8 @@ public sealed class McpServerFileTests : IDisposable
             }
         });
 
-        FluentActions.Invoking(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"))
-            .Should().Throw<InvalidOperationException>().WithMessage("*RequestTimeout must be positive*");
+        var assertion25 = Assert.ThrowsAny<InvalidOperationException>(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"));
+        Assert.Matches("(?is)^.*RequestTimeout\\ must\\ be\\ positive.*$", assertion25.Message);
     }
 
     [Fact]
@@ -180,8 +177,7 @@ public sealed class McpServerFileTests : IDisposable
         Directory.CreateDirectory(BaseDirectory);
         File.WriteAllText(path, "{");
 
-        FluentActions.Invoking(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"))
-            .Should().Throw<Exception>();
+        Assert.ThrowsAny<Exception>(() => McpServerFile.ReadFile(path, BaseDirectory, "plugin:demo::"));
     }
 
     private static JsonObject StdioServer()

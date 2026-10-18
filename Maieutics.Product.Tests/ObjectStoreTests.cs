@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using FluentAssertions;
 using Maieutics.Persistence;
 
 namespace Maieutics.Product.Tests;
@@ -38,13 +37,13 @@ public sealed class ObjectStoreTests : IDisposable
         var store = CreateStore();
         var ingested = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("abc")));
 
-        ingested.Sha256.Should().Be(AbcDigest);
-        ingested.Size.Should().Be(3);
-        File.Exists(Path.Combine(objectsRoot, "ba", AbcDigest)).Should().BeTrue();
+        Assert.Equal(AbcDigest, ingested.Sha256);
+        Assert.Equal(3, ingested.Size);
+        Assert.True(File.Exists(Path.Combine(objectsRoot, "ba", AbcDigest)));
 
         using var read = store.Open(AbcDigest);
         using var reader = new StreamReader(read);
-        reader.ReadToEnd().Should().Be("abc");
+        Assert.Equal("abc", reader.ReadToEnd());
     }
 
     [Fact]
@@ -54,9 +53,9 @@ public sealed class ObjectStoreTests : IDisposable
         var first = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("abc")));
         var second = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("abc")));
 
-        second.Should().Be(first);
-        Directory.GetFiles(Path.Combine(objectsRoot, "ba")).Should().ContainSingle();
-        Directory.GetFiles(Path.Combine(objectsRoot, ".staging")).Should().BeEmpty();
+        Assert.Equal(first, second);
+        Assert.Single(Directory.GetFiles(Path.Combine(objectsRoot, "ba")));
+        Assert.Empty(Directory.GetFiles(Path.Combine(objectsRoot, ".staging")));
     }
 
     [Fact]
@@ -69,9 +68,9 @@ public sealed class ObjectStoreTests : IDisposable
         var store = CreateStore();
         var ingested = store.Ingest(new MemoryStream(payload));
 
-        ingested.Size.Should().Be(payload.Length);
-        ingested.Sha256.Should().Be(expected);
-        store.Exists(expected).Should().BeTrue();
+        Assert.Equal(payload.Length, ingested.Size);
+        Assert.Equal(expected, ingested.Sha256);
+        Assert.True(store.Exists(expected));
     }
 
     [Fact]
@@ -80,10 +79,10 @@ public sealed class ObjectStoreTests : IDisposable
         var store = CreateStore();
         var digest = new string('a', 64);
 
-        store.Exists(digest).Should().BeFalse();
-        store.Invoking(s => s.Open(digest)).Should().Throw<FileNotFoundException>();
-        store.Invoking(s => s.Open("not-a-digest")).Should().Throw<ArgumentException>();
-        store.Invoking(s => s.Open(new string('A', 64))).Should().Throw<ArgumentException>();
+        Assert.False(store.Exists(digest));
+        Assert.ThrowsAny<FileNotFoundException>(() => (store).Open(digest));
+        Assert.ThrowsAny<ArgumentException>(() => (store).Open("not-a-digest"));
+        Assert.ThrowsAny<ArgumentException>(() => (store).Open(new string('A', 64)));
     }
 
     [Fact]
@@ -99,9 +98,9 @@ public sealed class ObjectStoreTests : IDisposable
 
         var removed = store.SweepStaging(TimeSpan.FromMinutes(30));
 
-        removed.Should().Be(1);
-        File.Exists(stale).Should().BeFalse();
-        File.Exists(fresh).Should().BeTrue();
+        Assert.Equal(1, removed);
+        Assert.False(File.Exists(stale));
+        Assert.True(File.Exists(fresh));
     }
 
     [Fact]
@@ -113,10 +112,10 @@ public sealed class ObjectStoreTests : IDisposable
 
         var removed = store.DeleteExcept([keep.Sha256], DateTimeOffset.UtcNow);
 
-        removed.Should().Be(1);
-        store.Exists(keep.Sha256).Should().BeTrue();
-        store.Exists(drop.Sha256).Should().BeFalse();
-        store.DeleteExcept([keep.Sha256], DateTimeOffset.UtcNow).Should().Be(0);
+        Assert.Equal(1, removed);
+        Assert.True(store.Exists(keep.Sha256));
+        Assert.False(store.Exists(drop.Sha256));
+        Assert.Equal(0, store.DeleteExcept([keep.Sha256], DateTimeOffset.UtcNow));
     }
 
     [Fact]
@@ -127,6 +126,6 @@ public sealed class ObjectStoreTests : IDisposable
 
         store.Delete(AbcDigest);
 
-        store.Exists(AbcDigest).Should().BeFalse();
+        Assert.False(store.Exists(AbcDigest));
     }
 }

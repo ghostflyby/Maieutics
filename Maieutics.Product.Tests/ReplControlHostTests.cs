@@ -5,7 +5,6 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -78,8 +77,8 @@ public sealed class ReplControlHostTests
         await using (application)
         {
             var response = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
-            response.Should().StartWith("HTTP/1.1 200");
-            response.Should().Contain("ok");
+            Assert.StartsWith("HTTP/1.1 200", response);
+            Assert.Contains("ok", response);
         }
     }
 
@@ -102,15 +101,15 @@ public sealed class ReplControlHostTests
                 """{"version":1,"type":"control.hello","payload":{"sessionId":"test-session"}}""",
                 timeout.Token);
             var ready = await ReceiveBusAsync(socket, timeout.Token);
-            ready.Should().Contain("\"type\":\"control.ready\"");
+            Assert.Contains("\"type\":\"control.ready\"", ready);
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"control.ping","correlationId":"p1"}""",
                 timeout.Token);
             var pong = await ReceiveBusAsync(socket, timeout.Token);
-            pong.Should().Contain("\"type\":\"control.pong\"");
-            pong.Should().Contain("\"correlationId\":\"p1\"");
+            Assert.Contains("\"type\":\"control.pong\"", pong);
+            Assert.Contains("\"correlationId\":\"p1\"", pong);
         }
     }
 
@@ -138,25 +137,25 @@ public sealed class ReplControlHostTests
                 socket,
                 """{"version":1,"type":"comm.msg","payload":{"commId":"c1"}}""",
                 timeout.Token);
-            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("comm_not_open");
+            Assert.Contains("comm_not_open", (await ReceiveBusAsync(socket, timeout.Token)));
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"comm.open","payload":{"commId":"c1","targetName":"test"}}""",
                 timeout.Token);
-            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("\"type\":\"comm.ack\"");
+            Assert.Contains("\"type\":\"comm.ack\"", (await ReceiveBusAsync(socket, timeout.Token)));
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"comm.msg","payload":{"commId":"c1"}}""",
                 timeout.Token);
-            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("\"type\":\"comm.ack\"");
+            Assert.Contains("\"type\":\"comm.ack\"", (await ReceiveBusAsync(socket, timeout.Token)));
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"nonsense.unknown"}""",
                 timeout.Token);
-            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("unknown_message");
+            Assert.Contains("unknown_message", (await ReceiveBusAsync(socket, timeout.Token)));
         }
     }
 
@@ -184,8 +183,8 @@ public sealed class ReplControlHostTests
             await SendFragmentedBusAsync(socket, message, timeout.Token);
 
             var pong = await ReceiveBusAsync(socket, timeout.Token);
-            pong.Should().Contain("\"type\":\"control.pong\"");
-            pong.Should().Contain("\"correlationId\":\"limit\"");
+            Assert.Contains("\"type\":\"control.pong\"", pong);
+            Assert.Contains("\"correlationId\":\"limit\"", pong);
         }
     }
 
@@ -216,9 +215,8 @@ public sealed class ReplControlHostTests
             await SendFragmentedBusAsync(socket, message, timeout.Token, true);
 
             var (opcode, payload) = await ReceiveFrameAsync(socket, timeout.Token);
-            opcode.Should().Be(0x8, "an oversized message must close before it can be dispatched");
-            BinaryPrimitives.ReadUInt16BigEndian(payload).Should()
-                .Be((ushort)WebSocketCloseStatus.MessageTooBig);
+            Assert.Equal(0x8, opcode);
+            Assert.Equal((ushort)WebSocketCloseStatus.MessageTooBig, BinaryPrimitives.ReadUInt16BigEndian(payload));
         }
     }
 
@@ -261,10 +259,10 @@ public sealed class ReplControlHostTests
                 socket,
                 """{"version":1,"type":"control.cancel","payload":{"correlationId":"cancel-me"}}""",
                 timeout.Token);
-            (await ReceiveBusAsync(socket, timeout.Token)).Should().Contain("control.cancelled");
+            Assert.Contains("control.cancelled", (await ReceiveBusAsync(socket, timeout.Token)));
 
             var response = await invoke;
-            response.Should().Contain("\"status\":\"cancelled\"");
+            Assert.Contains("\"status\":\"cancelled\"", response);
         }
     }
 
@@ -302,12 +300,12 @@ public sealed class ReplControlHostTests
                     token),
                 timeout.Token);
             var progress = await ReceiveBusAsync(socket, timeout.Token);
-            progress.Should().Contain("\"type\":\"tool.progress\"");
-            progress.Should().Contain("\"correlationId\":\"progress-1\"");
-            progress.Should().Contain("\"stage\":\"building\"");
+            Assert.Contains("\"type\":\"tool.progress\"", progress);
+            Assert.Contains("\"correlationId\":\"progress-1\"", progress);
+            Assert.Contains("\"stage\":\"building\"", progress);
 
             var response = await invoke;
-            response.Should().Contain("\"status\":\"ok\"");
+            Assert.Contains("\"status\":\"ok\"", response);
         }
     }
 
@@ -325,7 +323,7 @@ public sealed class ReplControlHostTests
         await using (application)
         {
             var response = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
-            response.Should().Contain("403");
+            Assert.Contains("403", response);
         }
     }
 
@@ -343,12 +341,12 @@ public sealed class ReplControlHostTests
         await using (application)
         {
             var accepted = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
-            accepted.Should().Contain("200");
+            Assert.Contains("200", accepted);
 
             registry.Unregister(Environment.ProcessId);
             registry.Register(Environment.ProcessId + 1_000_000, "other-session");
             var rejected = await SendHttpRequestAsync(host.SocketPath, "GET /health", timeout.Token);
-            rejected.Should().Contain("403");
+            Assert.Contains("403", rejected);
         }
     }
 
@@ -383,17 +381,15 @@ public sealed class ReplControlHostTests
                 """{"version":1,"type":"control.hello","payload":{"sessionId":"repl-default"}}""",
                 timeout.Token);
             var ready = await ReceiveBusAsync(socket, timeout.Token);
-            ready.Should().Contain("\"type\":\"control.ready\"");
+            Assert.Contains("\"type\":\"control.ready\"", ready);
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"tool.invoke","correlationId":"t1","payload":{"tool":"probe_session","arguments":{}}}""",
                 timeout.Token);
             var result = await ReceiveBusAsync(socket, timeout.Token);
-            result.Should().Contain("\"status\":\"ok\"");
-            captured.Should().Be(ownerSessionId,
-                "session-scoped gates (the IDE workspace bridge, ADR 0042 decision 12) key on the " +
-                "pid-verified owner agent session, not the REPL-local id the hello claims");
+            Assert.Contains("\"status\":\"ok\"", result);
+            Assert.Equal(ownerSessionId, captured);
         }
     }
 
@@ -409,11 +405,11 @@ public sealed class ReplControlHostTests
             new ReplControlSessionRegistry(),
             timeout.Token);
         var socketPath = host.SocketPath;
-        File.Exists(socketPath).Should().BeTrue();
+        Assert.True(File.Exists(socketPath));
 
         await application.StopAsync(timeout.Token);
         await application.DisposeAsync();
-        File.Exists(socketPath).Should().BeFalse();
+        Assert.False(File.Exists(socketPath));
     }
 
     [Fact(Timeout = 30_000)]
@@ -443,8 +439,8 @@ public sealed class ReplControlHostTests
                     "{}",
                     null,
                     timeout.Token);
-                success.Should().Contain("\"status\":\"ok\"");
-                success.Should().Contain("\"uri\"");
+                Assert.Contains("\"status\":\"ok\"", success);
+                Assert.Contains("\"uri\"", success);
 
                 var missing = await PostToolInvokeAsync(
                     host.SocketPath,
@@ -452,7 +448,7 @@ public sealed class ReplControlHostTests
                     "{}",
                     null,
                     timeout.Token);
-                missing.Should().Contain("tool_not_found");
+                Assert.Contains("tool_not_found", missing);
             }
         }
         finally
@@ -483,17 +479,17 @@ public sealed class ReplControlHostTests
                 CreateToolInvokeBodyOfSize(ReplControlLimits.MaximumInboundMessageBytes),
                 false,
                 timeout.Token);
-            accepted.Should().StartWith("HTTP/1.1 200");
-            accepted.Should().Contain("\"status\":\"ok\"");
-            invocations.Should().Be(1);
+            Assert.StartsWith("HTTP/1.1 200", accepted);
+            Assert.Contains("\"status\":\"ok\"", accepted);
+            Assert.Equal(1, invocations);
 
             var rejected = await PostRawToolInvokeAsync(
                 host.SocketPath,
                 CreateToolInvokeBodyOfSize(ReplControlLimits.MaximumInboundMessageBytes + 1),
                 false,
                 timeout.Token);
-            rejected.Should().StartWith("HTTP/1.1 413");
-            invocations.Should().Be(1, "an oversized body must not be deserialized or invoked");
+            Assert.StartsWith("HTTP/1.1 413", rejected);
+            Assert.Equal(1, invocations);
         }
     }
 
@@ -520,8 +516,8 @@ public sealed class ReplControlHostTests
                 true,
                 timeout.Token);
 
-            rejected.Should().StartWith("HTTP/1.1 413");
-            invocations.Should().Be(0);
+            Assert.StartsWith("HTTP/1.1 413", rejected);
+            Assert.Equal(0, invocations);
         }
     }
 
@@ -534,7 +530,7 @@ public sealed class ReplControlHostTests
     [InlineData("HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n", false)]
     public void PayloadTooLargeResetRequiresCompleteResponseFraming(string response, bool expected)
     {
-        IsCompletePayloadTooLargeResponse(new StringBuilder(response)).Should().Be(expected);
+        Assert.Equal(expected, IsCompletePayloadTooLargeResponse(new StringBuilder(response)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -562,8 +558,8 @@ public sealed class ReplControlHostTests
                 "},\"sessionId\":\"test-session\"}";
             var rejected = await PostRawToolInvokeAsync(host.SocketPath, body, false, timeout.Token);
 
-            rejected.Should().StartWith("HTTP/1.1 400");
-            invocations.Should().Be(0);
+            Assert.StartsWith("HTTP/1.1 400", rejected);
+            Assert.Equal(0, invocations);
         }
     }
 
@@ -612,7 +608,7 @@ public sealed class ReplControlHostTests
                     var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
                     await process.WaitForExitAsync(timeout.Token);
                     var outputs = await Task.WhenAll(stdout, stderr);
-                    process.ExitCode.Should().Be(0, $"stdout: {outputs[0]}\nstderr: {outputs[1]}");
+                    Assert.Equal(0, process.ExitCode);
                 }
                 finally
                 {
@@ -719,7 +715,7 @@ public sealed class ReplControlHostTests
             "Sec-WebSocket-Version: 13\r\n\r\n";
         await socket.SendAsync(Encoding.ASCII.GetBytes(handshake), SocketFlags.None, ct);
         var response = await ReadUntilHeadersAsync(socket, ct);
-        response.Should().Contain("101");
+        Assert.Contains("101", response);
         return socket;
     }
 
@@ -756,7 +752,7 @@ public sealed class ReplControlHostTests
     private static async Task<string> ReceiveBusAsync(Socket socket, CancellationToken ct)
     {
         var (opcode, payload) = await ReceiveFrameAsync(socket, ct);
-        opcode.Should().Be(0x1);
+        Assert.Equal(0x1, opcode);
         return Encoding.UTF8.GetString(payload);
     }
 

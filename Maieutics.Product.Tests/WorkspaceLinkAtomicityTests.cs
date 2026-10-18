@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 
 namespace Maieutics.Product.Tests;
@@ -32,15 +31,11 @@ public sealed class WorkspaceLinkAtomicityTests
             UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
         try
         {
-        var exception = context.Invoking(c => c.OpenLink(second, null))
-            .Should().Throw<Exception>(
-                "the physical link cannot be created in an unwritable directory").Which;
-        (exception is IOException or UnauthorizedAccessException)
-            .Should().BeTrue($"the link creation failed with {exception.GetType().Name}");
+        var exception = Assert.ThrowsAny<Exception>(() => (context).OpenLink(second, null));
+        Assert.True((exception is IOException or UnauthorizedAccessException), $"the link creation failed with {exception.GetType().Name}");
 
             var entries = WorkspaceLinkRegistry.Load(home.HomePath).Entries();
-            entries.Should().ContainSingle("the failed open rolled back")
-                .Which.Name.Should().Be("first");
+            Assert.Equal("first", Assert.Single(entries).Name);
         }
         finally
         {
@@ -54,8 +49,8 @@ public sealed class WorkspaceLinkAtomicityTests
         // The rolled-back name never entered circulation: no tombstone, so the retry
         // allocates the plain name again instead of a hash suffix.
         var reopened = context.OpenLink(second, null);
-        (reopened.Links ?? throw new InvalidOperationException("missing links")).Records
-            .Should().HaveCount(2).And.Contain(record => record.Name == "second");
+        Assert.Equal(2, (reopened.Links ?? throw new InvalidOperationException("missing links")).Records.Count());
+        Assert.Contains((reopened.Links ?? throw new InvalidOperationException("missing links")).Records, record => record.Name == "second");
     }
 
     [Fact(Timeout = 30_000)]
@@ -76,11 +71,8 @@ public sealed class WorkspaceLinkAtomicityTests
             new WorkspaceLinkRecord("project", project, null, DateTimeOffset.UtcNow));
 
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
-        Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project"))
-            .Should().BeTrue("remount repairs a registered link that was never created");
-        Workspace.Create(remounted).Capture()
-            .Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
-            .Should().NotThrow();
+        Assert.True(Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project")), "remount repairs a registered link that was never created");
+        Workspace.Create(remounted).Capture().Resolve("workspace://local/projects/project/marker.txt", false);
     }
 
     [Fact(Timeout = 30_000)]
@@ -102,17 +94,12 @@ public sealed class WorkspaceLinkAtomicityTests
         ManagedWorkspaceLink.Create(Path.Combine(home.ProjectsRoot, "project"), project);
 
         var after = context.Capture().Links ?? throw new InvalidOperationException("missing links");
-        after.Records.Should().BeEmpty("the registry no longer knows this link");
-        context.Capture().Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed",
-                "an unregistered link is inert: traversal rejects it");
+        Assert.Empty(after.Records);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (context.Capture()).Resolve("workspace://local/projects/project/marker.txt", false)).Code);
 
         // Reopening the same target sweeps the leftover and reuses the retired name.
         var reopened = context.OpenLink(project, null);
-        (reopened.Links ?? throw new InvalidOperationException("missing links")).Records
-            .Should().ContainSingle().Which.Name.Should().Be("project");
-        context.Capture().Invoking(s => s.Resolve("workspace://local/projects/project/marker.txt", false))
-            .Should().NotThrow();
+        Assert.Equal("project", Assert.Single((reopened.Links ?? throw new InvalidOperationException("missing links")).Records).Name);
+        context.Capture().Resolve("workspace://local/projects/project/marker.txt", false);
     }
 }

@@ -1,6 +1,5 @@
 using System.IO.Pipelines;
 using System.Text;
-using FluentAssertions;
 using Maieutics.Execution;
 using Maieutics.Mcp;
 using Microsoft.Extensions.AI;
@@ -25,18 +24,18 @@ public sealed class McpResourceIntegrationTests
         var generation = harness.Generation;
 
         var catalog = generation.GetResourceCatalog();
-        catalog.Resources.Should().ContainSingle().Which.Uri.Should().Be("test://static/hello");
-        catalog.Templates.Should().ContainSingle().Which.UriTemplate.Should().Be("test://users/{id}");
+        Assert.Equal("test://static/hello", Assert.Single(catalog.Resources).Uri);
+        Assert.Equal("test://users/{id}", Assert.Single(catalog.Templates).UriTemplate);
 
         var provider = new McpResourceProvider(() => harness.Source);
-        provider.Claims.Should().Contain(claim => claim.Scheme == "mcp" && claim.Authority == null);
-        provider.Claims.Should().Contain(claim => claim.Scheme == "test" && claim.Authority == "static");
-        provider.Claims.Should().Contain(claim => claim.Scheme == "test" && claim.Authority == "users");
+        Assert.Contains(provider.Claims, claim => claim.Scheme == "mcp" && claim.Authority == null);
+        Assert.Contains(provider.Claims, claim => claim.Scheme == "test" && claim.Authority == "static");
+        Assert.Contains(provider.Claims, claim => claim.Scheme == "test" && claim.Authority == "users");
 
         var entries = await provider.ListAsync(deadline.Token);
-        entries.Should().HaveCount(2);
-        entries.Should().Contain(entry => entry.Kind == "resource" && entry.Uri == "test://static/hello");
-        entries.Should().Contain(entry => entry.Kind == "template");
+        Assert.Equal(2, entries.Count());
+        Assert.Contains(entries, entry => entry.Kind == "resource" && entry.Uri == "test://static/hello");
+        Assert.Contains(entries, entry => entry.Kind == "template");
     }
 
     [Fact(Timeout = 30_000)]
@@ -53,10 +52,10 @@ public sealed class McpResourceIntegrationTests
             deadline.Token);
         using (exact.Content)
         {
-            exact.MimeType.Should().Be("text/plain");
+            Assert.Equal("text/plain", exact.MimeType);
             using var buffered = new MemoryStream();
             exact.Content.CopyTo(buffered);
-            Encoding.UTF8.GetString(buffered.ToArray()).Should().Be("hello content");
+            Assert.Equal("hello content", Encoding.UTF8.GetString(buffered.ToArray()));
         }
 
         var templated = await provider.ReadAsync(
@@ -67,15 +66,15 @@ public sealed class McpResourceIntegrationTests
         {
             using var buffered = new MemoryStream();
             templated.Content.CopyTo(buffered);
-            Encoding.UTF8.GetString(buffered.ToArray()).Should().Be("user 42");
+            Assert.Equal("user 42", Encoding.UTF8.GetString(buffered.ToArray()));
         }
 
         Func<Task> missing = async () => await provider.ReadAsync(
             "test://absent",
             new ResourceReadRequest(1024),
             deadline.Token);
-        var assertions = await missing.Should().ThrowAsync<ResourceException>();
-        assertions.Which.Code.Should().Be("resource_not_found");
+        var assertions = await Assert.ThrowsAnyAsync<ResourceException>(async () => { await missing.Invoke(); });
+        Assert.Equal("resource_not_found", assertions.Code);
 
         var escape = await provider.ReadAsync(
             $"mcp://{harness.ServerId}/{Uri.EscapeDataString("test://static/hello")}",
@@ -85,7 +84,7 @@ public sealed class McpResourceIntegrationTests
         {
             using var buffered = new MemoryStream();
             escape.Content.CopyTo(buffered);
-            Encoding.UTF8.GetString(buffered.ToArray()).Should().Be("hello content");
+            Assert.Equal("hello content", Encoding.UTF8.GetString(buffered.ToArray()));
         }
     }
 
@@ -101,17 +100,17 @@ public sealed class McpResourceIntegrationTests
             new McpResourceProvider(() => harness.Source)
         ]);
 
-        ResourceRegistry.TryParseUri("workspace://local/", out var root).Should().BeTrue();
-        registry.Resolve(root).Should().BeOfType<WorkspaceResourceProvider>();
+        Assert.True(ResourceRegistry.TryParseUri("workspace://local/", out var root));
+        Assert.IsType<WorkspaceResourceProvider>(registry.Resolve(root));
 
-        ResourceRegistry.TryParseUri("test://static/hello", out var resource).Should().BeTrue();
-        registry.Resolve(resource).Should().BeOfType<McpResourceProvider>();
+        Assert.True(ResourceRegistry.TryParseUri("test://static/hello", out var resource));
+        Assert.IsType<McpResourceProvider>(registry.Resolve(resource));
 
-        ResourceRegistry.TryParseUri("mcp://other/test://x", out var escape).Should().BeTrue();
-        registry.Resolve(escape).Should().BeOfType<McpResourceProvider>();
+        Assert.True(ResourceRegistry.TryParseUri("mcp://other/test://x", out var escape));
+        Assert.IsType<McpResourceProvider>(registry.Resolve(escape));
 
         var conflicts = registry.GetConflicts();
-        conflicts.Should().BeEmpty("the workspace and mcp claims never overlap");
+        Assert.Empty(conflicts);
     }
 
     private sealed class ResourceServerHarness : IAsyncDisposable

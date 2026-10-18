@@ -3,7 +3,6 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
@@ -48,11 +47,11 @@ public sealed class PluginHostReplRegistrationTests
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "host-repl-session", 7, process.Id)));
 
-            registry.IsOwnedBy(process.Id, "host-repl-session").Should().BeTrue();
+            Assert.True(registry.IsOwnedBy(process.Id, "host-repl-session"));
             var output = await outputTask;
-            output.Should().Contain("read OK");
-            output.Should().Contain("HOME visible");
-            output.Should().Contain("PATH denied");
+            Assert.Contains("read OK", output);
+            Assert.Contains("HOME visible", output);
+            Assert.Contains("PATH denied", output);
         }
         finally
         {
@@ -81,9 +80,9 @@ public sealed class PluginHostReplRegistrationTests
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "no-policy-session", 1, process.Id)));
 
-            registry.IsOwnedBy(process.Id, "no-policy-session").Should().BeTrue();
+            Assert.True(registry.IsOwnedBy(process.Id, "no-policy-session"));
             var output = await outputTask;
-            output.Should().Contain("read denied");
+            Assert.Contains("read denied", output);
         }
         finally
         {
@@ -103,12 +102,12 @@ public sealed class PluginHostReplRegistrationTests
 
         manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
             "host-repl-session", 3, 424_242)));
-        registry.IsOwnedBy(424_242, "host-repl-session").Should().BeTrue();
+        Assert.True(registry.IsOwnedBy(424_242, "host-repl-session"));
 
         manager.HandleHostMessage(Envelope(ReplMessageType.HostReplExited, new HostReplExitedPayload(
             "host-repl-session", 3, 424_242)));
 
-        registry.TryGetSession(424_242, out _).Should().BeFalse();
+        Assert.False(registry.TryGetSession(424_242, out _));
         // UnregisterProcess is idempotent; the released slot cannot be observed directly, but the
         // session identity release above is the observable half of the pair.
         broker.UnregisterProcess(424_242);
@@ -138,20 +137,20 @@ public sealed class PluginHostReplRegistrationTests
             // installed the socket, so the awaited task proves acceptance instead of inferring
             // it from the fake's first receive or polling GetStatus().ControlConnected.
             await attached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
-            manager.GetStatus().ControlConnected.Should().BeTrue();
+            Assert.True(manager.GetStatus().ControlConnected);
 
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "disconnect-session", 1, 424_242)));
-            registry.IsOwnedBy(424_242, "disconnect-session").Should().BeTrue();
-            broker.RegistrationCount.Should().Be(1);
+            Assert.True(registry.IsOwnedBy(424_242, "disconnect-session"));
+            Assert.Equal(1, broker.RegistrationCount);
 
             // The host dies without reporting exits: the attach loop ends and its finally must
             // release the host-derived pid's session identity and broker policy.
             socket.Dispose();
             await attach;
 
-            registry.TryGetSession(424_242, out _).Should().BeFalse();
-            broker.RegistrationCount.Should().Be(0);
+            Assert.False(registry.TryGetSession(424_242, out _));
+            Assert.Equal(0, broker.RegistrationCount);
         }
         finally
         {
@@ -184,25 +183,25 @@ public sealed class PluginHostReplRegistrationTests
             // installed the socket, so the awaited task proves acceptance instead of inferring
             // it from the fake's first receive or polling GetStatus().ControlConnected.
             await attached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
-            manager.GetStatus().ControlConnected.Should().BeTrue();
+            Assert.True(manager.GetStatus().ControlConnected);
 
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "disconnect-session", 1, 424_242)));
-            registry.IsOwnedBy(424_242, "disconnect-session").Should().BeTrue();
-            broker.RegistrationCount.Should().Be(1);
+            Assert.True(registry.IsOwnedBy(424_242, "disconnect-session"));
+            Assert.Equal(1, broker.RegistrationCount);
 
             // The normal exited path releases the pid first; the later disconnect must find nothing
             // left to release (idempotent with the disconnect fallback).
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplExited, new HostReplExitedPayload(
                 "disconnect-session", 1, 424_242)));
-            registry.TryGetSession(424_242, out _).Should().BeFalse();
-            broker.RegistrationCount.Should().Be(0);
+            Assert.False(registry.TryGetSession(424_242, out _));
+            Assert.Equal(0, broker.RegistrationCount);
 
             socket.Dispose();
             await attach;
 
-            registry.TryGetSession(424_242, out _).Should().BeFalse();
-            broker.RegistrationCount.Should().Be(0);
+            Assert.False(registry.TryGetSession(424_242, out _));
+            Assert.Equal(0, broker.RegistrationCount);
         }
         finally
         {
@@ -226,9 +225,9 @@ public sealed class PluginHostReplRegistrationTests
         manager.HandleHostMessage("""{"version":1,"type":"host.repl.unknown","payload":{}}""");
         manager.HandleHostMessage("not-json");
 
-        registry.TryGetSession(0, out _).Should().BeFalse();
-        registry.TryGetSession(-5, out _).Should().BeFalse();
-        registry.TryGetSession(42, out _).Should().BeFalse();
+        Assert.False(registry.TryGetSession(0, out _));
+        Assert.False(registry.TryGetSession(-5, out _));
+        Assert.False(registry.TryGetSession(42, out _));
     }
 
     [Fact(Timeout = 60_000)]
@@ -257,10 +256,10 @@ public sealed class PluginHostReplRegistrationTests
 
             var resultA = await outputA;
             var resultB = await outputB;
-            resultA.Should().Contain("HOME visible");
-            resultA.Should().Contain("PATH denied");
-            resultB.Should().Contain("PATH visible");
-            resultB.Should().Contain("HOME denied");
+            Assert.Contains("HOME visible", resultA);
+            Assert.Contains("PATH denied", resultA);
+            Assert.Contains("PATH visible", resultB);
+            Assert.Contains("HOME denied", resultB);
         }
         finally
         {
@@ -287,10 +286,9 @@ public sealed class PluginHostReplRegistrationTests
 
         var environment = ReplControlEnvironment.FromHostOptions(options);
 
-        environment.Should().ContainKey(ReplControlEnvironment.BrokerAddress);
-        environment[ReplControlEnvironment.BrokerAddress].Should().Be(broker.Address);
-        environment.Should().NotContainKey("DENO_PERMISSION_BROKER_PATH",
-            "the host itself must never consult the broker (it runs with full launch-time grants and no registered policy)");
+        Assert.True(environment.ContainsKey(ReplControlEnvironment.BrokerAddress));
+        Assert.Equal(broker.Address, environment[ReplControlEnvironment.BrokerAddress]);
+        Assert.False(environment.ContainsKey("DENO_PERMISSION_BROKER_PATH"));
     }
 
     [Fact]
@@ -308,7 +306,7 @@ public sealed class PluginHostReplRegistrationTests
 
         var environment = ReplControlEnvironment.FromHostOptions(options);
 
-        environment.Should().NotContainKey(ReplControlEnvironment.BrokerAddress);
+        Assert.False(environment.ContainsKey(ReplControlEnvironment.BrokerAddress));
     }
 
     private static PluginHostManager CreateManager(

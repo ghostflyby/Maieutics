@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -55,13 +54,11 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
-            manager.GetStatus().State.Should().Be(PluginHostState.NotStarted);
+            Assert.Equal(PluginHostState.NotStarted, manager.GetStatus().State);
             var readiness = manager.WaitUntilReadyAsync(canceledWait.Token);
             canceledWait.Cancel();
-            await readiness
-                .Invoking(static task => task)
-                .Should().ThrowAsync<OperationCanceledException>();
-            manager.GetStatus().State.Should().Be(PluginHostState.NotStarted);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((readiness)); });
+            Assert.Equal(PluginHostState.NotStarted, manager.GetStatus().State);
 
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
@@ -70,15 +67,15 @@ public sealed class PluginHostIntegrationTests
             // to ship as plugins. ControlConnected is not asserted because the
             // host's control-channel attach races the status read.
             var status = manager.GetStatus();
-            status.State.Should().Be(PluginHostState.Ready);
-            status.PluginCount.Should().Be(0);
-            status.RegistrationCount.Should().Be(0);
-            status.HostProcessRequired.Should().BeTrue();
+            Assert.Equal(PluginHostState.Ready, status.State);
+            Assert.Equal(0, status.PluginCount);
+            Assert.Equal(0, status.RegistrationCount);
+            Assert.True(status.HostProcessRequired);
             await Task.WhenAll(
                 manager.StopAsync(deadline.Token),
                 manager.DisposeAsync().AsTask());
             await manager.DisposeAsync();
-            manager.GetStatus().State.Should().Be(PluginHostState.Stopped);
+            Assert.Equal(PluginHostState.Stopped, manager.GetStatus().State);
         }
         finally
         {
@@ -107,18 +104,18 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
-            Directory.Exists(pluginsRoot).Should().BeFalse();
+            Assert.False(Directory.Exists(pluginsRoot));
             await manager.StartAsync(deadline.Token);
             await manager.WaitUntilReadyAsync(deadline.Token);
 
             // The skeleton is an empty deno project: deno.json + maieutics.json
             // with no entrypoints, so the root project carries zero workers.
-            Directory.Exists(pluginsRoot).Should().BeTrue();
-            File.Exists(Path.Combine(pluginsRoot, "deno.json")).Should().BeTrue();
-            File.Exists(Path.Combine(pluginsRoot, "maieutics.json")).Should().BeTrue();
-            manager.GetStatus().PluginCount.Should().Be(1); // the skeleton project itself
-            manager.GetStatus().RegistrationCount.Should().Be(0);
-            manager.GetStatus().HostProcessRequired.Should().BeTrue();
+            Assert.True(Directory.Exists(pluginsRoot));
+            Assert.True(File.Exists(Path.Combine(pluginsRoot, "deno.json")));
+            Assert.True(File.Exists(Path.Combine(pluginsRoot, "maieutics.json")));
+            Assert.Equal(1, manager.GetStatus().PluginCount); // the skeleton project itself
+            Assert.Equal(0, manager.GetStatus().RegistrationCount);
+            Assert.True(manager.GetStatus().HostProcessRequired);
         }
         finally
         {
@@ -146,15 +143,11 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
-            var startupFailure = (await manager.StartAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<Exception>()).Which;
-            var readinessFailure = (await manager.WaitUntilReadyAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<Exception>()).Which;
+            var startupFailure = (await Assert.ThrowsAnyAsync<Exception>(async () => { await ((manager.StartAsync(deadline.Token))); }));
+            var readinessFailure = (await Assert.ThrowsAnyAsync<Exception>(async () => { await ((manager.WaitUntilReadyAsync(deadline.Token))); }));
 
-            readinessFailure.Should().BeSameAs(startupFailure);
-            manager.GetStatus().State.Should().Be(PluginHostState.Failed);
+            Assert.Same(startupFailure, readinessFailure);
+            Assert.Equal(PluginHostState.Failed, manager.GetStatus().State);
         }
         finally
         {
@@ -200,7 +193,7 @@ public sealed class PluginHostIntegrationTests
                 manager,
                 ReplExtensionPointName.McpDiscover,
                 timeout.Token);
-            registrations.Should().NotBeEmpty();
+            Assert.NotEmpty(registrations);
 
             var outcome = await manager.InvokeExtensionPointAsync(
                 registrations[0].PluginId,
@@ -208,16 +201,17 @@ public sealed class PluginHostIntegrationTests
                 ReplExtensionPointName.McpDiscover,
                 null,
                 timeout.Token);
-            outcome.IsError.Should().BeFalse(outcome.Message);
-            outcome.Value.Should().NotBeNull();
+            Assert.False(outcome.IsError, outcome.Message);
+            Assert.NotNull(outcome.Value);
 
             var discovery = JsonSerializer.Deserialize<McpDiscoveryTestShape[]>(
                 outcome.Value is { } discoveryValue
                     ? discoveryValue.GetRawText()
                     : throw new InvalidOperationException("Expected a discovery result."),
                 JsonSerializerOptionsCaseInsensitive);
-            discovery.Should().HaveCount(1);
-            discovery[0].Module.Should().Be("npm:@maieutics/probe-server");
+            Assert.NotNull(discovery);
+            Assert.Single(discovery);
+            Assert.Equal("npm:@maieutics/probe-server", discovery[0].Module);
         }
     }
 
@@ -264,13 +258,13 @@ public sealed class PluginHostIntegrationTests
         {
             // The merged entry is present in every variant: only the worker's import
             // form differs, so the variants isolate the failing resolution path.
-            File.ReadAllText(modules.ConfigFile).Should().Contain("\"@std/bytes\"");
+            Assert.Contains("\"@std/bytes\"", File.ReadAllText(modules.ConfigFile));
 
             var registrations = await WaitForRegistrationsAsync(
                 manager,
                 ReplExtensionPointName.McpDiscover,
                 timeout.Token);
-            registrations.Should().NotBeEmpty();
+            Assert.NotEmpty(registrations);
 
             var outcome = await manager.InvokeExtensionPointAsync(
                 registrations[0].PluginId,
@@ -278,9 +272,9 @@ public sealed class PluginHostIntegrationTests
                 ReplExtensionPointName.McpDiscover,
                 null,
                 timeout.Token);
-            outcome.IsError.Should().BeFalse(outcome.Message);
+            Assert.False(outcome.IsError, outcome.Message);
             if (variant != "sdk-only")
-                outcome.Value!.Value.GetRawText().Should().Contain("1,2,3,4");
+                Assert.Contains("1,2,3,4", outcome.Value!.Value.GetRawText());
         }
         Console.WriteLine($"[readiness] {variant}: READY");
     }
@@ -330,7 +324,7 @@ public sealed class PluginHostIntegrationTests
                 manager,
                 ReplExtensionPointName.ToolPreInvoke,
                 timeout.Token);
-            registrations.Should().NotBeEmpty();
+            Assert.NotEmpty(registrations);
 
             var options = new DenoReplOptions();
             var factory = new LocalDenoReplSessionFactory(
@@ -360,11 +354,10 @@ public sealed class PluginHostIntegrationTests
                     "await maieutics.tools.invoke('list_directory', {}).catch((error) => ({ rejected: String(error) }))",
                     AgentToolCallId.Create(),
                     timeout.Token);
-                result.ExecutionStatus.Should().Be("ok");
-                result.Outputs
+                Assert.Equal("ok", result.ExecutionStatus);
+                Assert.Contains(result.Outputs
                     .Where(static item => item is { Kind: "result", Value: not null })
-                    .Select(static item => item.Value?.GetRawText())
-                    .Should().Contain(value => value != null && value.Contains("denied_by_hook"));
+                    .Select(static item => item.Value?.GetRawText()), value => value != null && value.Contains("denied_by_hook"));
             }
         }
 
@@ -423,7 +416,7 @@ public sealed class PluginHostIntegrationTests
                 manager,
                 ReplExtensionPointName.ToolPreInvoke,
                 timeout.Token);
-            registrations.Should().NotBeEmpty();
+            Assert.NotEmpty(registrations);
 
             var options = new DenoReplOptions();
             var factory = new LocalDenoReplSessionFactory(
@@ -464,13 +457,9 @@ public sealed class PluginHostIntegrationTests
                 // The hook replaced the bogus outer path with the real root listing only
                 // if the capability callback executed the kernel tool end to end; a failed
                 // callback leaves the bogus path in place and the tool errors on it.
-                result.ExecutionStatus.Should().Be("ok", trace);
-                resultValues.Should().Contain(
-                    text => text!.Contains("workspace://local/") && text.Contains("entries"),
-                    trace);
-                resultValues.Should().NotContain(
-                    text => text!.Contains("missing-without-capability-callback"),
-                    trace);
+                Assert.Equal("ok", result.ExecutionStatus);
+                Assert.Contains(resultValues, text => text!.Contains("workspace://local/") && text.Contains("entries"));
+                Assert.DoesNotContain(resultValues, text => text!.Contains("missing-without-capability-callback"));
             }
         }
 
@@ -583,21 +572,19 @@ public sealed class PluginHostIntegrationTests
             await manager.StartAsync(timeout.Token);
             await manager.WaitUntilReadyAsync(timeout.Token);
 
-            var registration = (await WaitForRegistrationsAsync(
+            var registration = (Assert.Single((await WaitForRegistrationsAsync(
                     manager,
                     ReplExtensionPointName.McpDiscover,
-                    timeout.Token))
-                .Should().ContainSingle().Which;
-            registration.PluginId.Should().Be(Path.GetFileName(root));
-            registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
+                    timeout.Token))));
+            Assert.Equal(Path.GetFileName(root), registration.PluginId);
+            Assert.Equal(PluginHostManager.ManifestExportName, registration.ExportName);
 
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
-            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
-                .Be($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server");
+            Assert.True(discovery.IsSuccess, discovery.Failure);
+            Assert.Equal($"plugin:{Path.GetFileName(root)}::npm:@maieutics/probe-server", Assert.Single(discovery.Definitions).Id);
 
             // No worker was ever spawned for a data-only plugin.
-            manager.GetStatus().PluginCount.Should().Be(1);
+            Assert.Equal(1, manager.GetStatus().PluginCount);
         }
         finally
         {
@@ -672,20 +659,18 @@ public sealed class PluginHostIntegrationTests
             await manager.StartAsync(timeout.Token);
             await manager.WaitUntilReadyAsync(timeout.Token);
 
-            var registration = (await WaitForRegistrationsAsync(
+            var registration = (Assert.Single((await WaitForRegistrationsAsync(
                     manager,
                     ReplExtensionPointName.McpDiscover,
-                    timeout.Token))
-                .Should().ContainSingle().Which;
-            registration.PluginId.Should().Be(Path.GetFileName(root));
-            registration.ExportName.Should().Be(PluginHostManager.ManifestExportName);
+                    timeout.Token))));
+            Assert.Equal(Path.GetFileName(root), registration.PluginId);
+            Assert.Equal(PluginHostManager.ManifestExportName, registration.ExportName);
 
             var discovery = manager.DiscoverManifestMcpAsync(registration);
-            discovery.IsSuccess.Should().BeTrue(discovery.Failure);
-            discovery.Definitions.Should().ContainSingle().Which.Id.Should()
-                .Be($"plugin:{Path.GetFileName(root)}::probe");
+            Assert.True(discovery.IsSuccess, discovery.Failure);
+            Assert.Equal($"plugin:{Path.GetFileName(root)}::probe", Assert.Single(discovery.Definitions).Id);
 
-            manager.GetStatus().PluginCount.Should().Be(1);
+            Assert.Equal(1, manager.GetStatus().PluginCount);
         }
         finally
         {
@@ -787,7 +772,7 @@ public sealed class PluginHostIntegrationTests
                 manager,
                 ReplExtensionPointName.McpDiscover,
                 timeout.Token);
-            registrations.Should().NotBeEmpty();
+            Assert.NotEmpty(registrations);
 
             // The consumer's handler crosses workers: dep.math.double(21) executes
             // in the sub plugin's worker through the load-hook stub redirect.
@@ -797,8 +782,8 @@ public sealed class PluginHostIntegrationTests
                 ReplExtensionPointName.McpDiscover,
                 null,
                 timeout.Token);
-            outcome.IsError.Should().BeFalse(outcome.Message);
-            outcome.Value!.Value.GetRawText().Should().Contain("42");
+            Assert.False(outcome.IsError, outcome.Message);
+            Assert.Contains("42", outcome.Value!.Value.GetRawText());
         }
     }
 
@@ -849,9 +834,8 @@ public sealed class PluginHostIntegrationTests
                 ReplExtensionPointName.McpDiscover,
                 registrations => registrations.Count == 0,
                 timeout.Token);
-            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                .Should().BeEmpty("the live host must withdraw a revoked plugin's registration");
-            manager.GetStatus().PendingApprovals.Should().Be(1);
+            Assert.Empty(manager.GetRegistrations(ReplExtensionPointName.McpDiscover));
+            Assert.Equal(1, manager.GetStatus().PendingApprovals);
 
             // Re-approval upserts the worker back without a host-process restart.
             await manager.ApproveAsync(rootPluginId, timeout.Token);
@@ -860,9 +844,8 @@ public sealed class PluginHostIntegrationTests
                 ReplExtensionPointName.McpDiscover,
                 registrations => registrations.Count > 0,
                 timeout.Token);
-            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                .Should().NotBeEmpty("re-approval must upsert the worker back onto the live host");
-            manager.GetStatus().PendingApprovals.Should().Be(0);
+            Assert.NotEmpty(manager.GetRegistrations(ReplExtensionPointName.McpDiscover));
+            Assert.Equal(0, manager.GetStatus().PendingApprovals);
         }
 
         if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
@@ -905,8 +888,7 @@ public sealed class PluginHostIntegrationTests
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, timeout.Token);
 
-            logger.Lines.Any(line => line.Contains("Restart the host process")).Should()
-                .BeTrue("the reload must warn that the host process restart is required");
+            Assert.True(logger.Lines.Any(line => line.Contains("Restart the host process")), "the reload must warn that the host process restart is required");
         }
         finally
         {
@@ -954,7 +936,7 @@ public sealed class PluginHostIntegrationTests
                 ReplExtensionPointName.McpDiscover,
                 timeout.Token);
             var rootPluginId = manager.GetRegistrations(ReplExtensionPointName.McpDiscover).Single().PluginId;
-            rootPluginId.Should().StartWith("mc-plugins-root-");
+            Assert.StartsWith("mc-plugins-root-", rootPluginId);
 
             // Adding a sibling plugin plus its local import entry changes the plugin set:
             // the new module entry belongs to the process import map, so the manager must
@@ -977,10 +959,8 @@ public sealed class PluginHostIntegrationTests
                     registrations.Any(registration => registration.PluginId == rootPluginId) &&
                     registrations.Any(registration => registration.PluginId == "extra"),
                 timeout.Token);
-            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                .Should().Contain(registration => registration.PluginId == rootPluginId)
-                .And.Contain(registration => registration.PluginId == "extra",
-                    "the restart must load the newly added plugin");
+            Assert.Contains(manager.GetRegistrations(ReplExtensionPointName.McpDiscover), registration => registration.PluginId == rootPluginId);
+            Assert.Contains(manager.GetRegistrations(ReplExtensionPointName.McpDiscover), registration => registration.PluginId == "extra");
 
             // Removing the plugin (directory and import entry) recomputes the set the
             // other way: the removed plugin's registrations disappear after the restart.
@@ -997,9 +977,7 @@ public sealed class PluginHostIntegrationTests
                     registrations.Any(registration => registration.PluginId == rootPluginId) &&
                     registrations.All(registration => registration.PluginId != "extra"),
                 timeout.Token);
-            manager.GetRegistrations(ReplExtensionPointName.McpDiscover)
-                .Should().Contain(registration => registration.PluginId == rootPluginId,
-                    "the restart must drop the removed plugin");
+            Assert.Contains(manager.GetRegistrations(ReplExtensionPointName.McpDiscover), registration => registration.PluginId == rootPluginId);
         }
 
         if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
@@ -1052,10 +1030,7 @@ public sealed class PluginHostIntegrationTests
             // The terminal state depends on where the race landed (a startup cancelled by the
             // stop reports Canceled, a faulted one Failed); what it must never be is a live
             // generation again.
-            manager.GetStatus().State.Should().BeOneOf(
-                PluginHostState.Stopped,
-                PluginHostState.Canceled,
-                PluginHostState.Failed);
+            Assert.Contains(manager.GetStatus().State, new[] { PluginHostState.Stopped, PluginHostState.Canceled, PluginHostState.Failed });
         }
 
         if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);

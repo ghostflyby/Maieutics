@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Persistence;
 using Microsoft.Data.Sqlite;
@@ -47,7 +46,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         using var reopened = new SqliteTranscriptStore(databasePath);
         var references = reopened.GetReferencedObjectIds();
-        references.Should().BeEquivalentTo([referenced, alsoReferenced]);
+        Assert.Equivalent(new[] { referenced, alsoReferenced }, references);
     }
 
     [Fact]
@@ -73,12 +72,12 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         }
 
         using var store = new SqliteTranscriptStore(databasePath);
-        store.ListSessions().Should().ContainSingle();
+        Assert.Single(store.ListSessions());
         using var check = new SqliteConnection($"Data Source={databasePath};Pooling=False");
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Convert.ToInt32(version.ExecuteScalar()).Should().Be(4);
+        Assert.Equal(4, Convert.ToInt32(version.ExecuteScalar()));
     }
 
     [Fact]
@@ -108,12 +107,12 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         }
 
         using var store = new SqliteTranscriptStore(databasePath);
-        var descriptor = store.ListSessions().Should().ContainSingle().Subject;
-        descriptor.Id.Should().Be(sessionId);
-        descriptor.Title.Should().Be("v3 title");
-        descriptor.WorkspaceRoot.Should().Be("/repos/v3");
-        descriptor.ParentSessionId.Should().BeNull();
-        descriptor.ForkPointSeq.Should().BeNull();
+        var descriptor = Assert.Single(store.ListSessions());
+        Assert.Equal(sessionId, descriptor.Id);
+        Assert.Equal("v3 title", descriptor.Title);
+        Assert.Equal("/repos/v3", descriptor.WorkspaceRoot);
+        Assert.Null(descriptor.ParentSessionId);
+        Assert.Null(descriptor.ForkPointSeq);
     }
 
     [Fact]
@@ -142,12 +141,12 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         }
 
         using var store = new SqliteTranscriptStore(databasePath);
-        var descriptor = store.ListSessions().Should().ContainSingle().Subject;
-        descriptor.Id.Should().Be(sessionId);
-        descriptor.TurnCount.Should().Be(1);
-        descriptor.Title.Should().BeNull();
-        descriptor.Preview.Should().BeNull();
-        descriptor.WorkspaceRoot.Should().BeNull();
+        var descriptor = Assert.Single(store.ListSessions());
+        Assert.Equal(sessionId, descriptor.Id);
+        Assert.Equal(1, descriptor.TurnCount);
+        Assert.Null(descriptor.Title);
+        Assert.Null(descriptor.Preview);
+        Assert.Null(descriptor.WorkspaceRoot);
     }
 
     [Fact]
@@ -165,9 +164,9 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         store.AppendTurn(sessionId, Turn(sessionId, "b", identity: null, truncated: false,
             ("user", "Second question"), ("assistant", "Answer two")), []);
 
-        var descriptor = store.ListSessions().Should().ContainSingle().Subject;
-        descriptor.Preview.Should().Be("First question spans lines");
-        descriptor.WorkspaceRoot.Should().Be("/repos/alpha");
+        var descriptor = Assert.Single(store.ListSessions());
+        Assert.Equal("First question spans lines", descriptor.Preview);
+        Assert.Equal("/repos/alpha", descriptor.WorkspaceRoot);
     }
 
     [Fact]
@@ -178,9 +177,10 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         store.AppendTurn(sessionId, Turn(sessionId, "a", identity: null, truncated: false,
             ("user", new string('x', 500)), ("assistant", "Answer")), []);
 
-        var descriptor = store.ListSessions().Should().ContainSingle().Subject;
-        descriptor.Preview.Should().NotBeNull().And.HaveLength(SqliteTranscriptStore.MaxDisplayTextLength);
-        descriptor.Preview.Should().EndWith("…");
+        var descriptor = Assert.Single(store.ListSessions());
+        Assert.NotNull(descriptor.Preview);
+        Assert.Equal(SqliteTranscriptStore.MaxDisplayTextLength, (descriptor.Preview ?? throw new InvalidOperationException("the assertion subject is null")).Length);
+        Assert.EndsWith("…", descriptor.Preview);
     }
 
     [Fact]
@@ -196,19 +196,19 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         store.SetTitle(unknown, "Named before first turn");
 
         var descriptors = store.ListSessions();
-        descriptors.Should().HaveCount(2);
-        descriptors.Single(session => session.Id == committed).Title.Should().Be("Refactor vfs lenses");
-        descriptors.Single(session => session.Id == committed).Preview.Should().Be("Question");
+        Assert.Equal(2, descriptors.Count());
+        Assert.Equal("Refactor vfs lenses", descriptors.Single(session => session.Id == committed).Title);
+        Assert.Equal("Question", descriptors.Single(session => session.Id == committed).Preview);
         var named = descriptors.Single(session => session.Id == unknown);
-        named.TurnCount.Should().Be(0);
-        named.Title.Should().Be("Named before first turn");
-        named.Preview.Should().BeNull();
-        named.WorkspaceRoot.Should().Be("/repos/alpha");
-        named.CreatedAt.Should().BeOnOrBefore(named.LastActivityAt);
+        Assert.Equal(0, named.TurnCount);
+        Assert.Equal("Named before first turn", named.Title);
+        Assert.Null(named.Preview);
+        Assert.Equal("/repos/alpha", named.WorkspaceRoot);
+        Assert.True(named.CreatedAt <= named.LastActivityAt);
 
         // Clearing stores null.
         store.SetTitle(committed, null);
-        store.ListSessions().Single(session => session.Id == committed).Title.Should().BeNull();
+        Assert.Null(store.ListSessions().Single(session => session.Id == committed).Title);
     }
 
     [Fact]
@@ -216,7 +216,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
     {
         var familyId = AgentSessionId.Create();
         var path = SqliteTranscriptStore.FamilyDatabasePath("/data/agent/families", familyId);
-        path.Replace('\\', '/').Should().Be($"/data/agent/families/{familyId.Value.ToString("N")}/history.db");
+        Assert.Equal($"/data/agent/families/{familyId.Value.ToString("N")}/history.db", path.Replace('\\', '/'));
     }
 
     [Fact]
@@ -247,24 +247,22 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         using var reopened = new SqliteTranscriptStore(databasePath);
         var transcript = reopened.LoadTranscript(sessionId);
-        transcript.Should().NotBeNull();
-        transcript.SessionId.Should().Be(sessionId);
-        transcript.Turns.Should().HaveCount(2);
-        transcript.Turns[0].RunId.Should().Be(first.RunId);
-        transcript.Turns[0].ModelIdentity.Should().Be(identity);
-        transcript.Turns[0].Truncated.Should().BeFalse();
-        transcript.Turns[0].Messages.Select(message => message.Text)
-            .Should().Equal("Question one", "Answer one");
-        transcript.Turns[1].ModelIdentity.Should().BeNull();
-        transcript.Turns[1].Truncated.Should().BeTrue();
-        transcript.Turns[1].Messages.Select(message => message.Text)
-            .Should().Equal("Question two", "Answer two");
+        Assert.NotNull(transcript);
+        Assert.Equal(sessionId, transcript.SessionId);
+        Assert.Equal(2, transcript.Turns.Count());
+        Assert.Equal(first.RunId, transcript.Turns[0].RunId);
+        Assert.Equal(identity, transcript.Turns[0].ModelIdentity);
+        Assert.False(transcript.Turns[0].Truncated);
+        Assert.Equal(new string[] { "Question one", "Answer one" }, transcript.Turns[0].Messages.Select(message => message.Text));
+        Assert.Null(transcript.Turns[1].ModelIdentity);
+        Assert.True(transcript.Turns[1].Truncated);
+        Assert.Equal(new string[] { "Question two", "Answer two" }, transcript.Turns[1].Messages.Select(message => message.Text));
 
         var sessions = reopened.ListSessions();
-        sessions.Should().ContainSingle();
-        sessions[0].Id.Should().Be(sessionId);
-        sessions[0].TurnCount.Should().Be(2);
-        sessions[0].LastActivityAt.Should().BeOnOrAfter(sessions[0].CreatedAt);
+        Assert.Single(sessions);
+        Assert.Equal(sessionId, sessions[0].Id);
+        Assert.Equal(2, sessions[0].TurnCount);
+        Assert.True(sessions[0].LastActivityAt >= sessions[0].CreatedAt);
     }
 
     [Fact]
@@ -284,18 +282,18 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         store.AppendTurn(sessionId, turn, []);
         var loaded = store.LoadTranscript(sessionId);
 
-        loaded.Should().NotBeNull();
+        Assert.NotNull(loaded);
         var contents = loaded.Turns[0].Messages[^1].Contents;
-        contents.OfType<TextReasoningContent>().Should().ContainSingle().Which.Text.Should().Be("private reasoning summary");
-        contents.OfType<TextContent>().Should().ContainSingle().Which.Text.Should().Be("public answer");
+        Assert.Equal("private reasoning summary", Assert.Single(contents.OfType<TextReasoningContent>()).Text);
+        Assert.Equal("public answer", Assert.Single(contents.OfType<TextContent>()).Text);
     }
 
     [Fact]
     public void UnknownSessionsLoadAsAbsent()
     {
         using var store = new SqliteTranscriptStore(databasePath);
-        store.LoadTranscript(AgentSessionId.Create()).Should().BeNull();
-        store.ListSessions().Should().BeEmpty();
+        Assert.Null(store.LoadTranscript(AgentSessionId.Create()));
+        Assert.Empty(store.ListSessions());
     }
 
     [Fact]
@@ -316,25 +314,25 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         // The fork sees the prefix; the root keeps its whole history.
         var forkTranscript = store.LoadTranscript(fork);
-        forkTranscript.Should().NotBeNull();
-        forkTranscript.SessionId.Should().Be(fork);
-        forkTranscript.Turns.Select(turn => turn.RunId).Should().HaveCount(2);
-        forkTranscript.Turns[0].Messages[0].Text.Should().Be("Question one");
-        forkTranscript.Turns[1].Messages[^1].Text.Should().Be("Answer two");
-        store.LoadTranscript(root)!.Turns.Should().HaveCount(3);
+        Assert.NotNull(forkTranscript);
+        Assert.Equal(fork, forkTranscript.SessionId);
+        Assert.Equal(2, forkTranscript.Turns.Select(turn => turn.RunId).Count());
+        Assert.Equal("Question one", forkTranscript.Turns[0].Messages[0].Text);
+        Assert.Equal("Answer two", forkTranscript.Turns[1].Messages[^1].Text);
+        Assert.Equal(3, store.LoadTranscript(root)!.Turns.Count());
 
         // The fork's own turns append after the prefix.
         store.AppendTurn(fork, Turn(fork, "d", identity: null, truncated: false,
             ("user", "Fork question"), ("assistant", "Fork answer")), []);
         var grown = store.LoadTranscript(fork)!.Turns;
-        grown.Should().HaveCount(3);
-        grown[2].Messages[0].Text.Should().Be("Fork question");
+        Assert.Equal(3, grown.Count());
+        Assert.Equal("Fork question", grown[2].Messages[0].Text);
 
         var descriptor = store.ListSessions().Single(session => session.Id == fork);
-        descriptor.ParentSessionId.Should().Be(root);
-        descriptor.ForkPointSeq.Should().Be(2);
-        descriptor.Title.Should().Be("root · branch @ turn 3");
-        descriptor.TurnCount.Should().Be(1);
+        Assert.Equal(root, descriptor.ParentSessionId);
+        Assert.Equal(2, descriptor.ForkPointSeq);
+        Assert.Equal("root · branch @ turn 3", descriptor.Title);
+        Assert.Equal(1, descriptor.TurnCount);
     }
 
     [Fact]
@@ -357,11 +355,10 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         store.CreateForkSession(forkB, forkA, forkPointSeq: 3, title: null);
 
         var loaded = store.LoadTranscript(forkB)!.Turns;
-        loaded.Should().HaveCount(3);
-        loaded.Select(turn => turn.Messages[0].Text).Should().Equal(
-            "Question a", "Question b", "Question d");
-        store.ListSessions().Single(session => session.Id == forkB)
-            .ParentSessionId.Should().Be(forkA);
+        Assert.Equal(3, loaded.Count());
+        Assert.Equal(new string[] { "Question a", "Question b", "Question d" }, loaded.Select(turn => turn.Messages[0].Text));
+        Assert.Equal(forkA, store.ListSessions().Single(session => session.Id == forkB)
+            .ParentSessionId);
     }
 
     [Fact]
@@ -374,10 +371,10 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         store.CreateForkSession(freshFork, renamed, forkPointSeq: 0, title: null);
 
         var forkTranscript = store.LoadTranscript(freshFork);
-        forkTranscript.Should().NotBeNull();
-        forkTranscript.SessionId.Should().Be(freshFork);
-        forkTranscript.Turns.Should().BeEmpty();
-        store.LoadTranscript(renamed)!.Turns.Should().BeEmpty();
+        Assert.NotNull(forkTranscript);
+        Assert.Equal(freshFork, forkTranscript.SessionId);
+        Assert.Empty(forkTranscript.Turns);
+        Assert.Empty(store.LoadTranscript(renamed)!.Turns);
     }
 
     [Fact]
@@ -404,7 +401,8 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         }
 
         var load = () => store.LoadTranscript(a);
-        load.Should().Throw<InvalidOperationException>().WithMessage("*exceeds 64*");
+        var assertion33 = Assert.ThrowsAny<InvalidOperationException>(() => load.Invoke());
+        Assert.Matches("(?is)^.*exceeds\\ 64.*$", assertion33.Message);
     }
 
     [Fact]
@@ -425,7 +423,8 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         }
 
         var load = () => store.LoadTranscript(fork);
-        load.Should().Throw<InvalidOperationException>().WithMessage("*has no session row*");
+        var assertion34 = Assert.ThrowsAny<InvalidOperationException>(() => load.Invoke());
+        Assert.Matches("(?is)^.*has\\ no\\ session\\ row.*$", assertion34.Message);
     }
 
     [Fact]
@@ -438,13 +437,13 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
             ("user", "Original question"), ("assistant", "Answer")), []);
         store.CreateForkSession(fork, root, forkPointSeq: 0, title: null);
 
-        store.ListSessions().Single(session => session.Id == fork).Preview.Should().BeNull();
+        Assert.Null(store.ListSessions().Single(session => session.Id == fork).Preview);
         store.AppendTurn(fork, Turn(fork, "b", identity: null, truncated: false,
             ("user", "Fork question"), ("assistant", "Fork answer")), []);
 
         var descriptor = store.ListSessions().Single(session => session.Id == fork);
-        descriptor.Preview.Should().Be("Fork question");
-        descriptor.WorkspaceRoot.Should().Be("/repos/alpha");
+        Assert.Equal("Fork question", descriptor.Preview);
+        Assert.Equal("/repos/alpha", descriptor.WorkspaceRoot);
     }
 
     [Fact]
@@ -460,8 +459,8 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         }
 
         var open = () => new SqliteTranscriptStore(databasePath);
-        open.Should().Throw<InvalidOperationException>()
-            .WithMessage("*newer build*");
+        var assertion35 = Assert.ThrowsAny<InvalidOperationException>(() => open.Invoke());
+        Assert.Matches("(?is)^.*newer\\ build.*$", assertion35.Message);
     }
 
     private static AgentTranscriptTurn Turn(

@@ -259,7 +259,7 @@ internal sealed class IdeDebugTools
 
         var parameters = JsonSerializer.SerializeToElement(
             new DebugStartParams(launchName, configuration, stopOnEntry is true),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugStartParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/start",
@@ -277,7 +277,7 @@ internal sealed class IdeDebugTools
         EnsureConnected(arguments);
         var parameters = JsonSerializer.SerializeToElement(
             new DebugStateParams(sessionId, Math.Clamp(waitSeconds ?? 0, 0, 20)),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugStateParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/state",
@@ -295,7 +295,7 @@ internal sealed class IdeDebugTools
         EnsureConnected(arguments);
         var parameters = JsonSerializer.SerializeToElement(
             new DebugThreadParams(sessionId, threadId),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugThreadParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/stack",
@@ -323,7 +323,7 @@ internal sealed class IdeDebugTools
 
         var parameters = JsonSerializer.SerializeToElement(
             new DebugVariablesParams(sessionId, frameId, variablesReference),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugVariablesParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/variables",
@@ -345,7 +345,7 @@ internal sealed class IdeDebugTools
 
         var parameters = JsonSerializer.SerializeToElement(
             new DebugEvaluateParams(sessionId, expression, frameId),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugEvaluateParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/evaluate",
@@ -386,7 +386,7 @@ internal sealed class IdeDebugTools
 
         var parameters = JsonSerializer.SerializeToElement(
             new DebugBreakpointsParams(sessionId, uri, lines),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugBreakpointsParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/breakpoints",
@@ -410,7 +410,7 @@ internal sealed class IdeDebugTools
 
         var parameters = JsonSerializer.SerializeToElement(
             new DebugControlParams(sessionId, action, threadId),
-            SerializerOptions);
+            IdeFunctionJsonContext.Default.DebugControlParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
             "maieutics/debug/control",

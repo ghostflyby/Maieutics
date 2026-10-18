@@ -83,7 +83,6 @@ import {
   codeActionsToWire,
   collectDirty,
   collectProblems,
-  type DebugSessionState,
   defaultTreeSearchBounds,
   dirtyBufferAnswer,
   extractIdeRequest,

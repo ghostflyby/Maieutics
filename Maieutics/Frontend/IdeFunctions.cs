@@ -1558,6 +1558,7 @@ internal sealed record DiagnosticsTotals(
 [JsonSerializable(typeof(IdeFsSearchMatchValue))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(int[]))]
+[JsonSerializable(typeof(JsonElement[]))]
 [JsonSerializable(typeof(Maieutics.Frontend.DebugStartParams))]
 [JsonSerializable(typeof(Maieutics.Frontend.DebugStateParams))]
 [JsonSerializable(typeof(Maieutics.Frontend.DebugThreadParams))]

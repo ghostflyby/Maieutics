@@ -141,11 +141,20 @@ Deno.test("createIdeDebug passes DAP shapes through and shifts only breakpoints"
     { sessionId: "dbg-9", expression: "a + b", frameId: 3 },
   ]);
 
-  const breakpoints = await debug.breakpoints("dbg-9", "file:///w/a.ts", [7]);
+  const breakpoints = await debug.breakpoints("dbg-9", "file:///w/a.ts", [7, {
+    anchor: ["const a = 1;", "const b = 2;"],
+  }]);
   assertEquals(
     calls.at(-1),
-    ["ide_debug_breakpoints", { sessionId: "dbg-9", uri: "file:///w/a.ts", lines: [8] }],
-    "the facade takes 0-based and sends the kernel's 1-based contract",
+    [
+      "ide_debug_breakpoints",
+      {
+        sessionId: "dbg-9",
+        uri: "file:///w/a.ts",
+        points: [{ line: 8 }, { anchor: ["const a = 1;", "const b = 2;"] }],
+      },
+    ],
+    "the facade takes 0-based lines (converted to the kernel's 1-based) and passes anchors through",
   );
   assertEquals(breakpoints.breakpoints[0].line, 7, "and maps the answer back to 0-based");
 

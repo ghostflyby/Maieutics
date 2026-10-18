@@ -260,6 +260,15 @@ export type DebugVariablesTarget =
   | { readonly frameId: number }
   | { readonly variablesReference: number };
 
+/** One breakpoint address. `line` is 0-based (converted to the kernel's
+ * 1-based contract); `anchor` quotes unique context lines (1-based file
+ * positions survive line drift); `patch` is a V4A/git diff whose context
+ * locates the position. Exactly one form per entry. */
+export type DebugBreakpointSelector =
+  | { readonly line: number }
+  | { readonly anchor: readonly string[]; readonly occurrence?: number }
+  | { readonly patch: string };
+
 /** The debug slice: start the project under the user's debugger, wait for
  * stops, inspect, and step. Sessions are visible in the debug UI by design.
  * DAP shapes pass through 0-based; the only conversion is breakpoints, which
@@ -291,7 +300,7 @@ export interface IdeDebugFacade {
   breakpoints(
     sessionId: string,
     uri: string,
-    lines: number[],
+    points: readonly (number | DebugBreakpointSelector)[],
   ): Promise<{ breakpoints: Array<{ line?: number; verified?: boolean }> }>;
   control(
     sessionId: string,
@@ -331,8 +340,12 @@ export function createIdeDebug(
         "ide_debug_evaluate",
         frameId === undefined ? { sessionId, expression } : { sessionId, expression, frameId },
       ),
-    breakpoints: (sessionId, uri, lines) =>
-      call("ide_debug_breakpoints", { sessionId, uri, lines: lines.map((line) => line + 1) })
+    breakpoints: (sessionId, uri, points) =>
+      call("ide_debug_breakpoints", {
+        sessionId,
+        uri,
+        points: points.map((point) => typeof point === "number" ? { line: point + 1 } : point),
+      })
         .then((result) => {
           const shaped = result as { breakpoints?: Array<{ line?: number; verified?: boolean }> };
           return {

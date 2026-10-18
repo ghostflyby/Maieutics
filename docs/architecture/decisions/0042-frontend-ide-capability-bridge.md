@@ -485,7 +485,13 @@ diffs can be generated (`UnifiedDiff.Create`) but not parsed.
     the escape hatch stays read-language-only — starting sessions and stepping
     are not read operations. Arbitrary adapter commands remain out: only the
     fixed DAP requests the tools name cross the bridge. `workspace://local`
-    breakpoint URIs are kernel-translated (decision 4's authority).
+    breakpoint URIs are kernel-translated (decision 4's authority), and
+    breakpoints address through the stage-B selectors — `line`, the
+    unique-match `anchor` block, or a `patch` whose context locates the
+    position — resolved kernel-side against the file's current lines so
+    breakpoints survive line drift; the whole set resolves before
+    anything crosses (setBreakpoints replaces the file's breakpoints, so
+    a partial resolution must not degrade into a partial replacement).
 
 ## Later stages
 

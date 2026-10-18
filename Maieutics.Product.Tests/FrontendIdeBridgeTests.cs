@@ -1229,7 +1229,65 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task IdeDebugBreakpointsResolveSelectorsKernelSide()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        Directory.CreateDirectory(Path.Combine(workspace.Path, "src"));
+        await File.WriteAllTextAsync(
+            Path.Combine(workspace.Path, "src", "app.ts"),
+            "const a = 1;\nconst b = 2;\nconst c = 3;\n",
+            cancellationToken);
+        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var debugFunctions = new IdeDebugTools(
+            registry,
+            gate,
+            new FrontendIdeSockets(),
+            Workspace.Create(workspace.Path, workspace.Path));
+        var breakpoints = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_breakpoints");
+
+        const string patch = "*** Begin Patch\n*** Update File: src/app.ts\n@@\n-const b = 2;\n+const b = 20;\n*** End Patch\n";
+        var pointsJson = JsonSerializer.Serialize(new
+        {
+            sessionId = "dbg-1",
+            uri = "workspace://local/src/app.ts",
+            points = new object[]
+            {
+                new { line = 1 },
+                new { anchor = new[] { "const b = 2;" } },
+                new { patch },
+            },
+        });
+        var invocation = await InvokeWithAnswerAsync(
+            breakpoints,
+            pointsJson,
+            registry,
+            static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse(
+                """{"breakpoints":[{"line":0},{"line":1},{"line":1}]}""").RootElement.Clone()),
+            cancellationToken);
+
+        invocation.Method.Should().Be("maieutics/debug/breakpoints");
+        var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
+        outgoing.GetProperty("params").GetProperty("lines").EnumerateArray()
+            .Select(static line => line.GetInt32()).Should().Equal(
+                [1, 2, 2],
+                "the line stays, the anchor locates its block, the patch locates its hunk — all 1-based");
+
+        // Anchors failing resolution fail typed at the true site, before
+        // anything crosses to the frontend.
+        var missing = await InvokeAsync(
+            breakpoints,
+            NoContextArguments(
+                """{"sessionId":"dbg-1","uri":"workspace://local/src/app.ts","points":[{"anchor":["no such line"]}]}"""),
+            cancellationToken);
+        missing.Failure.Should().NotBeNull();
+        missing.Failure!.Code.Should().Be("ide_selector_no_match");
+    }
+
     // ---------- endpoint + announcement (harness) ----------
+
 
 
 

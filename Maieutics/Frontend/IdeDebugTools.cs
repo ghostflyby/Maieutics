@@ -1,9 +1,11 @@
+using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Execution;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Frontend;
@@ -94,10 +96,12 @@ internal sealed class IdeDebugTools
                 "Evaluates one expression in a paused debug session's context ('frameId' from ide_debug_stack " +
                 "scopes the evaluation)."),
             Create(
-                (Func<AIFunctionArguments, string, string, int[], CancellationToken, ValueTask<JsonElement>>)BreakpointsAsync,
+                (Func<AIFunctionArguments, string, string, JsonElement[], CancellationToken, ValueTask<JsonElement>>)BreakpointsAsync,
                 "ide_debug_breakpoints",
-                "Sets (or, with an empty 'lines', clears) the breakpoints of one file on a live debug session. " +
-                "'uri' is the file's workspace://local address."),
+                "Sets (or, with an empty 'points', clears) the breakpoints of one file on a live debug session. " +
+                "'points' addresses each breakpoint like the read tools' selectors: {'line': N}, an anchor block " +
+                "({'anchor': [context lines], 'occurrence'?} — unique match), or {'patch': a V4A/git diff} whose " +
+                "context locates the position. 'uri' is the file's workspace://local address."),
             Create(
                 (Func<AIFunctionArguments, string, string, int?, CancellationToken, ValueTask<JsonElement>>)ControlAsync,
                 "ide_debug_control",
@@ -358,34 +362,111 @@ internal sealed class IdeDebugTools
         AIFunctionArguments arguments,
         [Description("The sessionId from ide_debug_start.")] string sessionId,
         [Description("The file's workspace://local address.")] string uri,
-        [Description("The 1-based lines to break on; empty clears the file's breakpoints.")] int[] lines,
+        [Description("One selector per breakpoint: {'line': N}, {'anchor': [lines], 'occurrence'?}, or {'patch': diff}; empty clears the file's breakpoints.")] JsonElement[] points,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
         if (string.IsNullOrWhiteSpace(uri))
             throw new AgentToolException("ide_invalid_arguments", "uri is required.");
-        if (lines.Any(static line => line is < 1 or > 100_000) || lines.Length > 100)
+        if (points.Length > 100)
             throw new AgentToolException(
                 "ide_invalid_arguments",
-                "lines must be 1-based positions, at most 100 per file.");
+                "At most 100 breakpoints per file.");
 
         // Decision 4's translation authority: the kernel maps the workspace URI to
         // the physical address before the request crosses.
+        string fullPath;
+        var logicalRoot = workspace.Capture().ResolveLogical(uri, allowRoot: false);
+        var displayPath = logicalRoot.DisplayPath;
         if (uri.StartsWith("workspace://local/", StringComparison.Ordinal))
         {
             try
             {
                 var logical = workspace.Capture().ResolveLogical(uri, allowRoot: false);
-                uri = new Uri(workspace.Capture().ToPhysicalPath(logical.Segments)).AbsoluteUri;
+                fullPath = workspace.Capture().ToPhysicalPath(logical.Segments);
+                uri = new Uri(fullPath).AbsoluteUri;
             }
             catch (Maieutics.Execution.WorkspaceException exception)
             {
                 throw new AgentToolException(exception.Code, exception.Message);
             }
         }
+        else
+        {
+            fullPath = workspace.Capture().ToPhysicalPath(logicalRoot.Segments);
+        }
+
+        // Selector resolution is kernel-side (the translation authority, decision
+        // 13 + stage B): anchors and patches resolve against the file's current
+        // lines, so breakpoints survive line drift. The whole set resolves before
+        // anything crosses — setBreakpoints replaces the file's breakpoints, so a
+        // partial resolution must not degrade into a partial replacement.
+        IReadOnlyList<string> fileLines = Array.Empty<string>();
+        if (points.Any(static point => point.ValueKind != JsonValueKind.Object ||
+            point.TryGetProperty("line", out _)))
+        {
+            fileLines = await IdeSelector.ReadLinesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+        }
+
+        var lines = new List<int>(points.Length);
+        foreach (var point in points)
+        {
+            if (point.ValueKind != JsonValueKind.Object)
+                throw new AgentToolException(
+                    "ide_invalid_arguments",
+                    "Each breakpoint is a selector object: {'line': N}, {'anchor': [lines]}, or {'patch': diff}.");
+
+            if (point.TryGetProperty("line", out var lineElement))
+            {
+                if (lineElement.ValueKind != JsonValueKind.Number || !lineElement.TryGetInt32(out var line))
+                    throw new AgentToolException("ide_invalid_arguments", "The selector 'line' must be a number.");
+                if (line is < 1 or > 100_000)
+                    throw new AgentToolException(
+                        "ide_invalid_arguments",
+                        "lines must be 1-based positions.");
+                lines.Add(line);
+                continue;
+            }
+
+            if (point.TryGetProperty("anchor", out var anchorElement))
+            {
+                if (anchorElement.ValueKind != JsonValueKind.Array)
+                    throw new AgentToolException("ide_invalid_arguments", "The selector 'anchor' must be an array of context lines.");
+                var occurrence = 0;
+                if (point.TryGetProperty("occurrence", out var occurrenceElement))
+                {
+                    if (occurrenceElement.ValueKind != JsonValueKind.Number || !occurrenceElement.TryGetInt32(out var parsed))
+                        throw new AgentToolException("ide_invalid_arguments", "The selector 'occurrence' must be a number.");
+                    occurrence = parsed;
+                }
+
+                var anchor = ImmutableArray.CreateBuilder<string>(anchorElement.GetArrayLength());
+                foreach (var entry in anchorElement.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.String)
+                        throw new AgentToolException("ide_invalid_arguments", "Every selector 'anchor' entry must be a string.");
+                    anchor.Add(entry.GetString() ?? string.Empty);
+                }
+
+                lines.Add(IdeSelector.LocateAnchor(fileLines, anchor.ToImmutable(), occurrence));
+                continue;
+            }
+
+            if (point.TryGetProperty("patch", out var patchElement))
+            {
+                if (patchElement.ValueKind != JsonValueKind.String)
+                    throw new AgentToolException("ide_invalid_arguments", "The selector 'patch' must be a string holding a V4A or git diff.");
+                lines.Add(IdeSelector.LocatePatch(fileLines, patchElement.GetString() ?? string.Empty, displayPath));
+                continue;
+            }
+
+            throw new AgentToolException(
+                "ide_invalid_arguments",
+                "Each breakpoint needs a 'line', an 'anchor', or a 'patch' selector.");
+        }
 
         var parameters = JsonSerializer.SerializeToElement(
-            new DebugBreakpointsParams(sessionId, uri, lines),
+            new DebugBreakpointsParams(sessionId, uri, [.. lines]),
             IdeFunctionJsonContext.Default.DebugBreakpointsParams);
         return await SendAsync(
             ResolveAnnouncer(arguments),
